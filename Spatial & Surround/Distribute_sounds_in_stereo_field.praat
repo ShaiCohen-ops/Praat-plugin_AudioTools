@@ -3,7 +3,8 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2025)
+# Version: 0.4 (2025)
+# v0.4 (2026): SPATIAL VISUALIZATION STANDARDIZATION ONLY - label rails, compact summary, typography; DSP unchanged.
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -11,7 +12,7 @@
 #   Distributes multiple selected sounds across the stereo field
 #   using a chosen panning law and mixes to a single stereo output.
 #
-# Changelog v0.3:
+# Changelog v0.4:
 #   - Form + presets: now matches the rest of the suite. Adds
 #     pan width, curve law, order, stereo-input handling,
 #     output peak, draw_visualization, and play_result toggles.
@@ -150,7 +151,7 @@ else
 endif
 
 # === Info ===
-writeInfoLine: "=== Distribute Sounds in Stereo Field v0.3 ==="
+writeInfoLine: "=== Distribute Sounds in Stereo Field v0.4 ==="
 appendInfoLine: "Sources: ", numberOfSounds
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Width: ", fixed$(pan_width, 2), "  |  Order: ", orderName$, "  |  Law: ", panLawName$
@@ -439,7 +440,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##DISTRIBUTE SOUNDS IN STEREO FIELD##"
+    Text: 0.5, "centre", 0.68, "half", "##DISTRIBUTE SOUNDS IN STEREO FIELD v0.4##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
     Text: 0.5, "centre", -0.22, "half",
@@ -477,7 +478,7 @@ if draw_visualization
     Draw line:  pan_width, -0.85,  pan_width, 0.85
     Solid line
     Line width: 1
-    Font size: 5
+    Font size: 6
     Colour: "{0.55, 0.20, 0.55}"
     Text: -pan_width, "centre", 0.92, "half", "width edge"
     Text:  pan_width, "centre", 0.92, "half", "width edge"
@@ -541,7 +542,7 @@ if draw_visualization
         if length(nm$) > 10
             nm$ = left$(nm$, 9) + "."
         endif
-        Font size: 5
+        Font size: 6
         Colour: "{0.30, 0.30, 0.30}"
         Text: pn, "centre", yJit + 0.15, "half", nm$
     endfor
@@ -556,8 +557,8 @@ if draw_visualization
     # L and R gain curves vs pan position. Each source's
     # actual (L, R) pair plotted as a dot pair.
     # ----------------------------------------------------------
-    Select outer viewport: 4.2, 8, 0.75, 3.00
-    Select inner viewport: 4.52, 7.75, 0.85, 2.92
+    Select outer viewport: 4.2, 8, 0.75, 2.70
+    Select inner viewport: 4.52, 7.75, 0.85, 2.48
     
     Axes: -1.0, 1.0, 0, 1.05
     Paint rectangle: "{0.96, 0.96, 0.96}", -1.0, 1.0, 0, 1.05
@@ -612,14 +613,22 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
     Font size: 6
-    Text left: "yes", "Gain"
+    Select outer viewport: 4.02, 4.4, 0.75, 2.70
+    Select inner viewport: 4.02, 4.4, 0.77, 2.68
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Gain"
+    Select outer viewport: 4.2, 8, 0.75, 2.70
+    Select inner viewport: 4.52, 7.75, 0.85, 2.48
+    Axes: -1.0, 1.0, 0, 1.05
     Text bottom: "yes", "Pan position"
     
     # ----------------------------------------------------------
     # PANEL C: PER-SOURCE RMS BARS (sorted by pan position)
     # ----------------------------------------------------------
-    Select outer viewport: 4.2, 8, 3.05, 4.60
-    Select inner viewport: 4.52, 7.75, 3.12, 4.52
+    Select outer viewport: 4.2, 8, 3.00, 4.60
+    Select inner viewport: 4.52, 7.75, 3.10, 4.38
     
     # Sort source indices by pan position for plotting (stable, simple)
     sortIdx# = zero# (numberOfSounds)
@@ -645,7 +654,7 @@ if draw_visualization
         rgb$ = "{" + fixed$(srcColR#[srcI], 2) + ", " + fixed$(srcColG#[srcI], 2) + ", " + fixed$(srcColB#[srcI], 2) + "}"
         Paint rectangle: rgb$, k - 0.38, k + 0.38, 0, rmsValue#[srcI]
         
-        Font size: 5
+        Font size: 6
         Colour: "{0.30, 0.30, 0.30}"
         Text: k, "centre", -rmsHi * 0.06, "half", string$(srcI)
         
@@ -656,7 +665,15 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
     Font size: 6
-    Text left: "yes", "RMS"
+    Select outer viewport: 4.02, 4.4, 3.00, 4.60
+    Select inner viewport: 4.02, 4.4, 3.02, 4.58
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "RMS"
+    Select outer viewport: 4.2, 8, 3.00, 4.60
+    Select inner viewport: 4.52, 7.75, 3.10, 4.38
+    Axes: 0, numberOfSounds + 1, 0, rmsHi
     Text bottom: "yes", "Source # (top) / pan position (bottom), sorted L→R"
     
     # ----------------------------------------------------------
@@ -674,8 +691,8 @@ if draw_visualization
     # ----------------------------------------------------------
     # PANEL D: OUTPUT WAVEFORM
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 4.68, 5.75
-    Select inner viewport: 0.55, 7.72, 4.75, 5.68
+    Select outer viewport: 0, 8, 4.90, 5.95
+    Select inner viewport: 0.55, 7.72, 4.98, 5.72
     
     selectObject: stereoMix
     outDurViz = Get total duration
@@ -710,20 +727,28 @@ if draw_visualization
     Draw inner box
     Font size: 7
     Text top: "no", "Output stereo mix  (blue = L,  orange = R)"
-    Text left: "yes", "Amp"
+    Select outer viewport: 0.08, 0.52, 4.90, 5.95
+    Select inner viewport: 0.08, 0.52, 4.92, 5.93
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Amp"
+    Select outer viewport: 0, 8, 4.90, 5.95
+    Select inner viewport: 0.55, 7.72, 4.98, 5.72
+    Axes: 0, outDurViz, -ampViz, ampViz
     Text bottom: "yes", "Time (s)"
     
     # ----------------------------------------------------------
     # PANEL E: SUMMARY BAR
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 5.82, 6.58
-    Select inner viewport: 0.55, 7.72, 5.88, 6.52
+    Select outer viewport: 0, 8, 6.20, 6.98
+    Select inner viewport: 0.55, 7.72, 6.26, 6.92
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
     
     Font size: 6
     Colour: "{0.28, 0.28, 0.28}"
-    Text: 0.02, "left", 0.75, "half",
+    Text: 0.02, "left", 0.5, "half",
         ... "##" + presetName$ + "##"
         ... + "  Sources: " + string$(numberOfSounds)
         ... + "  |  Width: " + fixed$(pan_width, 2)
@@ -750,6 +775,11 @@ if draw_visualization
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
     
+    Select outer viewport: 0, 8, 0, 7.08
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
     Font size: 10
     Colour: "Black"
     Line width: 1

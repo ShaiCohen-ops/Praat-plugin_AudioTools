@@ -3,7 +3,8 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.2 (2025)
+# Version: 1.3 (2025)
+# v1.3.1 (2026): RUNTIME VISUAL QA - waveform/summary gap corrected; DSP unchanged.
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -59,7 +60,7 @@
 #
 #   Final output is peak-normalised with headroom_dB of clearance.
 #
-# Changelog v1.2:
+# Changelog v1.3:
 #   - Fixed mono front widening: L=original, R=delayed by full
 #     mono_width_ms, creating a real ITD (v1.1 delayed both
 #     channels equally, producing zero net timing difference)
@@ -651,8 +652,8 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##Hamasaki Square Ambience##"
-    Font size: 8
+    Text: 0.5, "centre", 0.68, "half", "##Hamasaki Square Ambience v1.3.1##"
+    Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
 
     # Input type label
@@ -714,7 +715,7 @@ if draw_visualization
     # Listener at centre
     Paint circle (mm): "White", 0, 0, 5.0
     Paint circle (mm): "{0.22, 0.62, 0.30}", 0, 0, 4.0
-    Font size: 5
+    Font size: 6
     Colour: "{0.15, 0.45, 0.18}"
     Text: 0, "centre", -0.20, "half", "Listener"
 
@@ -740,7 +741,7 @@ if draw_visualization
     Solid line
 
     # Delay annotations next to rear speakers
-    Font size: 5
+    Font size: 6
     Colour: "{0.35, 0.35, 0.35}"
     Text: -0.70, "centre", -0.75, "half",
         ... fixed$(lsDelaySec * 1000, 0) + " ms"
@@ -940,24 +941,32 @@ if draw_visualization
     Line width: 1
     Draw inner box
     Font size: 7
-    Text left: "yes", "Output"
+    Select outer viewport: 0.08, 0.52, 4.2, 5.35
+    Select inner viewport: 0.08, 0.52, 4.22, 5.33
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Output"
+    Select outer viewport: 0, 8, 4.2, 5.35
+    Select inner viewport: 0.55, 7.7, 4.27, 5.28
+    Axes: 0, outDur, -ampMax, ampMax
     Text top: "no", "4-ch output  (blue=L  orange=R  lt.blue=Ls  lt.orange=Rs)"
     Text bottom: "yes", "Time (s)"
 
     # ----------------------------------------------------------
     # Summary bar
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 5.45, 6.20
-    Select inner viewport: 0.55, 7.70, 5.50, 6.14
+    Select outer viewport: 0, 8, 5.60, 6.35
+    Select inner viewport: 0.55, 7.70, 5.65, 6.29
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
 
     Font size: 6
     Colour: "{0.28, 0.28, 0.28}"
-    Text: 0.02, "left", 0.75, "half",
+    Text: 0.02, "left", 0.64, "half",
         ... "##" + presetName$ + "##  " + inTypeStr$ + " in → 4 ch out  |  "
         ... + sourceName$
-    Text: 0.02, "left", 0.30, "half",
+    Text: 0.02, "left", 0.28, "half",
         ... "RearLvl=" + fixed$(rear_level_dB, 1) + "dB"
         ... + "  MidBlend=" + fixed$(rear_mid_blend_dB, 1) + "dB"
         ... + "  LsDly=" + fixed$(lsDelaySec * 1000, 0) + "ms"
@@ -970,6 +979,11 @@ if draw_visualization
     Draw rectangle: 0, 1, 0, 1
 
     # Reset drawing state
+    Select outer viewport: 0, 8, 0, 6.45
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
     Font size: 10
     Colour: "Black"
     Line width: 1

@@ -3,7 +3,8 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2025)
+# Version: 0.4 (2025)
+# v0.4 (2026): SPATIAL VISUALIZATION STANDARDIZATION ONLY - label rails, compact summary, typography; DSP unchanged.
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -26,7 +27,7 @@
 #   Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
-# Changelog v0.3:
+# Changelog v0.4:
 #   - HEADLINE: multichannel output. Number_of_channels form
 #     parameter takes 2, 4, 6, or 8. At N=2, behavior matches v0.2
 #     exactly (cosine/sine pan to L/R). At N>2, speakers are placed
@@ -70,7 +71,7 @@
 
 clearinfo
 
-form Partial Panner v0.3 (Multichannel)
+form Partial Panner v0.4 (Multichannel)
     comment ─────────────────────────────────────────
     comment Preset
     optionmenu Preset: 3
@@ -241,7 +242,7 @@ endfor
 # ============================================================
 
 writeInfoLine: "============================================"
-appendInfoLine: "Partial Panner v0.3"
+appendInfoLine: "Partial Panner v0.4"
 appendInfoLine: "============================================"
 appendInfoLine: "Input: ", originalName$
 appendInfoLine: "Duration: ", fixed$(duration, 3), " s"
@@ -575,7 +576,7 @@ if draw_visualization
         endfor
         
         # Frequency markers
-        Font size: 5
+        Font size: 6
         Colour: "{0.45, 0.45, 0.45}"
         fLabels# = { 100, 200, 500, 1000, 2000, 5000, 10000 }
         for k from 1 to size(fLabels#)
@@ -597,7 +598,15 @@ if draw_visualization
         Line width: 1
         Draw inner box
         Font size: 6
-        Text left: "yes", "Pan position"
+        Select outer viewport: 0.08, 0.52, 0.75, 4.6
+        Select inner viewport: 0.08, 0.52, 0.77, 4.58
+        Axes: 0, 1, 0, 1
+        Font size: 7
+        Colour: "Black"
+        Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Pan position"
+        Select outer viewport: 0, 4.2, 0.75, 4.6
+        Select inner viewport: 0.55, 4, 0.95, 4.4
+        Axes: minLogF, maxLogF, -1.2, 1.2
         Text bottom: "yes", "Frequency (Hz, log)"
     else
         # ---- MULTICHANNEL polar layout ----
@@ -661,7 +670,7 @@ if draw_visualization
         endfor
         
         # Cardinal labels
-        Font size: 5
+        Font size: 6
         Colour: "{0.45, 0.45, 0.50}"
         Text: 0, "centre", 1.32, "half", "FRONT 0°"
         Text: 0, "centre", -1.32, "half", "BACK 180°"
@@ -678,7 +687,7 @@ if draw_visualization
     # Heatmap: rows = bands, columns = output channels.
     # Color intensity = gain. Empty cells = 0 (band silent on that ch).
     # ----------------------------------------------------------
-    Select outer viewport: 4.2, 8, 0.75, 3.00
+    Select outer viewport: 4.2, 8, 0.75, 2.70
     Select inner viewport: 4.55, 7.75, 0.95, 2.85
     
     Axes: 0, nCh, 0, number_of_bands
@@ -710,7 +719,7 @@ if draw_visualization
     endfor
     
     # Channel labels
-    Font size: 5
+    Font size: 6
     Colour: "{0.30, 0.30, 0.30}"
     for s from 1 to nCh
         Text: s - 0.5, "centre", -number_of_bands * 0.04, "half", "C" + string$(s)
@@ -720,7 +729,15 @@ if draw_visualization
     Line width: 1
     Draw inner box
     Font size: 6
-    Text left: "yes", "Band (high -> low)"
+    Select outer viewport: 4.02, 4.4, 0.75, 2.70
+    Select inner viewport: 4.02, 4.4, 0.77, 2.68
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Band (high -> low)"
+    Select outer viewport: 4.2, 8, 0.75, 2.70
+    Select inner viewport: 4.55, 7.75, 0.95, 2.85
+    Axes: 0, nCh, 0, number_of_bands
     Text bottom: "yes", "Channel"
     
     # ----------------------------------------------------------
@@ -729,7 +746,7 @@ if draw_visualization
     # Reveals how the LF-protection and frequency-scaling
     # combine to limit low-freq spread.
     # ----------------------------------------------------------
-    Select outer viewport: 4.2, 8, 3.05, 4.60
+    Select outer viewport: 4.2, 8, 3.00, 4.60
     Select inner viewport: 4.55, 7.75, 3.20, 4.50
     
     minLogF = ln(minFreq)
@@ -751,7 +768,7 @@ if draw_visualization
         Dotted line
         Draw line: lfLogF, 0, lfLogF, 1.05
         Solid line
-        Font size: 5
+        Font size: 6
         Colour: "{0.65, 0.45, 0.45}"
         Text: lfLogF, "left", 0.10, "half", " LF protect"
     endif
@@ -798,7 +815,15 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
     Font size: 6
-    Text left: "yes", "Effective width"
+    Select outer viewport: 4.02, 4.4, 3.00, 4.60
+    Select inner viewport: 4.02, 4.4, 3.02, 4.58
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Effective width"
+    Select outer viewport: 4.2, 8, 3.00, 4.60
+    Select inner viewport: 4.55, 7.75, 3.2, 4.5
+    Axes: minLogF, maxLogF, 0, 1.05
     Text bottom: "yes", "Frequency (Hz)"
     
     # ----------------------------------------------------------
@@ -820,8 +845,8 @@ if draw_visualization
     # ----------------------------------------------------------
     # PANEL D: OUTPUT WAVEFORM
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 4.68, 5.75
-    Select inner viewport: 0.55, 7.72, 4.75, 5.68
+    Select outer viewport: 0, 8, 4.90, 5.95
+    Select inner viewport: 0.55, 7.72, 4.98, 5.72
     
     selectObject: result
     outPeak = Get absolute extremum: 0, 0, "None"
@@ -861,20 +886,28 @@ if draw_visualization
     else
         Text top: "no", "Output  (Ch1 blue, Ch2 orange — " + string$(nResultCh) + " channels total)"
     endif
-    Text left: "yes", "Amp"
+    Select outer viewport: 0.08, 0.52, 4.90, 5.95
+    Select inner viewport: 0.08, 0.52, 4.92, 5.93
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Amp"
+    Select outer viewport: 0, 8, 4.90, 5.95
+    Select inner viewport: 0.55, 7.72, 4.98, 5.72
+    Axes: 0, finalDur, -ampViz, ampViz
     Text bottom: "yes", "Time (s)"
     
     # ----------------------------------------------------------
     # PANEL E: SUMMARY BAR
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 5.82, 6.58
-    Select inner viewport: 0.55, 7.72, 5.88, 6.52
+    Select outer viewport: 0, 8, 6.20, 6.98
+    Select inner viewport: 0.55, 7.72, 6.26, 6.92
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
     
     Font size: 6
     Colour: "{0.28, 0.28, 0.28}"
-    Text: 0.02, "left", 0.75, "half",
+    Text: 0.02, "left", 0.64, "half",
         ... "##" + presetName$ + "##"
         ... + "  " + originalName$
         ... + "  |  Channels: " + string$(nCh)
@@ -892,6 +925,11 @@ if draw_visualization
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
     
+    Select outer viewport: 0, 8, 0, 7.08
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
     Font size: 10
     Colour: "Black"
     Line width: 1

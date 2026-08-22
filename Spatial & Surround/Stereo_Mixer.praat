@@ -3,7 +3,9 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.5 (2026) - Fix stereo mix channel routing (right gains were dropped)
+# Version: 0.6.1 (2026) - Fix stereo mix channel routing (right gains were dropped)
+# v0.6.1 (2026): VISUALIZATION LAYOUT FIX - separate header bands and output/Summary spacing; DSP unchanged.
+# v0.6 (2026): SPATIAL VISUALIZATION STANDARDIZATION ONLY - label rails, compact summary, typography; DSP unchanged.
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -15,7 +17,7 @@
 #   Select 1-8 Sound objects and run this script.
 #   Sounds are mixed in selection order (first selected = Sound 1).
 #
-# Changelog v0.5:
+# Changelog v0.6:
 #   - Fixed mix formula: object[id, row, col] so each output channel
 #     reads its matching source channel. Previously object[id, col] read
 #     channel 1 into BOTH outputs, silently discarding right-channel
@@ -50,7 +52,7 @@ for i from 1 to numSounds
     tempSoundID_'i' = selected("Sound", i)
 endfor
 
-form Stereo Mixer v0.4
+form Stereo Mixer v0.6.1
     comment === PRESET PANNING ===
     optionmenu Preset: 1
         option Custom (use gains below)
@@ -196,7 +198,7 @@ else
 endif
 
 clearinfo
-writeInfoLine: "=== Stereo Mixer v0.5 ==="
+writeInfoLine: "=== Stereo Mixer v0.6.1 ==="
 appendInfoLine: "Mixing ", numSounds, " sounds"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
@@ -341,14 +343,18 @@ if draw_visualization
     # ----------------------------------------------------------
     # Title
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 0, 0.65
+    Select outer viewport: 0, 8, 0, 0.28
+    Select inner viewport: 0.60, 7.70, 0.02, 0.26
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.65, "half", "##Stereo Mixer##"
+    Text: 0.5, "centre", 0.5, "half", "##Stereo Mixer v0.6.1##"
+    Select outer viewport: 0, 8, 0.28, 0.50
+    Select inner viewport: 0.60, 7.70, 0.29, 0.49
+    Axes: 0, 1, 0, 1
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
-    Text: 0.5, "centre", -0.25, "half",
+    Text: 0.5, "centre", 0.5, "half",
         ... resultName$ + "  |  " + presetName$
         ... + "  |  " + string$(numSounds) + " sounds"
 
@@ -490,7 +496,14 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "L"
+    Select outer viewport: 0.08, 0.52, 3.02, 3.92
+    Select inner viewport: 0.08, 0.52, 3.04, 3.9
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "L"
+    Select outer viewport: 0, 8, 3.02, 3.92
+    Select inner viewport: 0.55, 7.65, 3.12, 3.87
 
     # ----------------------------------------------------------
     # Output waveform (R channel)
@@ -507,19 +520,26 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "R"
+    Select outer viewport: 0.08, 0.52, 3.96, 4.86
+    Select inner viewport: 0.08, 0.52, 3.98, 4.84
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "R"
+    Select outer viewport: 0, 8, 3.96, 4.86
+    Select inner viewport: 0.55, 7.65, 4.06, 4.81
     Text bottom: "yes", "Time (s)"
 
     # ----------------------------------------------------------
     # Summary panel
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 4.96, 5.56
-    Select inner viewport: 0.55, 7.65, 5.02, 5.50
+    Select outer viewport: 0, 8, 5.06, 5.66
+    Select inner viewport: 0.55, 7.65, 5.12, 5.60
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
     Font size: 7
     Colour: "Black"
-    Text: 0.02, "left", 0.78, "half", "##Summary##"
+    Text: 0.02, "left", 0.68, "half", "##Summary##"
     Font size: 6
     Colour: "{0.30, 0.30, 0.30}"
 
@@ -532,16 +552,18 @@ if draw_visualization
         inputStr$ = inputStr$ + soundName_'i'$
     endfor
 
-    Text: 0.02, "left", 0.45, "half",
+    Text: 0.02, "left", 0.28, "half",
         ... string$(numSounds) + " sounds  |  "
         ... + presetName$ + "  |  "
         ... + fixed$(maxDur, 2) + "s  |  "
         ... + string$(maxSR) + " Hz  |  "
         ... + fixed$(elapsed, 1) + " s"
 
+    Select inner viewport: 0.55, 7.65, 5.12, 5.60
+    Axes: 0, 1, 0, 1
     Colour: "Black"
-    Draw rectangle: 0, 1, 0, 1
-
+    Draw inner box
+    Select outer viewport: 0, 8, 0, 5.76
     Font size: 10
     Colour: "Black"
     Line width: 1

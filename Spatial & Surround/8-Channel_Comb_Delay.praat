@@ -3,7 +3,8 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4 (2026)
+# Version: 0.5 (2026)
+# v0.5 (2026): SPATIAL VISUALIZATION STANDARDIZATION ONLY - label rails, compact summary, typography; DSP unchanged.
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -13,7 +14,7 @@
 #   Optional: Reverse even-numbered channels for spatial effects.
 #   Deliverable as octophonic, stems, or a downmix.
 #
-# Changelog v0.4 (2026):
+# Changelog v0.5 (2026):
 #   - NEW: Output_format menu. The preset choice, the b calculation, the
 #     comb formula, the even-channel reversal and the construction of
 #     the eight working channels are untouched; the branch begins only
@@ -214,7 +215,7 @@ else
     presetName$ = "Custom"
 endif
 
-# v0.4: Scale_peak is a plain real; 0 or negative would make Scale peak
+# v0.5: Scale_peak is a plain real; 0 or negative would make Scale peak
 # fail after all the processing had already been done.
 if scale_peak <= 0
     scale_peak = 0.99
@@ -285,7 +286,7 @@ for i from 1 to 8
     n = divisor[i]
     b = floor(numSamples / n)
 
-    # v0.4: a divisor larger than the sample count gave b = 0, which
+    # v0.5: a divisor larger than the sample count gave b = 0, which
     # turns the comb into self[col] - self[col] - a silent channel, with
     # nothing reported. b >= 1 keeps it a first difference at worst.
     if b < 1
@@ -297,7 +298,7 @@ for i from 1 to 8
     endif
     b_[i] = b
 
-    # v0.4: string$() instead of backtick interpolation of b
+    # v0.5: string$() instead of backtick interpolation of b
     Formula: "if col + " + string$(b) + " <= ncol then self[col + "
         ... + string$(b) + "] - self[col] else -self[col] fi"
 endfor
@@ -530,7 +531,7 @@ endif
 # ============================================================
 # VISUALIZATION  (8 x 8 canvas — suite standard)
 # ============================================================
-# v0.4: the working channels ch[1]-ch[8] are still alive here. The
+# v0.5: the working channels ch[1]-ch[8] are still alive here. The
 # waveform panel draws them directly instead of extracting from an
 # output object, so it is identical in all five formats.
 
@@ -583,7 +584,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##8-CHANNEL COMB DELAY##"
+    Text: 0.5, "centre", 0.68, "half", "##8-CHANNEL COMB DELAY v0.5##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
     Text: 0.5, "centre", -0.22, "half",
@@ -597,7 +598,7 @@ if draw_visualization
     # PANEL A: DELAY SAMPLES BAR CHART  (left column)
     # ----------------------------------------------------------
     Select outer viewport: 0, 4.2, 0.75, 4.60
-    Select inner viewport: 0.38, 4.00, 0.85, 4.50
+    Select inner viewport: 0.55, 4.00, 0.85, 4.34
 
     axMax = maxB * 1.12
     Axes: 0, axMax, 0.5, 8.5
@@ -626,7 +627,7 @@ if draw_visualization
         Line width: 1
         Draw rectangle: 0, b_[i], yLo, yHi
 
-        Font size: 5
+        Font size: 6
         Colour: "{0.30, 0.30, 0.30}"
         Text: -axMax * 0.02, "right", y, "half", "Ch" + string$(i)
         Colour: "White"
@@ -641,13 +642,21 @@ if draw_visualization
     Draw inner box
     Font size: 6
     Text bottom: "yes", "Comb delay b (samples)"
-    Text left: "yes", "Ch"
+    Select outer viewport: 0.08, 0.52, 0.75, 4.6
+    Select inner viewport: 0.08, 0.52, 0.77, 4.58
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Ch"
+    Select outer viewport: 0, 4.2, 0.75, 4.6
+    Select inner viewport: 0.55, 4, 0.85, 4.34
+    Axes: 0, axMax, 0.5, 8.5
 
     # ----------------------------------------------------------
     # PANEL B: COMB PERIOD IN MS  (right column, upper)
     # ----------------------------------------------------------
-    Select outer viewport: 4.2, 8, 0.75, 3.00
-    Select inner viewport: 4.52, 7.75, 0.85, 2.92
+    Select outer viewport: 4.2, 8, 0.75, 2.70
+    Select inner viewport: 4.52, 7.75, 0.85, 2.48
 
     # b samples → ms = b / sr * 1000
     maxMs = (maxB / sr) * 1000 * 1.12
@@ -680,7 +689,7 @@ if draw_visualization
         Colour: "{0.30, 0.30, 0.30}"
         Draw rectangle: 0, ms, yLo, yHi
 
-        Font size: 5
+        Font size: 6
         Colour: "{0.30, 0.30, 0.30}"
         Text: -maxMs * 0.02, "right", y, "half", "Ch" + string$(i)
         Colour: "White"
@@ -691,15 +700,23 @@ if draw_visualization
 
     Colour: "Black"
     Draw inner box
-    Font size: 5
-    Text left: "yes", "Ch"
+    Font size: 6
+    Select outer viewport: 4.02, 4.4, 0.75, 2.70
+    Select inner viewport: 4.02, 4.4, 0.77, 2.68
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Ch"
+    Select outer viewport: 4.2, 8, 0.75, 2.70
+    Select inner viewport: 4.52, 7.75, 0.85, 2.48
+    Axes: 0, maxMs, 0.5, 8.5
     Text bottom: "yes", "Comb period (ms)"
 
     # ----------------------------------------------------------
     # PANEL C: DIRECTION AND OUTPUT ROUTING  (right column, lower)
     # ----------------------------------------------------------
-    Select outer viewport: 4.2, 8, 3.05, 4.60
-    Select inner viewport: 4.52, 7.75, 3.12, 4.52
+    Select outer viewport: 4.2, 8, 3.00, 4.60
+    Select inner viewport: 4.52, 7.75, 3.10, 4.38
 
     Axes: 0, 10, 0.5, 8.5
     Paint rectangle: "{0.96, 0.96, 0.96}", 0, 10, 0.5, 8.5
@@ -710,7 +727,7 @@ if draw_visualization
         yHi = y + 0.38
         yMid = y
 
-        # v0.4: where this channel lands in the chosen output format
+        # v0.5: where this channel lands in the chosen output format
         if output_format = 1
             route$ = "out" + string$(i)
         elsif output_format = 2
@@ -746,7 +763,7 @@ if draw_visualization
             Line width: 2
             Draw arrow: 8.5, yMid, 1.5, yMid
             Line width: 1
-            Font size: 5
+            Font size: 6
             Colour: "White"
             Text: 5.0, "centre", yMid, "half",
                 ... "Ch" + string$(i) + "  REV  /÷" + string$(divisor[i])
@@ -758,7 +775,7 @@ if draw_visualization
             Line width: 2
             Draw arrow: 1.5, yMid, 8.5, yMid
             Line width: 1
-            Font size: 5
+            Font size: 6
             Colour: "White"
             Text: 5.0, "centre", yMid, "half",
                 ... "Ch" + string$(i) + "  fwd  /÷" + string$(divisor[i])
@@ -769,7 +786,7 @@ if draw_visualization
     Colour: "Black"
     Line width: 1
     Draw inner box
-    Font size: 5
+    Font size: 6
     Text bottom: "yes", "Direction and routing  (blue = forward,  red = reversed)"
 
     # ----------------------------------------------------------
@@ -787,10 +804,10 @@ if draw_visualization
     # ----------------------------------------------------------
     # PANEL D: PROCESSED CHANNELS Ch1 / Ch2 (full width)
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 4.68, 5.75
-    Select inner viewport: 0.55, 7.72, 4.75, 5.68
+    Select outer viewport: 0, 8, 4.90, 5.95
+    Select inner viewport: 0.55, 7.72, 4.98, 5.72
 
-    # v0.4: drawn from the working channels, not from an output object
+    # v0.5: drawn from the working channels, not from an output object
     selectObject: ch[1]
     outDurViz = Get total duration
     peakViz = Get absolute extremum: 0, 0, "None"
@@ -823,27 +840,35 @@ if draw_visualization
     Draw inner box
     Font size: 7
     Text top: "no", "Processed channels  (blue = Ch1,  orange = Ch2)"
-    Text left: "yes", "Amp"
+    Select outer viewport: 0.08, 0.52, 4.90, 5.95
+    Select inner viewport: 0.08, 0.52, 4.92, 5.93
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Amp"
+    Select outer viewport: 0, 8, 4.90, 5.95
+    Select inner viewport: 0.55, 7.72, 4.98, 5.72
+    Axes: 0, outDurViz, -ampViz, ampViz
     Text bottom: "yes", "Time (s)"
 
     # ----------------------------------------------------------
     # PANEL E: SUMMARY BAR (full width, bottom)
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 5.82, 6.85
-    Select inner viewport: 0.55, 7.72, 5.88, 6.79
+    Select outer viewport: 0, 8, 6.20, 7.08
+    Select inner viewport: 0.55, 7.72, 6.26, 7.02
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
 
     Font size: 6
     Colour: "{0.28, 0.28, 0.28}"
-    Text: 0.02, "left", 0.80, "half",
+    Text: 0.02, "left", 0.72, "half",
         ... "##" + presetName$ + "##" + revLabel$
         ... + "  " + originalName$
         ... + "  |  " + fixed$(originalDur, 2) + " s"
         ... + "  |  " + string$(numSamples) + " smp"
         ... + "  |  @" + string$(sr) + " Hz"
 
-    Text: 0.02, "left", 0.50, "half",
+    Text: 0.02, "left", 0.45, "half",
         ... "÷" + string$(divisor[1])
         ... + "  ÷" + string$(divisor[2])
         ... + "  ÷" + string$(divisor[3])
@@ -854,7 +879,7 @@ if draw_visualization
         ... + "  ÷" + string$(divisor[8])
         ... + "  [Ch1–Ch8]"
 
-    Text: 0.02, "left", 0.20, "half",
+    Text: 0.02, "left", 0.18, "half",
         ... "Format: " + formatName$
         ... + "  |  " + string$(outCount) + " object"
         ... + " x " + string$(outChannels) + " ch"
@@ -863,6 +888,11 @@ if draw_visualization
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
 
+    Select outer viewport: 0, 8, 0, 7.18
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
     Font size: 10
     Colour: "Black"
     Line width: 1
@@ -890,7 +920,7 @@ if play_result
         selectObject: out[1]
         Play
     else
-        # v0.4: playing the first pair or quad alone would present a
+        # v0.5: playing the first pair or quad alone would present a
         # quarter or a half of the result as the whole.
         appendInfoLine: ""
         appendInfoLine: "Playback: stereo preview, L = odd channels, R = even channels."

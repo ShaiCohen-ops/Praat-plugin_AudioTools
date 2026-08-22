@@ -3,7 +3,8 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.5 (2026)
+# Version: 0.6 (2026)
+# v0.6.1 (2026): RUNTIME VISUAL QA - summary row collision fixed; DSP unchanged.
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -22,7 +23,7 @@
 #   distance model: there is no inverse-distance law, no propagation
 #   delay and no direct-to-reverberant ratio. It is named accordingly.
 #
-# Changelog v0.5 (2026):
+# Changelog v0.6.1 (2026):
 #   - FIX: the ambient bed was discontinuous at every speaker position.
 #     v0.4 gave the bed only to the six non-active speakers, so a
 #     speaker lost the bed the instant it became active. With the source
@@ -467,7 +468,7 @@ for frame from 1 to numberOfFrames
     panPosition = max(0, min(1, panPosition))
 
     # --- Pan law: sine/cosine rather than sqrt ---
-    # v0.5: both forms satisfy g1^2 + g2^2 = 1, but sqrt(p) has infinite
+    # v0.6: both forms satisfy g1^2 + g2^2 = 1, but sqrt(p) has infinite
     # slope at p = 0, so the quiet neighbour leaves zero as a cusp. At
     # p = 0.0001 sqrt gives 0.0100 where sin gives 0.000157 - 64 times
     # larger - which is what made the channel that hands over at a
@@ -478,7 +479,7 @@ for frame from 1 to numberOfFrames
     gain_adjacent = sin(theta)
 
     # --- Ambient as a base under all eight, then the pan on top ---
-    # v0.5: v0.4 gave the bed only to the six non-active speakers, so
+    # v0.6: v0.4 gave the bed only to the six non-active speakers, so
     # the bed vanished from a speaker the moment it became active. At
     # an exact speaker position the adjacent speaker held 0 while the
     # speaker on the other side held the full bed, and crossing that
@@ -545,7 +546,7 @@ for ch from 1 to 8
         peakAll = thisPeak
     endif
 endfor
-# v0.5: an all-silent result used to divide by a 1e-9 floor and report
+# v0.6: an all-silent result used to divide by a 1e-9 floor and report
 # a shared gain near a billion. The audio stayed silent, but the number
 # was nonsense. Skip the stage instead and say so.
 allSilent = 0
@@ -794,7 +795,7 @@ endif
 # ============================================================
 # INFO
 # ============================================================
-writeInfoLine: "=== 8-Channel Speech-Driven Spatialization v0.5 ==="
+writeInfoLine: "=== 8-Channel Speech-Driven Spatialization v0.6.1 ==="
 appendInfoLine: "Source: ", soundName$, "  (", fixed$(duration, 2), " s @ ",
     ... samplingFrequency, " Hz)"
 appendInfoLine: "Preset: ", presetName$
@@ -987,7 +988,7 @@ if draw_visualization
     # PANEL A: OCTAGON MAP + TRAJECTORY  (left column)
     # ----------------------------------------------------------
     Select outer viewport: 0, 4.2, 0.75, 4.60
-    Select inner viewport: 0.38, 4.00, 0.85, 4.50
+    Select inner viewport: 0.55, 4.00, 0.85, 4.34
 
     Axes: -1.45, 1.45, -1.45, 1.45
     Paint rectangle: "{0.96, 0.96, 0.96}", -1.45, 1.45, -1.45, 1.45
@@ -1022,10 +1023,10 @@ if draw_visualization
             ... + fixed$(spkColG#[k], 2) + ", " + fixed$(spkColB#[k], 2) + "}",
             ... spkX#[k], spkY#[k], 3.6
         Colour: "White"
-        Font size: 5
+        Font size: 6
         Text: spkX#[k], "centre", spkY#[k], "half", string$(k)
         Colour: "{0.40, 0.40, 0.40}"
-        Font size: 4
+        Font size: 6
         Text: spkX#[k] * 1.24, "centre", spkY#[k] * 1.24, "half", spkName$#[k]
     endfor
 
@@ -1038,8 +1039,8 @@ if draw_visualization
     # ----------------------------------------------------------
     # PANEL B: PITCH CONTOUR  (right column, upper)
     # ----------------------------------------------------------
-    Select outer viewport: 4.2, 8, 0.75, 3.00
-    Select inner viewport: 4.52, 7.75, 0.85, 2.92
+    Select outer viewport: 4.2, 8, 0.75, 2.70
+    Select inner viewport: 4.52, 7.75, 0.85, 2.48
 
     # v0.4: the axis is the mapped range in fixed mode, so the plot
     # shows the mapping the audio actually used.
@@ -1076,10 +1077,18 @@ if draw_visualization
 
     Colour: "Black"
     Draw inner box
-    Font size: 5
+    Font size: 6
     Marks left: 3, "yes", "yes", "no"
     Font size: 6
-    Text left: "yes", "Pitch (Hz)"
+    Select outer viewport: 4.02, 4.4, 0.75, 2.70
+    Select inner viewport: 4.02, 4.4, 0.77, 2.68
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Pitch (Hz)"
+    Select outer viewport: 4.2, 8, 0.75, 2.70
+    Select inner viewport: 4.52, 7.75, 0.85, 2.48
+    Axes: 0, duration, pAxLo, pAxHi
     if pitch_mapping = 1
         Text bottom: "yes", "dotted = mapped range (" + fixed$(pitch_floor, 0)
             ... + "-" + fixed$(pitch_ceiling, 0) + " Hz)"
@@ -1090,8 +1099,8 @@ if draw_visualization
     # ----------------------------------------------------------
     # PANEL C: PROXIMITY GAIN  (right column, lower)
     # ----------------------------------------------------------
-    Select outer viewport: 4.2, 8, 3.05, 4.60
-    Select inner viewport: 4.52, 7.75, 3.12, 4.52
+    Select outer viewport: 4.2, 8, 3.00, 4.60
+    Select inner viewport: 4.52, 7.75, 3.10, 4.38
 
     gSpan = max_proximity_gain - min_proximity_gain
     gAxLo = min_proximity_gain - gSpan * 0.10
@@ -1116,9 +1125,17 @@ if draw_visualization
 
     Colour: "Black"
     Draw inner box
-    Font size: 5
+    Font size: 6
     Marks left: 3, "yes", "yes", "no"
-    Text left: "yes", "Gain"
+    Select outer viewport: 4.02, 4.4, 3.00, 4.60
+    Select inner viewport: 4.02, 4.4, 3.02, 4.58
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Gain"
+    Select outer viewport: 4.2, 8, 3.00, 4.60
+    Select inner viewport: 4.52, 7.75, 3.10, 4.38
+    Axes: 0, duration, gAxLo, gAxHi
     Text bottom: "yes", "Proximity gain (amplitude cue, not distance)"
 
     # ----------------------------------------------------------
@@ -1137,8 +1154,8 @@ if draw_visualization
     # ----------------------------------------------------------
     # PANEL D: TWO CHANNEL EXAMPLES (full width)
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 4.68, 5.75
-    Select inner viewport: 0.55, 7.72, 4.75, 5.68
+    Select outer viewport: 0, 8, 4.90, 5.95
+    Select inner viewport: 0.55, 7.72, 4.98, 5.72
 
     selectObject: channel[2]
     outDurViz = Get total duration
@@ -1172,20 +1189,28 @@ if draw_visualization
     Draw inner box
     Font size: 7
     Text top: "no", "Opposing channels  (blue = Ch2 Front,  orange = Ch6 Back)"
-    Text left: "yes", "Amp"
+    Select outer viewport: 0.08, 0.52, 4.90, 5.95
+    Select inner viewport: 0.08, 0.52, 4.92, 5.93
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Amp"
+    Select outer viewport: 0, 8, 4.90, 5.95
+    Select inner viewport: 0.55, 7.72, 4.98, 5.72
+    Axes: 0, outDurViz, -ampViz, ampViz
     Text bottom: "yes", "Time (s)"
 
     # ----------------------------------------------------------
     # PANEL E: SUMMARY BAR (full width, bottom)
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 5.82, 6.85
-    Select inner viewport: 0.55, 7.72, 5.88, 6.79
+    Select outer viewport: 0, 8, 6.20, 7.08
+    Select inner viewport: 0.55, 7.72, 6.26, 7.02
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
 
     Font size: 6
     Colour: "{0.28, 0.28, 0.28}"
-    Text: 0.02, "left", 0.80, "half",
+    Text: 0.02, "left", 0.72, "half",
         ... "##" + presetName$ + "##"
         ... + "  " + soundName$
         ... + "  |  " + fixed$(duration, 2) + " s"
@@ -1198,11 +1223,11 @@ if draw_visualization
     else
         pitchLine$ = "Pitch " + fixed$(pitchMin, 0) + "-" + fixed$(pitchMax, 0) + " Hz observed, mapped " + mapMode$ + "  |  Intensity " + fixed$(intensityLo, 0) + "-" + fixed$(intensityHi, 0) + " dB (5-95%)"
     endif
-    Text: 0.02, "left", 0.50, "half",
+    Text: 0.02, "left", 0.45, "half",
         ... pitchLine$
         ... + "  |  Bed " + fixed$(ambient_level, 3) + " (renormalised)"
 
-    Text: 0.02, "left", 0.20, "half",
+    Text: 0.02, "left", 0.18, "half",
         ... "Format: " + formatName$
         ... + "  |  " + string$(outCount) + objWord$
         ... + " x " + string$(outChannels) + " ch"
@@ -1211,6 +1236,11 @@ if draw_visualization
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
 
+    Select outer viewport: 0, 8, 0, 7.18
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
     Font size: 10
     Colour: "Black"
     Line width: 1

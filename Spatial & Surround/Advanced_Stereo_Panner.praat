@@ -3,7 +3,8 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 2.1 (2026)
+# Version: 2.2.1 (2026)
+# v2.2 (2026): SPATIAL VISUALIZATION STANDARDIZATION ONLY - label rails, compact summary, typography; DSP unchanged.
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -77,7 +78,7 @@
 #     report the actual gains, the actual ILD in dB, the safety
 #     attenuation if any, the ITD in both samples and milliseconds, the
 #     distance attenuation in dB, and the output duration.
-#   - v2.1 FIX: the drawing tool used beginPause to wait while you drew,
+#   - v2.2 FIX: the drawing tool used beginPause to wait while you drew,
 #     which fails with "Praat cannot have more than one pause form at a
 #     time" - the script's own form window is already a pause form, and
 #     Praat allows only one. Replaced with a two-pass handshake: run
@@ -425,7 +426,7 @@ else
     endfor
 endif
 
-# v2.1: the drawing tool runs in TWO PASSES rather than pausing.
+# v2.2: the drawing tool runs in TWO PASSES rather than pausing.
 # Praat will not open a second pause form while the script's own form
 # window is up, so beginPause fails here with "cannot have more than
 # one pause form at a time". Instead:
@@ -833,7 +834,7 @@ gR0 = panGains.gR * distGain
 @panGains: panAbsMax
 ildAtMax = 20 * log10(panGains.gR / max(panGains.gL, 1e-12))
 
-writeInfoLine: "=== Advanced Stereo Panner v2.1 ==="
+writeInfoLine: "=== Advanced Stereo Panner v2.2 ==="
 appendInfoLine: "Source: ", name$, "  (", fixed$(duration, 3), " s @ ", sampleRate, " Hz)"
 appendInfoLine: "Output duration: ", fixed$(outDur, 3), " s"
 if maxItdSec > 0
@@ -975,7 +976,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##ADVANCED STEREO PANNER##"
+    Text: 0.5, "centre", 0.68, "half", "##ADVANCED STEREO PANNER v2.2.1##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
     if isTrajectory = 0
@@ -993,7 +994,7 @@ if draw_visualization
     # PANEL A: SPATIAL DIAGRAM  (left column)
     # ----------------------------------------------------------
     Select outer viewport: 0, 4.2, 0.72, 3.55
-    Select inner viewport: 0.42, 4.00, 0.82, 3.42
+    Select inner viewport: 0.55, 4.00, 0.82, 3.28
 
     Axes: -1.6, 1.6, -0.6, 1.25
     Paint rectangle: "{0.96, 0.96, 0.96}", -1.6, 1.6, -0.6, 1.25
@@ -1008,7 +1009,7 @@ if draw_visualization
     Paint circle (mm): "{0.88, 0.80, 0.70}", 0, 0, 5
     Paint circle (mm): "{0.78, 0.68, 0.58}", -0.28, 0.02, 1.8
     Paint circle (mm): "{0.78, 0.68, 0.58}", 0.28, 0.02, 1.8
-    Font size: 5
+    Font size: 6
     Colour: "{0.55, 0.45, 0.35}"
     Text: 0, "centre", -0.24, "half", "head"
 
@@ -1037,7 +1038,7 @@ if draw_visualization
         Line width: 1
         Paint circle (mm): "{0.10, 0.30, 0.85}", panAt[0] * 1.15, srcY, 2.6
         Paint circle (mm): "{0.85, 0.25, 0.10}", panAt[nCtrl] * 1.15, srcY, 2.6
-        Font size: 5
+        Font size: 6
         Colour: "{0.35, 0.35, 0.35}"
         Text: 0, "centre", srcY + 0.16, "half", "path: blue start, red end"
     else
@@ -1076,8 +1077,8 @@ if draw_visualization
     # ----------------------------------------------------------
     # PANEL B: PAN OVER TIME  (right column, upper)
     # ----------------------------------------------------------
-    Select outer viewport: 4.2, 8, 0.72, 2.30
-    Select inner viewport: 4.55, 7.75, 0.82, 2.22
+    Select outer viewport: 4.2, 8, 0.72, 2.08
+    Select inner viewport: 4.55, 7.75, 0.82, 1.86
 
     Axes: 0, duration, -1.15, 1.15
     Paint rectangle: "{0.96, 0.96, 0.96}", 0, duration, -1.15, 1.15
@@ -1103,17 +1104,25 @@ if draw_visualization
 
     Colour: "Black"
     Draw inner box
-    Font size: 5
+    Font size: 6
     Marks left: 3, "yes", "yes", "no"
     Font size: 6
-    Text left: "yes", "Pan"
+    Select outer viewport: 4.02, 4.4, 0.72, 2.08
+    Select inner viewport: 4.02, 4.4, 0.74, 2.06
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Pan"
+    Select outer viewport: 4.2, 8, 0.72, 2.08
+    Select inner viewport: 4.55, 7.75, 0.82, 1.86
+    Axes: 0, duration, -1.15, 1.15
     Text bottom: "yes", "Pan path  (-1 left, +1 right)"
 
     # ----------------------------------------------------------
     # PANEL C: CHANNEL GAINS OVER TIME  (right column, lower)
     # ----------------------------------------------------------
-    Select outer viewport: 4.2, 8, 2.36, 3.55
-    Select inner viewport: 4.55, 7.75, 2.42, 3.42
+    Select outer viewport: 4.2, 8, 2.38, 3.55
+    Select inner viewport: 4.55, 7.75, 2.48, 3.28
 
     gTop = 1.1
     Axes: 0, duration, 0, gTop
@@ -1140,17 +1149,25 @@ if draw_visualization
 
     Colour: "Black"
     Draw inner box
-    Font size: 5
+    Font size: 6
     Marks left: 3, "yes", "yes", "no"
     Font size: 6
-    Text left: "yes", "Gain"
+    Select outer viewport: 4.02, 4.4, 2.38, 3.55
+    Select inner viewport: 4.02, 4.4, 2.40, 3.53
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Gain"
+    Select outer viewport: 4.2, 8, 2.38, 3.55
+    Select inner viewport: 4.55, 7.75, 2.48, 3.28
+    Axes: 0, duration, 0, gTop
     Text bottom: "yes", "Channel gains  (blue L, orange R)  incl. distance"
 
     # ----------------------------------------------------------
     # PANEL D: OUTPUT WAVEFORM
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 3.65, 4.80
-    Select inner viewport: 0.55, 7.72, 3.72, 4.73
+    Select outer viewport: 0, 8, 3.90, 5.05
+    Select inner viewport: 0.55, 7.72, 3.98, 4.80
 
     selectObject: stereo
     resPeak = Get absolute extremum: 0, 0, "None"
@@ -1179,21 +1196,29 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "Output"
+    Select outer viewport: 0.08, 0.52, 3.90, 5.05
+    Select inner viewport: 0.08, 0.52, 3.92, 5.03
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Output"
+    Select outer viewport: 0, 8, 3.90, 5.05
+    Select inner viewport: 0.55, 7.72, 3.98, 4.80
+    Axes: 0, outDur, -ampMax, ampMax
     Text top: "no", "Stereo output  (blue = L, orange = R)"
     Text bottom: "yes", "Time (s)"
 
     # ----------------------------------------------------------
     # PANEL E: SUMMARY
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 4.88, 5.95
-    Select inner viewport: 0.55, 7.72, 4.94, 5.89
+    Select outer viewport: 0, 8, 5.38, 6.18
+    Select inner viewport: 0.55, 7.72, 5.44, 6.12
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
 
     Font size: 6
     Colour: "{0.28, 0.28, 0.28}"
-    Text: 0.02, "left", 0.80, "half",
+    Text: 0.02, "left", 0.72, "half",
         ... "##" + presetName$ + "##  " + filterCues$
         ... + "  |  Out " + fixed$(outDur, 2) + " s"
         ... + "  |  Pan range " + fixed$(panMin, 2) + " to " + fixed$(panMax, 2)
@@ -1203,7 +1228,7 @@ if draw_visualization
     else
         distStr$ = "off"
     endif
-    Text: 0.02, "left", 0.50, "half",
+    Text: 0.02, "left", 0.45, "half",
         ... "ILD at widest " + fixed$(ildAtMax, 1) + " dB"
         ... + "  |  ITD max " + fixed$(max_ITD_ms, 2) + " ms"
         ... + "  |  Shadow " + shadowMode$
@@ -1214,7 +1239,7 @@ if draw_visualization
     else
         ceilStr$ = "no attenuation needed"
     endif
-    Text: 0.02, "left", 0.20, "half",
+    Text: 0.02, "left", 0.18, "half",
         ... "Peak " + fixed$(prePeak, 3) + " -> " + fixed$(postPeak, 3)
         ... + "  |  Ceiling " + fixed$(peak_ceiling, 2) + ": " + ceilStr$
         ... + "  |  Not an HRTF binaural renderer"
@@ -1222,6 +1247,11 @@ if draw_visualization
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
 
+    Select outer viewport: 0, 8, 0, 6.28
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
     Font size: 10
     Colour: "Black"
     Line width: 1
@@ -1230,7 +1260,7 @@ endif
 # ============================================================
 # CLEANUP
 # ============================================================
-# v2.1: a drawn trajectory belongs to the user, so it is left in place;
+# v2.2: a drawn trajectory belongs to the user, so it is left in place;
 # only a tier this run created is removed.
 removeObject: monoID
 if pan_mode <> 8

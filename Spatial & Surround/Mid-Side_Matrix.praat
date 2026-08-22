@@ -4,7 +4,9 @@
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
-# Version: 1.2 (2026)
+# Version: 1.3.1 (2026)
+# v1.3.1 (2026): VISUALIZATION LAYOUT FIX - separate header bands and compact Summary; DSP unchanged.
+# v1.3 (2026): SPATIAL VISUALIZATION STANDARDIZATION ONLY - label rails, compact summary, typography; DSP unchanged.
 #
 # Description:
 #   Mid-Side Matrix - Encode, Decode & Spatial Stem Preparation.
@@ -33,7 +35,7 @@
 #   3. Round-trip verification     (encode, decode, null test)
 #   4. Spatial source preparation  (Mid, Side_Left=+S, Side_Right=-S)
 #
-# Changelog v1.2:
+# Changelog v1.3:
 #   Library-hardening (safety + reporting; DSP unchanged).
 #   - Decode mode FAILS CLOSED if _Mid/_Side can't be identified (no more
 #     guessing a polarity), and requires both stems to share a base name
@@ -67,7 +69,7 @@
 #   test, width/mono-compatibility report, house-style visualization.
 # ============================================================
 
-form Mid-Side Matrix v1.2
+form Mid-Side Matrix v1.3.1
     comment ── Mode ──
     optionmenu Mode: 1
         option Stereo L/R -> Mid/Side (select 1 stereo Sound)
@@ -82,7 +84,7 @@ endform
 
 clearinfo
 writeInfoLine: "=============================================="
-appendInfoLine: "  Mid-Side Matrix v1.2"
+appendInfoLine: "  Mid-Side Matrix v1.3.1"
 appendInfoLine: "=============================================="
 
 # Capture the user's selection NOW, before the reference self-test runs.
@@ -436,14 +438,18 @@ if draw_visualization
     Line width: 1
 
     # ---- Title ----
-    Select outer viewport: 0, 8, 0, 0.7
+    Select outer viewport: 0, 8, 0, 0.30
+    Select inner viewport: 0.60, 7.70, 0.02, 0.28
     Axes: 0, 1, 0, 1
-    Font size: 13
+    Font size: 12
     Colour: "{0.15, 0.15, 0.25}"
-    Text: 0.5, "centre", 0.62, "half", "##MID-SIDE MATRIX##"
-    Font size: 8
+    Text: 0.5, "centre", 0.5, "half", "##MID-SIDE MATRIX v1.3.1##"
+    Select outer viewport: 0, 8, 0.30, 0.52
+    Select inner viewport: 0.60, 7.70, 0.31, 0.51
+    Axes: 0, 1, 0, 1
+    Font size: 7
     Colour: "{0.40, 0.40, 0.45}"
-    Text: 0.5, "centre", 0.24, "half", name$ + "   |   " + fixed$(duration, 2) + " s   |   " + string$(sr) + " Hz"
+    Text: 0.5, "centre", 0.5, "half", name$ + "   |   " + fixed$(duration, 2) + " s   |   " + string$(sr) + " Hz"
 
     # Peaks for consistent amplitude scaling
     selectObject: lCh
@@ -475,7 +481,15 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "L / R"
+    Select outer viewport: 0.08, 0.52, 0.72, 2.6
+    Select inner viewport: 0.08, 0.52, 0.74, 2.58
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "L / R"
+    Select outer viewport: 0, 8, 0.72, 2.6
+    Select inner viewport: 0.6, 7.7, 0.8, 2.55
+    Axes: 0, duration, -ampMax, ampMax
     Text top: "no", "Input stereo (blue = L, red = R)"
 
     # ---- Panel 2: Mid / Side ----
@@ -494,7 +508,15 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "M / S"
+    Select outer viewport: 0.08, 0.52, 2.62, 4.5
+    Select inner viewport: 0.08, 0.52, 2.64, 4.48
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "M / S"
+    Select outer viewport: 0, 8, 2.62, 4.5
+    Select inner viewport: 0.6, 7.7, 2.7, 4.45
+    Axes: 0, duration, -ampMax, ampMax
     Text top: "no", "Mid (green) / Side (amber)"
 
     # ---- Panel 3: width/correlation bars ----
@@ -529,20 +551,28 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
     Colour: "{0.15, 0.15, 0.15}"
-    Font size: 8
-    Text: 0.04, "left", 0.85, "half", "##Mid RMS## " + fixed$(midRms, 4) + "    ##Side RMS## " + fixed$(sideRms, 4) + "    ##Side/Mid## " + sideMidStr$
-    Text: 0.04, "left", 0.60, "half", "##Correlation## " + corrStr$ + "    ##Side energy share## " + fixed$(sideShare, 1) + " %"
-    Text: 0.04, "left", 0.35, "half", "##Reconstruction## max " + fixed$(maxResidual, 10) + "   rms " + fixed$(rmsResidual, 10)
+    Font size: 7
+    Text: 0.04, "left", 0.84, "half", "##Summary##"
+    Font size: 6
+    Text: 0.04, "left", 0.60, "half", "Mid RMS " + fixed$(midRms, 4) + "  |  Side RMS " + fixed$(sideRms, 4) + "  |  Side/Mid " + sideMidStr$
+    Text: 0.04, "left", 0.37, "half", "Correlation " + corrStr$ + "  |  Side energy share " + fixed$(sideShare, 1) + " \%"
     reconLabel$ = "FAIL"
     if reconOK
         reconLabel$ = "PASS"
     endif
-    Text: 0.04, "left", 0.12, "half", "##Null test## " + reconLabel$ + "     ##Matrix## M=(L+R)/2  S=(L-R)/2"
+    Text: 0.04, "left", 0.13, "half", "Reconstruction max " + fixed$(maxResidual, 10) + "  rms " + fixed$(rmsResidual, 10) + "  |  Null test " + reconLabel$ + "  |  M=(L+R)/2  S=(L-R)/2"
+    Select inner viewport: 0.6, 7.7, 6.15, 7.4
+    Axes: 0, 1, 0, 1
     Colour: "Black"
     Draw inner box
 endif
 
 # ============================================================
+Select outer viewport: 0, 8, 0, 7.60
+Font size: 10
+Colour: "Black"
+Line width: 1
+Solid line
 # CLEANUP + FINAL SELECTION
 # ============================================================
 removeObject: lCh, rCh

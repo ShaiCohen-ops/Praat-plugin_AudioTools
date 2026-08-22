@@ -3,7 +3,8 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2026) - Added Manual per-channel pan/gain mode
+# Version: 0.4 (2026) - Added Manual per-channel pan/gain mode
+# v0.4 (2026): SPATIAL VISUALIZATION STANDARDIZATION ONLY - label rails, compact summary, typography; DSP unchanged.
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -19,7 +20,7 @@
 #   Cohen, S. (2025). Praat AudioTools: An Offline Analysis–Resynthesis Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
-# Changelog v0.3:
+# Changelog v0.4:
 #   - New "Manual" mix mode: per-channel pan + gain from typed lists
 #     (space/comma separated, one value per channel; honours the
 #     constant-power / linear panning law)
@@ -112,7 +113,7 @@ endif
 # ============================================================
 
 writeInfoLine: "============================================"
-writeInfoLine: "Mix Multi-Channel to Stereo v0.3"
+writeInfoLine: "Mix Multi-Channel to Stereo v0.4"
 writeInfoLine: "============================================"
 appendInfoLine: "Input: ", originalName$
 appendInfoLine: "Channels: ", nChan
@@ -485,7 +486,7 @@ if draw_visualization
     Select outer viewport: 0.5, 8, 0, 0.5
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "Multi-Channel to Stereo: " + originalName$ + " (" + modeName$ + ")"
+    Text: 0.5, "centre", 0.5, "half", "Multi-Channel to Stereo: " + originalName$ + " (" + modeName$ + ")" + " | v0.4"
     
     # === Channel Routing Diagram ===
     Select outer viewport: 0, 8, 0.6, 4.5
@@ -499,7 +500,7 @@ if draw_visualization
     # Draw stereo output (right side)
     # Left speaker
     Paint rectangle: "{0.7, 0.8, 0.9}", 1.8, 2.2, nChan * 0.75, nChan * 0.75 + 0.4
-    Font size: 8
+    Font size: 7
     Colour: "Black"
     Text: 2.0, "centre", nChan * 0.75 + 0.2, "half", "L"
     
@@ -515,7 +516,7 @@ if draw_visualization
         Paint rectangle: "{0.8, 0.85, 0.9}", -0.3, 0.3, yPos - 0.3, yPos + 0.3
         
         # Channel number
-        Font size: 9
+        Font size: 7
         Colour: "Black"
         Text: 0, "centre", yPos, "half", string$(ch)
         
@@ -588,12 +589,23 @@ if draw_visualization
     Draw line: 0.5, 0, 0.5, nChan + 0.5
     Draw line: 1, 0, 1, nChan + 0.5
     
-    # === Info ===
-    Select outer viewport: 0, 8, 5.5, 5.9
-    Font size: 8
-    Colour: "{0.4, 0.4, 0.4}"
-    Text: 0.5, "centre", 0.5, "half", string$(nChan) + " channels → Stereo | Mode: " + modeName$ + " | Power pan: " + if use_constant_power_panning then "ON" else "OFF" fi
-    
+    # === SUMMARY ===
+    Select outer viewport: 0, 8, 5.55, 6.35
+    Select inner viewport: 0.60, 7.70, 5.62, 6.28
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text: 0.02, "left", 0.76, "half", "##Summary##"
+    Font size: 6
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.02, "left", 0.46, "half", string$(nChan) + " channels → stereo | Mode " + modeName$ + " | Power pan " + if use_constant_power_panning then "ON" else "OFF" fi
+    Text: 0.02, "left", 0.18, "half", "Duration " + fixed$(duration, 2) + " s | " + string$(round(sr)) + " Hz | Normalize " + if normalize_output then "ON" else "OFF" fi
+    Select inner viewport: 0.60, 7.70, 5.62, 6.28
+    Axes: 0, 1, 0, 1
+    Colour: "Black"
+    Draw inner box
+    Select outer viewport: 0, 8, 0, 6.45
     Font size: 10
     Colour: "Black"
 endif

@@ -3,7 +3,8 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.2 (2025) - Optimized
+# Version: 0.3 (2025) - Optimized
+# v0.3 (2026): SPATIAL VISUALIZATION STANDARDIZATION ONLY - label rails, compact summary, typography; DSP unchanged.
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -21,7 +22,7 @@
 #   Cohen, S. (2025). Praat AudioTools: An Offline Analysis–Resynthesis Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
-# Changelog v0.2:
+# Changelog v0.3:
 #   - Fixed critical formula interpolation bugs
 #   - Modern selectObject: syntax throughout
 #   - Efficient batch processing (pre-build all segments, single concatenate)
@@ -901,7 +902,7 @@ endfor
 # ============================================================
 
 writeInfoLine: "============================================"
-writeInfoLine: "Knight's Tour Sonification v0.2"
+writeInfoLine: "Knight's Tour Sonification v0.3"
 writeInfoLine: "============================================"
 appendInfoLine: "Input: ", originalName$
 appendInfoLine: "Duration: ", fixed$(duration, 3), " s"
@@ -1119,10 +1120,18 @@ procedure drawVisualization: .step, .isFinal
     Draw rectangle: 0.5, 8.5, 0.5, 8.5
     
     # Axis labels
-    Font size: 8
+    Font size: 7
     Colour: "{0.4, 0.4, 0.4}"
     Text bottom: "yes", "X → Stereo"
-    Text left: "yes", "Y → Intensity"
+    Select outer viewport: 0.08, 0.52, 0.6, 4.2
+    Select inner viewport: 0.08, 0.52, 0.62, 4.18
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Y → Intensity"
+    Select outer viewport: 0, 4, 0.6, 4.2
+    Select inner viewport: 0.4, 3.8, 0.8, 4
+    Axes: 0.5, 8.5, 0.5, 8.5
     
     # === PANEL B: Parameter Curves ===
     Select outer viewport: 4, 8, 0.6, 4.2
@@ -1184,9 +1193,17 @@ procedure drawVisualization: .step, .isFinal
     Colour: "Black"
     Line width: 1
     Draw inner box
-    Font size: 8
+    Font size: 7
     Text bottom: "yes", "Time (s)"
-    Text left: "yes", "Value"
+    Select outer viewport: 4.02, 4.4, 0.6, 4.2
+    Select inner viewport: 4.02, 4.4, 0.62, 4.18
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Value"
+    Select outer viewport: 4, 8, 0.6, 4.2
+    Select inner viewport: 4.4, 7.8, 0.8, 4
+    Axes: 0, duration, -0.1, 1.1
     
     # Legend
     Font size: 7
@@ -1195,18 +1212,32 @@ procedure drawVisualization: .step, .isFinal
     Colour: "{0.3, 0.3, 0.8}"
     Text: duration * 0.95, "right", 0.95, "half", "Intensity"
     
-    # === Info bar ===
-    Select outer viewport: 0, 8, 4.3, 4.7
-    Font size: 8
-    Colour: "{0.4, 0.4, 0.4}"
+    # === SUMMARY / STEP STATUS ===
+    Select outer viewport: 0, 8, 4.35, 5.15
+    Select inner viewport: 0.60, 7.70, 4.42, 5.08
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
     if .isFinal
-        Text: 0.5, "centre", 0.5, "half", originalName$ + " | " + tourName$ + " | I:[" + fixed$(intensity_min, 2) + "-" + fixed$(intensity_max, 2) + "] S:[" + fixed$(stereo_min, 2) + "-" + fixed$(stereo_max, 2) + "]"
+        Font size: 7
+        Colour: "Black"
+        Text: 0.02, "left", 0.76, "half", "##Summary##"
+        Font size: 6
+        Colour: "{0.35, 0.35, 0.50}"
+        Text: 0.02, "left", 0.46, "half", originalName$ + " | " + tourName$ + " | duration " + fixed$(duration, 2) + " s"
+        Text: 0.02, "left", 0.18, "half", "Intensity " + fixed$(intensity_min, 2) + "-" + fixed$(intensity_max, 2) + " | Stereo " + fixed$(stereo_min, 2) + "-" + fixed$(stereo_max, 2) + " | 64-square tour"
     else
         currentStereo = stereoVal[.step]
         currentIntensity = intensityVal[.step]
-        Text: 0.5, "centre", 0.5, "half", "Step " + string$(.step) + ": X=" + string$(tourX[.step]) + " Y=" + string$(tourY[.step]) + " → Stereo=" + fixed$(currentStereo, 2) + " Intensity=" + fixed$(currentIntensity, 2)
+        Font size: 6
+        Colour: "{0.35, 0.35, 0.50}"
+        Text: 0.02, "left", 0.62, "half", "##Step " + string$(.step) + "/64##  X=" + string$(tourX[.step]) + "  Y=" + string$(tourY[.step])
+        Text: 0.02, "left", 0.28, "half", "Stereo=" + fixed$(currentStereo, 2) + " | Intensity=" + fixed$(currentIntensity, 2)
     endif
-    
+    Select inner viewport: 0.60, 7.70, 4.42, 5.08
+    Axes: 0, 1, 0, 1
+    Colour: "Black"
+    Draw inner box
+    Select outer viewport: 0, 8, 0, 5.25
     Font size: 10
     Colour: "Black"
 endproc

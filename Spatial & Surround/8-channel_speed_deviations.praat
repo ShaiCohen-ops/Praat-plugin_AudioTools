@@ -3,7 +3,8 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4 (2026)
+# Version: 0.5 (2026)
+# v0.5 (2026): SPATIAL VISUALIZATION STANDARDIZATION ONLY - label rails, compact summary, typography; DSP unchanged.
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -20,7 +21,7 @@
 #   -15% speed is +17.65% duration, +15% speed is -13.04% duration.
 #   The speed set is symmetric about 1; the durations are not.
 #
-# Changelog v0.4 (2026):
+# Changelog v0.5 (2026):
 #   - FIX (critical): Random mode was not random. It used
 #     ((seed * i * 137 + 97) mod 1000) / 1000, an arithmetic sequence
 #     with a constant step, not Praat's generator. Successive channels
@@ -175,7 +176,7 @@ elsif preset = 5
     speed_deviation_factor = 0.50
     presetName$ = "Extreme"
 elsif preset = 6
-    # v0.4: evenly spaced. v0.3 stepped by 0.10 five times then 0.05
+    # v0.5: evenly spaced. v0.3 stepped by 0.10 five times then 0.05
     # twice, which was almost certainly not intended.
     mode = 2
     channel_1_speed = 0.7000
@@ -213,7 +214,7 @@ if min_pitch >= max_pitch
     exitScript: "Min_pitch (", min_pitch, ") must be below Max_pitch (", max_pitch, ")."
 endif
 
-# v0.4: d = 1 gives channel 1 a speed of exactly 0 and d > 1 gives it a
+# v0.5: d = 1 gives channel 1 a speed of exactly 0 and d > 1 gives it a
 # negative speed, so D/s is undefined or negative. d = 0 is legal and
 # useful (eight channels at unison) but the positive type forbade it.
 devClamped = 0
@@ -251,7 +252,7 @@ elsif mode = 2
     speedFactor[7] = channel_7_speed
     speedFactor[8] = channel_8_speed
 else
-    # v0.4: Praat's own generator. The v0.3 formula was an arithmetic
+    # v0.5: Praat's own generator. The v0.3 formula was an arithmetic
     # sequence with a constant step, so the eight channels formed a
     # ramp rather than a scatter, and a few seeds collapsed them onto
     # one or two values.
@@ -300,7 +301,7 @@ else
     monoID = selected("Sound")
 endif
 
-# v0.4: the drift diagram and the frame arithmetic index from 0. A
+# v0.5: the drift diagram and the frame arithmetic index from 0. A
 # Sound extracted with preserved times does not start there.
 selectObject: monoID
 workT0 = Get start time
@@ -348,7 +349,7 @@ for i from 1 to 8
         selectObject: processedID
         Resample: target_sampling_frequency, 50
         resampledID = selected("Sound")
-        # v0.4: capture the new id BEFORE removing the old one. v0.3
+        # v0.5: capture the new id BEFORE removing the old one. v0.3
         # called selected() after removeObject, relying on the survivor
         # staying selected.
         removeObject: processedID
@@ -360,7 +361,7 @@ for i from 1 to 8
     Rename: "sdCh" + string$(i)
     dur[i] = Get total duration
 
-    # v0.4: measure what actually came out. PSOLA lands close but not
+    # v0.5: measure what actually came out. PSOLA lands close but not
     # exactly on the requested duration, and the drift diagram should
     # plot the result rather than the request.
     if dur[i] > 0
@@ -570,7 +571,7 @@ endif
 # ============================================================
 # INFO
 # ============================================================
-writeInfoLine: "=== 8-Channel Speed Deviations v0.4 ==="
+writeInfoLine: "=== 8-Channel Speed Deviations v0.5 ==="
 appendInfoLine: "Source: ", originalName$, "  (", fixed$(original_dur, 2), " s @ ",
     ... original_sr, " Hz)"
 appendInfoLine: "Preset: ", presetName$
@@ -761,11 +762,11 @@ if draw_visualization
     # ----------------------------------------------------------
     # PANEL A: DRIFT DIAGRAM  (left column)
     # ----------------------------------------------------------
-    # v0.4: drawn from the MEASURED durations, so the slope is the
+    # v0.5: drawn from the MEASURED durations, so the slope is the
     # achieved speed rather than the requested one. The v0.3 comment
     # claimed y = t * s, which is exact only if D_i is exactly D / s.
     Select outer viewport: 0, 4.2, 0.75, 4.60
-    Select inner viewport: 0.38, 4.00, 0.85, 4.50
+    Select inner viewport: 0.55, 4.00, 0.85, 4.34
 
     Axes: 0, maxDur * 1.04, 0, original_dur * 1.04
     Paint rectangle: "{0.96, 0.96, 0.96}", 0, maxDur * 1.04, 0, original_dur * 1.04
@@ -779,7 +780,7 @@ if draw_visualization
             ... + ", " + fixed$(chColB[ch], 2) + "}"
         Line width: 2
         Draw line: 0, 0, dur[ch], original_dur
-        Font size: 5
+        Font size: 6
         Text: dur[ch], "left", original_dur * 0.985, "half", " " + string$(ch)
     endfor
     Line width: 1
@@ -788,13 +789,21 @@ if draw_visualization
     Draw inner box
     Font size: 6
     Text bottom: "yes", "Output time (s)  — slope = achieved speed"
-    Text left: "yes", "Source consumed (s)"
+    Select outer viewport: 0.08, 0.52, 0.75, 4.6
+    Select inner viewport: 0.08, 0.52, 0.77, 4.58
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Source consumed (s)"
+    Select outer viewport: 0, 4.2, 0.75, 4.6
+    Select inner viewport: 0.55, 4, 0.85, 4.34
+    Axes: 0, maxDur * 1.04, 0, original_dur * 1.04
 
     # ----------------------------------------------------------
     # PANEL B: SPEED DEVIATION BARS  (right column, upper)
     # ----------------------------------------------------------
-    Select outer viewport: 4.2, 8, 0.75, 3.00
-    Select inner viewport: 4.52, 7.75, 0.85, 2.92
+    Select outer viewport: 4.2, 8, 0.75, 2.70
+    Select inner viewport: 4.52, 7.75, 0.85, 2.48
 
     devMax = abs((minSpeed - 1) * 100)
     if abs((maxSpeed - 1) * 100) > devMax
@@ -823,7 +832,7 @@ if draw_visualization
         else
             Paint rectangle: colStr$, pctV, 0, y - 0.38, y + 0.38
         endif
-        Font size: 5
+        Font size: 6
         Colour: "{0.30, 0.30, 0.30}"
         Text: -devMax * 0.97, "left", y, "half", "Ch" + string$(ch)
         Colour: "White"
@@ -834,15 +843,23 @@ if draw_visualization
 
     Colour: "Black"
     Draw inner box
-    Font size: 5
-    Text left: "yes", "Ch"
+    Font size: 6
+    Select outer viewport: 4.02, 4.4, 0.75, 2.70
+    Select inner viewport: 4.02, 4.4, 0.77, 2.68
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Ch"
+    Select outer viewport: 4.2, 8, 0.75, 2.70
+    Select inner viewport: 4.52, 7.75, 0.85, 2.48
+    Axes: -devMax, devMax, 0.5, 8.5
     Text bottom: "yes", "Speed deviation from unison (%)"
 
     # ----------------------------------------------------------
     # PANEL C: DURATION OUTCOME  (right column, lower)
     # ----------------------------------------------------------
-    Select outer viewport: 4.2, 8, 3.05, 4.60
-    Select inner viewport: 4.52, 7.75, 3.12, 4.52
+    Select outer viewport: 4.2, 8, 3.00, 4.60
+    Select inner viewport: 4.52, 7.75, 3.10, 4.38
 
     Axes: 0, maxDur * 1.10, 0.5, 8.5
     Paint rectangle: "{0.96, 0.96, 0.96}", 0, maxDur * 1.10, 0.5, 8.5
@@ -857,7 +874,7 @@ if draw_visualization
         colStr$ = "{" + fixed$(chColR[ch], 2) + ", " + fixed$(chColG[ch], 2)
             ... + ", " + fixed$(chColB[ch], 2) + "}"
         Paint rectangle: colStr$, 0, dur[ch], y - 0.38, y + 0.38
-        Font size: 5
+        Font size: 6
         Colour: "{0.30, 0.30, 0.30}"
         Text: maxDur * 0.02, "left", y, "half", "Ch" + string$(ch)
         Colour: "White"
@@ -868,8 +885,16 @@ if draw_visualization
 
     Colour: "Black"
     Draw inner box
-    Font size: 5
-    Text left: "yes", "Ch"
+    Font size: 6
+    Select outer viewport: 4.02, 4.4, 3.00, 4.60
+    Select inner viewport: 4.02, 4.4, 3.02, 4.58
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Ch"
+    Select outer viewport: 4.2, 8, 3.00, 4.60
+    Select inner viewport: 4.52, 7.75, 3.10, 4.38
+    Axes: 0, maxDur * 1.10, 0.5, 8.5
     Text bottom: "yes", "Duration (s)  — dotted = original " + fixed$(original_dur, 2) + "s"
 
     # ----------------------------------------------------------
@@ -889,8 +914,8 @@ if draw_visualization
     # ----------------------------------------------------------
     # v0.3 titled this "Output 8-ch mix" but drew channels 1 and 2.
     # They are two of the eight variations, not a mix.
-    Select outer viewport: 0, 8, 4.68, 5.75
-    Select inner viewport: 0.55, 7.72, 4.75, 5.68
+    Select outer viewport: 0, 8, 4.90, 5.95
+    Select inner viewport: 0.55, 7.72, 4.98, 5.72
 
     selectObject: channel[1]
     peakViz = Get absolute extremum: 0, 0, "None"
@@ -925,20 +950,28 @@ if draw_visualization
     Text top: "no", "Channel examples  (blue = Ch1 " + fixed$(speedFactor[1], 3)
         ... + "x,  orange = Ch8 " + fixed$(speedFactor[8], 3)
         ... + "x)  — the two ends of the pair set"
-    Text left: "yes", "Amp"
+    Select outer viewport: 0.08, 0.52, 4.90, 5.95
+    Select inner viewport: 0.08, 0.52, 4.92, 5.93
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Amp"
+    Select outer viewport: 0, 8, 4.90, 5.95
+    Select inner viewport: 0.55, 7.72, 4.98, 5.72
+    Axes: 0, maxDur, -ampViz, ampViz
     Text bottom: "yes", "Time (s)"
 
     # ----------------------------------------------------------
     # PANEL E: SUMMARY BAR (full width, bottom)
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 5.82, 6.85
-    Select inner viewport: 0.55, 7.72, 5.88, 6.79
+    Select outer viewport: 0, 8, 6.20, 7.08
+    Select inner viewport: 0.55, 7.72, 6.26, 7.02
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
 
     Font size: 6
     Colour: "{0.28, 0.28, 0.28}"
-    Text: 0.02, "left", 0.80, "half",
+    Text: 0.02, "left", 0.72, "half",
         ... "##" + presetName$ + "##"
         ... + "  " + originalName$
         ... + "  |  Source " + fixed$(original_dur, 2) + " s"
@@ -946,7 +979,7 @@ if draw_visualization
         ... + "  |  Mean speed " + fixed$(sumSpeed / 8, 3) + "x"
         ... + "  |  Mean dur " + fixed$(sumDur / 8, 2) + " s"
 
-    Text: 0.02, "left", 0.50, "half",
+    Text: 0.02, "left", 0.45, "half",
         ... "Speeds:  "
         ... + fixed$(speedFactor[1], 2) + "  " + fixed$(speedFactor[2], 2)
         ... + "  " + fixed$(speedFactor[3], 2) + "  " + fixed$(speedFactor[4], 2)
@@ -955,7 +988,7 @@ if draw_visualization
         ... + "   [Ch1-Ch8]  |  PSOLA " + fixed$(min_pitch, 0) + "-"
         ... + fixed$(max_pitch, 0) + " Hz"
 
-    Text: 0.02, "left", 0.20, "half",
+    Text: 0.02, "left", 0.18, "half",
         ... "Format: " + formatName$
         ... + "  |  " + string$(outCount) + objWord$
         ... + " x " + string$(outChannels) + " ch"
@@ -964,6 +997,11 @@ if draw_visualization
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
 
+    Select outer viewport: 0, 8, 0, 7.18
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
     Font size: 10
     Colour: "Black"
     Line width: 1

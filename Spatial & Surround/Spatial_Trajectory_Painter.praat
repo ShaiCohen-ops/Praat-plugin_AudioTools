@@ -3,7 +3,11 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.6 (2026) - Ambisonic trajectory output, optional drawn elevation
+# Version: 0.7.3 (2026) - Ambisonic trajectory output, optional drawn elevation
+# v0.7.3 (2026): VISUALIZATION LAYOUT FIX - inset trajectory endpoint labels away from the adjacent panel rail; DSP unchanged.
+# v0.7.2 (2026): VISUALIZATION LAYOUT FIX - keep trajectory endpoint labels inside their panel; DSP unchanged.
+# v0.7.1 (2026): VISUALIZATION LAYOUT FIX - separate title/subtitle bands; DSP unchanged.
+# v0.7 (2026): SPATIAL VISUALIZATION STANDARDIZATION ONLY - label rails, compact summary, typography; DSP unchanged.
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -30,7 +34,7 @@
 #     is exact at each frame and an approximation in between -- raise
 #     Control_rate for fast movement). Distance is held constant.
 #
-#     ELEVATION (new in v0.6) - elevation may be either a single FIXED
+#     ELEVATION (new in v0.7) - elevation may be either a single FIXED
 #       value for the whole sound (the original v0.5 behaviour), or a
 #       second, INDEPENDENT drawn curve giving time-varying elevation.
 #       When Elevation_control = "Drawn elevation curve", Phase 1 opens
@@ -111,7 +115,7 @@
 # gains at each control frame.
 #
 # Changelog:
-#   v0.6 - Optional DRAWN ELEVATION for Ambisonic trajectory mode. A
+#   v0.7 - Optional DRAWN ELEVATION for Ambisonic trajectory mode. A
 #          second, independent PitchTier (movement_elevation) can now
 #          drive elevation over time, in parallel with the azimuth curve
 #          (movement_azimuth), producing genuine full-3D movement instead
@@ -119,7 +123,7 @@
 #          encoding core is that @computeACN is now called with a
 #          per-frame elevation_frame[f] instead of a single fixed
 #          elevation; with Elevation_control = "Fixed elevation" that
-#          per-frame value is constant, so v0.6 reproduces v0.5 output
+#          per-frame value is constant, so v0.7 reproduces v0.5 output
 #          numerically for the same input, settings, and azimuth curve.
 #          Elevation has its own Relative / Absolute mapping and is always
 #          clamped to [-90, +90] (never wrapped). Distance stays fixed.
@@ -1018,16 +1022,20 @@ if draw_visualization = 1
     # ============================================================
     # TITLE BAR (full width)
     # ============================================================
-    Select outer viewport: 0, 8, 0, 0.65
+    Select outer viewport: 0, 8, 0, 0.30
+    Select inner viewport: 0.60, 7.70, 0.02, 0.28
     Axes: 0, 1, 0, 1
     Colour: "Black"
     Font size: 12
-    Text: 0.5, "Centre", 0.80, "Half", "##SPATIAL TRAJECTORY PAINTER##"
+    Text: 0.5, "Centre", 0.5, "Half", "##SPATIAL TRAJECTORY PAINTER v0.7.3##"
+    Select outer viewport: 0, 8, 0.30, 0.55
+    Select inner viewport: 0.60, 7.70, 0.31, 0.54
+    Axes: 0, 1, 0, 1
     Font size: 7
     Colour: {0.35, 0.35, 0.52}
     escapedName$ = replace$(mono_name$, "_", "\_ ", 0)
     subtitle$ = escapedName$ + "  |  " + repDesc$ + "  |  " + mapping$ + "  |  " + fixed$(duration, 2) + " s  |  " + string$(control_rate) + " Hz control"
-    Text: 0.5, "Centre", 0.15, "Half", subtitle$
+    Text: 0.5, "Centre", 0.5, "Half", subtitle$
     Colour: "Black"
 
     # ============================================================
@@ -1085,7 +1093,7 @@ if draw_visualization = 1
                 Draw line: t_frame[f-1], plotPos[f-1], t_frame[f], plotPos[f]
             else
                 Colour: {0.55, 0.35, 0.65}
-                Font size: 4
+                Font size: 6
                 Text: t_frame[f], "Centre", plotPos[f], "Half", "wrap"
                 Font size: 7
                 Colour: {0.25, 0.50, 0.82}
@@ -1098,13 +1106,13 @@ if draw_visualization = 1
         Colour: {0.30, 0.68, 0.40}
         Paint circle (mm): {0.30, 0.68, 0.40}, t_frame[0], plotPos[0], 2.0
         Colour: "Black"
-        Font size: 5
-        Text: t_frame[0], "Centre", plotPos[0] - markerOffset, "Half", "Centre"
+        Font size: 6
+        Text: t_frame[0] + 0.015 * duration, "left", plotPos[0] - markerOffset, "Half", "Centre"
 
         Colour: {0.85, 0.38, 0.22}
         Paint circle (mm): {0.85, 0.38, 0.22}, t_frame[n_frames], plotPos[n_frames], 2.0
         Colour: "Black"
-        Text: t_frame[n_frames], "Centre", plotPos[n_frames] + markerOffset, "Half", "end"
+        Text: t_frame[n_frames] - 0.025 * duration, "right", plotPos[n_frames] + markerOffset, "Half", "end"
 
         # axis label
         Font size: 6
@@ -1132,7 +1140,7 @@ if draw_visualization = 1
             gVal = (gi - 1) * 90
             Draw line: xmin, gVal, xmax, gVal
         endfor
-        Font size: 5
+        Font size: 6
         Colour: {0.55, 0.55, 0.55}
         for gi to 5
             gVal = (gi - 1) * 90
@@ -1153,7 +1161,7 @@ if draw_visualization = 1
         for f from 1 to n_frames
             if abs(azimuth_frame[f] - azimuth_frame[f-1]) > 180
                 Colour: {0.55, 0.35, 0.65}
-                Font size: 4
+                Font size: 6
                 Text: t_frame[f], "Centre", azimuth_frame[f], "Half", "wrap"
                 Font size: 7
                 Colour: {0.25, 0.50, 0.82}
@@ -1215,7 +1223,7 @@ if draw_visualization = 1
                     Colour: {0.88, 0.88, 0.88}
                 endif
                 Draw line: xmin, gv, xmax, gv
-                Font size: 5
+                Font size: 6
                 Colour: {0.55, 0.55, 0.55}
                 Text: xmin, "Left", gv, "Half", fixed$(gv, 0) + "°"
             endif
@@ -1288,7 +1296,7 @@ if draw_visualization = 1
             endfor
             Colour: {0.5, 0.5, 0.5}
             Paint circle (mm): {0.5, 0.5, 0.5}, centreX, centreY, 1.0
-            Font size: 4
+            Font size: 6
             Colour: "Black"
             Text: centreX, "Centre", centreY - 0.09, "Half", "Listener"
         endif
@@ -1338,7 +1346,7 @@ if draw_visualization = 1
         Text: 1.20, "Left", -0.10, "Half", "270° Right"
 
         Paint circle (mm): {0.35, 0.35, 0.35}, 0, 0, 2.0
-        Font size: 4
+        Font size: 6
         Colour: "Black"
         Text: 0, "Centre", -0.10, "Half", "Listener"
 
@@ -1519,6 +1527,11 @@ if draw_visualization = 1
     # ============================================================
     # RESET
     # ============================================================
+    Select outer viewport: 0, 8, 0, 6.88
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
     Font size: 10
     Colour: "Black"
     Line width: 1

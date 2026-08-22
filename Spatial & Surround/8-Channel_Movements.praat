@@ -3,7 +3,8 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.5 (2026)
+# Version: 0.6 (2026)
+# v0.6 (2026): SPATIAL VISUALIZATION STANDARDIZATION ONLY - label rails, compact summary, typography; DSP unchanged.
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -19,7 +20,7 @@
 #     Ch1 FL 315   Ch2 F   0   Ch3 FR  45   Ch4 R  90
 #     Ch5 BR 135   Ch6 B 180   Ch7 BL 225   Ch8 L 270
 #
-# Changelog v0.5 (2026):
+# Changelog v0.6 (2026):
 #   - FIX: Figure-8 left the path radius. y = r sin(2p) has excursion
 #     r*sqrt(25/16) = 1.25 r, so at Path_radius 0.98 the source reached
 #     1.225 - outside the speaker ring itself, which contradicts both
@@ -491,7 +492,7 @@ procedure envelope: .t
     if pattern = 1
         .g = gFloorLin + (1 - gFloorLin) * (1 + sin(2 * pi * frequency_hz * .t)) / 2
     elsif pattern = 2
-        # v0.5: spans the floor to unity. v0.4 started at 0 and relied
+        # v0.6: spans the floor to unity. v0.4 started at 0 and relied
         # on a clamp, so the first part of the fade was flat at the
         # floor - inaudible at -60 dB, very audible at -12 or -6.
         if fadein_time > 0 and .t < fadein_time
@@ -534,7 +535,7 @@ procedure computeGains: .t
         endif
     endfor
 
-    # v0.5: the common factor exp(-focus * d2min) cancels in the
+    # v0.6: the common factor exp(-focus * d2min) cancels in the
     # normalisation anyway, so factoring it out costs nothing and stops
     # every weight underflowing to zero when the source is far away or
     # the focus is high. The nearest speaker always starts at 1.
@@ -545,7 +546,7 @@ procedure computeGains: .t
         endif
     endfor
 
-    # v0.5: the floor is applied to the WEIGHTS, before normalisation.
+    # v0.6: the floor is applied to the WEIGHTS, before normalisation.
     # v0.4 clamped the finished gains channel by channel, which added
     # energy the normalisation had already accounted for: at a -6 dB
     # floor a tight lobe came out at sum g^2 = 2.56, a 4 dB level jump,
@@ -1012,7 +1013,7 @@ endif
 
 if draw_visualization
 
-    # v0.5: the plot only verifies the audio if it samples the motion at
+    # v0.6: the plot only verifies the audio if it samples the motion at
     # a comparable density. v0.4 used fixed 400 / 240 / 200 points, which
     # on a 60 s Figure-8 at speed 2 (fastest component 4 Hz) gave 1.67,
     # 1.00 and 0.83 points per cycle - the curves were aliased and the
@@ -1086,7 +1087,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##8-CHANNEL SPATIAL MOVEMENTS##"
+    Text: 0.5, "centre", 0.68, "half", "##8-CHANNEL SPATIAL MOVEMENTS v0.6##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
     Text: 0.5, "centre", -0.22, "half",
@@ -1100,7 +1101,7 @@ if draw_visualization
     # PANEL A: OCTAGON MAP WITH THE ACTUAL PATH  (left column)
     # ----------------------------------------------------------
     Select outer viewport: 0, 4.2, 0.75, 4.60
-    Select inner viewport: 0.38, 4.00, 0.85, 4.50
+    Select inner viewport: 0.55, 4.00, 0.85, 4.34
 
     Axes: -1.45, 1.45, -1.45, 1.45
     Paint rectangle: "{0.96, 0.96, 0.96}", -1.45, 1.45, -1.45, 1.45
@@ -1142,7 +1143,7 @@ if draw_visualization
         Paint circle (mm): "{0.10, 0.30, 0.85}", trajectory.x, trajectory.y, 3
     else
         Paint circle (mm): "{0.55, 0.55, 0.55}", 0, 0, 4
-        Font size: 5
+        Font size: 6
         Colour: "{0.40, 0.40, 0.40}"
         Text: 0, "centre", -0.30, "half", "no spatial movement"
     endif
@@ -1154,10 +1155,10 @@ if draw_visualization
         Paint circle (mm): "{" + fixed$(chColR[k], 2) + ", " + fixed$(chColG[k], 2)
             ... + ", " + fixed$(chColB[k], 2) + "}", spkX[k], spkY[k], dotR
         Colour: "White"
-        Font size: 5
+        Font size: 6
         Text: spkX[k], "centre", spkY[k], "half", string$(k)
         Colour: "{0.40, 0.40, 0.40}"
-        Font size: 4
+        Font size: 6
         Text: spkX[k] * 1.24, "centre", spkY[k] * 1.24, "half", spkName$[k]
     endfor
 
@@ -1169,8 +1170,8 @@ if draw_visualization
     # ----------------------------------------------------------
     # PANEL B: THE EIGHT GAIN CURVES  (right column, upper)
     # ----------------------------------------------------------
-    Select outer viewport: 4.2, 8, 0.75, 3.00
-    Select inner viewport: 4.52, 7.75, 0.85, 2.92
+    Select outer viewport: 4.2, 8, 0.75, 2.70
+    Select inner viewport: 4.52, 7.75, 0.85, 2.48
 
     dbTop = 2
     dbBot = floor_db
@@ -1218,19 +1219,27 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
     Marks bottom every: 1, 1, "yes", "yes", "no"
-    Font size: 5
+    Font size: 6
     Marks left every: 1, 10, "yes", "yes", "no"
     Font size: 6
     Text bottom: "yes", "Time (s)"
-    Text left: "yes", "Gain (dB)"
+    Select outer viewport: 4.02, 4.4, 0.75, 2.70
+    Select inner viewport: 4.02, 4.4, 0.77, 2.68
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Gain (dB)"
+    Select outer viewport: 4.2, 8, 0.75, 2.70
+    Select inner viewport: 4.52, 7.75, 0.85, 2.48
+    Axes: 0, duration, dbBot, dbTop
 
     # ----------------------------------------------------------
     # PANEL C: MEASURED PEAK GAIN PER CHANNEL  (right column, lower)
     # ----------------------------------------------------------
     # v0.3 drew max_volume here for almost every pattern, which said
     # nothing about what the channel actually did. These are measured.
-    Select outer viewport: 4.2, 8, 3.05, 4.60
-    Select inner viewport: 4.52, 7.75, 3.12, 4.52
+    Select outer viewport: 4.2, 8, 3.00, 4.60
+    Select inner viewport: 4.52, 7.75, 3.10, 4.38
 
     for k from 1 to 8
         peakG[k] = 0
@@ -1260,7 +1269,7 @@ if draw_visualization
         endif
         Paint rectangle: "{" + fixed$(chColR[k], 2) + ", " + fixed$(chColG[k], 2)
             ... + ", " + fixed$(chColB[k], 2) + "}", dbBot, pv, y - 0.38, y + 0.38
-        Font size: 5
+        Font size: 6
         Colour: "{0.30, 0.30, 0.30}"
         Text: dbBot - (dbTop - dbBot) * 0.02, "right", y, "half",
             ... string$(k) + " " + spkName$[k]
@@ -1270,8 +1279,16 @@ if draw_visualization
 
     Colour: "Black"
     Draw inner box
-    Font size: 5
-    Text left: "yes", "Ch"
+    Font size: 6
+    Select outer viewport: 4.02, 4.4, 3.00, 4.60
+    Select inner viewport: 4.02, 4.4, 3.02, 4.58
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Ch"
+    Select outer viewport: 4.2, 8, 3.00, 4.60
+    Select inner viewport: 4.52, 7.75, 3.10, 4.38
+    Axes: dbBot, dbTop, 0.5, 8.5
     Text bottom: "yes", "Peak gain (dB)"
 
     # ----------------------------------------------------------
@@ -1292,8 +1309,8 @@ if draw_visualization
     # ----------------------------------------------------------
     # Drawn from the working channels, so the panel is the same in all
     # five output formats.
-    Select outer viewport: 0, 8, 4.68, 5.75
-    Select inner viewport: 0.55, 7.72, 4.75, 5.68
+    Select outer viewport: 0, 8, 4.90, 5.95
+    Select inner viewport: 0.55, 7.72, 4.98, 5.72
 
     selectObject: result[2]
     outDurViz = Get total duration
@@ -1327,20 +1344,28 @@ if draw_visualization
     Draw inner box
     Font size: 7
     Text top: "no", "Opposing channels  (blue = Ch2 Front,  orange = Ch6 Back)"
-    Text left: "yes", "Amp"
+    Select outer viewport: 0.08, 0.52, 4.90, 5.95
+    Select inner viewport: 0.08, 0.52, 4.92, 5.93
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Amp"
+    Select outer viewport: 0, 8, 4.90, 5.95
+    Select inner viewport: 0.55, 7.72, 4.98, 5.72
+    Axes: 0, outDurViz, -ampViz, ampViz
     Text bottom: "yes", "Time (s)"
 
     # ----------------------------------------------------------
     # PANEL E: SUMMARY BAR (full width, bottom)
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 5.82, 6.85
-    Select inner viewport: 0.55, 7.72, 5.88, 6.79
+    Select outer viewport: 0, 8, 6.20, 7.08
+    Select inner viewport: 0.55, 7.72, 6.26, 7.02
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
 
     Font size: 6
     Colour: "{0.28, 0.28, 0.28}"
-    Text: 0.02, "left", 0.80, "half",
+    Text: 0.02, "left", 0.72, "half",
         ... "##" + patternName$ + "##"
         ... + "  " + soundName$
         ... + "  |  " + fixed$(duration, 2) + " s"
@@ -1348,14 +1373,14 @@ if draw_visualization
         ... + "  |  Radius: " + fixed$(path_radius, 2)
         ... + "  |  Focus: " + fixed$(source_focus, 2)
 
-    Text: 0.02, "left", 0.50, "half",
+    Text: 0.02, "left", 0.45, "half",
         ... "Floor: " + fixed$(floor_db, 0) + " dB"
         ... + "  |  Points: " + string$(nPoints)
         ... + " (" + fixed$(nPoints / (fMax * duration), 1) + "/cycle)"
         ... + "  |  Seed: " + string$(random_seed)
         ... + "  |  Const-power before envelope"
 
-    Text: 0.02, "left", 0.20, "half",
+    Text: 0.02, "left", 0.18, "half",
         ... "Format: " + formatName$
         ... + "  |  " + string$(outCount) + objWord$
         ... + " x " + string$(outChannels) + " ch"
@@ -1364,6 +1389,11 @@ if draw_visualization
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
 
+    Select outer viewport: 0, 8, 0, 7.18
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
     Font size: 10
     Colour: "Black"
     Line width: 1

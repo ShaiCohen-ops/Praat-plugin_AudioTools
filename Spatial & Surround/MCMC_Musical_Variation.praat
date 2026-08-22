@@ -3,7 +3,8 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.2 (2026)
+# Version: 1.3.1 (2026)
+# v1.3 (2026): SPATIAL VISUALIZATION STANDARDIZATION ONLY - label rails, compact summary, typography; DSP unchanged.
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -37,7 +38,7 @@
 #   the operationally useful property here. The "samples from a
 #   stationary posterior" interpretation does not strictly apply.
 #
-# Changelog v1.2 (2026):
+# Changelog v1.3 (2026):
 #   - REPRODUCIBILITY: Added a Seed field. Seed=0 keeps behaviour
 #     unpredictable (as before); any other value fixes Praat's RNG
 #     via random_initializeWithSeedUnsafelyButPredictably, so a
@@ -121,7 +122,7 @@ endif
 # FORM
 # ============================================================
 
-form MCMC Musical Variation v1.2
+form MCMC Musical Variation v1.3
     comment === Aesthetic Mode ===
     optionmenu Aesthetic_mode: 2
         option Custom
@@ -176,7 +177,7 @@ pitchFloorHz   = pitch_floor_Hz
 pitchCeilingHz = pitch_ceiling_Hz
 
 # ============================================================
-# PARAMETER VALIDATION (v1.2)
+# PARAMETER VALIDATION (v1.3)
 # ============================================================
 
 if nSteps <= 0
@@ -193,7 +194,7 @@ if pitchFloorHz >= pitchCeilingHz
 endif
 
 # ============================================================
-# RANDOM SEED (v1.2)
+# RANDOM SEED (v1.3)
 # A fixed, non-zero Seed makes the whole chain (proposals AND
 # acceptance draws) reproducible, so a chain that produced a
 # good result can be re-run exactly. Seed = 0 keeps behaviour
@@ -381,7 +382,7 @@ if nPhrases > 20
     nPhrases = 20
 endif
 
-# v1.2: Reference duration for the E4 duration-preservation term.
+# v1.3: Reference duration for the E4 duration-preservation term.
 # Phrase detection strips silence, so the sum of *processed*
 # phrase durations should never be compared against srcDur (which
 # includes the stripped silence) — even tm=1 for every phrase
@@ -578,7 +579,7 @@ endproc
 procedure proposePitchNudge
     pp = randomInteger(1, nPhrases)
     delta = round(randomGauss(0, 1.5))
-    # v1.2: a rounded Gaussian can land on 0, which is not a move.
+    # v1.3: a rounded Gaussian can land on 0, which is not a move.
     # Previously this was always bumped to +1, which added extra
     # probability mass to +1 that -1 never got, breaking the
     # symmetric-proposal-density claim in the header. Resolve the
@@ -829,7 +830,7 @@ endproc
 
 clearinfo
 writeInfoLine:  "=================================================="
-writeInfoLine:  "  MCMC Musical Variation v1.2"
+writeInfoLine:  "  MCMC Musical Variation v1.3"
 writeInfoLine:  "=================================================="
 appendInfoLine: ""
 appendInfoLine: "Source    : ", srcName$, " (", fixed$(srcDur, 2), " s)"
@@ -1007,7 +1008,7 @@ for step from 1 to nSteps
 
 endfor
 
-# v1.2: The loop above only renders on an accepted step that also
+# v1.3: The loop above only renders on an accepted step that also
 # lands on the thinning interval, so it is possible to reach the
 # end of the chain with varCount = 0 (nothing rendered), which
 # used to crash the multichannel-combine step below. Guarantee at
@@ -1061,14 +1062,16 @@ if draw_visualization = 1 and varCount > 0
     Erase all
 
     # === TITLE ===
-    Select outer viewport: 0, 8, 0, 0.48
+    Select outer viewport: 0, 8, 0, 0.28
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.70, "half", "##MCMC Musical Variation v1.2##"
-    Font size: 8
+    Text: 0.5, "centre", 0.5, "half", "##MCMC Musical Variation v1.3.2##"
+    Select outer viewport: 0, 8, 0.28, 0.50
+    Axes: 0, 1, 0, 1
+    Font size: 7
     Colour: "{0.4, 0.4, 0.5}"
-    Text: 0.5, "centre", -0.15, "half",
+    Text: 0.5, "centre", 0.5, "half",
         ... "[" + presetName$ + "]  " + srcName$
         ... + "  |  " + string$(nPhrases) + " phrases"
         ... + "  |  " + string$(nSteps) + " steps"
@@ -1098,7 +1101,15 @@ if draw_visualization = 1 and varCount > 0
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "Source"
+    Select outer viewport: 0.08, 0.52, 0.52, 1.42
+    Select inner viewport: 0.08, 0.52, 0.54, 1.4
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Source"
+    Select outer viewport: 0, 4, 0.52, 1.42
+    Select inner viewport: 0.55, 3.8, 0.57, 1.37
+    Axes: 0, srcDur, -ampMax, ampMax
     Text top: "no", "Input  (dotted = phrase boundaries)"
 
     # === PANEL 2: Variation 1 waveform ===
@@ -1114,12 +1125,20 @@ if draw_visualization = 1 and varCount > 0
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "Var 1"
+    Select outer viewport: 4.02, 4.4, 0.52, 1.42
+    Select inner viewport: 4.02, 4.4, 0.54, 1.4
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Var 1"
+    Select outer viewport: 4, 8, 0.52, 1.42
+    Select inner viewport: 4.2, 7.8, 0.57, 1.37
+    Axes: 0, var1Dur, -ampMax, ampMax
     Text top: "no", "Variation 1  (E=" + fixed$(varEnergy_1, 3) + ")"
 
     # === PANEL 3: Energy trace ===
-    Select outer viewport: 0, 8, 1.50, 2.38
-    Select inner viewport: 0.55, 7.75, 1.55, 2.33
+    Select outer viewport: 0, 8, 1.50, 2.30
+    Select inner viewport: 0.55, 7.75, 1.55, 2.12
 
     # Find min/max energy
     eMin = eTrace_1
@@ -1152,7 +1171,7 @@ if draw_visualization = 1 and varCount > 0
     # Mark render points
     for v from 1 to varCount
         # Exact step where this variation was rendered, recorded
-        # at render time (v1.2) — not guessed from v * thin, since
+        # at render time (v1.3) — not guessed from v * thin, since
         # a variation is only rendered on an accepted step that
         # also lands on the thinning interval.
         rStep = renderStep_'v'
@@ -1196,14 +1215,22 @@ if draw_visualization = 1 and varCount > 0
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "Energy"
+    Select outer viewport: 0.08, 0.52, 1.50, 2.30
+    Select inner viewport: 0.08, 0.52, 1.52, 2.28
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Energy"
+    Select outer viewport: 0, 8, 1.50, 2.30
+    Select inner viewport: 0.55, 7.75, 1.55, 2.12
+    Axes: 1, nSteps, ePlotMin, ePlotMax
     Text bottom: "yes", "MCMC step"
     Text top: "no",
         ... "Energy trace  (green=accepted  blue=render  red=energy  dotted=T)"
 
     # === PANEL 4: Pitch contour heatmap (variation x phrase) ===
-    Select outer viewport: 0, 4, 2.45, 3.55
-    Select inner viewport: 0.55, 3.8, 2.50, 3.50
+    Select outer viewport: 0, 4, 2.55, 3.65
+    Select inner viewport: 0.55, 3.8, 2.60, 3.43
 
     if varCount > 1 and nPhrases > 1
         Axes: 0, nPhrases, 0, varCount
@@ -1249,7 +1276,15 @@ if draw_visualization = 1 and varCount > 0
         Colour: "Black"
         Draw inner box
         Font size: 7
-        Text left: "yes", "Variation"
+        Select outer viewport: 0.08, 0.52, 2.55, 3.65
+        Select inner viewport: 0.08, 0.52, 2.57, 3.63
+        Axes: 0, 1, 0, 1
+        Font size: 7
+        Colour: "Black"
+        Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Variation"
+        Select outer viewport: 0, 4, 2.55, 3.65
+        Select inner viewport: 0.55, 3.8, 2.60, 3.43
+        Axes: 0, nPhrases, 0, varCount
         Text bottom: "yes", "Phrase"
         Text top: "no", "Pitch contour  (blue=low  red=high)"
     else
@@ -1263,8 +1298,8 @@ if draw_visualization = 1 and varCount > 0
     endif
 
     # === PANEL 5: Per-variation energy bar chart ===
-    Select outer viewport: 4, 8, 2.45, 3.55
-    Select inner viewport: 4.2, 7.8, 2.50, 3.50
+    Select outer viewport: 4, 8, 2.55, 3.65
+    Select inner viewport: 4.2, 7.8, 2.60, 3.43
 
     vEmin = varEnergy_1
     vEmax = varEnergy_1
@@ -1304,32 +1339,40 @@ if draw_visualization = 1 and varCount > 0
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "Energy"
+    Select outer viewport: 4.02, 4.4, 2.55, 3.65
+    Select inner viewport: 4.02, 4.4, 2.57, 3.63
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Energy"
+    Select outer viewport: 4, 8, 2.55, 3.65
+    Select inner viewport: 4.2, 7.8, 2.60, 3.43
+    Axes: 0, varCount + 1, 0, vEplotMax
     Text bottom: "yes", "Variation"
     Text top: "no", "Energy per rendered variation  (lower = better fit to the selected energy criteria)"
 
-    # === PANEL 6: Stats ===
-    Select outer viewport: 0, 8, 3.62, 4.30
-    Select inner viewport: 0.4, 7.8, 3.67, 4.25
+    # === PANEL 6: SUMMARY ===
+    Select outer viewport: 0, 8, 3.95, 4.95
+    Select inner viewport: 0.60, 7.70, 4.02, 4.88
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.95, 0.95, 0.95}", 0, 1, 0, 1
     Font size: 7
     Colour: "Black"
-    Text: 0.02, "left", 0.87, "half", "##MCMC Musical Variation v1.2##"
+    Text: 0.02, "left", 0.88, "half", "##MCMC Musical Variation v1.3.2##"
     Font size: 6
     Colour: "{0.35, 0.35, 0.40}"
-    Text: 0.02, "left", 0.66, "half",
+    Text: 0.02, "left", 0.68, "half",
         ... "Source: " + srcName$ + "  (" + fixed$(srcDur,2) + " s)"
         ... + "  |  Mode: " + presetName$
         ... + "  |  Phrases: " + string$(nPhrases)
         ... + "  |  T: " + fixed$(tStart,2) + " -> " + fixed$(tEnd,2)
-    Text: 0.02, "left", 0.45, "half",
+    Text: 0.02, "left", 0.48, "half",
         ... "Steps: " + string$(nSteps)
         ... + "  |  Accepted: " + string$(nAccepted)
         ... + "  (" + fixed$(acceptRate*100,1) + "%)"
         ... + "  |  Rendered: " + string$(varCount)
         ... + "  |  Thinning: " + string$(thin)
-    Text: 0.02, "left", 0.24, "half",
+    Text: 0.02, "left", 0.28, "half",
         ... "E weights: scale=" + fixed$(w1,1)
         ... + " voice=" + fixed$(w2,1)
         ... + " range=" + fixed$(w3,1)
@@ -1337,7 +1380,7 @@ if draw_visualization = 1 and varCount > 0
         ... + " dyn=" + fixed$(w5,1)
         ... + " phrase=" + fixed$(w6,1)
         ... + " contour=" + fixed$(w7,1)
-    Text: 0.02, "left", 0.06, "half",
+    Text: 0.02, "left", 0.10, "half",
         ... "Initial E=" + fixed$(eTrace_1,3)
         ... + "  Final E=" + fixed$(currentEnergy,3)
         ... + "  Delta=" + fixed$(currentEnergy - eTrace_1, 3)
@@ -1345,6 +1388,11 @@ if draw_visualization = 1 and varCount > 0
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
 
+    Select outer viewport: 0, 8, 0, 5.05
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
     Font size: 10
     Colour: "Black"
     Line width: 1

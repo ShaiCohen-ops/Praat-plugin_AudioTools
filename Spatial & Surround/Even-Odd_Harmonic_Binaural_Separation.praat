@@ -3,7 +3,8 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4 (2025)
+# Version: 0.5 (2025)
+# v0.5 (2026): SPATIAL VISUALIZATION STANDARDIZATION ONLY - label rails, compact summary, typography; DSP unchanged.
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -33,7 +34,7 @@
 #   Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
-# Changelog v0.4:
+# Changelog v0.5:
 #   - HEADLINE NEW: LTAS panel in visualization shows the actual
 #     long-term average spectrum of both output channels overlaid.
 #     This is the only way to verify separation visually — a clean
@@ -50,7 +51,7 @@
 #     for low bass and high voices. Default kept at 75-600.
 #   - Repurposed Preset 5 ("Custom F0"): now means user-supplied
 #     F0 with explicit per-channel orientation. v0.3 made it
-#     identical to preset 1, which was confusing. v0.4: when
+#     identical to preset 1, which was confusing. v0.5: when
 #     preset 5 is selected, Auto_detect_F0 is forced OFF and
 #     the script uses manual_F0_Hz with odd-L/even-R orientation.
 #   - Visualization rewritten to suite 8x8 standard with title
@@ -62,7 +63,7 @@
 #   - Added presets, visualization, play toggle. Removed gotos.
 # ============================================================
 
-form Even-Odd Harmonic Binaural Separation v0.4
+form Even-Odd Harmonic Binaural Separation v0.5
     comment === PRESET ===
     optionmenu Preset: 1
         option: "1. Odd Left / Even Right"
@@ -166,7 +167,7 @@ endif
 # ============================================================
 
 writeInfoLine: "============================================"
-appendInfoLine: "  EVEN-ODD HARMONIC BINAURAL SEPARATION v0.4"
+appendInfoLine: "  EVEN-ODD HARMONIC BINAURAL SEPARATION v0.5"
 appendInfoLine: "============================================"
 appendInfoLine: ""
 appendInfoLine: "Source: ", soundName$, " (", fixed$(duration, 2), " s)"
@@ -503,7 +504,7 @@ if draw_visualization
             
             # Harmonic number label
             if h <= 12 or h mod 2 = 0
-                Font size: 5
+                Font size: 6
                 Colour: "{0.30, 0.30, 0.30}"
                 Text: freq, "centre", 1.35, "half", string$(h)
             endif
@@ -527,7 +528,7 @@ if draw_visualization
     # PANEL B: ACTUAL OUTPUT LTAS (L vs R)
     # The honest test of whether separation worked.
     # ----------------------------------------------------------
-    Select outer viewport: 4.2, 8, 0.75, 3.00
+    Select outer viewport: 4.2, 8, 0.75, 2.70
     Select inner viewport: 4.55, 7.75, 0.95, 2.85
     
     selectObject: leftLtasID
@@ -631,7 +632,15 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
     Font size: 6
-    Text left: "yes", "Mag (dB)"
+    Select outer viewport: 4.02, 4.4, 0.75, 2.70
+    Select inner viewport: 4.02, 4.4, 0.77, 2.68
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Mag (dB)"
+    Select outer viewport: 4.2, 8, 0.75, 2.70
+    Select inner viewport: 4.55, 7.75, 0.95, 2.85
+    Axes: 0, maxFreqDisplay, yLo, yHi
     Text bottom: "yes", "Freq (Hz)"
     
     # ----------------------------------------------------------
@@ -639,7 +648,7 @@ if draw_visualization
     # Shows where the rejection bands are — useful to see the
     # filter_width_factor's effect at the chosen F0.
     # ----------------------------------------------------------
-    Select outer viewport: 4.2, 8, 3.05, 4.60
+    Select outer viewport: 4.2, 8, 3.00, 4.60
     Select inner viewport: 4.55, 7.75, 3.20, 4.50
     
     Axes: 0, maxFreqDisplay, 0, 1.2
@@ -708,8 +717,8 @@ if draw_visualization
     # ----------------------------------------------------------
     # PANEL D: OUTPUT WAVEFORM
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 4.68, 5.75
-    Select inner viewport: 0.55, 7.72, 4.75, 5.68
+    Select outer viewport: 0, 8, 4.90, 5.95
+    Select inner viewport: 0.55, 7.72, 4.98, 5.72
     
     selectObject: result
     outPeakViz = Get absolute extremum: 0, 0, "None"
@@ -743,20 +752,28 @@ if draw_visualization
     Draw inner box
     Font size: 7
     Text top: "no", "Output  (blue=L  orange=R)"
-    Text left: "yes", "Amp"
+    Select outer viewport: 0.08, 0.52, 4.90, 5.95
+    Select inner viewport: 0.08, 0.52, 4.92, 5.93
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Amp"
+    Select outer viewport: 0, 8, 4.90, 5.95
+    Select inner viewport: 0.55, 7.72, 4.98, 5.72
+    Axes: 0, finalDur, -ampViz, ampViz
     Text bottom: "yes", "Time (s)"
     
     # ----------------------------------------------------------
     # PANEL E: SUMMARY BAR
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 5.82, 6.58
-    Select inner viewport: 0.55, 7.72, 5.88, 6.52
+    Select outer viewport: 0, 8, 6.20, 6.98
+    Select inner viewport: 0.55, 7.72, 6.26, 6.92
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
     
     Font size: 6
     Colour: "{0.28, 0.28, 0.28}"
-    Text: 0.02, "left", 0.75, "half",
+    Text: 0.02, "left", 0.64, "half",
         ... "##" + presetName$ + "##"
         ... + "  " + soundName$
         ... + "  |  Method: " + methodName$
@@ -773,6 +790,11 @@ if draw_visualization
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
     
+    Select outer viewport: 0, 8, 0, 7.08
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
     Font size: 10
     Colour: "Black"
     Line width: 1

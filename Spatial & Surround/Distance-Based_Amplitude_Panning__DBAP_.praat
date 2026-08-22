@@ -3,7 +3,8 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.2 (2025)
+# Version: 0.3.1 (2025)
+# v0.3 (2026): SPATIAL VISUALIZATION STANDARDIZATION ONLY - label rails, compact summary, typography; DSP unchanged.
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -11,7 +12,7 @@
 #   Static DBAP Panner - Places mono/stereo source at a position
 #   and outputs multichannel sound with distance-based gains.
 #
-# Changelog v0.2:
+# Changelog v0.3:
 #   - Fixed: Now takes mono/stereo input, creates multichannel output
 #   - Fixed form placement
 #   - Added visualization
@@ -289,7 +290,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.65, "half", "##DBAP Static Panner##"
+    Text: 0.5, "centre", 0.65, "half", "##DBAP Static Panner v0.3.1##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
     Text: 0.5, "centre", -0.25, "half",
@@ -350,14 +351,14 @@ if draw_visualization
 
         # Gain value below speaker
         gLblY = spkY[i] - dy / dLen * 0.18
-        Font size: 5
+        Font size: 6
         Colour: "{0.45, 0.45, 0.45}"
         Text: spkX[i], "centre", gLblY, "half", fixed$(gain[i], 3)
     endfor
 
     # Listener at centre
     Paint circle (mm): "{0.22, 0.62, 0.30}", 0, 0, 2.0
-    Font size: 5
+    Font size: 6
     Colour: "{0.15, 0.45, 0.18}"
     Text: 0, "centre", -0.18, "half", "Listener"
 
@@ -384,8 +385,8 @@ if draw_visualization
     # ----------------------------------------------------------
     # Gain bar chart (right half)
     # ----------------------------------------------------------
-    Select outer viewport: 4.5, 8, 0.52, 2.42
-    Select inner viewport: 4.80, 7.65, 0.62, 2.30
+    Select outer viewport: 4.5, 8, 0.52, 2.20
+    Select inner viewport: 4.80, 7.65, 0.62, 1.98
 
     maxGainViz = 0
     for i from 1 to numSpk
@@ -416,7 +417,7 @@ if draw_visualization
         Colour: "{0.18, 0.38, 0.58}"
         Draw rectangle: i - 0.32, i + 0.32, 0, g
         # Gain value above bar
-        Font size: 5
+        Font size: 6
         Colour: "{0.30, 0.30, 0.30}"
         Text: i, "centre", g + gTop * 0.04, "half", fixed$(g, 3)
         # Channel number below
@@ -427,15 +428,23 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "Gain"
+    Select outer viewport: 4.02, 4.4, 0.52, 2.20
+    Select inner viewport: 4.02, 4.4, 0.54, 2.18
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Gain"
+    Select outer viewport: 4.5, 8, 0.52, 2.20
+    Select inner viewport: 4.8, 7.65, 0.62, 1.98
+    Axes: 0.3, numSpk + 0.7, 0, gTop
     Text bottom: "yes", "Channel"
     Text top: "no", "DBAP gains"
 
     # ----------------------------------------------------------
     # Output waveform (mono downmix of multichannel result)
     # ----------------------------------------------------------
-    Select outer viewport: 4.5, 8, 2.52, 3.82
-    Select inner viewport: 4.80, 7.65, 2.60, 3.72
+    Select outer viewport: 4.5, 8, 2.55, 3.82
+    Select inner viewport: 4.80, 7.65, 2.65, 3.60
 
     selectObject: result
     vizDown = Convert to mono
@@ -445,20 +454,27 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "Mix"
+    Select outer viewport: 4.02, 4.4, 2.55, 3.82
+    Select inner viewport: 4.02, 4.4, 2.57, 3.80
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Mix"
+    Select outer viewport: 4.5, 8, 2.55, 3.82
+    Select inner viewport: 4.8, 7.65, 2.65, 3.60
     Text bottom: "yes", "Time (s)"
     Text top: "no", "Mono downmix"
 
     # ----------------------------------------------------------
     # Summary panel
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 3.92, 4.82
-    Select inner viewport: 0.50, 7.65, 3.98, 4.76
+    Select outer viewport: 0, 8, 4.12, 4.98
+    Select inner viewport: 0.50, 7.65, 4.18, 4.92
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
     Font size: 7
     Colour: "Black"
-    Text: 0.02, "left", 0.82, "half", "##Summary##"
+    Text: 0.02, "left", 0.84, "half", "##Summary##"
     Font size: 6
     Colour: "{0.30, 0.30, 0.30}"
 
@@ -471,7 +487,7 @@ if draw_visualization
         gainList$ = gainList$ + string$(i) + ":" + fixed$(gain[i], 3)
     endfor
 
-    Text: 0.02, "left", 0.55, "half",
+    Text: 0.02, "left", 0.52, "half",
         ... "Preset: " + presetName$
         ... + "  |  Speakers: " + string$(numSpk)
         ... + "  |  Source: (" + fixed$(source_x, 2) + ", " + fixed$(source_y, 2) + ")"
@@ -481,6 +497,11 @@ if draw_visualization
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
 
+    Select outer viewport: 0, 8, 0, 5.08
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
     Font size: 10
     Colour: "Black"
     Line width: 1

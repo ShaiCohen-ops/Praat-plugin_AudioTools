@@ -3,7 +3,8 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4 (2026)
+# Version: 0.5 (2026)
+# v0.5.1 (2026): RUNTIME VISUAL QA - summary row collision fixed; DSP unchanged.
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -15,7 +16,7 @@
 #   of one source are produced. Output as octophonic, stems, or a
 #   downmix.
 #
-# Changelog v0.4 (2026):
+# Changelog v0.5.1 (2026):
 #   The chance mechanism is corrected before the output work, because
 #   several of the Cage options did not do what their names promised.
 #
@@ -208,7 +209,7 @@ else
     presetName$ = "Custom"
 endif
 
-# === v0.4: actually seed the generator ===
+# === v0.5: actually seed the generator ===
 if random_seed > 0
     random_initializeWithSeedUnsafelyButPredictably (random_seed)
     seedApplied = 1
@@ -331,7 +332,7 @@ original_freq = Get sampling frequency
 srcT0 = Get start time
 srcT1 = Get end time
 
-# v0.4: slice times are computed from 0. A Praat Sound need not start
+# v0.5: slice times are computed from 0. A Praat Sound need not start
 # at 0 - anything extracted with preserved times does not - and every
 # slice boundary would then be displaced by xmin.
 ownWork = 0
@@ -372,7 +373,7 @@ for ch from 1 to 8
     hexValue[ch] = hex_value
     kingWenNo[ch] = kingWen[hex_value]
 
-    # v0.4: uniform map onto the legal range. v0.3 mapped onto
+    # v0.5: uniform map onto the legal range. v0.3 mapped onto
     # [1+b-d, 1+b+d] and then clamped at 0.1, which piled several codes
     # onto one speed whenever the range reached below 0.1.
     speed_factor = sMin + (sMax - sMin) * (hex_value / 63)
@@ -449,7 +450,7 @@ for ch from 1 to 8
                 selectObject: currentSliceID
                 Reverse
 
-                # v0.4: depth drawn per slice, so the operation really
+                # v0.5: depth drawn per slice, so the operation really
                 # is indeterminate. It is a shift, not an inversion.
                 if indeterminate_pitch_shift
                     hexP = randomInteger(0, 63)
@@ -481,7 +482,7 @@ for ch from 1 to 8
             plusObject: sliceID[k]
         endfor
 
-        # v0.4: short crossfade. Rectangular cuts butt-joined produce a
+        # v0.5: short crossfade. Rectangular cuts butt-joined produce a
         # discontinuity at every boundary, worst after a reversal.
         ovl = slice_crossfade
         if ovl > shortestSlice * 0.4
@@ -504,7 +505,7 @@ for ch from 1 to 8
     endif
 
     # --- 4. MONO ---
-    # v0.4: capture the new id before removing the old one instead of
+    # v0.5: capture the new id before removing the old one instead of
     # calling selected() after removeObject.
     selectObject: recombinedSound
     nChans = Get number of channels
@@ -516,7 +517,7 @@ for ch from 1 to 8
     endif
 
     # --- 5. SILENCE BY CHANCE (4'33" homage) ---
-    # v0.4: its own six-line throw per channel. v0.3 measured the peak
+    # v0.5: its own six-line throw per channel. v0.3 measured the peak
     # amplitude of the recombined channel, which reversal and reordering
     # do not change, so all eight channels shared one peak and the gate
     # silenced everything or nothing.
@@ -563,7 +564,7 @@ endif
 # PAD TO A COMMON DURATION
 # ============================================================
 # Each channel is lengthened by its own speed factor, so the eight
-# differ in length by design. v0.4 pads them explicitly rather than
+# differ in length by design. v0.5.1 pads them explicitly rather than
 # relying on how Combine to stereo treats unequal inputs.
 
 maxDur = 0
@@ -865,7 +866,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##8-CHANNEL I CHING: Form & Speed##"
+    Text: 0.5, "centre", 0.68, "half", "##8-CHANNEL I CHING: Form & Speed v0.5.1##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
     Text: 0.5, "centre", -0.22, "half",
@@ -878,7 +879,7 @@ if draw_visualization
     # PANEL A: HEXAGRAM GRID  (left column)
     # ----------------------------------------------------------
     Select outer viewport: 0, 4.2, 0.75, 4.60
-    Select inner viewport: 0.38, 4.00, 0.85, 4.50
+    Select inner viewport: 0.55, 4.00, 0.85, 4.34
 
     Axes: 0, 10, 0, 10
     Paint rectangle: "{0.96, 0.96, 0.96}", 0, 10, 0, 10
@@ -901,13 +902,13 @@ if draw_visualization
             yBase = 1.8
         endif
 
-        # v0.4: King Wen number and binary code shown separately, so the
+        # v0.5: King Wen number and binary code shown separately, so the
         # code that drives the speed is not mistaken for the hexagram.
         Font size: 6
         Colour: "Black"
         Text: xCenter, "centre", yBase - 0.45, "half",
             ... "Ch" + string$(ch) + "  KW" + string$(kingWenNo[ch])
-        Font size: 5
+        Font size: 6
         Colour: "{0.40, 0.40, 0.40}"
         Text: xCenter, "centre", yBase - 0.85, "half",
             ... "code " + string$(hexValue[ch]) + "  " + fixed$(speedFactor[ch], 2) + "x"
@@ -937,10 +938,10 @@ if draw_visualization
     # ----------------------------------------------------------
     # PANEL B: SPEED FACTOR BARS  (right column, upper)
     # ----------------------------------------------------------
-    # v0.4: the axis follows the speeds actually produced. A fixed
+    # v0.5: the axis follows the speeds actually produced. A fixed
     # 0..1.5 cut off Chaos, which reaches 2.0.
-    Select outer viewport: 4.2, 8, 0.75, 3.00
-    Select inner viewport: 4.52, 7.75, 0.85, 2.92
+    Select outer viewport: 4.2, 8, 0.75, 2.70
+    Select inner viewport: 4.52, 7.75, 0.85, 2.48
 
     axMaxSpeed = sMax * 1.12
     if axMaxSpeed < 1.2
@@ -969,7 +970,7 @@ if draw_visualization
             Paint rectangle: "{0.80, 0.45, 0.25}", 0, sf, yLo, yHi
         endif
 
-        Font size: 5
+        Font size: 6
         Colour: "{0.30, 0.30, 0.30}"
         Text: -axMaxSpeed * 0.015, "right", y, "half", "Ch" + string$(ch)
         Text: axMaxSpeed * 0.98, "right", y, "half", fixed$(sf, 2) + "x"
@@ -978,14 +979,22 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
     Font size: 6
-    Text left: "yes", "Ch"
+    Select outer viewport: 4.02, 4.4, 0.75, 2.70
+    Select inner viewport: 4.02, 4.4, 0.77, 2.68
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Ch"
+    Select outer viewport: 4.2, 8, 0.75, 2.70
+    Select inner viewport: 4.52, 7.75, 0.85, 2.48
+    Axes: 0, axMaxSpeed, 0.5, 8.5
     Text bottom: "yes", "Speed factor  (blue = faster, orange = slower, grey = silent)"
 
     # ----------------------------------------------------------
     # PANEL C: YIN/YANG BALANCE  (right column, lower)
     # ----------------------------------------------------------
-    Select outer viewport: 4.2, 8, 3.05, 4.60
-    Select inner viewport: 4.52, 7.75, 3.12, 4.52
+    Select outer viewport: 4.2, 8, 3.00, 4.60
+    Select inner viewport: 4.52, 7.75, 3.10, 4.38
 
     Axes: 0, 6, 0.5, 8.5
     Paint rectangle: "{0.96, 0.96, 0.96}", 0, 6, 0.5, 8.5
@@ -1000,7 +1009,7 @@ if draw_visualization
         Paint rectangle: "{0.72, 0.35, 0.30}", 0, yc, yLo, yHi
         Paint rectangle: "{0.25, 0.50, 0.72}", yc, 6, yLo, yHi
 
-        Font size: 5
+        Font size: 6
         Colour: "{0.30, 0.30, 0.30}"
         Text: -0.15, "right", y, "half", "Ch" + string$(ch)
         if yc > 0
@@ -1020,8 +1029,16 @@ if draw_visualization
 
     Colour: "Black"
     Draw inner box
-    Font size: 5
-    Text left: "yes", "Ch"
+    Font size: 6
+    Select outer viewport: 4.02, 4.4, 3.00, 4.60
+    Select inner viewport: 4.02, 4.4, 3.02, 4.58
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Ch"
+    Select outer viewport: 4.2, 8, 3.00, 4.60
+    Select inner viewport: 4.52, 7.75, 3.10, 4.38
+    Axes: 0, 6, 0.5, 8.5
     Text bottom: "yes", "Lines: Yin (red, reversed) | Yang (blue)"
 
     # ----------------------------------------------------------
@@ -1039,11 +1056,11 @@ if draw_visualization
     # ----------------------------------------------------------
     # PANEL D: TWO CHANNEL EXAMPLES (full width)
     # ----------------------------------------------------------
-    # v0.4: these are two of the eight variations, drawn from the
+    # v0.5: these are two of the eight variations, drawn from the
     # working channels. They are not the L and R of a stereo mix, which
     # is what v0.3 called them.
-    Select outer viewport: 0, 8, 4.68, 5.75
-    Select inner viewport: 0.55, 7.72, 4.75, 5.68
+    Select outer viewport: 0, 8, 4.90, 5.95
+    Select inner viewport: 0.55, 7.72, 4.98, 5.72
 
     selectObject: final_channels[1]
     outDurViz = Get total duration
@@ -1077,20 +1094,28 @@ if draw_visualization
     Draw inner box
     Font size: 7
     Text top: "no", "Channel examples  (blue = Ch1,  orange = Ch2)  — two of eight variations"
-    Text left: "yes", "Amp"
+    Select outer viewport: 0.08, 0.52, 4.90, 5.95
+    Select inner viewport: 0.08, 0.52, 4.92, 5.93
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Amp"
+    Select outer viewport: 0, 8, 4.90, 5.95
+    Select inner viewport: 0.55, 7.72, 4.98, 5.72
+    Axes: 0, outDurViz, -ampViz, ampViz
     Text bottom: "yes", "Time (s)"
 
     # ----------------------------------------------------------
     # PANEL E: SUMMARY BAR (full width, bottom)
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 5.82, 6.85
-    Select inner viewport: 0.55, 7.72, 5.88, 6.79
+    Select outer viewport: 0, 8, 6.20, 7.08
+    Select inner viewport: 0.55, 7.72, 6.26, 7.02
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
 
     Font size: 6
     Colour: "{0.28, 0.28, 0.28}"
-    Text: 0.02, "left", 0.80, "half",
+    Text: 0.02, "left", 0.72, "half",
         ... "##" + presetName$ + "##"
         ... + "  " + originalName$
         ... + "  |  Dev: ±" + fixed$(deviation_range * 100, 0) + "%"
@@ -1118,9 +1143,9 @@ if draw_visualization
         cageFlags$ = "  (no Cage extensions active)"
     endif
 
-    Text: 0.02, "left", 0.50, "half", "Cage extensions:" + cageFlags$
+    Text: 0.02, "left", 0.45, "half", "Cage extensions:" + cageFlags$
 
-    Text: 0.02, "left", 0.20, "half",
+    Text: 0.02, "left", 0.18, "half",
         ... "Format: " + formatName$
         ... + "  |  " + string$(outCount) + objWord$
         ... + " x " + string$(outChannels) + " ch"
@@ -1129,6 +1154,11 @@ if draw_visualization
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
 
+    Select outer viewport: 0, 8, 0, 7.18
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
     Font size: 10
     Colour: "Black"
     Line width: 1

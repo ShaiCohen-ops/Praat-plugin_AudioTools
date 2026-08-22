@@ -3,7 +3,8 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2026)
+# Version: 0.4 (2026)
+# v0.4.1 (2026): SPATIAL VISUALIZATION STANDARDIZATION ONLY - label rails, compact summary, typography; DSP unchanged.
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -30,7 +31,7 @@
 #   - Added visualization option
 #   - Added play_result option
 #
-# Changelog v0.3 (2026):
+# Changelog v0.4.1 (2026):
 #   - FIX: Wet/dry mix Formula used "Object_<id>[col, row]" with two
 #     bugs: (a) Object_<numeric> resolves by name and crashes on
 #     numeric IDs, and (b) the index order [col, row] is reversed —
@@ -51,7 +52,7 @@
 # FORM
 # ============================================================
 
-form Spectral Swirl Multi-Channel v0.3
+form Spectral Swirl Multi-Channel v0.4.1
     optionmenu Preset: 1
         option Custom
         option Subtle Shimmer
@@ -163,7 +164,7 @@ dry_level = 1 - wet_level
 # ============================================================
 
 writeInfoLine: "============================================"
-writeInfoLine: "Fast Spectral Swirl Multi-Channel v0.3"
+writeInfoLine: "Fast Spectral Swirl Multi-Channel v0.4.1"
 writeInfoLine: "============================================"
 appendInfoLine: "Input: ", originalName$
 appendInfoLine: "Duration: ", fixed$(originalDur, 3), " s"
@@ -219,7 +220,7 @@ for i from 1 to 8
     # Convert back to sound
     selectObject: spec
     swirled = To Sound
-    # v0.3: removed per-channel "Scale peak: 0.99" — it normalized
+    # v0.4: removed per-channel "Scale peak: 0.99" — it normalized
     # each channel independently and destroyed inter-channel level
     # relationships. The final post-combine Scale peak handles
     # overall level appropriately.
@@ -301,7 +302,7 @@ if dry_level > 0
     endfor
     
     # Apply wet/dry formula
-    # v0.3: was "Object_<id>[col, row]" which has two bugs:
+    # v0.4: was "Object_<id>[col, row]" which has two bugs:
     # (a) Object_<numeric_id> resolves by name, not numeric ID; and
     # (b) the index order is wrong — Praat's object[] takes
     # (id, row, col), not (id, col, row).
@@ -340,15 +341,17 @@ if draw_visualization
     # ===========================================
     # Title (full width, top)
     # ===========================================
-    Select outer viewport: 0, 8, 0.05, 0.50
+    Select outer viewport: 0, 8, 0.00, 0.28
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.65, "half",
-        ... "##Spectral Swirl 8-Channel##"
+    Text: 0.5, "centre", 0.5, "half",
+        ... "##Spectral Swirl 8-Channel v0.4.1##"
+    Select outer viewport: 0, 8, 0.28, 0.50
+    Axes: 0, 1, 0, 1
     Font size: 7
     Colour: "{0.35, 0.35, 0.50}"
-    Text: 0.5, "centre", 0.20, "half",
+    Text: 0.5, "centre", 0.5, "half",
         ... originalName$ + "  |  preset: " + presetName$
         ... + "  |  base depth: " + string$(base_depth)
         ... + "  |  cycles: " + fixed$(base_cycle, 1)
@@ -366,7 +369,14 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "Input"
+    Select outer viewport: 0.08, 0.52, 0.55, 1.3
+    Select inner viewport: 0.08, 0.52, 0.57, 1.28
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Input"
+    Select outer viewport: 0, 8, 0.55, 1.3
+    Select inner viewport: 0.6, 7.6, 0.6, 1.25
     Text top: "no", "Source: " + originalName$
 
     # ===========================================
@@ -459,15 +469,23 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "Bin shift"
+    Select outer viewport: 0.08, 0.52, 2.9, 4.1
+    Select inner viewport: 0.08, 0.52, 2.92, 4.08
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Bin shift"
+    Select outer viewport: 0, 8, 2.9, 4.1
+    Select inner viewport: 0.6, 7.6, 3, 4.05
+    Axes: 0, 1, -maxDepth, maxDepth
     Text bottom: "yes", "Normalized frequency"
     Text top: "no", "Swirl displacement curves (per channel)"
 
     # ===========================================
     # Output spectrogram panel — Channel 4
     # ===========================================
-    Select outer viewport: 0, 8, 4.15, 5.65
-    Select inner viewport: 0.6, 7.6, 4.25, 5.55
+    Select outer viewport: 0, 8, 4.35, 5.85
+    Select inner viewport: 0.6, 7.6, 4.45, 5.75
 
     selectObject: result
     chForSpec = Extract one channel: 4
@@ -480,15 +498,22 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "Hz"
+    Select outer viewport: 0.08, 0.52, 4.35, 5.85
+    Select inner viewport: 0.08, 0.52, 4.37, 5.83
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Hz"
+    Select outer viewport: 0, 8, 4.35, 5.85
+    Select inner viewport: 0.6, 7.6, 4.45, 5.75
     Text bottom: "yes", "Time (s)"
     Text top: "no", "Output spectrogram (Channel 4 — mid-range parameters)"
 
     # ===========================================
     # Channel legend strip
     # ===========================================
-    Select outer viewport: 0, 8, 5.70, 6.05
-    Select inner viewport: 0.6, 7.6, 5.72, 6.03
+    Select outer viewport: 0, 8, 6.05, 6.40
+    Select inner viewport: 0.6, 7.6, 6.07, 6.38
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.97, 0.97, 0.97}", 0, 1, 0, 1
 
@@ -510,13 +535,13 @@ if draw_visualization
     # ===========================================
     # Parameters summary strip
     # ===========================================
-    Select outer viewport: 0, 8, 6.10, 6.55
-    Select inner viewport: 0.6, 7.6, 6.13, 6.52
+    Select outer viewport: 0, 8, 6.50, 6.95
+    Select inner viewport: 0.6, 7.6, 6.53, 6.92
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
     Font size: 6
     Colour: "{0.25, 0.25, 0.35}"
-    Text: 0.02, "left", 0.72, "half",
+    Text: 0.02, "left", 0.64, "half",
         ... "##Parameters##  base depth=" + string$(base_depth)
         ... + "  depth increment=" + string$(depth_increment)
         ... + "  base cycle=" + fixed$(base_cycle, 1)
@@ -530,6 +555,11 @@ if draw_visualization
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
 
+    Select outer viewport: 0, 8, 0, 7.05
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
     Font size: 10
     Colour: "Black"
     Line width: 1

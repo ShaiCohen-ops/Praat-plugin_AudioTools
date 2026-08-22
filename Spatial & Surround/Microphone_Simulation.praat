@@ -3,7 +3,9 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2025)
+# Version: 0.4.1 (2026)
+# v0.4.1 (2026): VISUALIZATION LAYOUT FIX - output/Summary spacing and versioned title; DSP unchanged.
+# v0.4 (2026): SPATIAL VISUALIZATION STANDARDIZATION ONLY - label rails, compact summary, typography; DSP unchanged.
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -19,7 +21,7 @@
 #     on summed playback, the "AB sound")
 #   - Distance attenuation (1/r pressure law, optional)
 #   - Proximity effect (low-shelf boost on directional mics at <30cm,
-#     optional, NEW in v0.3)
+#     optional, NEW in v0.4)
 #
 # NOT modeled:
 #   - Room acoustics / reflections
@@ -32,7 +34,7 @@
 #   Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
-# Changelog v0.3:
+# Changelog v0.4:
 #   - NEW: optional proximity-effect simulation. When enabled and
 #     pattern is directional and distance < 30cm, applies a low-shelf
 #     boost via Praat's Filter (de-emphasis from) — magnitude scales
@@ -73,7 +75,7 @@ clearinfo
 # FORM
 # ============================================================
 
-form Microphone Simulation v0.3
+form Microphone Simulation v0.4.1
     comment ─────────────────────────────────────────
     comment Preset (overrides custom settings)
     optionmenu Preset: 1
@@ -288,7 +290,7 @@ endif
 # ============================================================
 
 writeInfoLine: "============================================"
-appendInfoLine: "Microphone Simulation v0.3"
+appendInfoLine: "Microphone Simulation v0.4.1"
 appendInfoLine: "============================================"
 appendInfoLine: "Input: ", originalName$
 appendInfoLine: "Duration: ", fixed$(duration, 3), " s"
@@ -939,7 +941,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##MICROPHONE SIMULATION##"
+    Text: 0.5, "centre", 0.68, "half", "##MICROPHONE SIMULATION v0.4.1##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
     Text: 0.5, "centre", -0.22, "half",
@@ -1135,7 +1137,7 @@ if draw_visualization
     
     # ITD readout for spaced configs
     if stereo_config >= 5
-        Font size: 5
+        Font size: 6
         Colour: "{0.30, 0.30, 0.40}"
         Text: -1.55, "left", -0.30, "half",
             ... "ITD: " + fixed$(abs(itdMs), 3) + " ms (" + itdSide$ + ")"
@@ -1186,7 +1188,7 @@ if draw_visualization
         if decadeFreqs#[k] >= freqLo and decadeFreqs#[k] <= freqHi
             lf = log10(decadeFreqs#[k])
             Draw line: lf, yLo, lf, yHi
-            Font size: 5
+            Font size: 6
             Colour: "{0.45, 0.45, 0.50}"
             Text: lf, "centre", yLo + (yHi - yLo) * 0.04, "half", decadeLabels$#[k]
             Colour: "{0.88, 0.88, 0.92}"
@@ -1232,7 +1234,15 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
     Font size: 6
-    Text left: "yes", "Mag (dB rel)"
+    Select outer viewport: 4.02, 4.4, 2.65, 4.4
+    Select inner viewport: 4.02, 4.4, 2.67, 4.38
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Mag (dB rel)"
+    Select outer viewport: 4.2, 8, 2.65, 4.4
+    Select inner viewport: 4.5, 7.75, 2.85, 4.25
+    Axes: logLo, logHi, yLo, yHi
     Text bottom: "yes", "Freq (Hz, log)"
     
     # ----------------------------------------------------------
@@ -1250,8 +1260,8 @@ if draw_visualization
     # ----------------------------------------------------------
     # PANEL D: OUTPUT WAVEFORM
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 4.50, 5.65
-    Select inner viewport: 0.55, 7.72, 4.60, 5.55
+    Select outer viewport: 0, 8, 4.60, 5.75
+    Select inner viewport: 0.55, 7.72, 4.70, 5.65
     
     selectObject: finalSound
     nChOut = Get number of channels
@@ -1297,20 +1307,28 @@ if draw_visualization
     else
         Text top: "no", "Mono output"
     endif
-    Text left: "yes", "Amp"
+    Select outer viewport: 0.08, 0.52, 4.60, 5.75
+    Select inner viewport: 0.08, 0.52, 4.62, 5.73
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Amp"
+    Select outer viewport: 0, 8, 4.60, 5.75
+    Select inner viewport: 0.55, 7.72, 4.70, 5.65
+    Axes: 0, duration, -ampMax, ampMax
     Text bottom: "yes", "Time (s)"
     
     # ----------------------------------------------------------
     # PANEL E: SUMMARY BAR
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 5.75, 6.55
-    Select inner viewport: 0.55, 7.72, 5.82, 6.50
+    Select outer viewport: 0, 8, 5.95, 6.75
+    Select inner viewport: 0.55, 7.72, 6.02, 6.70
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
     
     Font size: 6
     Colour: "{0.28, 0.28, 0.28}"
-    Text: 0.02, "left", 0.75, "half",
+    Text: 0.02, "left", 0.64, "half",
         ... "##" + presetName$ + "##"
         ... + "  " + originalName$
         ... + "  |  Config: " + config$ + "  Pattern: " + pattern$
@@ -1328,6 +1346,11 @@ if draw_visualization
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
     
+    Select outer viewport: 0, 8, 0, 6.85
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
     Font size: 10
     Colour: "Black"
     Line width: 1

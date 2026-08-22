@@ -3,7 +3,9 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2026)
+# Version: 0.4.1 (2026)
+# v0.4.2 (2026): RUNTIME VISUAL QA - vertical panel gaps corrected; DSP unchanged.
+# v0.4 (2026): SPATIAL VISUALIZATION STANDARDIZATION ONLY - label rails, compact summary, typography; DSP unchanged.
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -12,7 +14,7 @@
 #   with 8 pitch-shifted voices on separate channels, deliverable
 #   as octophonic, stems, or a downmix.
 #
-# Changelog v0.3 (2026):
+# Changelog v0.4 (2026):
 #   - NEW: Output_format menu. The canon mechanism is untouched; the
 #     branch happens only after ch1-ch8 are complete.
 #       1  8 channels - octophonic          (default, v0.2 behaviour)
@@ -356,7 +358,7 @@ delay[6] = delay_6
 delay[7] = delay_7
 delay[8] = delay_8
 
-# v0.3: the delay fields are plain reals, so a negative value is
+# v0.4: the delay fields are plain reals, so a negative value is
 # reachable. Formula (part) starting before the buffer truncates the
 # voice, so shift the whole set until the earliest entry is at 0. This
 # keeps every relative offset, which is what the canon actually is.
@@ -390,7 +392,7 @@ for i from 1 to 8
     voice[i] = selected("Sound")
     dur[i] = Get total duration
     
-    # v0.3: clamp so fade-in and fade-out cannot overlap on short voices
+    # v0.4: clamp so fade-in and fade-out cannot overlap on short voices
     fadeUse = fade_time
     if fadeUse > dur[i] / 2
         fadeUse = dur[i] / 2
@@ -425,7 +427,7 @@ for i from 1 to 8
     d = delay[i]
     voiceDur = dur[i]
     
-    # v0.3: string$() concatenation instead of backtick interpolation
+    # v0.4: string$() concatenation instead of backtick interpolation
     voiceName$ = "canonvoice" + string$(i)
     Formula (part): d, d + voiceDur, 1, 1,
         ... "Sound_" + voiceName$ + "(x - " + fixed$(d, 9) + ")"
@@ -672,7 +674,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.95, "half", "##8-Channel Canon##"
+    Text: 0.5, "centre", 0.95, "half", "##8-Channel Canon v0.4.2##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
     Text: 0.5, "centre", -0.25, "half",
@@ -769,7 +771,7 @@ if draw_visualization
         endif
 
         # Delay label at left edge (outside bar if needed)
-        Font size: 5
+        Font size: 6
         Colour: "{0.40, 0.40, 0.40}"
         if delay[i] > outputDur * 0.04
             Text: delay[i] - outputDur * 0.01, "right", barMidY, "half",
@@ -830,10 +832,10 @@ if draw_visualization
     # ----------------------------------------------------------
     # Spectrogram of the monitoring mix (all eight voices)
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 3.58, 4.88
-    Select inner viewport: 0.55, 7.65, 3.65, 4.80
+    Select outer viewport: 0, 8, 3.78, 5.08
+    Select inner viewport: 0.55, 7.65, 3.85, 5.00
 
-    # v0.3: built from the monitoring mix, not from an output object.
+    # v0.4: built from the monitoring mix, not from an output object.
     # In a stem format the first output holds a quarter or a half of the
     # canon, so drawing it would show part of the piece as the whole.
     selectObject: monitorID
@@ -845,21 +847,28 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "Hz"
+    Select outer viewport: 0.08, 0.52, 3.78, 5.08
+    Select inner viewport: 0.08, 0.52, 3.80, 5.06
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Hz"
+    Select outer viewport: 0, 8, 3.78, 5.08
+    Select inner viewport: 0.55, 7.65, 3.85, 5.00
     Text bottom: "yes", "Time (s)"
     Text top: "no", "Canon spectrogram  (mono monitoring mix of all 8 voices)"
 
     # ----------------------------------------------------------
     # Summary panel
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 4.98, 6.28
-    Select inner viewport: 0.55, 7.65, 5.04, 6.22
+    Select outer viewport: 0, 8, 5.28, 6.58
+    Select inner viewport: 0.55, 7.65, 5.34, 6.52
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
 
     Font size: 7
     Colour: "Black"
-    Text: 0.02, "left", 0.90, "half", "##Summary##"
+    Text: 0.02, "left", 0.94, "half", "##Summary##"
 
     Font size: 6
     Colour: "{0.30, 0.30, 0.30}"
@@ -899,15 +908,15 @@ if draw_visualization
         mapLine$ = "L = V1+V2+V3+V4    R = V5+V6+V7+V8"
     endif
 
-    Text: 0.02, "left", 0.74, "half",
+    Text: 0.02, "left", 0.72, "half",
         ... "Preset: " + presetName$
         ... + "  |  Source: " + originalName$
         ... + "  |  Duration: " + fixed$(outputDur, 2) + " s"
-    Text: 0.02, "left", 0.54, "half",
+    Text: 0.02, "left", 0.52, "half",
         ... "Semitones:  " + intList$
-    Text: 0.02, "left", 0.34, "half",
+    Text: 0.02, "left", 0.32, "half",
         ... "Delays (s): " + delList$
-    Text: 0.02, "left", 0.14, "half",
+    Text: 0.02, "left", 0.12, "half",
         ... "Format: " + formatName$
         ... + "  |  " + string$(outCount) + " object"
         ... + " x " + string$(outChannels) + " ch"
@@ -916,6 +925,11 @@ if draw_visualization
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
 
+    Select outer viewport: 0, 8, 0, 6.68
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
     Font size: 10
     Colour: "Black"
     Line width: 1
@@ -937,7 +951,7 @@ if play_result
         selectObject: out[1]
         Play
     else
-        # v0.3: playing out[1] alone would present a quarter or a half of
+        # v0.4: playing out[1] alone would present a quarter or a half of
         # the canon as the result. The monitoring mix is auditioned
         # instead, and labelled as a preview rather than a deliverable.
         appendInfoLine: ""

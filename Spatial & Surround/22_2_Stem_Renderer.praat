@@ -3,7 +3,8 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.0 (2025)
+# Version: 1.1.1 (2025)
+# v1.1 (2026): SPATIAL VISUALIZATION STANDARDIZATION ONLY - label rails, compact summary, typography; DSP unchanged.
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -113,7 +114,7 @@
 #      files are missing, binaural rendering aborts cleanly
 #      rather than producing a partial, tonally corrupted render.
 #
-# Changelog v1.0:
+# Changelog v1.1:
 #   - Established stable 24-channel 22.2-style synthetic render
 #   - Added clean headphone fold-down reference mode
 #   - Added CNMAT KEMAR experimental binaural mode
@@ -557,6 +558,10 @@ if render_headphone_output = 1
             appendInfoLine: ">>> BINAURAL RENDER ABORTED: " + string$ (missingPairs) + " missing HRIR pair(s) <<<"
             removeObject: ear_L, ear_R
             render_headphone_output = 0
+            beginPause: "Binaural Render Aborted"
+                comment: string$ (missingPairs) + " HRIR file pair(s) missing from: " + hrir_folder$
+                comment: "Check the Kemar_HRIR folder and re-run."
+            endPause: "OK", 1, 1
         else
             selectObject: ear_L, ear_R
             hpOut = Combine to stereo
@@ -584,6 +589,8 @@ if render_22_2_output = 1
     for i from 2 to 24
         plusObject: outCh[i]
     endfor
+    # "Combine to stereo" with N>2 selected mono Sounds produces an N-channel
+    # Sound object (despite the command name implying stereo).
     ch24Out = Combine to stereo
     Rename: sourceName$ + "_22_2_Array"
 
@@ -638,7 +645,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.65, "half", "##22.2 Synthetic Stem Renderer##"
+    Text: 0.5, "centre", 0.65, "half", "##22.2 Synthetic Stem Renderer v1.1.1##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
     Text: 0.5, "centre", -0.25, "half",
@@ -651,7 +658,7 @@ if draw_visualization
     # PANEL A: 3-LAYER DOME MAP  (left column, rows 1-3)
     # ----------------------------------------------------------
     Select outer viewport: 0, 4.2, 0.95, 4.60
-    Select inner viewport: 0.40, 4.00, 1.05, 4.50
+    Select inner viewport: 0.55, 4.00, 1.05, 4.34
 
     Axes: -1.8, 1.8, -1.6, 2.0
 
@@ -719,12 +726,12 @@ if draw_visualization
 
     # --- Listener at origin
     Paint circle (mm): "{0.22, 0.62, 0.30}", 0, 0, 2.2
-    Font size: 5
+    Font size: 6
     Colour: "{0.15, 0.45, 0.18}"
     Text: 0, "centre", -0.15, "half", "L"
 
     # --- Layer legend
-    Font size: 5
+    Font size: 6
     Colour: "{0.25, 0.50, 0.72}"
     Text: -1.68, "left", -0.55, "half", "Mid"
     Colour: "{0.82, 0.55, 0.22}"
@@ -754,7 +761,7 @@ if draw_visualization
     Colour: "{0.20, 0.38, 0.58}"
     Text: 0.08, "centre", 0.93, "half", "##INPUT##"
     Paint rectangle: "{0.78, 0.88, 0.96}", 0.01, 0.15, 0.74, 0.88
-    Font size: 5
+    Font size: 6
     Colour: "{0.18, 0.35, 0.55}"
     Text: 0.08, "centre", 0.81, "half", inTypeStr$
     Text: 0.08, "centre", 0.76, "half", string$(numInCh) + " ch"
@@ -778,7 +785,7 @@ if draw_visualization
     for s from 1 to 10
         sy = 0.86 - (s - 1) * 0.082
         Paint rectangle: "{0.88, 0.92, 0.98}", 0.24, 0.52, sy - 0.028, sy + 0.028
-        Font size: 4
+        Font size: 6
         Colour: "{0.25, 0.40, 0.60}"
         Text: 0.38, "centre", sy, "half", stemNames$[s]
     endfor
@@ -789,7 +796,7 @@ if draw_visualization
     Text: 0.76, "centre", 0.93, "half", "##GROUPS##"
 
     Paint rectangle: "{0.78, 0.88, 0.96}", 0.62, 0.90, 0.76, 0.88
-    Font size: 4
+    Font size: 6
     Colour: "{0.18, 0.35, 0.55}"
     Text: 0.76, "centre", 0.82, "half", "Front (1-3)"
     
@@ -800,7 +807,7 @@ if draw_visualization
     Text: 0.76, "centre", 0.60, "half", "Surr (6-10)"
     
     Paint rectangle: "{0.82, 0.78, 0.60}", 0.62, 0.90, 0.44, 0.54
-    Font size: 4
+    Font size: 6
     Colour: "{0.52, 0.35, 0.12}"
     Text: 0.76, "centre", 0.49, "half", "Upper (11-19)"
     
@@ -851,7 +858,7 @@ if draw_visualization
     # PANEL C: 24-CHANNEL GAIN/DELAY BARS (right column, lower)
     # ----------------------------------------------------------
     Select outer viewport: 4.2, 8, 3.05, 4.60
-    Select inner viewport: 4.55, 7.75, 3.12, 4.52
+    Select inner viewport: 4.55, 7.75, 3.12, 4.38
 
     # Channel gains (dB) and delays (ms) for 24 channels
     chGainDb[1]  = 0.0
@@ -956,7 +963,7 @@ if draw_visualization
             Paint rectangle: "{0.82, 0.28, 0.28}", 0, gainLin, yLo, yHi
         endif
 
-        Font size: 4
+        Font size: 6
         Colour: "{0.30, 0.30, 0.30}"
         Text: -0.01, "right", y, "half", chName$[ch]
 
@@ -970,15 +977,23 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
     Font size: 6
-    Text left: "yes", "Ch"
+    Select outer viewport: 4.02, 4.4, 3.05, 4.6
+    Select inner viewport: 4.02, 4.4, 3.07, 4.58
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Ch"
+    Select outer viewport: 4.2, 8, 3.05, 4.6
+    Select inner viewport: 4.55, 7.75, 3.12, 4.38
+    Axes: 0, 1, 0.2, 24.8
     Text bottom: "yes", "Gain (linear 0–1)          ● delay"
     Text top: "no", "Per-channel gain (bar) & delay (dot)"
 
     # ----------------------------------------------------------
     # PANEL D: OUTPUT WAVEFORM (full width)
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 4.68, 5.75
-    Select inner viewport: 0.55, 7.72, 4.75, 5.68
+    Select outer viewport: 0, 8, 4.90, 5.95
+    Select inner viewport: 0.55, 7.72, 4.98, 5.72
 
     if render_headphone_output = 1
         selectObject: hpOut
@@ -1016,7 +1031,15 @@ if draw_visualization
         else
             Text top: "no", "True Binaural output  (blue = L ear,  orange = R ear)"
         endif
-        Text left: "yes", "Amp"
+        Select outer viewport: 0.08, 0.52, 4.90, 5.95
+        Select inner viewport: 0.08, 0.52, 4.92, 5.93
+        Axes: 0, 1, 0, 1
+        Font size: 7
+        Colour: "Black"
+        Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Amp"
+        Select outer viewport: 0, 8, 4.90, 5.95
+        Select inner viewport: 0.55, 7.72, 4.98, 5.72
+        Axes: 0, outDurViz, -hpPeak * 1.15, hpPeak * 1.15
         Text bottom: "yes", "Time (s)"
 
     elsif render_22_2_output = 1
@@ -1053,21 +1076,29 @@ if draw_visualization
         Draw inner box
         Font size: 7
         Text top: "no", "FL & FR of 24-ch array  (blue = FL,  orange = FR)"
-        Text left: "yes", "Amp"
+        Select outer viewport: 0.08, 0.52, 4.90, 5.95
+        Select inner viewport: 0.08, 0.52, 4.92, 5.93
+        Axes: 0, 1, 0, 1
+        Font size: 7
+        Colour: "Black"
+        Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Amp"
+        Select outer viewport: 0, 8, 4.90, 5.95
+        Select inner viewport: 0.55, 7.72, 4.98, 5.72
+        Axes: 0, outDurViz, -ampViz, ampViz
         Text bottom: "yes", "Time (s)"
     endif
 
     # ----------------------------------------------------------
     # PANEL E: SUMMARY BAR (full width, bottom)
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 5.82, 6.58
-    Select inner viewport: 0.55, 7.72, 5.88, 6.52
+    Select outer viewport: 0, 8, 6.20, 6.98
+    Select inner viewport: 0.55, 7.72, 6.26, 6.92
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
 
     Font size: 6
     Colour: "{0.28, 0.28, 0.28}"
-    Text: 0.02, "left", 0.75, "half",
+    Text: 0.02, "left", 0.64, "half",
         ... "##" + presetName$ + "##"
         ... + "  " + inTypeStr$ + " → 24 ch  |  " + sourceName$
         ... + "  |  " + fixed$(dur, 2) + " s  @" + string$(sr) + " Hz"
@@ -1084,6 +1115,11 @@ if draw_visualization
     Draw rectangle: 0, 1, 0, 1
 
     # Reset drawing state
+    Select outer viewport: 0, 8, 0, 7.08
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
     Font size: 10
     Colour: "Black"
     Line width: 1

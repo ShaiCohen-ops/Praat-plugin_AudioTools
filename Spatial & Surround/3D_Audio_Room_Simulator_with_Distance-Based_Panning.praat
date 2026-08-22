@@ -3,7 +3,8 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.5 (2026)
+# Version: 0.6 (2026)
+# v0.6.1 (2026): SPATIAL VISUALIZATION STANDARDIZATION ONLY - label rails, compact summary, typography; DSP unchanged.
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -31,7 +32,7 @@
 #   Select a Sound object in Praat and run this script.
 #   Adjust parameters via the form dialog.
 #
-# Changelog v0.5 (2026):
+# Changelog v0.6.1 (2026):
 #   - FIX: diffuse tail was about 3.1 dB too quiet. The level was solved
 #     from an energy match against int exp(-13.8t/RT60) dt = RT60/13.8,
 #     but the envelope actually applied is exp(-6.9t/RT60) *
@@ -196,7 +197,7 @@ if numberOfChannels > 1
     sound_temp = 1
 endif
 
-# v0.5: the segment loop indexes the source from t = 0, and the room
+# v0.6: the segment loop indexes the source from t = 0, and the room
 # response is written into the output from t = 0. A Praat Sound need not
 # start at 0 - anything extracted with preserved times does not - and in
 # that case every segment boundary was displaced by xmin. Work on a copy
@@ -217,7 +218,7 @@ if src_t0 <> 0
 endif
 
 # === Single form for all parameters ===
-form 3D Audio Room Simulator v0.5
+form 3D Audio Room Simulator v0.6.1
     comment === Room Preset (length x width x height = L/R, B/F, D/U) ===
     optionmenu Preset 1
         option Custom
@@ -436,7 +437,7 @@ endif
 segment_duration = block_dur + crossfade_time
 
 # Speaker positions (stereo pair on the left-right axis, ear height).
-# v0.5: kept inside the room. At +-1 m a room narrower than 2 m on x put
+# v0.6: kept inside the room. At +-1 m a room narrower than 2 m on x put
 # the speakers outside the walls, so DBAP was computed on a geometry the
 # plot did not show.
 speaker_x = 1.0
@@ -492,7 +493,7 @@ procedure computePosition: .idx, .total
         .y = 0
         .z = 0
     elsif movement = 4
-        # Spiral, horizontal. v0.5: the angle now runs on .uOpen like the
+        # Spiral, horizontal. v0.6: the angle now runs on .uOpen like the
         # radius. With the angle on .uClosed the two ran on different
         # clocks, so radius and angle did not reach their endpoints
         # together and the curve depended on .total.
@@ -598,7 +599,7 @@ procedure buildEarlyIR: .objL, .objR, .sx, .sy, .sz
         .dDir = min_dist
     endif
 
-    # v0.5: the direct sound always sits at t = 0 inside the IR, and the
+    # v0.6: the direct sound always sits at t = 0 inside the IR, and the
     # whole response - direct, early reflections and diffuse tail alike -
     # is delayed by .delay when it is written into the output. v0.4 baked
     # d/c into the taps instead, which delayed the early field but not
@@ -653,7 +654,7 @@ endproc
 # REPORT
 # ============================================================
 
-writeInfoLine: "3D Audio Room Simulator v0.5 - STEREO"
+writeInfoLine: "3D Audio Room Simulator v0.6.1 - STEREO"
 if preset = 2
     appendInfoLine: "Preset: Small Studio"
 elsif preset = 3
@@ -803,7 +804,7 @@ if ir_model = 2
     tail_amp = 1 / (d_crit * 0.57735027 * sqrt(sound_sr * env_energy) * sqrt(2))
     tail_amp_str$ = fixed$(tail_amp, 10)
 
-    # v0.5: the tail is now part of each per-position IR rather than a
+    # v0.6: the tail is now part of each per-position IR rather than a
     # separate convolution of the whole source placed at t = 0. With
     # Propagation_delay on, that arrangement let the diffuse field start
     # rising before the direct sound had arrived - acausal for any source
@@ -1031,7 +1032,7 @@ Select outer viewport: 0, 8, 0, 0.60
 Axes: 0, 1, 0, 1
 Font size: 12
 Colour: "Black"
-Text: 0.5, "centre", 0.65, "half", "##3D Audio Room Simulator v0.5##"
+Text: 0.5, "centre", 0.65, "half", "##3D Audio Room Simulator v0.6.1##"
 Font size: 7
 Colour: "{0.35, 0.35, 0.52}"
 Text: 0.5, "centre", -0.25, "half",
@@ -1127,7 +1128,7 @@ Text: 0, "centre", -half_y - margin * 0.55, "half", "Back (-y)"
 Text: -half_x - margin * 0.50, "centre", 0, "half", "Left"
 Text: half_x + margin * 0.50, "centre", 0, "half", "Right"
 
-Font size: 5
+Font size: 6
 Colour: "{0.00, 0.20, 1.00}"
 Text: half_x + margin * 0.45, "centre", -half_y - margin * 0.30, "half", "Start"
 Colour: "{1.00, 0.20, 0.00}"
@@ -1184,7 +1185,15 @@ Draw inner box
 Font size: 6
 Marks left: 3, "yes", "yes", "no"
 Font size: 7
-Text left: "yes", "Height z (m)"
+Select outer viewport: 0.08, 0.52, 4.15, 5.15
+Select inner viewport: 0.08, 0.52, 4.17, 5.13
+Axes: 0, 1, 0, 1
+Font size: 7
+Colour: "Black"
+Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Height z (m)"
+Select outer viewport: 0, 8, 4.15, 5.15
+Select inner viewport: 0.55, 7.65, 4.25, 4.98
+Axes: 1, num_positions, -half_z - half_z * 0.15, half_z + half_z * 0.15
 Text bottom: "yes", "Position index"
 Text top: "no", "Elevation  —  ceiling/floor at ±" + fixed$(half_z, 2)
     ... + "m  (not encoded in the stereo audio)"
@@ -1192,8 +1201,8 @@ Text top: "no", "Elevation  —  ceiling/floor at ±" + fixed$(half_z, 2)
 # ----------------------------------------------------------
 # Output waveform (L blue, R orange)
 # ----------------------------------------------------------
-Select outer viewport: 0, 8, 5.20, 6.30
-Select inner viewport: 0.55, 7.65, 5.27, 6.23
+Select outer viewport: 0, 8, 5.35, 6.45
+Select inner viewport: 0.55, 7.65, 5.42, 6.38
 
 selectObject: output_stereo
 outPeak = Get absolute extremum: 0, 0, "None"
@@ -1225,15 +1234,23 @@ removeObject: vizL, vizR
 Colour: "Black"
 Draw inner box
 Font size: 7
-Text left: "yes", "Output"
+Select outer viewport: 0.08, 0.52, 5.35, 6.45
+Select inner viewport: 0.08, 0.52, 5.37, 6.43
+Axes: 0, 1, 0, 1
+Font size: 7
+Colour: "Black"
+Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Output"
+Select outer viewport: 0, 8, 5.35, 6.45
+Select inner viewport: 0.55, 7.65, 5.42, 6.38
+Axes: 0, outDur, -ampMax, ampMax
 Text top: "no", "Stereo output  (blue=L  orange=R)"
 Text bottom: "yes", "Time (s)"
 
 # ----------------------------------------------------------
 # Summary panel
 # ----------------------------------------------------------
-Select outer viewport: 0, 8, 6.45, 7.30
-Select inner viewport: 0.55, 7.65, 6.50, 7.23
+Select outer viewport: 0, 8, 6.65, 7.50
+Select inner viewport: 0.55, 7.65, 6.70, 7.43
 Axes: 0, 1, 0, 1
 Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
 Font size: 7
@@ -1241,7 +1258,7 @@ Colour: "Black"
 Text: 0.02, "left", 0.84, "half", "##Summary##"
 Font size: 6
 Colour: "{0.30, 0.30, 0.30}"
-Text: 0.02, "left", 0.60, "half",
+Text: 0.02, "left", 0.6, "half",
     ... "Room: " + fixed$(room_length, 1) + "×" + fixed$(room_width, 1)
     ... + "×" + fixed$(room_height, 1) + "m"
     ... + "  |  Vol: " + fixed$(volume, 0) + " m³"
@@ -1249,13 +1266,13 @@ Text: 0.02, "left", 0.60, "half",
     ... + "  |  |R|: " + fixed$(refl, 2)
     ... + "  |  RT60: " + fixed$(rt60, 2) + "s"
     ... + "  |  d_crit: " + fixed$(d_crit, 2) + "m"
-Text: 0.02, "left", 0.36, "half",
+Text: 0.02, "left", 0.37, "half",
     ... "Movement: " + movement$
     ... + "  |  Radius: " + fixed$(movement_radius, 2) + "m"
     ... + "  |  Positions: " + string$(num_positions)
     ... + "  |  Hop: " + fixed$(block_dur, 3) + "s"
     ... + "  |  Crossfade: " + fixed$(crossfade_time, 2) + "s"
-Text: 0.02, "left", 0.12, "half",
+Text: 0.02, "left", 0.13, "half",
     ... "Panning: " + dbapStr$
     ... + "  |  IR model: " + irStr$
     ... + "  |  IR padding: " + fixed$(ir_padding, 2) + "s"
@@ -1263,6 +1280,11 @@ Text: 0.02, "left", 0.12, "half",
 Colour: "Black"
 Draw rectangle: 0, 1, 0, 1
 
+Select outer viewport: 0, 8, 0, 7.60
+Font size: 10
+Colour: "Black"
+Line width: 1
+Solid line
 Font size: 10
 Colour: "Black"
 Line width: 1

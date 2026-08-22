@@ -3,7 +3,8 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.8 (2026)
+# Version: 0.9 (2026)
+# v0.9 (2026): SPATIAL VISUALIZATION STANDARDIZATION ONLY - label rails, compact summary, typography; DSP unchanged.
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -19,7 +20,7 @@
 #   is constant for its whole length - there are no frames, no windows
 #   and no time variation. Chunked STFT processing remains future work.
 #
-# Changelog v0.8 (2026):
+# Changelog v0.9 (2026):
 #   - RENAME: the description said "8-voice frequency shift canons".
 #     There are no staggered entries, no delays and no temporal
 #     imitation between the voices - they are eight parallel variations
@@ -143,7 +144,7 @@ form 8-Channel Spectral Shift
 endform
 
 # === Apply Presets ===
-# v0.8: preset values are Hertz. A preset therefore forces Hz units;
+# v0.9: preset values are Hertz. A preset therefore forces Hz units;
 # bins remain available for Custom only, where the user has chosen them
 # deliberately.
 presetForcedHz = 0
@@ -309,7 +310,7 @@ for ch from 1 to 8
         binOffset[ch] = round(requested[ch])
     endif
 
-    # v0.8: an offset at or beyond the bin count empties the matrix and
+    # v0.9: an offset at or beyond the bin count empties the matrix and
     # the channel comes out silent with nothing said.
     if binOffset[ch] > nBins - 1
         binOffset[ch] = nBins - 1
@@ -352,7 +353,7 @@ for ch from 1 to 8
             ... + sIntStr$ + "] else 0 fi"
     endif
 
-    # v0.8: a valid spectrum of a real signal has a zero imaginary part
+    # v0.9: a valid spectrum of a real signal has a zero imaginary part
     # at DC and at Nyquist. Translating every column alike can move an
     # interior complex bin into either slot with its imaginary part
     # intact, which is not a legal representation of a real signal.
@@ -379,7 +380,7 @@ for ch from 1 to 8
     Extract part: 0, originalDur, "rectangular", 1, "no"
     shifted[ch] = selected("Sound")
 
-    # v0.8: no per-channel Scale peak. Measure instead, so the energy
+    # v0.9: no per-channel Scale peak. Measure instead, so the energy
     # lost past Nyquist or below DC stays visible and audible.
     selectObject: shifted[ch]
     chEnergy[ch] = Get energy: 0, 0
@@ -697,7 +698,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##8-CHANNEL SPECTRAL SHIFT##"
+    Text: 0.5, "centre", 0.68, "half", "##8-CHANNEL SPECTRAL SHIFT v0.9##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
     Text: 0.5, "centre", -0.22, "half",
@@ -711,7 +712,7 @@ if draw_visualization
     # PANEL A: BIN OFFSET BAR CHART  (left column)
     # ----------------------------------------------------------
     Select outer viewport: 0, 4.2, 0.75, 4.60
-    Select inner viewport: 0.38, 4.00, 0.85, 4.50
+    Select inner viewport: 0.55, 4.00, 0.85, 4.34
 
     minShift = binOffset[1]
     maxShift = binOffset[1]
@@ -767,7 +768,7 @@ if draw_visualization
             Text: ch, "centre", s / 2, "half", string$(s)
         endif
 
-        Font size: 5
+        Font size: 6
         Colour: "{0.30, 0.30, 0.30}"
         Text: ch, "centre", plotMin + (plotMax - plotMin) * 0.05, "half",
             ... "Ch" + string$(ch)
@@ -777,14 +778,22 @@ if draw_visualization
     Draw inner box
     Font size: 6
     Marks left: 5, "yes", "yes", "no"
-    Text left: "yes", "Bin offset"
+    Select outer viewport: 0.08, 0.52, 0.75, 4.6
+    Select inner viewport: 0.08, 0.52, 0.77, 4.58
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Bin offset"
+    Select outer viewport: 0, 4.2, 0.75, 4.6
+    Select inner viewport: 0.55, 4, 0.85, 4.34
+    Axes: 0.5, 8.5, plotMin, plotMax
     Text bottom: "yes", "Channel  (blue = up,  orange = down)"
 
     # ----------------------------------------------------------
     # PANEL B: ACHIEVED FREQUENCY SHIFT (Hz)  (right col, upper)
     # ----------------------------------------------------------
-    Select outer viewport: 4.2, 8, 0.75, 3.00
-    Select inner viewport: 4.52, 7.75, 0.85, 2.92
+    Select outer viewport: 4.2, 8, 0.75, 2.70
+    Select inner viewport: 4.52, 7.75, 0.85, 2.48
 
     hzAbs = maxAbsHz * 1.15
     if hzAbs < 5
@@ -815,7 +824,7 @@ if draw_visualization
             Paint rectangle: colStr$, hz, 0, yLo, yHi
         endif
 
-        Font size: 5
+        Font size: 6
         Colour: "{0.30, 0.30, 0.30}"
         Text: hzMin + (hzMax - hzMin) * 0.02, "left", y, "half", "Ch" + string$(ch)
         Colour: "White"
@@ -826,18 +835,26 @@ if draw_visualization
 
     Colour: "Black"
     Draw inner box
-    Font size: 5
-    Text left: "yes", "Ch"
+    Font size: 6
+    Select outer viewport: 4.02, 4.4, 0.75, 2.70
+    Select inner viewport: 4.02, 4.4, 0.77, 2.68
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Ch"
+    Select outer viewport: 4.2, 8, 0.75, 2.70
+    Select inner viewport: 4.52, 7.75, 0.85, 2.48
+    Axes: hzMin, hzMax, 0.5, 8.5
     Text bottom: "yes", "Achieved shift (Hz)  — quantised to whole bins"
 
     # ----------------------------------------------------------
     # PANEL C: SPECTRAL ENERGY RETAINED  (right col, lower)
     # ----------------------------------------------------------
-    # v0.8: replaces the decorative scatter. This is the panel that
+    # v0.9: replaces the decorative scatter. This is the panel that
     # explains why an extreme shift sounds thin - and it only means
     # anything now that per-channel Scale peak is gone.
-    Select outer viewport: 4.2, 8, 3.05, 4.60
-    Select inner viewport: 4.52, 7.75, 3.12, 4.52
+    Select outer viewport: 4.2, 8, 3.00, 4.60
+    Select inner viewport: 4.52, 7.75, 3.10, 4.38
 
     Axes: 0, 105, 0.5, 8.5
     Paint rectangle: "{0.96, 0.96, 0.96}", 0, 105, 0.5, 8.5
@@ -855,19 +872,27 @@ if draw_visualization
         Paint rectangle: colStr$, 0, retained[ch], y - 0.38, y + 0.38
         Colour: "{0.30, 0.30, 0.30}"
         Draw rectangle: 0, retained[ch], y - 0.38, y + 0.38
-        Font size: 5
+        Font size: 6
         Colour: "{0.30, 0.30, 0.30}"
         Text: -2, "right", y, "half", "Ch" + string$(ch)
         Colour: "White"
         if retained[ch] > 14
-            Text: retained[ch] / 2, "centre", y, "half", fixed$(retained[ch], 0) + "%"
+            Text: retained[ch] / 2, "centre", y, "half", fixed$(retained[ch], 0) + "\%  "
         endif
     endfor
 
     Colour: "Black"
     Draw inner box
-    Font size: 5
-    Text left: "yes", "Ch"
+    Font size: 6
+    Select outer viewport: 4.02, 4.4, 3.00, 4.60
+    Select inner viewport: 4.02, 4.4, 3.02, 4.58
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Ch"
+    Select outer viewport: 4.2, 8, 3.00, 4.60
+    Select inner viewport: 4.52, 7.75, 3.10, 4.38
+    Axes: 0, 105, 0.5, 8.5
     Text bottom: "yes", "Energy kept after truncation at DC / Nyquist (%)"
 
     # ----------------------------------------------------------
@@ -887,8 +912,8 @@ if draw_visualization
     # ----------------------------------------------------------
     # v0.7 called this "Output 8-ch mix" but drew channels 1 and 2 of
     # the eight-channel object. They are two of the variations.
-    Select outer viewport: 0, 8, 4.68, 5.75
-    Select inner viewport: 0.55, 7.72, 4.75, 5.68
+    Select outer viewport: 0, 8, 4.90, 5.95
+    Select inner viewport: 0.55, 7.72, 4.98, 5.72
 
     selectObject: shifted[1]
     outDurViz = Get total duration
@@ -924,20 +949,28 @@ if draw_visualization
     Text top: "no", "Channel examples  (blue = Ch1 " + fixed$(actualHz[1], 0)
         ... + " Hz,  orange = Ch8 " + fixed$(actualHz[8], 0)
         ... + " Hz)  — shared gain, so levels are comparable"
-    Text left: "yes", "Amp"
+    Select outer viewport: 0.08, 0.52, 4.90, 5.95
+    Select inner viewport: 0.08, 0.52, 4.92, 5.93
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Amp"
+    Select outer viewport: 0, 8, 4.90, 5.95
+    Select inner viewport: 0.55, 7.72, 4.98, 5.72
+    Axes: 0, outDurViz, -ampViz, ampViz
     Text bottom: "yes", "Time (s)"
 
     # ----------------------------------------------------------
     # PANEL E: SUMMARY BAR (full width, bottom)
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 5.82, 6.85
-    Select inner viewport: 0.55, 7.72, 5.88, 6.79
+    Select outer viewport: 0, 8, 6.20, 7.08
+    Select inner viewport: 0.55, 7.72, 6.26, 7.02
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
 
     Font size: 6
     Colour: "{0.28, 0.28, 0.28}"
-    Text: 0.02, "left", 0.80, "half",
+    Text: 0.02, "left", 0.72, "half",
         ... "##" + presetName$ + "##"
         ... + "  " + originalName$
         ... + "  |  " + fixed$(originalDur, 2) + " s"
@@ -945,7 +978,7 @@ if draw_visualization
         ... + "  |  " + string$(nBins) + " bins x " + fixed$(binHz, 3) + " Hz"
         ... + "  |  input in " + unitName$
 
-    Text: 0.02, "left", 0.50, "half",
+    Text: 0.02, "left", 0.45, "half",
         ... "Achieved Hz:  "
         ... + fixed$(actualHz[1], 0) + "  " + fixed$(actualHz[2], 0)
         ... + "  " + fixed$(actualHz[3], 0) + "  " + fixed$(actualHz[4], 0)
@@ -953,7 +986,7 @@ if draw_visualization
         ... + "  " + fixed$(actualHz[7], 0) + "  " + fixed$(actualHz[8], 0)
         ... + "   [Ch1-Ch8]"
 
-    Text: 0.02, "left", 0.20, "half",
+    Text: 0.02, "left", 0.18, "half",
         ... "Format: " + formatName$
         ... + "  |  " + string$(outCount) + objWord$
         ... + " x " + string$(outChannels) + " ch"
@@ -962,6 +995,11 @@ if draw_visualization
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
 
+    Select outer viewport: 0, 8, 0, 7.18
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
     Font size: 10
     Colour: "Black"
     Line width: 1

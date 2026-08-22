@@ -3,7 +3,8 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4 (2025)
+# Version: 0.5 (2025)
+# v0.5 (2026): SPATIAL VISUALIZATION STANDARDIZATION ONLY - label rails, compact summary, typography; DSP unchanged.
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -19,7 +20,7 @@
 #   Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
-# Changelog v0.4:
+# Changelog v0.5:
 #   - Fix (visualization): the duration-tier panel was empty by
 #     default. v0.3 cleaned up the tiers BEFORE drawing, and the
 #     drawing loop was guarded by `if keep_duration_tiers` — so
@@ -72,7 +73,7 @@ tmin = Get start time
 tmax = Get end time
 totalDur = tmax - tmin
 
-form Random DurationTier Multichannel Generator v0.4
+form Random DurationTier Multichannel Generator v0.5
     comment ==== Presets ====
     optionmenu Preset: 1
         option Custom
@@ -174,7 +175,7 @@ endif
 nTiers = number_of_channels
 nPts = control_points
 
-writeInfoLine: "=== Random DurationTier Multichannel Generator v0.4 ==="
+writeInfoLine: "=== Random DurationTier Multichannel Generator v0.5 ==="
 appendInfoLine: "Processing: ", origName$
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Duration: ", fixed$(totalDur, 3), " s"
@@ -417,7 +418,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##RANDOM DURATION-TIER MULTICHANNEL GENERATOR##"
+    Text: 0.5, "centre", 0.68, "half", "##RANDOM DURATION-TIER MULTICHANNEL GENERATOR v0.5##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
     Text: 0.5, "centre", -0.22, "half",
@@ -458,7 +459,7 @@ if draw_visualization
     Draw line: tmin, 1.0, tmax, 1.0
     Solid line
     Line width: 1
-    Font size: 5
+    Font size: 6
     Colour: "{0.45, 0.45, 0.45}"
     Text: tmax * 0.99, "right", 1.0, "bottom", "1.0 (no stretch)"
     
@@ -468,7 +469,7 @@ if draw_visualization
     Draw line: tmin, min_factor, tmax, min_factor
     Draw line: tmin, max_factor, tmax, max_factor
     Solid line
-    Font size: 5
+    Font size: 6
     Colour: "{0.55, 0.30, 0.55}"
     Text: tmin * 0.01 + tmax * 0.99, "right", min_factor, "bottom", "min " + fixed$(min_factor, 2)
     Text: tmin * 0.01 + tmax * 0.99, "right", max_factor, "top", "max " + fixed$(max_factor, 2)
@@ -514,7 +515,15 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
     Font size: 6
-    Text left: "yes", "Time-stretch factor"
+    Select outer viewport: 0.08, 0.52, 0.75, 4.6
+    Select inner viewport: 0.08, 0.52, 0.77, 4.58
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Time-stretch factor"
+    Select outer viewport: 0, 4.2, 0.75, 4.6
+    Select inner viewport: 0.55, 4, 0.95, 4.45
+    Axes: tmin, tmax, yMin, yMax
     Text bottom: "yes", "Time (s)"
     
     # ----------------------------------------------------------
@@ -523,7 +532,7 @@ if draw_visualization
     # If Clamp is active, you'll see piles at min_factor and max_factor.
     # If Reflect/Reject is active, distribution is more even.
     # ----------------------------------------------------------
-    Select outer viewport: 4.2, 8, 0.75, 3.00
+    Select outer viewport: 4.2, 8, 0.75, 2.70
     Select inner viewport: 4.55, 7.75, 0.95, 2.85
     
     nBins = 24
@@ -580,14 +589,22 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
     Font size: 6
-    Text left: "yes", "Count"
+    Select outer viewport: 4.02, 4.4, 0.75, 2.70
+    Select inner viewport: 4.02, 4.4, 0.77, 2.68
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Count"
+    Select outer viewport: 4.2, 8, 0.75, 2.70
+    Select inner viewport: 4.55, 7.75, 0.95, 2.85
+    Axes: min_factor, max_factor, 0, binMax * 1.1
     Text bottom: "yes", "Stretch factor"
     
     # ----------------------------------------------------------
     # PANEL C: PER-CHANNEL RESULTING DURATIONS  (right, lower)
     # Shows the actual stretched duration of each output channel.
     # ----------------------------------------------------------
-    Select outer viewport: 4.2, 8, 3.05, 4.60
+    Select outer viewport: 4.2, 8, 3.00, 4.60
     Select inner viewport: 4.55, 7.75, 3.18, 4.50
     
     # Find duration extremes
@@ -618,7 +635,7 @@ if draw_visualization
     Draw line: 0.5, totalDur, nTiers + 0.5, totalDur
     Solid line
     Line width: 1
-    Font size: 5
+    Font size: 6
     Colour: "{0.45, 0.45, 0.45}"
     Text: nTiers + 0.45, "right", totalDur, "bottom", "orig " + fixed$(totalDur, 2) + "s"
     
@@ -647,7 +664,7 @@ if draw_visualization
         Paint rectangle: rgb$, k - 0.38, k + 0.38, 0, resDur#[k]
         
         # Channel index label
-        Font size: 5
+        Font size: 6
         Colour: "{0.30, 0.30, 0.30}"
         if nTiers <= 12
             Text: k, "centre", -yHi * 0.04, "half", string$(k)
@@ -659,7 +676,15 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
     Font size: 6
-    Text left: "yes", "Duration (s)"
+    Select outer viewport: 4.02, 4.4, 3.00, 4.60
+    Select inner viewport: 4.02, 4.4, 3.02, 4.58
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Duration (s)"
+    Select outer viewport: 4.2, 8, 3.00, 4.60
+    Select inner viewport: 4.55, 7.75, 3.18, 4.5
+    Axes: 0.5, nTiers + 0.5, yLo, yHi
     Text bottom: "yes", "Channel"
     
     # ----------------------------------------------------------
@@ -677,8 +702,8 @@ if draw_visualization
     # ----------------------------------------------------------
     # PANEL D: OUTPUT WAVEFORM  (full width)
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 4.68, 5.75
-    Select inner viewport: 0.55, 7.72, 4.75, 5.68
+    Select outer viewport: 0, 8, 4.90, 5.95
+    Select inner viewport: 0.55, 7.72, 4.98, 5.72
     
     selectObject: multiChannelSound
     outPeak = Get absolute extremum: 0, 0, "None"
@@ -725,20 +750,28 @@ if draw_visualization
     else
         Text top: "no", "Output (mono)"
     endif
-    Text left: "yes", "Amp"
+    Select outer viewport: 0.08, 0.52, 4.90, 5.95
+    Select inner viewport: 0.08, 0.52, 4.92, 5.93
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Amp"
+    Select outer viewport: 0, 8, 4.90, 5.95
+    Select inner viewport: 0.55, 7.72, 4.98, 5.72
+    Axes: 0, finalDur, -ampViz, ampViz
     Text bottom: "yes", "Time (s)"
     
     # ----------------------------------------------------------
     # PANEL E: SUMMARY BAR
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 5.82, 6.58
-    Select inner viewport: 0.55, 7.72, 5.88, 6.52
+    Select outer viewport: 0, 8, 6.20, 6.98
+    Select inner viewport: 0.55, 7.72, 6.26, 6.92
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
     
     Font size: 6
     Colour: "{0.28, 0.28, 0.28}"
-    Text: 0.02, "left", 0.75, "half",
+    Text: 0.02, "left", 0.64, "half",
         ... "##" + presetName$ + "##"
         ... + "  " + origName$
         ... + "  |  " + string$(nTiers) + " channels"
@@ -757,6 +790,11 @@ if draw_visualization
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
     
+    Select outer viewport: 0, 8, 0, 7.08
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
     Font size: 10
     Colour: "Black"
     Line width: 1

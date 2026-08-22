@@ -3,7 +3,9 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2025) - Visualization layout fix
+# Version: 0.4.1 (2026) - Visualization frame alignment fix
+# v0.4.1 (2026): VISUALIZATION ONLY - restore panel drawing frame after L/C/R labels; DSP unchanged.
+# v0.4 (2026): SPATIAL VISUALIZATION STANDARDIZATION ONLY - label rails, compact summary, typography; DSP unchanged.
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -128,7 +130,7 @@ endif
 # ============================================================
 
 writeInfoLine: "============================================"
-writeInfoLine: "Panning Variations v0.2"
+writeInfoLine: "Panning Variations v0.4.1"
 writeInfoLine: "============================================"
 appendInfoLine: "Input: ", originalName$
 appendInfoLine: "Duration: ", fixed$(duration, 3), " s"
@@ -367,7 +369,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "Panning Variations: " + originalName$ + " (" + patternName$ + ")"
+    Text: 0.5, "centre", 0.5, "half", "Panning Variations: " + originalName$ + " (" + patternName$ + ")" + " | v0.4.1"
 
     # === Panning Curve ===
     Select outer viewport: 0, 8, 0.6, 2.1
@@ -385,6 +387,11 @@ if draw_visualization
     Text: -duration * 0.02, "right", 0, "half", "L"
     Text: -duration * 0.02, "right", 0.5, "half", "C"
     Text: -duration * 0.02, "right", 1, "half", "R"
+
+    # Restore the data drawing frame after text labels.
+    Select outer viewport: 0, 8, 0.6, 2.1
+    Select inner viewport: 0.6, 7.7, 0.7, 1.95
+    Axes: 0, duration, -0.1, 1.1
     Colour: "{0.3, 0.5, 0.7}"
     Line width: 2
     for i from 1 to curve_resolution
@@ -399,7 +406,15 @@ if draw_visualization
     Draw inner box
     Font size: 7
     Text bottom: "yes", "Time (s)"
-    Text left: "yes", "Pan Position"
+    Select outer viewport: 0.08, 0.52, 0.6, 2.1
+    Select inner viewport: 0.08, 0.52, 0.62, 2.08
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Pan Position"
+    Select outer viewport: 0, 8, 0.6, 2.1
+    Select inner viewport: 0.6, 7.7, 0.7, 1.95
+    Axes: 0, duration, -0.1, 1.1
 
     # === L/R Gain Curves ===
     Select outer viewport: 0, 8, 2.1, 3.6
@@ -446,7 +461,15 @@ if draw_visualization
     Draw inner box
     Font size: 7
     Text bottom: "yes", "Time (s)"
-    Text left: "yes", "Gain"
+    Select outer viewport: 0.08, 0.52, 2.1, 3.6
+    Select inner viewport: 0.08, 0.52, 2.12, 3.58
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Gain"
+    Select outer viewport: 0, 8, 2.1, 3.6
+    Select inner viewport: 0.6, 7.7, 2.25, 3.45
+    Axes: 0, duration, -0.1, 1.25
     Font size: 7
     Colour: "{0.3, 0.5, 0.8}"
     Text: duration * 0.80, "left", 1.13, "half", "Left"
@@ -463,15 +486,32 @@ if draw_visualization
     Draw inner box
     Font size: 7
     Text bottom: "yes", "Time (s)"
-    Text left: "yes", "Output"
-
-    # === Info ===
-    Select outer viewport: 0, 8, 5.05, 5.45
+    Select outer viewport: 0.08, 0.52, 3.65, 5
+    Select inner viewport: 0.08, 0.52, 3.67, 4.98
     Axes: 0, 1, 0, 1
     Font size: 7
-    Colour: "{0.4, 0.4, 0.4}"
-    Text: 0.5, "centre", 0.5, "half", patternName$ + " | Speed: " + fixed$(motionFreq, 2) + " Hz | Range: " + fixed$(min_pan, 2) + "-" + fixed$(max_pan, 2) + " | Power: " + if use_constant_power then "ON" else "OFF" fi
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Output"
+    Select outer viewport: 0, 8, 3.65, 5
+    Select inner viewport: 0.6, 7.7, 3.75, 4.85
 
+    # === SUMMARY ===
+    Select outer viewport: 0, 8, 5.10, 5.90
+    Select inner viewport: 0.60, 7.70, 5.17, 5.83
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text: 0.02, "left", 0.76, "half", "##Summary##"
+    Font size: 6
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.02, "left", 0.46, "half", patternName$ + " | Speed " + fixed$(motionFreq, 2) + " Hz | Range " + fixed$(min_pan, 2) + "-" + fixed$(max_pan, 2)
+    Text: 0.02, "left", 0.18, "half", "Cycles " + fixed$(number_of_cycles, 2) + " | Constant power " + if use_constant_power then "ON" else "OFF" fi + " | Duration " + fixed$(duration, 2) + " s"
+    Select inner viewport: 0.60, 7.70, 5.17, 5.83
+    Axes: 0, 1, 0, 1
+    Colour: "Black"
+    Draw inner box
+    Select outer viewport: 0, 8, 0, 6.00
     Font size: 10
     Colour: "Black"
 endif

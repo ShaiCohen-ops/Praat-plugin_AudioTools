@@ -3,7 +3,8 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4 (2026) - ambiX submission hardening
+# Version: 0.5.1 (2026) - ambiX submission hardening
+# v0.5 (2026): SPATIAL VISUALIZATION STANDARDIZATION ONLY - label rails, compact summary, typography; DSP unchanged.
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -20,7 +21,7 @@
 #   Cohen, S. (2025). Praat AudioTools: An Offline Analysis–Resynthesis Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
-# Changelog v0.4:
+# Changelog v0.5:
 #   Submission-mode hardening (so an invalid file truly cannot be produced):
 #   - Submission mode now also forces Peak_protect_only (a close source can
 #     no longer clip on save).
@@ -306,7 +307,7 @@ traditional$[16] = "P"
 # ============================================================
 
 writeInfoLine: "============================================"
-writeInfoLine: "Higher-Order Ambisonic Encoder v0.4"
+writeInfoLine: "Higher-Order Ambisonic Encoder v0.5.1"
 writeInfoLine: "============================================"
 appendInfoLine: "Input: ", originalName$
 if wasStereo
@@ -580,7 +581,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.65, "half", "##Ambisonic Encoder##"
+    Text: 0.5, "centre", 0.65, "half", "##Ambisonic Encoder v0.5.1##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
     Text: 0.5, "centre", -0.25, "half",
@@ -646,7 +647,7 @@ if draw_visualization
         Draw circle (mm): srcX, srcY, markerSize
     endif
 
-    Font size: 5
+    Font size: 6
     Colour: "{0.60, 0.22, 0.22}"
     if srcY >= 0
         Text: srcX, "centre", srcY + 0.16, "half", "Src"
@@ -743,7 +744,7 @@ if draw_visualization
             barCol$ = "{0.78, 0.48, 0.35}"
         endif
         Paint rectangle: barCol$, ch - 0.30, ch + 0.30, 0, c
-        Font size: 5
+        Font size: 6
         Colour: "{0.35, 0.35, 0.35}"
         Text: ch, "centre", -cTop * 0.92, "half", channelLabel$[ch]
     endfor
@@ -751,7 +752,15 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "Coeff"
+    Select outer viewport: 4.02, 4.4, 2.3, 3.52
+    Select inner viewport: 4.02, 4.4, 2.32, 3.5
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Coeff"
+    Select outer viewport: 4.2, 8, 2.3, 3.52
+    Select inner viewport: 4.5, 7.65, 2.4, 3.4
+    Axes: 0.3, numChannels + 0.7, -cTop, cTop
     Text top: "no", "Encoding coefficients (ACN/SN3D)"
 
     # ----------------------------------------------------------
@@ -763,7 +772,7 @@ if draw_visualization
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
     Font size: 7
     Colour: "Black"
-    Text: 0.02, "left", 0.82, "half", "##Summary##"
+    Text: 0.02, "left", 0.84, "half", "##Summary##"
     Font size: 6
     Colour: "{0.30, 0.30, 0.30}"
 
@@ -776,7 +785,7 @@ if draw_visualization
         coeffList$ = coeffList$ + channelLabel$[ch] + "=" + fixed$(coeff[ch], 3)
     endfor
 
-    Text: 0.02, "left", 0.55, "half",
+    Text: 0.02, "left", 0.52, "half",
         ... "Order: " + orderName$ + "  (" + string$(numChannels) + " ch)"
         ... + "  |  Az: " + fixed$(azimuth, 1) + "°"
         ... + "  |  El: " + fixed$(elevation, 1) + "°"
@@ -787,6 +796,11 @@ if draw_visualization
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
 
+    Select outer viewport: 0, 8, 0, 4.52
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
     Font size: 10
     Colour: "Black"
     Line width: 1

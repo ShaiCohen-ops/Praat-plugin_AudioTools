@@ -3,7 +3,8 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4 (2026) - SN3D-correct decode normalization
+# Version: 0.5.1 (2026) - SN3D-correct decode normalization
+# v0.5 (2026): SPATIAL VISUALIZATION STANDARDIZATION ONLY - label rails, compact summary, typography; DSP unchanged.
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -20,7 +21,7 @@
 #   Cohen, S. (2025). Praat AudioTools: An Offline Analysis–Resynthesis Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
-# Changelog v0.4:
+# Changelog v0.5:
 #   SN3D-aware decode normalization (the panning was too broad; HOA
 #   directivity had collapsed toward first order).
 #   - Each ambisonic order n is now scaled by (2n+1) in the decode matrix.
@@ -329,7 +330,7 @@ endif
 # ============================================================
 
 writeInfoLine: "============================================"
-writeInfoLine: "Higher-Order Ambisonic Decoder v0.4"
+writeInfoLine: "Higher-Order Ambisonic Decoder v0.5"
 writeInfoLine: "============================================"
 appendInfoLine: "Ambisonic order: ", orderName$, " (", expectedChannels, " channels)"
 appendInfoLine: "Speaker layout: ", presetName$, " (", numSpeakers, " output channels, ", numDirectionalSpeakers, " directional)"
@@ -592,7 +593,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.65, "half", "##Ambisonic Decoder##"
+    Text: 0.5, "centre", 0.65, "half", "##Ambisonic Decoder v0.5.1##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
     Text: 0.5, "centre", -0.25, "half",
@@ -628,7 +629,7 @@ if draw_visualization
 
     # Listener
     Paint circle (mm): "{0.35, 0.35, 0.35}", 0, 0, 2.2
-    Font size: 5
+    Font size: 6
     Colour: "{0.30, 0.30, 0.30}"
     Text: 0, "centre", -0.16, "half", "Listener"
 
@@ -676,8 +677,8 @@ if draw_visualization
     # ----------------------------------------------------------
     # Per-speaker decoder row-norm bar chart (right, upper)
     # ----------------------------------------------------------
-    Select outer viewport: 4.5, 8, 0.52, 2.22
-    Select inner viewport: 4.80, 7.65, 0.62, 2.10
+    Select outer viewport: 4.5, 8, 0.52, 2.05
+    Select inner viewport: 4.80, 7.65, 0.62, 1.83
 
     # Decoder ROW NORM per speaker = sqrt(sum of that speaker's coefficients^2).
     # Unlike the W coefficient (identical for every speaker), this varies and
@@ -713,7 +714,7 @@ if draw_visualization
         sB = min(1, max(0, sB))
         Paint rectangle: "{" + fixed$(sR, 2) + ", " + fixed$(sG, 2) + ", " + fixed$(sB, 2) + "}",
             ... spk - 0.32, spk + 0.32, 0, wVal
-        Font size: 5
+        Font size: 6
         Colour: "{0.30, 0.30, 0.30}"
         Text: spk, "centre", wVal + wTop * 0.04, "half", fixed$(wVal, 3)
         Font size: 6
@@ -723,15 +724,23 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "Row norm"
+    Select outer viewport: 4.02, 4.4, 0.52, 2.05
+    Select inner viewport: 4.02, 4.4, 0.54, 2.03
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Row norm"
+    Select outer viewport: 4.5, 8, 0.52, 2.05
+    Select inner viewport: 4.8, 7.65, 0.62, 1.83
+    Axes: 0.3, numSpeakers + 0.7, 0, wTop
     Text bottom: "yes", "Speaker"
     Text top: "no", "Decoder row norm per speaker"
 
     # ----------------------------------------------------------
     # Output waveform — mono downmix (right, lower)
     # ----------------------------------------------------------
-    Select outer viewport: 4.5, 8, 2.30, 3.82
-    Select inner viewport: 4.80, 7.65, 2.38, 3.72
+    Select outer viewport: 4.5, 8, 2.40, 3.82
+    Select inner viewport: 4.80, 7.65, 2.50, 3.60
 
     selectObject: result
     vizDown = Convert to mono
@@ -741,20 +750,27 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "Mix"
+    Select outer viewport: 4.02, 4.4, 2.40, 3.82
+    Select inner viewport: 4.02, 4.4, 2.42, 3.80
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Mix"
+    Select outer viewport: 4.5, 8, 2.40, 3.82
+    Select inner viewport: 4.8, 7.65, 2.50, 3.60
     Text bottom: "yes", "Time (s)"
     Text top: "no", "Mono downmix"
 
     # ----------------------------------------------------------
     # Summary panel
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 3.92, 4.82
-    Select inner viewport: 0.45, 7.65, 3.98, 4.76
+    Select outer viewport: 0, 8, 4.12, 4.98
+    Select inner viewport: 0.45, 7.65, 4.18, 4.92
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
     Font size: 7
     Colour: "Black"
-    Text: 0.02, "left", 0.82, "half", "##Summary##"
+    Text: 0.02, "left", 0.84, "half", "##Summary##"
     Font size: 6
     Colour: "{0.30, 0.30, 0.30}"
 
@@ -772,7 +788,7 @@ if draw_visualization
         endif
     endfor
 
-    Text: 0.02, "left", 0.58, "half",
+    Text: 0.02, "left", 0.52, "half",
         ... "Order: " + orderName$
         ... + "  |  Method: " + methodName$
         ... + "  |  Layout: " + presetName$
@@ -783,6 +799,11 @@ if draw_visualization
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
 
+    Select outer viewport: 0, 8, 0, 5.08
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
     Font size: 10
     Colour: "Black"
     Line width: 1

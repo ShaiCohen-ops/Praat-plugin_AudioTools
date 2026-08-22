@@ -3,7 +3,8 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.1 (2026)
+# Version: 1.2 (2026)
+# v1.2.1 (2026): SPATIAL VISUALIZATION STANDARDIZATION ONLY - label rails, compact summary, typography; DSP unchanged.
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -18,7 +19,7 @@
 #   PSOLA preserves pitch on suitably periodic or monophonic material.
 #   Polyphonic, noisy or transient-heavy sources will show artefacts.
 #
-# Changelog v1.1 (2026):
+# Changelog v1.2.1 (2026):
 #   - FIX: the padding formula was inverted. duration_factor is a
 #     DURATION factor inside the DurationTier, so a slice becomes
 #     L * r long, but the script reserved L_max / r. The two are only
@@ -99,7 +100,7 @@ if numberOfSelected("Sound") <> 1
     exitScript: "Please select exactly one Sound object first."
 endif
 
-form Multi-channel Random Slice Time-Stretcher v1.1
+form Multi-channel Random Slice Time-Stretcher v1.2.1
     comment === Slice Parameters ===
     natural Number_of_segments 4
     real Min_duration 0.5
@@ -190,7 +191,7 @@ if slice_edge_fade_ms < 0
 endif
 edgeFade = slice_edge_fade_ms / 1000
 
-# v1.1: seed the generator so a good take can be recovered.
+# v1.2.1: seed the generator so a good take can be recovered.
 if random_seed > 0
     random_initializeWithSeedUnsafelyButPredictably (random_seed)
     seedApplied = 1
@@ -210,7 +211,7 @@ srcT1 = Get end time
 # ============================================================
 # WORKING SOURCE: one mono signal, starting at t = 0
 # ============================================================
-# v1.1: v1.0 took the original channel from the LEFT and every slice
+# v1.2.1: v1.0 took the original channel from the LEFT and every slice
 # from the RIGHT, and copied a >2-channel object whole into the mono
 # branch. One source now feeds both.
 if nchan = 1
@@ -264,7 +265,7 @@ endif
 # ============================================================
 # SLICE GENERATION
 # ============================================================
-# v1.1: no Scale peak inside the procedure - that erased the source
+# v1.2.1: no Scale peak inside the procedure - that erased the source
 # dynamics - and no PSOLA at all when the factor is exactly 1, where
 # the round trip cannot change the length but can change the signal.
 
@@ -296,7 +297,7 @@ procedure stretchSlice: .inID, .factor
         Scale peak: 0.99
     endif
 
-    # v1.1: raised-cosine edges. Every channel here is an isolated
+    # v1.2.1: raised-cosine edges. Every channel here is an isolated
     # event surrounded by silence, so both ends are exposed.
     selectObject: .outID
     .odur = Get total duration
@@ -386,7 +387,7 @@ sliceElapsed = stopwatch
 # ============================================================
 # OUTPUT LENGTH
 # ============================================================
-# v1.1: measured from where the slices actually end, not from an
+# v1.2.1: measured from where the slices actually end, not from an
 # inverted padding formula.
 outDur = latestEnd
 if preserve_original_timeline_length or mix_original_channel_1
@@ -519,7 +520,7 @@ endif
 
 selectObject: master_id
 Rename: orig_name$ + "_MultiSlice_" + presetName$ + "_" + string$(nOut) + "ch"
-# v1.1: capture the name here, while the object is selected. Reading it
+# v1.2.1: capture the name here, while the object is selected. Reading it
 # after the cleanup would find nothing selected.
 resultName$ = selected$("Sound")
 prePeak = Get absolute extremum: 0, 0, "None"
@@ -552,7 +553,7 @@ endfor
 # ============================================================
 # REPORT
 # ============================================================
-writeInfoLine: "=== Multi-channel Random Slice Time-Stretcher v1.1 ==="
+writeInfoLine: "=== Multi-channel Random Slice Time-Stretcher v1.2.1 ==="
 appendInfoLine: "Input: ", orig_name$, "  (", fixed$(total_duration, 3), " s @ ", fs, " Hz)"
 appendInfoLine: "Source used: ", inputNote$
 if nchan > 1
@@ -661,7 +662,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##MULTI-CHANNEL RANDOM SLICE TIME-STRETCHER##"
+    Text: 0.5, "centre", 0.68, "half", "##MULTI-CHANNEL RANDOM SLICE TIME-STRETCHER v1.2.1##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
     Text: 0.5, "centre", -0.22, "half",
@@ -674,9 +675,9 @@ if draw_visualization
     # ----------------------------------------------------------
     # PANEL A: SOURCE WITH SLICE REGIONS
     # ----------------------------------------------------------
-    # v1.1: regions painted FIRST, waveform drawn on top. v1.0 painted
+    # v1.2.1: regions painted FIRST, waveform drawn on top. v1.0 painted
     # over the waveform, so it disappeared inside every region.
-    Select outer viewport: 0, 8, 0.72, 2.30
+    Select outer viewport: 0, 8, 0.72, 2.22
     Select inner viewport: 0.55, 7.75, 0.80, 2.22
 
     selectObject: src_id
@@ -708,7 +709,7 @@ if draw_visualization
         Line width: 1.5
         Draw line: slice_source_start#[i], -aMax * 0.95, slice_source_start#[i], aMax * 0.95
         Draw line: slice_source_end#[i], -aMax * 0.95, slice_source_end#[i], aMax * 0.95
-        Font size: 5
+        Font size: 6
         Text: (slice_source_start#[i] + slice_source_end#[i]) / 2, "centre",
             ... aMax * 0.82, "half", string$(i)
     endfor
@@ -717,14 +718,22 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "Source"
+    Select outer viewport: 0.08, 0.52, 0.72, 2.22
+    Select inner viewport: 0.08, 0.52, 0.74, 2.28
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Source"
+    Select outer viewport: 0, 8, 0.72, 2.22
+    Select inner viewport: 0.55, 7.75, 0.8, 2.22
+    Axes: 0, total_duration, -aMax, aMax
     Text top: "no", "Source with the sampled regions (regions behind the waveform)"
     Text bottom: "yes", "Time (s)"
 
     # ----------------------------------------------------------
     # PANEL B: PLACEMENT TIMELINE
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 2.38, 4.30
+    Select outer viewport: 0, 8, 2.48, 4.26
     Select inner viewport: 0.55, 7.75, 2.46, 4.22
 
     Axes: 0, outDur, 0.3, nSeg + 0.7
@@ -732,7 +741,7 @@ if draw_visualization
 
     Colour: "{0.82, 0.82, 0.86}"
     Draw line: total_duration, 0.3, total_duration, nSeg + 0.7
-    Font size: 5
+    Font size: 6
     Colour: "{0.55, 0.55, 0.60}"
     Text: total_duration, "left", nSeg + 0.55, "half", " source end"
 
@@ -749,7 +758,7 @@ if draw_visualization
         Colour: "{0.15, 0.15, 0.15}"
         cx = (slice_source_start#[i] + slice_source_end#[i]) / 2
         Draw line: cx, y - 0.36, cx, y + 0.36
-        Font size: 5
+        Font size: 6
         Colour: "{0.35, 0.35, 0.35}"
         Text: -outDur * 0.012, "right", y, "half", string$(i)
     endfor
@@ -757,14 +766,22 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
     Font size: 6
-    Text left: "yes", "Slice"
+    Select outer viewport: 0.08, 0.52, 2.48, 4.26
+    Select inner viewport: 0.08, 0.52, 2.4, 4.28
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Slice"
+    Select outer viewport: 0, 8, 2.48, 4.26
+    Select inner viewport: 0.55, 7.75, 2.46, 4.22
+    Axes: 0, outDur, 0.3, nSeg + 0.7
     Text top: "no", "Placement: grey = source extent, bar = stretched slice, tick = source centre"
     Text bottom: "yes", "Time (s)"
 
     # ----------------------------------------------------------
     # PANEL C: SLICE TABLE
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 4.38, 6.00
+    Select outer viewport: 0, 8, 4.50, 5.98
     Select inner viewport: 0.55, 7.75, 4.44, 5.94
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.97, 0.97, 0.97}", 0, 1, 0, 1
@@ -786,7 +803,7 @@ if draw_visualization
         rowCol$ = "{" + fixed$(cR[i], 2) + ", " + fixed$(cG[i], 2) + ", " + fixed$(cB[i], 2) + "}"
         Colour: rowCol$
         Paint rectangle: rowCol$, 0.025, 0.055, yy - 0.022, yy + 0.022
-        Font size: 5
+        Font size: 6
         Colour: "{0.20, 0.20, 0.20}"
         Text: 0.075, "left", yy, "half", string$(i)
         srcTxt$ = fixed$(slice_source_start#[i], 2) + " - " + fixed$(slice_source_end#[i], 2)
@@ -797,7 +814,7 @@ if draw_visualization
         Text: 0.80, "left", yy, "half", fixed$(slice_target_start#[i], 3)
     endfor
 
-    Font size: 5
+    Font size: 6
     Colour: "{0.45, 0.45, 0.45}"
     if nSeg > maxShow
         noteTxt$ = "Showing the first " + string$(maxShow) + " of " + string$(nSeg) + " slices.  Achieved = stretched / original, so PSOLA can be checked against the requested x" + fixed$(duration_factor, 2) + "."
@@ -813,14 +830,17 @@ if draw_visualization
     # ----------------------------------------------------------
     # PANEL D: SUMMARY
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 6.08, 7.10
-    Select inner viewport: 0.55, 7.75, 6.14, 7.04
+    Select outer viewport: 0, 8, 6.16, 7.06
+    Select inner viewport: 0.55, 7.75, 6.22, 7.00
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
 
-    Font size: 6
+    Font size: 7
     Colour: "{0.28, 0.28, 0.28}"
-    Text: 0.02, "left", 0.80, "half",
+    Text: 0.02, "left", 0.84, "half", "##Summary##"
+
+    Font size: 6
+    Text: 0.02, "left", 0.60, "half",
         ... "##" + presetName$ + "##"
         ... + "  " + orig_name$
         ... + "  |  Source " + fixed$(total_duration, 2) + " s"
@@ -833,14 +853,14 @@ if draw_visualization
     else
         lvl$ = "each slice normalised"
     endif
-    Text: 0.02, "left", 0.50, "half",
+    Text: 0.02, "left", 0.36, "half",
         ... inputNote$
         ... + "  |  " + lvl$
         ... + "  |  fades " + fixed$(slice_edge_fade_ms, 0) + " ms"
         ... + "  |  PSOLA " + string$(psolaCount) + "/" + string$(nSeg)
         ... + "  |  seed " + string$(random_seed)
 
-    Text: 0.02, "left", 0.20, "half",
+    Text: 0.02, "left", 0.12, "half",
         ... "Routing: " + routeName$
         ... + "  |  " + string$(nOut) + " ch"
         ... + "  |  Norm: " + normMode$
@@ -849,6 +869,11 @@ if draw_visualization
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
 
+    Select outer viewport: 0, 8, 0, 7.16
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
     Font size: 10
     Colour: "Black"
     Line width: 1

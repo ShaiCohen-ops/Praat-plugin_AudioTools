@@ -3,7 +3,8 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 2.5 (2026)
+# Version: 2.6 (2026)
+# v2.6.2 (2026): SPATIAL VISUALIZATION STANDARDIZATION ONLY - label rails, compact summary, typography; DSP unchanged.
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -116,7 +117,7 @@ endif
 # FORM
 # ============================================================
 
-# Changelog v2.5 (2026):
+# Changelog v2.6.2 (2026):
 #   - FIX: in the varispeed+PSOLA method the pitch analysis runs AFTER
 #     the varispeed, so the material sits at r times its original
 #     pitch - but the original Pitch_floor/Pitch_ceiling were still
@@ -221,7 +222,7 @@ endif
 #     not show which voice entered when.
 # ============================================================
 
-form Perceptual Fugue v2.5
+form Perceptual Fugue v2.6.2
     comment === Preset ===
     optionmenu Preset: 2
         option Custom
@@ -364,7 +365,7 @@ endif
 # ============================================================
 # INPUT CHECKS
 # ============================================================
-# v2.5: v2.4 checked only the channel count and a minimum duration.
+# v2.6: v2.4 checked only the channel count and a minimum duration.
 if pitch_floor >= pitch_ceiling
     exitScript: "Pitch_floor (", pitch_floor, ") must be below Pitch_ceiling (",
         ... pitch_ceiling, ")."
@@ -466,7 +467,7 @@ spatialIldPreview = exposition_ILD_factor
 
 clearinfo
 writeInfoLine: "=================================================="
-writeInfoLine: " PERCEPTUAL FUGUE v2.5"
+writeInfoLine: " PERCEPTUAL FUGUE v2.6.2"
 writeInfoLine: "=================================================="
 appendInfoLine: ""
 appendInfoLine: "Source: ", soundName$, " | ", fixed$(monoDur, 3), " s | ", monoSr, " Hz"
@@ -746,7 +747,7 @@ procedure transposeByRatio: .snd, .ratio
         if transposition_method = 1
             # ...then stretch by the same ratio to put the duration
             # back, so the WHOLE subject survives at the new pitch.
-            # v2.5: the analysis happens AFTER the varispeed, so the
+            # v2.6: the analysis happens AFTER the varispeed, so the
             # material now sits at r * its original pitch and the
             # original floor/ceiling no longer bracket it. An octave
             # down turns 70 Hz into 35 Hz, below a 50 Hz floor, and the
@@ -953,7 +954,7 @@ procedure applySpatial: .monoSnd
     endif
 
     # Reverb
-    # v2.5: sp_rvWet is a SEND GAIN, not a wet percentage. The three
+    # v2.6: sp_rvWet is a SEND GAIN, not a wet percentage. The three
     # taps sum to 1 + 0.65 + 0.35 = 2.0 before filtering, so a value of
     # 0.60 puts the wet bus at roughly 1.2x the level of a single dry
     # tap, and the actual balance also depends on how the taps overlap,
@@ -1271,7 +1272,7 @@ fadeStart = lastMusicalEnd - fadeDur
 fadeStartStr$ = string$(fadeStart)
 fadeLenStr$ = string$(fadeDur)
 
-# v2.5: a raised cosine, so the fade actually reaches zero. v2.4 used
+# v2.6: a raised cosine, so the fade actually reaches zero. v2.4 used
 # exp(-5q), which ends at e^-5 = 0.0067, i.e. -43.5 dB rather than
 # silence. The reverb tail mostly covered it, but there is no reason
 # for a cadence fade not to land on zero.
@@ -1450,7 +1451,7 @@ if mcRef < 1e-30
 endif
 mcRatio = mcEnergySum / mcRef
 mcDb = 10 * log10(max(mcRatio, 1e-12))
-# v2.5: also report a proper correlation coefficient. The ratio above
+# v2.6: also report a proper correlation coefficient. The ratio above
 # compares the mono fold with what an uncorrelated pair would give, so
 # it runs 0..200% rather than being a percentage of energy retained -
 # which is what v2.4 called it.
@@ -1555,10 +1556,10 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "##Perceptual Fugue v2.5##"
+    Text: 0.5, "centre", 0.5, "half", "##Perceptual Fugue v2.6.2##"
     Select outer viewport: 0, 8, 0.28, 0.5
     Axes: 0, 1, 0, 1
-    Font size: 8
+    Font size: 7
     Colour: "{0.4, 0.4, 0.5}"
     Text: 0.5, "centre", 0.5, "half", presetName$ + " | " + soundName$ + " | " + string$(numV) + " voices | " + intervalName$ + " | " + fixed$(fugueDur, 1) + " s"
 
@@ -1582,7 +1583,7 @@ if draw_visualization
     Draw line: sb2, 0.4, sb2, numV + 0.6
     Draw line: sb3, 0.4, sb3, numV + 0.6
     Draw line: sb4, 0.4, sb4, numV + 0.6
-    Font size: 5
+    Font size: 6
     Colour: "{0.50, 0.50, 0.55}"
     Text: sb1 / 2, "centre", numV + 0.5, "half", "Exposition"
     Text: (sb1 + sb2) / 2, "centre", numV + 0.5, "half", "Episode"
@@ -1706,7 +1707,7 @@ if draw_visualization
             Paint rectangle: kCol$, entT[ent], entT[ent] + entL[ent], yy - 0.26, yy + 0.26
             Colour: "{0.30, 0.30, 0.30}"
             Draw rectangle: entT[ent], entT[ent] + entL[ent], yy - 0.26, yy + 0.26
-            Font size: 5
+            Font size: 6
             Colour: "White"
             if entL[ent] > fugueDur * 0.035
                 Text: entT[ent] + entL[ent] / 2, "centre", yy, "half", kLab$
@@ -1714,7 +1715,7 @@ if draw_visualization
         endif
     endfor
 
-    Font size: 5
+    Font size: 6
     Colour: "{0.30, 0.30, 0.35}"
     for vv from 1 to numV
         yy = numV + 1 - vv
@@ -1736,8 +1737,8 @@ if draw_visualization
     Font size: 6
     Text bottom: "yes", "Score: S subject, A answer, R retrograde, Aug augmented, frag fragment, Ped pedal"
 
-    Select outer viewport: 0, 8, 2.36, 3.20
-    Select inner viewport: 0.8, 7.6, 2.42, 3.14
+    Select outer viewport: 0, 8, 2.48, 3.32
+    Select inner viewport: 0.8, 7.6, 2.54, 3.26
     Axes: 0, fugueDur, -ampMax, ampMax
     Paint rectangle: "{0.97, 0.97, 0.97}", 0, fugueDur, -ampMax, ampMax
     Colour: "{0.82, 0.82, 0.82}"
@@ -1753,10 +1754,18 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "Left"
+    Select outer viewport: 0.08, 0.52, 2.48, 3.32
+    Select inner viewport: 0.08, 0.52, 2.50, 3.30
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Left"
+    Select outer viewport: 0, 8, 2.48, 3.32
+    Select inner viewport: 0.8, 7.6, 2.54, 3.26
+    Axes: 0, fugueDur, -ampMax, ampMax
 
-    Select outer viewport: 0, 8, 3.26, 4.10
-    Select inner viewport: 0.8, 7.6, 3.32, 4.04
+    Select outer viewport: 0, 8, 3.38, 4.22
+    Select inner viewport: 0.8, 7.6, 3.44, 4.16
     Axes: 0, fugueDur, -ampMax, ampMax
     Paint rectangle: "{0.97, 0.97, 0.97}", 0, fugueDur, -ampMax, ampMax
     Colour: "{0.82, 0.82, 0.82}"
@@ -1771,13 +1780,21 @@ if draw_visualization
     Draw: 0, 0, -ampMax, ampMax, "no", "Curve"
     Colour: "Black"
     Draw inner box
-    Text left: "yes", "Right"
+    Select outer viewport: 0.08, 0.52, 3.38, 4.22
+    Select inner viewport: 0.08, 0.52, 3.40, 4.20
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Right"
+    Select outer viewport: 0, 8, 3.38, 4.22
+    Select inner viewport: 0.8, 7.6, 3.44, 4.16
+    Axes: 0, fugueDur, -ampMax, ampMax
 
-    Select outer viewport: 0, 8, 4.16, 5.35
-    Select inner viewport: 0.8, 7.6, 4.22, 5.28
+    Select outer viewport: 0, 8, 4.28, 5.47
+    Select inner viewport: 0.8, 7.6, 4.34, 5.40
     Axes: 0, fugueDur, 0, 5000
     selectObject: vizSpec
-    Paint: 0, 0, 0, 0, 100, "yes", 50, 6, 0, "yes"
+    Paint: 0, 0, 0, 0, 100, "yes", 50, 6, 0, "no"
     Colour: "{0.82, 0.82, 0.82}"
     Draw line: sb1, 0, sb1, 5000
     Draw line: sb2, 0, sb2, 5000
@@ -1785,16 +1802,45 @@ if draw_visualization
     Draw line: sb4, 0, sb4, 5000
     Colour: "Black"
     Draw inner box
-    Text left: "yes", "Freq (Hz)"
+    Select outer viewport: 0.08, 0.52, 4.28, 5.47
+    Select inner viewport: 0.08, 0.52, 4.30, 5.45
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Freq (Hz)"
+    Select outer viewport: 0, 8, 4.28, 5.47
+    Select inner viewport: 0.8, 7.6, 4.34, 5.40
+    Axes: 0, fugueDur, 0, 5000
     Text bottom: "yes", "Time (s)"
 
-    Font size: 8
+    Font size: 7
     Colour: "Black"
     Text: sb1 / 2, "centre", 5500, "half", "EXPOSITION"
     Text: sb1 + (sb2 - sb1) / 2, "centre", 5500, "half", "EPISODE"
     Text: sb2 + (sb3 - sb2) / 2, "centre", 5500, "half", "MIDDLE ENTRIES"
     Text: sb3 + (sb4 - sb3) / 2, "centre", 5500, "half", "STRETTO"
     Text: sb4 + (fugueDur - sb4) / 2, "centre", 5500, "half", "PEDAL"
+
+    # === SUMMARY ===
+    Select outer viewport: 0, 8, 5.67, 6.67
+    Select inner viewport: 0.60, 7.70, 5.74, 6.60
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text: 0.02, "left", 0.84, "half", "##Summary##"
+    Font size: 6
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.02, "left", 0.60, "half", presetName$ + " | Source " + soundName$ + " | " + string$(numV) + " voices"
+    Text: 0.02, "left", 0.37, "half", "Interval " + intervalName$ + " | Fugue duration " + fixed$(fugueDur, 2) + " s"
+    Text: 0.02, "left", 0.13, "half", "Form: exposition → episode → middle entries → stretto → pedal"
+    Select inner viewport: 0.60, 7.70, 5.74, 6.60
+    Axes: 0, 1, 0, 1
+    Colour: "Black"
+    Draw inner box
+    Select outer viewport: 0, 8, 0, 6.77
+    Font size: 10
+    Colour: "Black"
 
     removeObject: vizLeft, vizRight, vizSpec
 endif

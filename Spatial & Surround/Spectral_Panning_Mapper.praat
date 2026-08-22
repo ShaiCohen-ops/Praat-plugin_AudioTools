@@ -3,7 +3,9 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.0 (2025) - Multi-channel rewrite
+# Version: 1.1 (2025) - Multi-channel rewrite
+# v1.1.3 (2026): RUNTIME VISUAL QA - relaxed panel spacing, shorter panel titles, compact Info reporting; DSP unchanged.
+# v1.1.2 (2026): SPATIAL VISUALIZATION STANDARDIZATION ONLY - label rails, compact summary, typography; DSP unchanged.
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -36,7 +38,7 @@
 #   MULTI-CHANNEL PRESETS (matching DBAP script vocabulary):
 #   Stereo, Triangle, Quad, 5.1, Hexagon, Octagon, FrontArc, DiffuseField
 #
-# Changelog v1.0:
+# Changelog v1.1:
 #   - Full multi-channel rewrite (2-8 channels)
 #   - DBAP gain model replaces cos/sin stereo pan
 #   - Orbit model: flatness->radius, flux->speed
@@ -67,7 +69,7 @@ endif
 # FORM
 # ============================================================
 
-form Spectral Panning Mapper v1.0
+form Spectral Panning Mapper v1.1.3
     comment === Preset ===
     optionmenu Preset: 3
         option Custom
@@ -358,15 +360,15 @@ endif
 
 clearinfo
 writeInfoLine:  "=================================================="
-writeInfoLine:  "  Spectral Panning Mapper v1.0"
+writeInfoLine:  "  Spectral Panning Mapper v1.1.3"
 writeInfoLine:  "=================================================="
+appendInfoLine: "Source   : ", srcName$, " | ", fixed$(srcDur, 3), " s | ", srcCh, " ch @ ", fixed$(srcSr, 0), " Hz"
+appendInfoLine: "Preset   : ", presetName$, " | output ", nChan, " ch | mix ", fixed$(mixPct, 0), "% wet"
+appendInfoLine: "Analysis : ", nWindows, " windows | update ", fixed$(updateHz, 0), " Hz"
+appendInfoLine: "Mapping  : radius ", fixed$(baseRadius, 2), " + flatness*", fixed$(flatInfl, 2),
+    ... " | speed ", fixed$(baseSpeed, 2), " + flux*", fixed$(fluxInfl, 2), " Hz | rolloff ", fixed$(rolloff, 2)
 appendInfoLine: ""
-appendInfoLine: "Source   : ", srcName$, " (", fixed$(srcDur, 3), " s)"
-appendInfoLine: "Preset   : ", presetName$
-appendInfoLine: "Channels : ", nChan
-appendInfoLine: "Windows  : ", nWindows
-appendInfoLine: ""
-appendInfoLine: "[1/4] Spectral analysis..."
+appendInfoLine: "[1/4] Spectral analysis"
 
 # Adaptive window half-size
 winHalf = 0.1
@@ -459,13 +461,38 @@ for ww from 1 to nWindows
 
     removeObject: winSnd, spec
 
-    appendInfoLine: "  [", ww, "/", nWindows, "]  t=",
-        ... fixed$(winTime#[ww], 3), "  flat=", fixed$(flatness#[ww], 3),
-        ... "  flux=", fixed$(flux#[ww], 3)
 endfor
 
+flatMin = flatness#[1]
+flatMax = flatness#[1]
+flatSum = 0
+fluxMin = flux#[1]
+fluxMax = flux#[1]
+fluxSumInfo = 0
+for ww from 1 to nWindows
+    fv = flatness#[ww]
+    xv = flux#[ww]
+    flatSum = flatSum + fv
+    fluxSumInfo = fluxSumInfo + xv
+    if fv < flatMin
+        flatMin = fv
+    endif
+    if fv > flatMax
+        flatMax = fv
+    endif
+    if xv < fluxMin
+        fluxMin = xv
+    endif
+    if xv > fluxMax
+        fluxMax = xv
+    endif
+endfor
+flatMean = flatSum / nWindows
+fluxMeanInfo = fluxSumInfo / nWindows
+appendInfoLine: "  Flatness mean ", fixed$(flatMean, 5), " | range ", fixed$(flatMin, 5), " .. ", fixed$(flatMax, 5)
+appendInfoLine: "  Flux     mean ", fixed$(fluxMeanInfo, 5), " | range ", fixed$(fluxMin, 5), " .. ", fixed$(fluxMax, 5)
 appendInfoLine: ""
-appendInfoLine: "[2/4] Building spatial envelopes (", nChan, " channels)..."
+appendInfoLine: "[2/4] Spatial envelopes"
 
 # ============================================================
 # CREATE PER-CHANNEL INTENSITY TIERS
@@ -579,14 +606,14 @@ for gi from 1 to nGrid
     prevT = curT
 endfor
 
-appendInfoLine: "  Created ", nGrid, " envelope points per channel"
+appendInfoLine: "  ", nChan, " channels | ", nGrid, " grid points per channel"
 
 # ============================================================
 # APPLY ENVELOPES
 # ============================================================
 
 appendInfoLine: ""
-appendInfoLine: "[3/4] Applying envelopes..."
+appendInfoLine: "[3/4] Rendering spatial output"
 
 for ch from 1 to nChan
     selectObject: monoSrc
@@ -665,7 +692,7 @@ appendInfoLine: "  Output: ", srcName$, "_SPM_", presetName$,
 # ============================================================
 
 appendInfoLine: ""
-appendInfoLine: "[4/4] Visualization..."
+appendInfoLine: "[4/4] Drawing visualization"
 
 if draw_visualization = 1
 
@@ -679,14 +706,16 @@ if draw_visualization = 1
     Erase all
 
     # === TITLE ===
-    Select outer viewport: 0, 8, 0, 0.48
+    Select outer viewport: 0, 8, 0, 0.28
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.70, "half", "##Spectral Panning Mapper v1.0##"
-    Font size: 8
+    Text: 0.5, "centre", 0.5, "half", "##Spectral Panning Mapper v1.1.3##"
+    Select outer viewport: 0, 8, 0.28, 0.50
+    Axes: 0, 1, 0, 1
+    Font size: 7
     Colour: "{0.4, 0.4, 0.5}"
-    Text: 0.5, "centre", -0.15, "half",
+    Text: 0.5, "centre", 0.5, "half",
         ... "[" + presetName$ + "]  " + srcName$
         ... + "  |  " + string$(nChan) + " ch"
         ... + "  |  " + string$(nWindows) + " windows"
@@ -694,8 +723,8 @@ if draw_visualization = 1
         ... + "  |  mix " + fixed$(mixPct, 0) + "%"
 
     # === PANEL 1: Original waveform ===
-    Select outer viewport: 0, 8, 0.52, 1.38
-    Select inner viewport: 0.60, 7.65, 0.57, 1.33
+    Select outer viewport: 0, 8, 0.62, 1.52
+    Select inner viewport: 0.60, 7.70, 0.67, 1.47
     Axes: 0, srcDur, -ampMax, ampMax
     Paint rectangle: "{0.97, 0.97, 0.97}", 0, srcDur, -ampMax, ampMax
     Colour: "{0.82, 0.82, 0.82}"
@@ -706,12 +735,20 @@ if draw_visualization = 1
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "Input"
+    Select outer viewport: 0.08, 0.52, 0.62, 1.52
+    Select inner viewport: 0.08, 0.52, 0.64, 1.50
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Input"
+    Select outer viewport: 0, 8, 0.62, 1.52
+    Select inner viewport: 0.6, 7.65, 0.57, 1.33
+    Axes: 0, srcDur, -ampMax, ampMax
     Text top: "no", "Source waveform"
 
     # === PANEL 2: Spectral features ===
-    Select outer viewport: 0, 8, 1.42, 2.22
-    Select inner viewport: 0.60, 7.65, 1.47, 2.17
+    Select outer viewport: 0, 8, 1.72, 2.62
+    Select inner viewport: 0.60, 7.70, 1.47, 2.17
     Axes: 0, srcDur, -0.05, 1.15
     Paint rectangle: "{0.97, 0.97, 0.97}", 0, srcDur, -0.05, 1.15
     Colour: "{0.87, 0.87, 0.87}"
@@ -748,12 +785,20 @@ if draw_visualization = 1
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "Feature"
-    Text top: "no", "Spectral Features  (flatness = Wiener entropy | flux = spectral irregularity)"
+    Select outer viewport: 0.08, 0.52, 1.72, 2.62
+    Select inner viewport: 0.08, 0.52, 1.74, 2.60
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Feature"
+    Select outer viewport: 0, 8, 1.72, 2.62
+    Select inner viewport: 0.60, 7.70, 1.77, 2.57
+    Axes: 0, srcDur, -0.05, 1.15
+    Text top: "no", "Spectral features"
 
     # === PANEL 3: Speaker layout + orbit trace ===
-    Select outer viewport: 0, 4, 2.28, 4.20
-    Select inner viewport: 0.50, 3.75, 2.33, 4.15
+    Select outer viewport: 0, 4, 2.90, 5.15
+    Select inner viewport: 0.60, 3.85, 2.95, 5.10
     Axes: -1.35, 1.35, -1.35, 1.35
     Paint rectangle: "{0.96, 0.96, 0.97}", -1.35, 1.35, -1.35, 1.35
 
@@ -801,7 +846,7 @@ if draw_visualization = 1
         endif
         Paint circle (mm): "{0.25, 0.48, 0.72}", spkX[ch], spkY[ch], spkSz
         Colour: "White"
-        Font size: 5
+        Font size: 6
         Text: spkX[ch], "centre", spkY[ch], "half", string$(ch)
     endfor
 
@@ -810,20 +855,28 @@ if draw_visualization = 1
 
     # Source start position (red)
     Paint circle (mm): "{0.82, 0.25, 0.18}", orbitX#[1], orbitY#[1], 3.0
-    Font size: 5
+    Font size: 6
     Colour: "{0.60, 0.15, 0.10}"
     Text: orbitX#[1] + 0.08, "left", orbitY#[1] + 0.08, "half", "start"
 
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text top: "no", "Speaker layout + orbit  (blue=trace  red=start  green=listener)"
+    Text top: "no", "Speaker layout + orbit"
     Text bottom: "yes", "X"
-    Text left: "yes", "Y"
+    Select outer viewport: 0.08, 0.52, 2.90, 5.15
+    Select inner viewport: 0.08, 0.52, 2.92, 5.13
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Y"
+    Select outer viewport: 0, 4, 2.90, 5.15
+    Select inner viewport: 0.5, 3.75, 2.33, 4.15
+    Axes: -1.35, 1.35, -1.35, 1.35
 
     # === PANEL 4: Orbit coordinates over time ===
-    Select outer viewport: 4, 8, 2.28, 3.24
-    Select inner viewport: 4.15, 7.65, 2.33, 3.19
+    Select outer viewport: 4, 8, 2.90, 3.85
+    Select inner viewport: 4.45, 7.70, 2.95, 3.80
     Axes: 0, srcDur, -1.1, 1.1
     Paint rectangle: "{0.97, 0.97, 0.97}", 0, srcDur, -1.1, 1.1
     Colour: "{0.85, 0.85, 0.85}"
@@ -863,12 +916,20 @@ if draw_visualization = 1
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "Position"
+    Select outer viewport: 4.04, 4.38, 2.90, 3.85
+    Select inner viewport: 4.04, 4.38, 2.92, 3.83
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Position"
+    Select outer viewport: 4, 8, 2.90, 3.85
+    Select inner viewport: 4.45, 7.70, 2.95, 3.80
+    Axes: 0, srcDur, -1.1, 1.1
     Text top: "no", "Orbit X/Y over time"
 
     # === PANEL 5: Per-channel gain heatmap over time ===
-    Select outer viewport: 4, 8, 3.28, 4.20
-    Select inner viewport: 4.15, 7.65, 3.33, 4.15
+    Select outer viewport: 4, 8, 4.15, 5.15
+    Select inner viewport: 4.45, 7.70, 4.20, 5.10
 
     # Sample gains at 50 time points for heatmap
     nHeat = 50
@@ -924,13 +985,21 @@ if draw_visualization = 1
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "Channel"
+    Select outer viewport: 4.04, 4.38, 4.15, 5.15
+    Select inner viewport: 4.04, 4.38, 4.17, 5.13
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Channel"
+    Select outer viewport: 4, 8, 4.15, 5.15
+    Select inner viewport: 4.45, 7.70, 4.20, 5.10
+    Axes: 0, nHeat, 0, nChan
     Text bottom: "yes", "Time ->"
-    Text top: "no", "Gain per channel over time  (dark=low  orange=high)"
+    Text top: "no", "Gain per channel over time"
 
     # === PANEL 6: Output waveform ===
-    Select outer viewport: 0, 8, 4.25, 5.05
-    Select inner viewport: 0.60, 7.65, 4.30, 5.00
+    Select outer viewport: 0, 8, 5.50, 6.45
+    Select inner viewport: 0.60, 7.70, 5.55, 6.40
     Axes: 0, resultDur, -ampMax, ampMax
     Paint rectangle: "{0.97, 0.97, 0.97}", 0, resultDur, -ampMax, ampMax
     Colour: "{0.82, 0.82, 0.82}"
@@ -941,43 +1010,53 @@ if draw_visualization = 1
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "Output"
+    Select outer viewport: 0.08, 0.52, 5.50, 6.45
+    Select inner viewport: 0.08, 0.52, 5.52, 6.43
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Output"
+    Select outer viewport: 0, 8, 5.50, 6.45
+    Select inner viewport: 0.60, 7.70, 5.55, 6.40
+    Axes: 0, resultDur, -ampMax, ampMax
     Text top: "no", "Output waveform  (" + string$(nChan) + " ch combined)"
 
-    # === STATS ===
-    Select outer viewport: 0, 8, 5.10, 5.78
-    Select inner viewport: 0.4, 7.8, 5.15, 5.73
+    # === SUMMARY ===
+    Select outer viewport: 0, 8, 6.70, 7.70
+    Select inner viewport: 0.60, 7.70, 6.77, 7.63
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.95, 0.95, 0.95}", 0, 1, 0, 1
     Font size: 7
     Colour: "Black"
-    Text: 0.02, "left", 0.87, "half", "##Spectral Panning Mapper v1.0##"
+    Text: 0.02, "left", 0.84, "half", "##Spectral Panning Mapper v1.1.3##"
     Font size: 6
     Colour: "{0.35, 0.35, 0.40}"
-    Text: 0.02, "left", 0.65, "half",
+    Text: 0.02, "left", 0.60, "half",
         ... "Source: " + srcName$ + "  (" + fixed$(srcDur,2) + " s)"
         ... + "  |  Preset: " + presetName$
         ... + "  |  Channels: " + string$(nChan)
         ... + "  |  Windows: " + string$(nWindows)
-    Text: 0.02, "left", 0.43, "half",
+    Text: 0.02, "left", 0.37, "half",
         ... "Base radius: " + fixed$(baseRadius, 2)
         ... + "  Flatness->radius: " + fixed$(flatInfl, 2)
         ... + "  Base speed: " + fixed$(baseSpeed, 2) + " Hz"
         ... + "  Flux->speed: " + fixed$(fluxInfl, 2)
         ... + "  Rolloff: " + fixed$(rolloff, 2)
-    Text: 0.02, "left", 0.22, "half",
+    Text: 0.02, "left", 0.13, "half",
         ... "Update: " + fixed$(updateHz, 0) + " Hz"
         ... + "  |  Mix: " + fixed$(mixPct, 0) + "% wet"
         ... + "  |  Grid points: " + string$(nGrid)
         ... + "  |  Output: " + srcName$ + "_SPM_" + presetName$
+    Select inner viewport: 0.60, 7.70, 6.77, 7.63
+    Axes: 0, 1, 0, 1
     Colour: "Black"
-    Draw rectangle: 0, 1, 0, 1
-
+    Draw inner box
+    Select outer viewport: 0, 8, 0, 7.80
     Font size: 10
     Colour: "Black"
     Line width: 1
 
-    appendInfoLine: "  Visualization complete."
+    appendInfoLine: "  Picture complete"
 endif
 
 # ============================================================
@@ -990,15 +1069,19 @@ appendInfoLine: ""
 appendInfoLine: "=================================================="
 appendInfoLine: "  COMPLETE"
 appendInfoLine: "=================================================="
-appendInfoLine: ""
-appendInfoLine: "Output  : ", srcName$, "_SPM_", presetName$
-appendInfoLine: "Duration: ", fixed$(resultDur, 2), " s"
-appendInfoLine: "Channels: ", nChan
-appendInfoLine: "Mix     : ", fixed$(mixPct, 0), "% wet"
-appendInfoLine: ""
-appendInfoLine: "Speaker positions:"
+appendInfoLine: "Output   : ", srcName$, "_SPM_", presetName$
+appendInfoLine: "Render   : ", fixed$(resultDur, 2), " s | ", nChan, " ch | ", fixed$(mixPct, 0), "% wet"
+appendInfoLine: "Speakers :"
 for ch from 1 to nChan
-    appendInfoLine: "  Ch", ch, ": (", fixed$(spkX[ch], 3), ", ", fixed$(spkY[ch], 3), ")"
+    infoX = spkX[ch]
+    infoY = spkY[ch]
+    if abs(infoX) < 0.0005
+        infoX = 0
+    endif
+    if abs(infoY) < 0.0005
+        infoY = 0
+    endif
+    appendInfoLine: "  Ch", ch, ": (", fixed$(infoX, 3), ", ", fixed$(infoY, 3), ")"
 endfor
 
 if play_result = 1

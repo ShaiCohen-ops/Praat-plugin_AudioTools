@@ -3,7 +3,8 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4 (2026)
+# Version: 0.5 (2026)
+# v0.5.1 (2026): RUNTIME VISUAL QA - stacked-panel gaps and summary rows corrected; DSP unchanged.
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -17,7 +18,7 @@
 #   would need a spatial model, not extra routing, and that belongs in
 #   a separate BPM surround script.
 #
-# Changelog v0.4 (2026):
+# Changelog v0.5.1 (2026):
 #   - FIX (critical): SWING DID NOTHING. swingFrac was computed and
 #     then, in the odd-step branch, immediately overwritten with
 #     stepFrac - and no pattern read it in any case, so moving
@@ -122,7 +123,7 @@ if numberOfSelected("Sound") <> 1
     exitScript: "Please select exactly one Sound object."
 endif
 
-form BPM Rhythmic Panning v0.4
+form BPM Rhythmic Panning v0.5.1
     comment === TEMPO ===
     real Tempo_bpm 120
     optionmenu Subdivision: 4
@@ -177,7 +178,7 @@ if tempo_bpm < 1 or tempo_bpm > 999
     exitScript: "BPM must be between 1 and 999."
 endif
 
-# v0.4: conventional swing scale. 50 is straight; below 50 is a
+# v0.5: conventional swing scale. 50 is straight; below 50 is a
 # reverse-swing feel, which is legal but unusual.
 if swing_percent < 25
     swing_percent = 25
@@ -210,7 +211,7 @@ if inputCh > 2
     exitScript: "Please use a mono or stereo source."
 endif
 
-# v0.4: the AmplitudeTiers are built from 0, so the working copy has to
+# v0.5: the AmplitudeTiers are built from 0, so the working copy has to
 # start there too.
 selectObject: originalID
 Copy: "bpm_work0"
@@ -231,7 +232,7 @@ if duration <= 0
     exitScript: "Source has zero duration."
 endif
 
-# v0.4: how the stereo field is handled. Downmixing and panning the
+# v0.5: how the stereo field is handled. Downmixing and panning the
 # result is true panning; keeping the two channels apart and gating
 # each is balance modulation, which cannot move material across the
 # image - it can only remove it.
@@ -347,7 +348,7 @@ patternNames$[14] = "PhraseBuild"
 patternNames$[15] = "PolymeterShift"
 patternName$ = patternNames$[pattern]
 
-# v0.4: swing warps the subdivision grid, so it reaches only the
+# v0.5: swing warps the subdivision grid, so it reaches only the
 # patterns that read that grid. Patterns with their own clock are
 # unaffected, and the report says so rather than leaving the user to
 # wonder why the control does nothing.
@@ -380,7 +381,7 @@ if eventRate < beatRate
     eventRate = beatRate
 endif
 
-# v0.4: control rate follows the music instead of sitting at 100 Hz.
+# v0.5: control rate follows the music instead of sitting at 100 Hz.
 ptsPerEvent = 24
 ctrlRate = ptsPerEvent * eventRate
 if ctrlRate < 200
@@ -484,7 +485,7 @@ for i from 1 to nCtrl
     isAccent = accent[stepIdx + 1]
 
     if pattern = 1
-        # 1. PING-PONG. v0.4: alternate on the GLOBAL step index, which
+        # 1. PING-PONG. v0.5: alternate on the GLOBAL step index, which
         # never resets, so an odd accent-grid length cannot put the
         # same side at the end of one cycle and the start of the next.
         if globalStep mod 2 = 0
@@ -526,7 +527,7 @@ for i from 1 to nCtrl
         panAmp#[i] = 0.5 + 0.5 * exp(-8 * (sixteenthFrac - 0.2)^2)
 
     elsif pattern = 5
-        # 5. DOTTED DUB. v0.4: a dotted eighth is 3/4 of a quarter, so
+        # 5. DOTTED DUB. v0.5: a dotted eighth is 3/4 of a quarter, so
         # the rate is beat * 4/3 - one event every 3 sixteenths. v0.3
         # used 8/3, firing twice as fast, every 3/8 of a beat. The
         # envelope also faded IN across each event; a dub delay strikes
@@ -608,7 +609,7 @@ for i from 1 to nCtrl
         endif
 
     elsif pattern = 11
-        # 11. 3-AGAINST-4. v0.4: to put THREE events on the left and
+        # 11. 3-AGAINST-4. v0.5: to put THREE events on the left and
         # FOUR on the right over a 12-step cycle, the left has to pulse
         # every 4 steps and the right every 3. v0.3 had it the other
         # way round, so the label was inverted.
@@ -736,7 +737,7 @@ result = selected("Sound")
 resultName$ = originalName$ + "_rhy_" + patternName$
 Rename: resultName$
 
-# v0.4: three normalisation choices. Peak is the v0.3 behaviour and
+# v0.5: three normalisation choices. Peak is the v0.3 behaviour and
 # still applies ONE shared gain to both channels, so the panning
 # ratios, the gates and the constant-power law all survive; it only
 # removes level differences between renders of different patterns.
@@ -772,7 +773,7 @@ removeObject: leftProcessed, rightProcessed
 # ============================================================
 # REPORT
 # ============================================================
-writeInfoLine: "=== BPM Rhythmic Panning v0.4 ==="
+writeInfoLine: "=== BPM Rhythmic Panning v0.5.1 ==="
 appendInfoLine: "Source: ", originalName$, " (", fixed$(duration, 2), " s, ",
     ... inputCh, " ch @ ", sr, " Hz)"
 appendInfoLine: "Input handling: ", inputMode$
@@ -850,7 +851,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##BPM RHYTHMIC PANNING##"
+    Text: 0.5, "centre", 0.68, "half", "##BPM RHYTHMIC PANNING v0.5.1##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
     if usesSwing = 1
@@ -881,7 +882,7 @@ if draw_visualization
     Draw line: 0, 0, nGridSteps, 0
     Line width: 1
 
-    # v0.4: step boundaries follow the swing, so the grid drawn here is
+    # v0.5: step boundaries follow the swing, so the grid drawn here is
     # the grid the audio actually used.
     Colour: "{0.85, 0.85, 0.88}"
     Line width: 1
@@ -899,7 +900,7 @@ if draw_visualization
         Draw line: xPos, -1.5, xPos, 1.5
     endfor
 
-    # v0.4: beat lines placed by TIME, t = b*60/BPM, converted to step
+    # v0.5: beat lines placed by TIME, t = b*60/BPM, converted to step
     # position. v0.3 drew a heavy line every 4 steps, which is only
     # right for 1/16 - and steps per beat is not even an integer for
     # the dotted subdivisions.
@@ -910,7 +911,7 @@ if draw_visualization
         bx = b * subPerBeat
         if bx <= nGridSteps
             Draw line: bx, -1.5, bx, 1.5
-            Font size: 5
+            Font size: 6
             Colour: "{0.45, 0.45, 0.50}"
             Text: bx, "centre", 1.36, "half", string$(b + 1)
             Colour: "{0.60, 0.60, 0.68}"
@@ -964,7 +965,7 @@ if draw_visualization
         Colour: "{0.35, 0.35, 0.35}"
         Draw rectangle: cellA, cellB, 0, pv * av
 
-        Font size: 4
+        Font size: 6
         Colour: "{0.40, 0.40, 0.40}"
         Text: xMid, "centre", -1.36, "half", string$(s + 1)
     endfor
@@ -973,7 +974,15 @@ if draw_visualization
     Line width: 1
     Draw inner box
     Font size: 6
-    Text left: "yes", "L  <-  pan  ->  R"
+    Select outer viewport: 0.08, 0.52, 0.75, 3.2
+    Select inner viewport: 0.08, 0.52, 0.77, 3.18
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "L  <-  pan  ->  R"
+    Select outer viewport: 0, 8, 0.75, 3.2
+    Select inner viewport: 0.5, 7.75, 0.95, 3.05
+    Axes: 0, nGridSteps, -1.5, 1.5
     Text bottom: "yes", "Step  (shaded = accent, heavy lines = beats, bar height = pan x amp)"
 
     # ----------------------------------------------------------
@@ -1047,10 +1056,18 @@ if draw_visualization
 
     Colour: "Black"
     Draw inner box
-    Font size: 5
+    Font size: 6
     Marks left: 3, "yes", "yes", "no"
     Font size: 6
-    Text left: "yes", "Pan / Amp"
+    Select outer viewport: 0.08, 0.52, 3.3, 4.9
+    Select inner viewport: 0.08, 0.52, 3.32, 4.88
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Pan / Amp"
+    Select outer viewport: 0, 4.2, 3.3, 4.9
+    Select inner viewport: 0.5, 3.98, 3.38, 4.78
+    Axes: 0, showDur, -1.1, 1.1
     Text bottom: "yes", "Time (s), first 8 beats  (blue = pan, orange = amp)"
 
     # ----------------------------------------------------------
@@ -1097,17 +1114,25 @@ if draw_visualization
 
     Colour: "Black"
     Draw inner box
-    Font size: 5
+    Font size: 6
     Marks left: 3, "yes", "yes", "no"
     Font size: 6
-    Text left: "yes", "Gain"
+    Select outer viewport: 4.02, 4.4, 3.3, 4.9
+    Select inner viewport: 4.02, 4.4, 3.32, 4.88
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Gain"
+    Select outer viewport: 4.2, 8, 3.3, 4.9
+    Select inner viewport: 4.55, 7.75, 3.38, 4.78
+    Axes: 0, showDur, 0, 1.1
     Text bottom: "yes", "Channel gains  (blue = L, orange = R)"
 
     # ----------------------------------------------------------
     # PANEL D: OUTPUT WAVEFORM
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 4.98, 6.10
-    Select inner viewport: 0.55, 7.75, 5.04, 6.03
+    Select outer viewport: 0, 8, 5.10, 6.22
+    Select inner viewport: 0.55, 7.75, 5.16, 6.15
 
     selectObject: result
     resPeak = Get absolute extremum: 0, 0, "None"
@@ -1148,21 +1173,29 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "Output"
+    Select outer viewport: 0.08, 0.52, 5.10, 6.22
+    Select inner viewport: 0.08, 0.52, 5.12, 6.20
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Output"
+    Select outer viewport: 0, 8, 5.10, 6.22
+    Select inner viewport: 0.55, 7.75, 5.16, 6.15
+    Axes: 0, finalDur, -ampMax, ampMax
     Text top: "no", "Output  (blue = L, orange = R, ticks = beats)"
     Text bottom: "yes", "Time (s)"
 
     # ----------------------------------------------------------
     # PANEL E: SUMMARY
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 6.18, 7.20
-    Select inner viewport: 0.55, 7.75, 6.24, 7.14
+    Select outer viewport: 0, 8, 6.42, 7.44
+    Select inner viewport: 0.55, 7.75, 6.48, 7.38
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
 
     Font size: 6
     Colour: "{0.28, 0.28, 0.28}"
-    Text: 0.02, "left", 0.80, "half",
+    Text: 0.02, "left", 0.72, "half",
         ... "##" + patternName$ + "##"
         ... + "  " + originalName$
         ... + "  |  " + fixed$(tempo_bpm, 1) + " BPM " + subdivName$
@@ -1174,13 +1207,13 @@ if draw_visualization
     else
         swLine$ = "Swing not used by this pattern (own clock)"
     endif
-    Text: 0.02, "left", 0.50, "half",
+    Text: 0.02, "left", 0.45, "half",
         ... swLine$
         ... + "  |  Ctrl " + fixed$(ctrlRate, 0) + " Hz = "
         ... + fixed$(achievedPts, 1) + " pts/event"
         ... + "  |  Edge " + fixed$(edgeTau * 1000, 1) + " ms"
 
-    Text: 0.02, "left", 0.20, "half",
+    Text: 0.02, "left", 0.18, "half",
         ... "Input: " + inputMode$
         ... + "  |  Norm: " + normMode$
         ... + "  |  Peak " + fixed$(prePeak, 3) + " -> " + fixed$(finalPeak, 3)
@@ -1188,6 +1221,11 @@ if draw_visualization
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
 
+    Select outer viewport: 0, 8, 0, 7.54
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
     Font size: 10
     Colour: "Black"
     Line width: 1

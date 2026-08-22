@@ -3,7 +3,8 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.5 (2026)
+# Version: 0.6.1 (2026)
+# v0.6 (2026): SPATIAL VISUALIZATION STANDARDIZATION ONLY - label rails, compact summary, typography; DSP unchanged.
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -21,7 +22,7 @@
 #   with a sinusoidal pan, not spring or pendulum equations - they are
 #   named accordingly.
 #
-# Changelog v0.5 (2026):
+# Changelog v0.6 (2026):
 #   - The form was 32 rows and ran off the screen. It is now 15, with
 #     nothing removed: groups of numbers moved into sentence fields read
 #     with extractNumber, and menus that always travelled together were
@@ -137,7 +138,7 @@ if numberOfSelected("Sound") <> 1
     exitScript: "Please select a Sound object first."
 endif
 
-form Physics-Based Stereo Dynamics v0.5
+form Physics-Based Stereo Dynamics v0.6
     optionmenu Preset: 2
         option Custom (use the three sentence fields below)
         option Bouncy Rubber Ball (L to R)
@@ -194,7 +195,7 @@ endform
 # ============================================================
 # UNPACK THE COMPACT FORM
 # ============================================================
-# v0.5: the v0.4 form was 32 rows and ran off the screen. Nothing was
+# v0.6: the v0.4 form was 32 rows and ran off the screen. Nothing was
 # dropped - grouped numbers moved into sentence fields read with
 # extractNumber, and related menus were merged. 32 rows -> 15.
 # extractNumber finds the number after each key, so the keys must stay
@@ -1046,7 +1047,7 @@ resultName$ = selected$("Sound")
 # ============================================================
 # REPORT
 # ============================================================
-writeInfoLine: "=== Physics-Based Stereo Dynamics v0.5 ==="
+writeInfoLine: "=== Physics-Based Stereo Dynamics v0.6 ==="
 appendInfoLine: "Input: ", originalName$, "  (", fixed$(duration, 3), " s, ",
     ... nChannels, " ch @ ", sr, " Hz)"
 appendInfoLine: "Source handling: ", inputNote$
@@ -1205,7 +1206,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##PHYSICS-BASED STEREO DYNAMICS##"
+    Text: 0.5, "centre", 0.68, "half", "##PHYSICS-BASED STEREO DYNAMICS v0.6.1##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
     if mapping_model = 1
@@ -1223,8 +1224,8 @@ if draw_visualization
     # ----------------------------------------------------------
     # PANEL A: MOTION PATH, pan vs height
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 0.72, 3.40
-    Select inner viewport: 0.55, 7.75, 0.82, 3.30
+    Select outer viewport: 0, 8, 0.72, 3.28
+    Select inner viewport: 0.55, 7.75, 0.82, 3.05
 
     hTop = maxHeightSeen * 1.18
     if hTop < 0.05
@@ -1242,7 +1243,7 @@ if draw_visualization
     # Speakers and listener
     Paint circle (mm): "{0.45, 0.45, 0.50}", -1.15, hTop * 0.06, 2.6
     Paint circle (mm): "{0.45, 0.45, 0.50}", 1.15, hTop * 0.06, 2.6
-    Font size: 5
+    Font size: 6
     Colour: "{0.35, 0.35, 0.40}"
     Text: -1.15, "centre", hTop * 0.13, "half", "L"
     Text: 1.15, "centre", hTop * 0.13, "half", "R"
@@ -1309,14 +1310,22 @@ if draw_visualization
     Draw inner box
     Font size: 6
     Marks left: 3, "yes", "yes", "no"
-    Text left: "yes", "Height (m)"
+    Select outer viewport: 0.08, 0.52, 0.72, 3.28
+    Select inner viewport: 0.08, 0.52, 0.74, 3.26
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Height (m)"
+    Select outer viewport: 0, 8, 0.72, 3.28
+    Select inner viewport: 0.55, 7.75, 0.82, 3.05
+    Axes: -1.35, 1.35, -hTop * 0.14, hTop
     Text bottom: "yes", "Pan  (-1 left, +1 right)   —   dots = impacts, size = amplitude"
 
     # ----------------------------------------------------------
     # PANEL B: HEIGHT AND SPEED VS TIME
     # ----------------------------------------------------------
-    Select outer viewport: 0, 4.2, 3.48, 5.00
-    Select inner viewport: 0.55, 4.00, 3.56, 4.92
+    Select outer viewport: 0, 4.2, 3.58, 5.00
+    Select inner viewport: 0.55, 4.00, 3.66, 4.76
 
     Axes: 0, duration, 0, 1.08
     Paint rectangle: "{0.96, 0.96, 0.96}", 0, duration, 0, 1.08
@@ -1338,17 +1347,25 @@ if draw_visualization
 
     Colour: "Black"
     Draw inner box
-    Font size: 5
+    Font size: 6
     Marks left: 3, "yes", "yes", "no"
     Font size: 6
-    Text left: "yes", "Normalised"
+    Select outer viewport: 0.08, 0.52, 3.58, 5.00
+    Select inner viewport: 0.08, 0.52, 3.60, 4.98
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Normalised"
+    Select outer viewport: 0, 4.2, 3.58, 5.00
+    Select inner viewport: 0.55, 4, 3.66, 4.76
+    Axes: 0, duration, 0, 1.08
     Text bottom: "yes", "Height (blue) and speed (orange), each / measured max"
 
     # ----------------------------------------------------------
     # PANEL C: CHANNEL GAINS
     # ----------------------------------------------------------
-    Select outer viewport: 4.2, 8, 3.48, 5.00
-    Select inner viewport: 4.55, 7.75, 3.56, 4.92
+    Select outer viewport: 4.2, 8, 3.58, 5.00
+    Select inner viewport: 4.55, 7.75, 3.66, 4.76
 
     gTop = maxAmpTrace * 1.12
     Axes: 0, duration, 0, gTop
@@ -1367,17 +1384,25 @@ if draw_visualization
 
     Colour: "Black"
     Draw inner box
-    Font size: 5
+    Font size: 6
     Marks left: 3, "yes", "yes", "no"
     Font size: 6
-    Text left: "yes", "Gain"
+    Select outer viewport: 4.02, 4.4, 3.58, 5.00
+    Select inner viewport: 4.02, 4.4, 3.60, 4.98
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Gain"
+    Select outer viewport: 4.2, 8, 3.58, 5.00
+    Select inner viewport: 4.55, 7.75, 3.66, 4.76
+    Axes: 0, duration, 0, gTop
     Text bottom: "yes", "Channel gains (blue L, orange R) — the pan law, preserved"
 
     # ----------------------------------------------------------
     # PANEL D: OUTPUT WAVEFORM
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 5.08, 6.15
-    Select inner viewport: 0.55, 7.75, 5.14, 6.08
+    Select outer viewport: 0, 8, 5.30, 6.35
+    Select inner viewport: 0.55, 7.75, 5.38, 6.12
 
     selectObject: result
     resPeak = Get absolute extremum: 0, 0, "None"
@@ -1406,21 +1431,29 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "Output"
+    Select outer viewport: 0.08, 0.52, 5.30, 6.35
+    Select inner viewport: 0.08, 0.52, 5.32, 6.33
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Output"
+    Select outer viewport: 0, 8, 5.30, 6.35
+    Select inner viewport: 0.55, 7.75, 5.38, 6.12
+    Axes: 0, finalDur, -aMax, aMax
     Text top: "no", "Output (blue = L, orange = R)"
     Text bottom: "yes", "Time (s)"
 
     # ----------------------------------------------------------
     # PANEL E: SUMMARY
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 6.23, 7.30
-    Select inner viewport: 0.55, 7.75, 6.29, 7.24
+    Select outer viewport: 0, 8, 6.65, 7.55
+    Select inner viewport: 0.55, 7.75, 6.71, 7.49
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
 
     Font size: 6
     Colour: "{0.28, 0.28, 0.28}"
-    Text: 0.02, "left", 0.80, "half",
+    Text: 0.02, "left", 0.70, "half",
         ... "##" + presetName$ + "##"
         ... + "  " + originalName$
         ... + "  |  h0 " + fixed$(initialHeight, 2) + " m, v0 "
@@ -1428,7 +1461,7 @@ if draw_visualization
         ... + "  |  e " + fixed$(bounceCoef, 2) + " (E x" + fixed$(bounceCoef^2, 2) + ")"
         ... + "  |  " + string$(bouncesDone) + " bounces"
 
-    Text: 0.02, "left", 0.50, "half",
+    Text: 0.02, "left", 0.43, "half",
         ... "Max height " + fixed$(maxHeightSeen, 3) + " m"
         ... + "  |  Max speed " + fixed$(maxSpeedSeen, 3) + " m/s"
         ... + "  |  Sim " + fixed$(simRate, 0) + " Hz, dt " + fixed$(dt * 1000, 2) + " ms"
@@ -1440,7 +1473,7 @@ if draw_visualization
     else
         distTag$ = "geometric distance, W=" + fixed$(stage_half_width_m, 1) + " z=" + fixed$(listener_distance_m, 1) + " m"
     endif
-    Text: 0.02, "left", 0.20, "half",
+    Text: 0.02, "left", 0.16, "half",
         ... mappingName$
         ... + "  |  " + distTag$
         ... + "  |  " + fixed$(mixPercent, 0) + "% wet, " + mixLaw$
@@ -1450,6 +1483,11 @@ if draw_visualization
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
 
+    Select outer viewport: 0, 8, 0, 7.65
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
     Font size: 10
     Colour: "Black"
     Line width: 1

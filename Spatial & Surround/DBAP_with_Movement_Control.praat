@@ -3,7 +3,8 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4 (2026)
+# Version: 0.5 (2026)
+# v0.5.1 (2026): RUNTIME VISUAL QA - stacked-panel label gaps corrected; DSP unchanged.
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -14,7 +15,7 @@
 #   2-8 speakers, ten trajectories, with the LFE excluded from the
 #   spatial calculation in the 5.1 and 7.1 layouts.
 #
-# Changelog v0.4 (2026):
+# Changelog v0.5.1 (2026):
 #   - FIX: the radial clamp was deforming the Square and the Zigzag.
 #     Both were built on +-Radius, which puts the corners at sqrt(2)*R,
 #     and the clamp then projected them onto the circle - at Radius 0.8
@@ -145,7 +146,7 @@ if numberOfSelected("Sound") <> 1
     exitScript: "Please select exactly one Sound object."
 endif
 
-form DBAP Movement Control v0.4
+form DBAP Movement Control v0.5.1
     comment === MOVEMENT TRAJECTORY ===
     optionmenu Movement_type: 2
         option: "1. Linear"
@@ -261,7 +262,7 @@ if lfeLevel > 1
     lfeLevel = 1
 endif
 
-# v0.4: Radius is a real, so a negative value was reachable and would
+# v0.5: Radius is a real, so a negative value was reachable and would
 # invert every shape and the clamp with it. 0 is legal - a fixed source
 # at the centre.
 if radius < 0
@@ -511,7 +512,7 @@ if nCtrl > 200000
     nCtrl = 200000
     ctrlCapped = 1
 endif
-# v0.4: report the rate that the rounded point count actually gives,
+# v0.5: report the rate that the rounded point count actually gives,
 # not the pre-rounding figure, and say when a cap has bitten.
 ctrlRate = nCtrl / duration
 achievedPts = ctrlRate / fastRate
@@ -599,7 +600,7 @@ procedure trajectory: .q
         .x = .r * sin(.sw)
         .y = -.r * cos(.sw) * 0.5
     elsif movement_type = 7
-        # v0.4: built on the half-side R/sqrt(2), so the extreme corners
+        # v0.5: built on the half-side R/sqrt(2), so the extreme corners
         # land exactly at Radius and the radial clamp never has to touch
         # the shape. Using +-R on both axes put the corners at sqrt(2)R
         # and the clamp then bent the path.
@@ -616,7 +617,7 @@ procedure trajectory: .q
         .x = .r * cos(.ph)
         .y = .r * 0.5 * sin(.ph)
     elsif movement_type = 10
-        # v0.4: half-side R/sqrt(2), so the CORNERS sit at Radius and the
+        # v0.5: half-side R/sqrt(2), so the CORNERS sit at Radius and the
         # sides stay straight. v0.3 built the square on +-R, which put
         # the corners at sqrt(2)R, and the radial clamp then projected
         # them onto the circle - bowing every edge outward from 0.566 to
@@ -728,7 +729,7 @@ for i from 0 to nCtrl
         # Normalised DBAP holds sum(g^2) = 1, so distance from the array
         # changes only the DISTRIBUTION, not the total energy. This adds
         # the depth term separately when it is wanted.
-        # v0.4: the reference distance is a field. v0.3 hard-wired it to
+        # v0.5: the reference distance is a field. v0.3 hard-wired it to
         # 1, so at the 0.8 default radius rho never exceeded it and the
         # whole term was inert - it did nothing at all unless the path
         # left the unit circle. Coordinates are MAP UNITS, not metres.
@@ -782,7 +783,7 @@ applyElapsed = stopwatch
 # ============================================================
 # COMBINE AND GAIN
 # ============================================================
-# v0.4: channel order. Printing the internal order is not enough once
+# v0.5: channel order. Printing the internal order is not enough once
 # the file is saved as WAV and imported somewhere else - the LFE would
 # land on a surround speaker and vice versa. The standard order puts
 # the LFE fourth.
@@ -838,7 +839,7 @@ resultName$ = selected$("Sound")
 # ============================================================
 # REPORT
 # ============================================================
-writeInfoLine: "=== DBAP with Movement Control v0.4 ==="
+writeInfoLine: "=== DBAP with Movement Control v0.5.1 ==="
 appendInfoLine: "Source: ", soundName$, "  (", fixed$(duration, 2), " s @ ", sr, " Hz)"
 if parseFailed = 1
     appendInfoLine: "  NOTE: a key= entry could not be read and fell back to its"
@@ -1064,7 +1065,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.65, "half", "##DBAP with Movement Control##"
+    Text: 0.5, "centre", 0.65, "half", "##DBAP with Movement Control v0.5.1##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
     if normalize_gains
@@ -1124,15 +1125,15 @@ if draw_visualization
     for sp from 1 to numDir
         Paint circle (mm): "{0.30, 0.55, 0.35}", spkX[sp], spkY[sp], 3.4
         Colour: "White"
-        Font size: 5
+        Font size: 6
         Text: spkX[sp], "centre", spkY[sp], "half", string$(sp)
         Colour: "{0.35, 0.35, 0.35}"
-        Font size: 4
+        Font size: 6
         Text: spkX[sp] * 1.22, "centre", spkY[sp] * 1.22, "half", spkRole$[sp]
     endfor
     if hasLfe = 1
         Paint circle (mm): "{0.55, 0.55, 0.55}", 0, -1.42, 2.2
-        Font size: 4
+        Font size: 6
         Colour: "{0.40, 0.40, 0.40}"
         Text: 0.14, "left", -1.42, "half", "LFE (not spatialised)"
     endif
@@ -1151,7 +1152,7 @@ if draw_visualization
     Select outer viewport: 4.2, 8, 0.72, 2.50
     Select inner viewport: 4.55, 7.75, 0.82, 2.40
 
-    # v0.4: the axis ceiling is the maximum over EVERY speaker and every
+    # v0.5: the axis ceiling is the maximum over EVERY speaker and every
     # plotted instant. v0.3's loop left gg holding only the LAST
     # speaker's gain, so a louder channel elsewhere was clipped by the
     # axis. It also now includes the distance term, which v0.3 applied
@@ -1244,10 +1245,18 @@ if draw_visualization
 
     Colour: "Black"
     Draw inner box
-    Font size: 5
+    Font size: 6
     Marks left: 3, "yes", "yes", "no"
     Font size: 6
-    Text left: "yes", "Gain"
+    Select outer viewport: 4.02, 4.4, 0.72, 2.5
+    Select inner viewport: 4.02, 4.4, 0.74, 2.48
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Gain"
+    Select outer viewport: 4.2, 8, 0.72, 2.5
+    Select inner viewport: 4.55, 7.75, 0.82, 2.4
+    Axes: 0, duration, 0, gTop
     Text bottom: "yes", "Directional gain envelopes, before the global output gain"
 
     # ----------------------------------------------------------
@@ -1255,10 +1264,10 @@ if draw_visualization
     # ----------------------------------------------------------
     # v0.2 analysed channel 1 of the ORIGINAL input, which is not what
     # was spatialised when the source was stereo.
-    Select outer viewport: 4.2, 8, 2.56, 4.20
-    Select inner viewport: 4.55, 7.75, 2.62, 4.10
+    Select outer viewport: 4.2, 8, 2.70, 4.20
+    Select inner viewport: 4.55, 7.75, 2.78, 4.10
 
-    # v0.4: the 5000 Hz ceiling is meaningless above Nyquist on a
+    # v0.5: the 5000 Hz ceiling is meaningless above Nyquist on a
     # low-rate source.
     specTop = 5000
     if specTop > nyq * 0.95
@@ -1272,14 +1281,21 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
     Font size: 6
-    Text left: "yes", "Hz"
+    Select outer viewport: 4.02, 4.4, 2.70, 4.20
+    Select inner viewport: 4.02, 4.4, 2.72, 4.18
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Hz"
+    Select outer viewport: 4.2, 8, 2.70, 4.20
+    Select inner viewport: 4.55, 7.75, 2.78, 4.10
     Text bottom: "yes", "Source (the mono copy that was spatialised)"
 
     # ----------------------------------------------------------
     # PANEL D: OUTPUT
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 4.28, 5.40
-    Select inner viewport: 0.55, 7.75, 4.34, 5.33
+    Select outer viewport: 0, 8, 4.45, 5.57
+    Select inner viewport: 0.55, 7.75, 4.51, 5.50
 
     selectObject: result
     resPeak = Get absolute extremum: 0, 0, "None"
@@ -1307,21 +1323,29 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "Output"
+    Select outer viewport: 0.08, 0.52, 4.45, 5.57
+    Select inner viewport: 0.08, 0.52, 4.47, 5.55
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Output"
+    Select outer viewport: 0, 8, 4.45, 5.57
+    Select inner viewport: 0.55, 7.75, 4.51, 5.50
+    Axes: 0, duration, -aMax, aMax
     Text top: "no", "Output channels 1 and 2 of " + string$(numOut)
     Text bottom: "yes", "Time (s)"
 
     # ----------------------------------------------------------
     # PANEL E: SUMMARY
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 5.48, 6.55
-    Select inner viewport: 0.55, 7.75, 5.54, 6.49
+    Select outer viewport: 0, 8, 5.80, 6.87
+    Select inner viewport: 0.55, 7.75, 5.86, 6.81
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
 
     Font size: 6
     Colour: "{0.28, 0.28, 0.28}"
-    Text: 0.02, "left", 0.80, "half",
+    Text: 0.02, "left", 0.72, "half",
         ... "##" + movementName$ + "##"
         ... + "  " + soundName$
         ... + "  |  " + fixed$(duration, 2) + " s"
@@ -1329,7 +1353,7 @@ if draw_visualization
         ... + radiusTag$
         ... + "  |  max rho " + fixed$(maxRho, 3)
 
-    Text: 0.02, "left", 0.50, "half",
+    Text: 0.02, "left", 0.45, "half",
         ... configName$ + ": " + string$(numDir) + " directional"
         ... + " + " + string$(hasLfe) + " LFE"
         ... + "  |  " + orderName$
@@ -1337,7 +1361,7 @@ if draw_visualization
         ... + "  |  blur " + fixed$(spatial_blur, 2)
         ... + "  |  " + nrmTag$
 
-    Text: 0.02, "left", 0.20, "half",
+    Text: 0.02, "left", 0.18, "half",
         ... "Control " + fixed$(ctrlRate, 0) + " Hz = "
         ... + fixed$(achievedPts, 0) + " pts/cycle"
         ... + "  |  " + normMode$
@@ -1347,6 +1371,11 @@ if draw_visualization
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
 
+    Select outer viewport: 0, 8, 0, 6.97
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
     Font size: 10
     Colour: "Black"
     Line width: 1

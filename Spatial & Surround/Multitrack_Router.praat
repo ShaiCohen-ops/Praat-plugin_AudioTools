@@ -2,7 +2,9 @@
 # Praat AudioTools - Multitrack_Router.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
-# Version: 3.3.2 (2025)
+# Version: 3.3.4 (2026)
+# v3.3.4 (2026): VISUALIZATION LAYOUT FIX - separate header bands and output/Summary spacing; DSP unchanged.
+# v3.3.3 (2026): SPATIAL VISUALIZATION STANDARDIZATION ONLY - label rails, compact summary, typography; DSP unchanged.
 # License: MIT License
 #
 # Description:
@@ -52,7 +54,7 @@
 # Requires: Praat ≥ 6.0
 # Category: Routing / Mixing / Composition
 #
-# Changelog v3.3.2:
+# Changelog v3.3.3:
 #   - Form converted from Apply-loop (beginPause/endPause + repeat…
 #     until 0) to a single-stage form…endform. The dialog now
 #     appears once; the script runs and exits. Removed: v_ persistence
@@ -557,7 +559,7 @@ endform
 
     clearinfo
     appendInfoLine: "=================================================="
-    appendInfoLine: "  Multitrack Router v3.3.1  ·  ", presetName$[preset]
+    appendInfoLine: "  Multitrack Router v3.3.4  ·  ", presetName$[preset]
     appendInfoLine: "=================================================="
     appendInfoLine: ""
     appendInfoLine: nSounds, " sounds -> ", number_of_tracks, " tracks  ",
@@ -1065,14 +1067,18 @@ endform
         Erase all
         
         # --- Title ---
-        Select outer viewport: 0, 8, 0, 0.55
+        Select outer viewport: 0, 8, 0, 0.28
+        Select inner viewport: 0.60, 7.70, 0.02, 0.26
         Axes: 0, 1, 0, 1
         Font size: 12
         Colour: "Black"
-        Text: 0.5, "centre", 0.65, "half", "##MULTITRACK ROUTER##"
+        Text: 0.5, "centre", 0.5, "half", "##MULTITRACK ROUTER v3.3.4##"
+        Select outer viewport: 0, 8, 0.28, 0.55
+        Select inner viewport: 0.60, 7.70, 0.29, 0.54
+        Axes: 0, 1, 0, 1
         Font size: 7
         Colour: "{0.35, 0.35, 0.45}"
-        Text: 0.5, "centre", -0.20, "half",
+        Text: 0.5, "centre", 0.5, "half",
             ... presetName$[preset]
             ... + "  |  " + string$(nSounds) + " snd -> "
             ... + string$(number_of_tracks) + " trk"
@@ -1146,7 +1152,7 @@ endform
                 pn = trkPan[t]
                 # Mini bar showing pan: -1 -> left edge, +1 -> right edge.
                 # Positioned just left of the track label area.
-                Font size: 5
+                Font size: 6
                 if pn < -0.05
                     Colour: "{0.30, 0.50, 0.78}"
                     Text: -globalEnd * 0.040, "right", yMid, "half", "L" + fixed$(abs(pn), 2)
@@ -1291,7 +1297,7 @@ endform
                     
                     # Source index label inside block (only if wide enough)
                     if (bx2 - bx1) > globalEnd * 0.025
-                        Font size: 5
+                        Font size: 6
                         Colour: "White"
                         Text: (bx1 + bx2) / 2, "centre", (yB + yT) / 2, "half", string$(srcI)
                     endif
@@ -1306,7 +1312,7 @@ endform
                     Draw rectangle: bx1, bx2, yB, yT
                     Solid line
                     if (bx2 - bx1) > globalEnd * 0.04
-                        Font size: 5
+                        Font size: 6
                         Colour: "{0.55, 0.50, 0.40}"
                         Text: (bx1 + bx2) / 2, "centre", (yB + yT) / 2, "half", "sil"
                     endif
@@ -1378,12 +1384,20 @@ endform
         else
             Text top: "no", "Output"
         endif
-        Text left: "yes", "Amp"
+        Select outer viewport: 0.08, 0.52, 4.55, 5.85
+        Select inner viewport: 0.08, 0.52, 4.57, 5.83
+        Axes: 0, 1, 0, 1
+        Font size: 7
+        Colour: "Black"
+        Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Amp"
+        Select outer viewport: 0, 8, 4.55, 5.85
+        Select inner viewport: 0.55, 7.65, 4.65, 5.78
+        Axes: 0, resultDur, -ampMax, ampMax
         Text bottom: "yes", "Time (s)"
         
         # --- Panel 3: Summary stats bar ---
-        Select outer viewport: 0, 8, 5.95, 6.65
-        Select inner viewport: 0.55, 7.65, 6.00, 6.60
+        Select outer viewport: 0, 8, 6.05, 6.75
+        Select inner viewport: 0.55, 7.65, 6.10, 6.70
         Axes: 0, 1, 0, 1
         Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
         
@@ -1419,6 +1433,11 @@ endform
         Colour: "Black"
         Draw rectangle: 0, 1, 0, 1
         
+        Select outer viewport: 0, 8, 0, 6.85
+        Font size: 10
+        Colour: "Black"
+        Line width: 1
+        Solid line
         Font size: 10
         Line width: 1
     endif

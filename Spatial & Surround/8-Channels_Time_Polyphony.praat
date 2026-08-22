@@ -3,7 +3,8 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.5 (2026)
+# Version: 0.6 (2026)
+# v0.6 (2026): SPATIAL VISUALIZATION STANDARDIZATION ONLY - label rails, compact summary, typography; DSP unchanged.
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -24,7 +25,7 @@
 #   accelerates or decelerates within a voice; the drift is cumulative
 #   between voices, which is a different thing.
 #
-# Changelog v0.5 (2026):
+# Changelog v0.6 (2026):
 #   - NEW: per-voice edge fades. Each voice ended wherever PSOLA left
 #     it, and if that last sample is not near zero the step to silence
 #     clicks. Long voices running past the source length are correct
@@ -424,7 +425,7 @@ for i from 1 to 8
     endif
     factorErr[i] = achieved[i] - scale[i]
 
-    # --- v0.5: edge fades, per voice, here and nowhere else ---
+    # --- v0.6: edge fades, per voice, here and nowhere else ---
     # A voice ends wherever PSOLA left it, and if that last sample is
     # not near zero the step to silence clicks. This has to happen on
     # each voice before the entry padding, the shared gain and the
@@ -696,7 +697,7 @@ endif
 # ============================================================
 # INFO
 # ============================================================
-writeInfoLine: "=== 8-Channel Time Polyphony v0.5 ==="
+writeInfoLine: "=== 8-Channel Time Polyphony v0.6 ==="
 appendInfoLine: "Source: ", originalName$, "  (", fixed$(originalDur, 3), " s @ ", sr, " Hz)"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "PSOLA: pitch ", fixed$(pitch_floor, 0), "-", fixed$(pitch_ceiling, 0),
@@ -908,7 +909,7 @@ if draw_visualization
     # from the MEASURED durations and the entry delays, so it shows
     # whether the field converges or diverges rather than asserting it.
     Select outer viewport: 0, 4.2, 0.75, 4.60
-    Select inner viewport: 0.38, 4.00, 0.85, 4.50
+    Select inner viewport: 0.55, 4.00, 0.85, 4.34
 
     Axes: 0, maxDur * 1.04, 0, originalDur * 1.06
     Paint rectangle: "{0.96, 0.96, 0.96}", 0, maxDur * 1.04, 0, originalDur * 1.06
@@ -922,7 +923,7 @@ if draw_visualization
             ... + ", " + fixed$(chColB[ch], 2) + "}"
         Line width: 2
         Draw line: entryDelay[ch], 0, entryDelay[ch] + rawDur[ch], originalDur
-        Font size: 5
+        Font size: 6
         Text: entryDelay[ch] + rawDur[ch], "left", originalDur * 0.99, "half",
             ... " " + string$(ch)
     endfor
@@ -932,13 +933,21 @@ if draw_visualization
     Draw inner box
     Font size: 6
     Text bottom: "yes", "Output time (s)"
-    Text left: "yes", "Source consumed (s)"
+    Select outer viewport: 0.08, 0.52, 0.75, 4.6
+    Select inner viewport: 0.08, 0.52, 0.77, 4.58
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Source consumed (s)"
+    Select outer viewport: 0, 4.2, 0.75, 4.6
+    Select inner viewport: 0.55, 4, 0.85, 4.34
+    Axes: 0, maxDur * 1.04, 0, originalDur * 1.06
 
     # ----------------------------------------------------------
     # PANEL B: DURATION FACTOR BARS  (right column, upper)
     # ----------------------------------------------------------
-    Select outer viewport: 4.2, 8, 0.75, 3.00
-    Select inner viewport: 4.52, 7.75, 0.85, 2.92
+    Select outer viewport: 4.2, 8, 0.75, 2.70
+    Select inner viewport: 4.52, 7.75, 0.85, 2.48
 
     axMaxF = maxScale * 1.12
     if axMaxF < 1.2
@@ -958,7 +967,7 @@ if draw_visualization
         colStr$ = "{" + fixed$(chColR[ch], 2) + ", " + fixed$(chColG[ch], 2)
             ... + ", " + fixed$(chColB[ch], 2) + "}"
         Paint rectangle: colStr$, 0, scale[ch], y - 0.38, y + 0.38
-        Font size: 5
+        Font size: 6
         Colour: "{0.30, 0.30, 0.30}"
         Text: axMaxF * 0.015, "left", y, "half", "Ch" + string$(ch)
         Colour: "White"
@@ -969,15 +978,23 @@ if draw_visualization
 
     Colour: "Black"
     Draw inner box
-    Font size: 5
-    Text left: "yes", "Ch"
+    Font size: 6
+    Select outer viewport: 4.02, 4.4, 0.75, 2.70
+    Select inner viewport: 4.02, 4.4, 0.77, 2.68
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Ch"
+    Select outer viewport: 4.2, 8, 0.75, 2.70
+    Select inner viewport: 4.52, 7.75, 0.85, 2.48
+    Axes: 0, axMaxF, 0.5, 8.5
     Text bottom: "yes", "Duration factor  (dotted = x1, blue = longer, orange = shorter)"
 
     # ----------------------------------------------------------
     # PANEL C: DURATION OUTCOME AND ENTRY  (right column, lower)
     # ----------------------------------------------------------
-    Select outer viewport: 4.2, 8, 3.05, 4.60
-    Select inner viewport: 4.52, 7.75, 3.12, 4.52
+    Select outer viewport: 4.2, 8, 3.00, 4.60
+    Select inner viewport: 4.52, 7.75, 3.10, 4.38
 
     Axes: 0, maxDur * 1.06, 0.5, 8.5
     Paint rectangle: "{0.96, 0.96, 0.96}", 0, maxDur * 1.06, 0.5, 8.5
@@ -998,15 +1015,23 @@ if draw_visualization
         endif
         Paint rectangle: colStr$, entryDelay[ch], entryDelay[ch] + rawDur[ch],
             ... y - 0.38, y + 0.38
-        Font size: 5
+        Font size: 6
         Colour: "{0.30, 0.30, 0.30}"
         Text: maxDur * 0.015, "left", y, "half", "Ch" + string$(ch)
     endfor
 
     Colour: "Black"
     Draw inner box
-    Font size: 5
-    Text left: "yes", "Ch"
+    Font size: 6
+    Select outer viewport: 4.02, 4.4, 3.00, 4.60
+    Select inner viewport: 4.02, 4.4, 3.02, 4.58
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Ch"
+    Select outer viewport: 4.2, 8, 3.00, 4.60
+    Select inner viewport: 4.52, 7.75, 3.10, 4.38
+    Axes: 0, maxDur * 1.06, 0.5, 8.5
     Text bottom: "yes", "Entry (grey) and sounding span (s); dotted = source length"
 
     # ----------------------------------------------------------
@@ -1026,8 +1051,8 @@ if draw_visualization
     # ----------------------------------------------------------
     # v0.3 titled this "Output 8-ch mix" but drew channels 1 and 2.
     # They are two of the eight voices, not a mix.
-    Select outer viewport: 0, 8, 4.68, 5.75
-    Select inner viewport: 0.55, 7.72, 4.75, 5.68
+    Select outer viewport: 0, 8, 4.90, 5.95
+    Select inner viewport: 0.55, 7.72, 4.98, 5.72
 
     selectObject: voice[1]
     peakViz = Get absolute extremum: 0, 0, "None"
@@ -1062,20 +1087,28 @@ if draw_visualization
     Text top: "no", "Channel examples  (blue = Ch1 x" + fixed$(scale[1], 2)
         ... + ",  orange = Ch2 x" + fixed$(scale[2], 2)
         ... + ")  — two of eight voices"
-    Text left: "yes", "Amp"
+    Select outer viewport: 0.08, 0.52, 4.90, 5.95
+    Select inner viewport: 0.08, 0.52, 4.92, 5.93
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Amp"
+    Select outer viewport: 0, 8, 4.90, 5.95
+    Select inner viewport: 0.55, 7.72, 4.98, 5.72
+    Axes: 0, maxDur, -ampViz, ampViz
     Text bottom: "yes", "Time (s)"
 
     # ----------------------------------------------------------
     # PANEL E: SUMMARY BAR (full width, bottom)
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 5.82, 6.85
-    Select inner viewport: 0.55, 7.72, 5.88, 6.79
+    Select outer viewport: 0, 8, 6.20, 7.08
+    Select inner viewport: 0.55, 7.72, 6.26, 7.02
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
 
     Font size: 6
     Colour: "{0.28, 0.28, 0.28}"
-    Text: 0.02, "left", 0.80, "half",
+    Text: 0.02, "left", 0.72, "half",
         ... "##" + presetName$ + "##"
         ... + "  " + originalName$
         ... + "  |  Source " + fixed$(originalDur, 2) + " s"
@@ -1083,7 +1116,7 @@ if draw_visualization
         ... + "  |  Distinct factors " + string$(uniqueCount) + "/8"
         ... + "  |  " + alignStr$
 
-    Text: 0.02, "left", 0.50, "half",
+    Text: 0.02, "left", 0.45, "half",
         ... "Factors:  "
         ... + fixed$(scale[1], 2) + "  " + fixed$(scale[2], 2)
         ... + "  " + fixed$(scale[3], 2) + "  " + fixed$(scale[4], 2)
@@ -1094,7 +1127,7 @@ if draw_visualization
         ... + "  |  Fades " + fixed$(start_fade * 1000, 0) + "/"
         ... + fixed$(end_fade * 1000, 0) + " ms"
 
-    Text: 0.02, "left", 0.20, "half",
+    Text: 0.02, "left", 0.18, "half",
         ... "Format: " + formatName$
         ... + "  |  " + string$(outCount) + objWord$
         ... + " x " + string$(outChannels) + " ch"
@@ -1103,6 +1136,11 @@ if draw_visualization
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
 
+    Select outer viewport: 0, 8, 0, 7.18
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
     Font size: 10
     Colour: "Black"
     Line width: 1

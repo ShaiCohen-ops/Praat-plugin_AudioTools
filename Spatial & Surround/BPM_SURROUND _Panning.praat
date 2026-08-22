@@ -3,7 +3,8 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.5 (2026)
+# Version: 0.6 (2026)
+# v0.6.1 (2026): RUNTIME VISUAL QA - stacked-panel label gaps corrected; DSP unchanged.
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -21,7 +22,7 @@
 #     8-channel octophonic ring - all eight are full-range and
 #       directional, Ch4 becomes back-centre, and nothing is called LFE.
 #
-# Changelog v0.5 (2026):
+# Changelog v0.6.1 (2026):
 #   - FIX: Speaker_format and Output_format contradicted each other. In
 #     the full-range mode Ch4 is a directional back-centre speaker, but
 #     the output stage still treated it as an LFE: format 1 was always
@@ -185,7 +186,7 @@ if numberOfSelected("Sound") <> 1
     exitScript: "Please select exactly one Sound object."
 endif
 
-form BPM Surround Panning v0.5
+form BPM Surround Panning v0.6.1
     comment === RATE ===
     optionmenu Rate_mode: 1
         option: "BPM-locked (real tempo sync)"
@@ -384,7 +385,7 @@ spkAngle[6] = 110
 spkAngle[7] = 210
 spkAngle[8] = 150
 
-# v0.5: three formats, because v0.4 called the second one an
+# v0.6: three formats, because v0.4 called the second one an
 # "octophonic ring" while keeping the 7.1 angles (330, 30, 0, 180, 250,
 # 110, 210, 150) with the LFE slot reused. Those are not eight evenly
 # spaced speakers. A real ring is 45 degrees apart, so it is now its own
@@ -460,7 +461,7 @@ patternNames$[14] = "Heartbeat"
 patternNames$[15] = "Breathing"
 patternName$ = patternNames$[pattern]
 
-# v0.5: the fastest internal component of each pattern, used to set the
+# v0.6: the fastest internal component of each pattern, used to set the
 # control rate and the plot sampling. v0.4 used a flat 96 points per
 # phase cycle, which left Quantum with 96/7.1 = 13.5 points per its own
 # fastest term.
@@ -501,7 +502,7 @@ fastRate = patRate * fastMult[pattern]
 # ============================================================
 # CONTROL RATE
 # ============================================================
-# v0.5: derived from the FASTEST internal component, not from the phase
+# v0.6: derived from the FASTEST internal component, not from the phase
 # rate alone.
 ctrlRate = 32 * fastRate
 if ctrlRate < 200
@@ -545,7 +546,7 @@ procedure trajectory: .t
         .x = .r * sin(.ph)
         .y = .r * 0.5 * sin(2 * .ph)
     elsif pattern = 3
-        # v0.5: out and back, so there is no reset. v0.4 grew the radius
+        # v0.6: out and back, so there is no reset. v0.4 grew the radius
         # linearly and snapped it to 0 at every wrap - radius 0.85 -> 0
         # and amplitude 1.00 -> 0.55 in one control step.
         .q = .ph / (2 * pi) - floor(.ph / (2 * pi))
@@ -633,7 +634,7 @@ procedure trajectory: .t
         .amp = 0.5 + 0.5 * (0.5 + 0.5 * sin(.ph))
     endif
 
-    # v0.5: one radius clamp for every pattern, so Path_radius really is
+    # v0.6: one radius clamp for every pattern, so Path_radius really is
     # the greatest distance from the listener. Without it Bounce and
     # Plasma both reached sqrt(2)*r = 1.414r (1.386 at the 0.98 limit,
     # outside the speaker ring), Quantum 1.134r and Wave 1.049r, while
@@ -708,7 +709,7 @@ endfor
 
 # Also record the path and the energy centroid for the plot, so the
 # picture is generated from the same numbers as the audio.
-# v0.5: the drawn path has to resolve the motion too. v0.4 capped it at
+# v0.6: the drawn path has to resolve the motion too. v0.4 capped it at
 # 600 points for the whole file, so 64 file cycles x Lightning's
 # multiplier 8 = 512 phase cycles gave 1.17 points per cycle and the
 # plotted path was not the path.
@@ -786,7 +787,7 @@ if peakDir < 1e-9
     peakDir = 1e-9
 endif
 sharedGain = peak_target / peakDir
-# v0.5: the LF channel is excluded from the SPATIAL normalisation - it
+# v0.6: the LF channel is excluded from the SPATIAL normalisation - it
 # takes no part in sum(g^2) - but it must still take the global output
 # gain, or Lfe_level stops meaning a fixed ratio to the main channels.
 # In v0.4 a quiet source pushed sharedGain to x135 on the directional
@@ -875,7 +876,7 @@ if hasLF = 0 and output_format = 3
     Formula: "self * " + fixed$(lfe_level * sharedGain, 10)
 endif
 
-# v0.5: the downmix matrices depend on what Ch4 IS. With a derived LF
+# v0.6: the downmix matrices depend on what Ch4 IS. With a derived LF
 # channel it belongs in the LFE slot of a 5.1 and nowhere else; with a
 # full-range Ch4 it is a directional speaker that must be folded into
 # the surrounds, and a fresh LF channel has to be derived for 5.1.
@@ -948,7 +949,7 @@ elsif output_format = 4
     mixW[27 + 8] = 1
     mixW[27 + 6] = half
     if hasLF = 0
-        # v0.5: a full-range Ch4 must not simply disappear.
+        # v0.6: a full-range Ch4 must not simply disappear.
         mixW[18 + 4] = half
         mixW[27 + 4] = half
     endif
@@ -969,7 +970,7 @@ else
     mixW[9 + 6] = 0.5
     mixW[9 + 8] = 0.35
     if hasLF = 0
-        # v0.5: a full-range Ch4 sits centre-rear, so it goes to both
+        # v0.6: a full-range Ch4 sits centre-rear, so it goes to both
         # sides equally rather than being dropped.
         mixW[4] = 0.35
         mixW[9 + 4] = 0.35
@@ -1006,7 +1007,7 @@ endif
 # ============================================================
 # REPORT
 # ============================================================
-writeInfoLine: "=== BPM Surround Panning v0.5 ==="
+writeInfoLine: "=== BPM Surround Panning v0.6.1 ==="
 appendInfoLine: "Source: ", originalName$, "  (", fixed$(duration, 2), " s @ ", sr, " Hz)"
 appendInfoLine: "Pattern: ", patternName$
 appendInfoLine: ""
@@ -1150,7 +1151,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##BPM SURROUND PANNING##"
+    Text: 0.5, "centre", 0.68, "half", "##BPM SURROUND PANNING v0.6.1##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
     if rate_mode = 1
@@ -1265,16 +1266,16 @@ if draw_visualization
             spkCol$ = "{" + fixed$(chColR[k], 2) + ", " + fixed$(chColG[k], 2) + ", " + fixed$(chColB[k], 2) + "}"
             Paint circle (mm): spkCol$, spkX[k], spkY[k], dotR
             Colour: "White"
-            Font size: 5
+            Font size: 6
             Text: spkX[k], "centre", spkY[k], "half", string$(k)
             Colour: "{0.40, 0.40, 0.40}"
-            Font size: 4
+            Font size: 6
             Text: spkX[k] * 1.22, "centre", spkY[k] * 1.22, "half", chLabel$[k]
         endif
     endfor
     if speaker_format = 1
         Paint circle (mm): "{0.55, 0.55, 0.55}", 0, -1.28, 2.4
-        Font size: 4
+        Font size: 6
         Colour: "{0.40, 0.40, 0.40}"
         Text: 0.30, "left", -1.28, "half", "LFE (not spatialised)"
     endif
@@ -1333,17 +1334,25 @@ if draw_visualization
 
     Colour: "Black"
     Draw inner box
-    Font size: 5
+    Font size: 6
     Marks left: 3, "yes", "yes", "no"
     Font size: 6
-    Text left: "yes", "Gain"
+    Select outer viewport: 4.02, 4.4, 0.72, 2.55
+    Select inner viewport: 4.02, 4.4, 0.74, 2.53
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Gain"
+    Select outer viewport: 4.2, 8, 0.72, 2.55
+    Select inner viewport: 4.55, 7.75, 0.82, 2.45
+    Axes: 0, cycDur, 0, 1.05
     Text bottom: "yes", "Gain envelopes, one pattern cycle (colour = channel)"
 
     # ----------------------------------------------------------
     # PANEL C: POLAR MEAN GAIN
     # ----------------------------------------------------------
-    Select outer viewport: 4.2, 8, 2.62, 4.20
-    Select inner viewport: 4.55, 7.75, 2.70, 4.10
+    Select outer viewport: 4.2, 8, 2.78, 4.20
+    Select inner viewport: 4.55, 7.75, 2.86, 4.10
 
     Axes: -1.35, 1.35, -1.35, 1.35
     Paint rectangle: "{0.96, 0.96, 0.96}", -1.35, 1.35, -1.35, 1.35
@@ -1374,14 +1383,14 @@ if draw_visualization
 
     Colour: "Black"
     Draw inner box
-    Font size: 5
+    Font size: 6
     Text bottom: "yes", "Mean gain per speaker (normalised to the loudest)"
 
     # ----------------------------------------------------------
     # PANEL D: OUTPUT WAVEFORM
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 4.28, 5.40
-    Select inner viewport: 0.55, 7.75, 4.34, 5.33
+    Select outer viewport: 0, 8, 4.45, 5.57
+    Select inner viewport: 0.55, 7.75, 4.51, 5.50
 
     selectObject: result
     resPeak = Get absolute extremum: 0, 0, "None"
@@ -1410,21 +1419,29 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "Output"
+    Select outer viewport: 0.08, 0.52, 4.45, 5.57
+    Select inner viewport: 0.08, 0.52, 4.47, 5.55
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Output"
+    Select outer viewport: 0, 8, 4.45, 5.57
+    Select inner viewport: 0.55, 7.75, 4.51, 5.50
+    Axes: 0, finalDur, -ampMax, ampMax
     Text top: "no", "Output channels 1 and 2  (two of " + string$(outChannels) + ")"
     Text bottom: "yes", "Time (s)"
 
     # ----------------------------------------------------------
     # PANEL E: SUMMARY
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 5.48, 6.55
-    Select inner viewport: 0.55, 7.75, 5.54, 6.49
+    Select outer viewport: 0, 8, 5.80, 6.87
+    Select inner viewport: 0.55, 7.75, 5.86, 6.81
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
 
     Font size: 6
     Colour: "{0.28, 0.28, 0.28}"
-    Text: 0.02, "left", 0.80, "half",
+    Text: 0.02, "left", 0.72, "half",
         ... "##" + patternName$ + "##"
         ... + "  " + originalName$
         ... + "  |  " + rateTag$
@@ -1432,14 +1449,14 @@ if draw_visualization
         ... + fixed$(patRate * duration, 1) + " cycles"
         ... + "  |  " + fixed$(finalDur, 2) + " s"
 
-    Text: 0.02, "left", 0.50, "half",
+    Text: 0.02, "left", 0.45, "half",
         ... formatName$
         ... + "  |  " + string$(nDir) + " directional ch"
         ... + "  |  " + spatTag$
         ... + "  |  focus " + fixed$(source_focus, 2)
         ... + "  |  radius " + fixed$(path_radius, 2)
 
-    Text: 0.02, "left", 0.20, "half",
+    Text: 0.02, "left", 0.18, "half",
         ... "Output: " + outFormat$
         ... + "  |  " + stemNote$
         ... + "  |  Peak " + fixed$(finalPeak, 3)
@@ -1447,6 +1464,11 @@ if draw_visualization
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
 
+    Select outer viewport: 0, 8, 0, 6.97
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
     Font size: 10
     Colour: "Black"
     Line width: 1

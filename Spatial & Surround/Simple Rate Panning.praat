@@ -3,7 +3,8 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2025) - Fixed panning
+# Version: 0.4 (2025) - Fixed panning
+# v0.4 (2026): SPATIAL VISUALIZATION STANDARDIZATION ONLY - label rails, compact summary, typography; DSP unchanged.
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -19,7 +20,7 @@
 #   Cohen, S. (2025). Praat AudioTools: An Offline Analysis-Resynthesis Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
-# Changelog v0.3:
+# Changelog v0.4:
 #   - FIXED: Used row instead of col to detect channel (critical bug)
 #   - FIXED: Convert to mono first for proper stereo panning effect
 #   - Combined L/R formulas into single pass
@@ -36,7 +37,7 @@ dur = Get total duration
 sr = Get sampling frequency
 nCh = Get number of channels
 
-form Simple Rate Panning v0.3
+form Simple Rate Panning v0.4
     comment ==== Presets ====
     optionmenu Preset: 1
         option Custom
@@ -171,7 +172,7 @@ else
     waveName$ = "Sawtooth"
 endif
 
-writeInfoLine: "=== Simple Rate Panning v0.3 ==="
+writeInfoLine: "=== Simple Rate Panning v0.4 ==="
 appendInfoLine: "Input: ", originalName$
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Rate: ", fixed$(pan_rate_Hz, 2), " Hz"
@@ -288,37 +289,51 @@ if draw_visualization
     Erase all
     
     # Title
-    Select outer viewport: 0, 7, 0, 0.5
+    Select outer viewport: 0, 8, 0, 0.5
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "Simple Rate Panning: " + presetName$ + " (" + waveName$ + " @ " + fixed$(pan_rate_Hz, 2) + " Hz)"
+    Text: 0.5, "centre", 0.5, "half", "Simple Rate Panning: " + presetName$ + " (" + waveName$ + " @ " + fixed$(pan_rate_Hz, 2) + " Hz)" + " | v0.4"
     
     # Original waveform
-    Select outer viewport: 0, 7, 0.5, 1.7
-    Select inner viewport: 0.6, 6.6, 0.65, 1.55
+    Select outer viewport: 0, 8, 0.5, 1.7
+    Select inner viewport: 0.60, 7.70, 0.65, 1.55
     selectObject: original
     Colour: "{0.5, 0.5, 0.5}"
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
-    Font size: 8
-    Text left: "yes", "Original"
+    Font size: 7
+    Select outer viewport: 0.08, 0.52, 0.5, 1.7
+    Select inner viewport: 0.08, 0.52, 0.52, 1.68
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Original"
+    Select outer viewport: 0, 8, 0.5, 1.7
+    Select inner viewport: 0.60, 7.70, 0.65, 1.55
     
     # Result waveform
-    Select outer viewport: 0, 7, 1.7, 2.9
-    Select inner viewport: 0.6, 6.6, 1.85, 2.75
+    Select outer viewport: 0, 8, 1.7, 2.9
+    Select inner viewport: 0.60, 7.70, 1.85, 2.75
     selectObject: result
     Colour: "{0.3, 0.5, 0.7}"
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
-    Font size: 8
-    Text left: "yes", "Panned"
+    Font size: 7
+    Select outer viewport: 0.08, 0.52, 1.7, 2.9
+    Select inner viewport: 0.08, 0.52, 1.72, 2.88
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Panned"
+    Select outer viewport: 0, 8, 1.7, 2.9
+    Select inner viewport: 0.60, 7.70, 1.85, 2.75
     Text bottom: "yes", "Time (s)"
     
     # Pan modulator visualization
-    Select outer viewport: 0, 7, 3.1, 4.6
-    Select inner viewport: 0.6, 6.6, 3.25, 4.45
+    Select outer viewport: 0, 8, 3.1, 4.6
+    Select inner viewport: 0.60, 7.70, 3.25, 4.45
     
     Axes: 0, dur, -1.2, 1.2
     
@@ -413,17 +428,36 @@ if draw_visualization
     Line width: 1
     Colour: "Black"
     Draw inner box
-    Font size: 8
-    Text left: "yes", "Pan"
+    Font size: 7
+    Select outer viewport: 0.08, 0.52, 3.1, 4.6
+    Select inner viewport: 0.08, 0.52, 3.12, 4.58
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Pan"
+    Select outer viewport: 0, 8, 3.1, 4.6
+    Select inner viewport: 0.60, 7.70, 3.25, 4.45
+    Axes: 0, dur, -1.2, 1.2
     Text bottom: "yes", "Time (s)"
     Text top: "no", "Pan Position (L=-1, R=+1)"
     
-    # Parameters
-    Select outer viewport: 0, 7, 4.7, 5.1
+    # === SUMMARY ===
+    Select outer viewport: 0, 8, 4.75, 5.55
+    Select inner viewport: 0.60, 7.70, 4.82, 5.48
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
     Font size: 7
-    Colour: "{0.4, 0.4, 0.4}"
-    Text: 0.5, "centre", 0.5, "half", "Rate: " + fixed$(pan_rate_Hz, 2) + " Hz | Depth: " + fixed$(pan_depth_percent, 0) + "% | Center: " + fixed$(pan_center, 2) + " | Phase: " + fixed$(start_phase_degrees, 0) + "deg | Mix: " + fixed$(mix_percent, 0) + "%"
-    
+    Colour: "Black"
+    Text: 0.02, "left", 0.76, "half", "##Summary##"
+    Font size: 6
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.02, "left", 0.46, "half", presetName$ + " | " + waveName$ + " | Rate " + fixed$(pan_rate_Hz, 2) + " Hz | Depth " + fixed$(pan_depth_percent, 0) + "\%  "
+    Text: 0.02, "left", 0.18, "half", "Center " + fixed$(pan_center, 2) + " | Phase " + fixed$(start_phase_degrees, 0) + " deg | Mix " + fixed$(mix_percent, 0) + "\%  | Duration " + fixed$(dur, 2) + " s"
+    Select inner viewport: 0.60, 7.70, 4.82, 5.48
+    Axes: 0, 1, 0, 1
+    Colour: "Black"
+    Draw inner box
+    Select outer viewport: 0, 8, 0, 5.65
     Font size: 10
     Colour: "Black"
 endif
