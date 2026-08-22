@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2026)
+# Version: 0.4 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -22,6 +22,14 @@
 #   R  = retrograde
 #   RI = retrograde of the complement inversion
 #
+# Changelog v0.4:
+#   - VISUALIZATION / FORM STANDARDIZATION ONLY; audio/DSP, analysis,
+#     parameter mapping and rendering logic are unchanged.
+#   - Standardized title/version, Picture-page restoration,
+#     typography and summary/export behavior for AudioTools.
+#   - Technical controls moved to optional Advanced settings;
+#     defaults remain identical to the previous main form.
+#
 # Changelog v0.3:
 #   - Fixed tape-speed sign: 0=-6 st, 6=0 st, 11=+5 st.
 #   - Fixed non-zero input start times by processing a zero-based copy.
@@ -35,7 +43,7 @@
 #   - Updated visualization to the AudioTools text/layout standard.
 # ============================================================
 
-form Hexaphonic Serial Audio Processor
+form Hexaphonic Serial Audio Processor v0.4
     optionmenu Preset: 1
         option Custom
         option Classic Webern
@@ -53,23 +61,37 @@ form Hexaphonic Serial Audio Processor
     sentence Duration_row 6 2 9 1 11 4 8 0 7 3 10 5
     sentence Panning_row 4 8 1 10 3 7 0 11 5 9 2 6
     sentence Speed_row 6 5 7 4 8 3 9 2 10 1 11 0
-    comment === Parameter ranges ===
-    positive Min_rate 0.5
-    positive Max_rate 50
-    positive Min_depth 0.05
-    positive Max_depth 0.95
-    positive Min_duration 0.1
-    positive Max_duration 3.0
-    boolean Perceptual_rate_scaling 1
-    comment === Random preset ===
-    integer Random_seed 0
-    comment (0 = unpredictable; nonzero = reproducible Random Permutations)
-    comment === Output ===
-    real Safety_peak 0.99
-    comment (0 disables; otherwise attenuation only)
+    boolean Advanced_settings 0
     boolean Draw_visualization 1
     boolean Play_result 1
 endform
+
+# Advanced defaults: identical to the previous main-form defaults.
+min_rate = 0.5
+max_rate = 50
+min_depth = 0.05
+max_depth = 0.95
+min_duration = 0.1
+max_duration = 3.0
+perceptual_rate_scaling = 1
+random_seed = 0
+safety_peak = 0.99
+
+if advanced_settings
+    beginPause: "Hexaphonic Serial Audio Processor v0.4 - Advanced settings"
+        comment: "=== Parameter ranges ==="
+        positive: "Min_rate", "0.5"
+        positive: "Max_rate", "50"
+        positive: "Min_depth", "0.05"
+        positive: "Max_depth", "0.95"
+        positive: "Min_duration", "0.1"
+        positive: "Max_duration", "3.0"
+        boolean: "Perceptual_rate_scaling", 1
+        comment: "=== Random preset / output ==="
+        integer: "Random_seed", "0"
+        real: "Safety_peak", "0.99"
+    clicked = endPause: "Continue", 1
+endif
 
 # ============================================================
 # INPUT
@@ -300,7 +322,7 @@ selectObject: sourceMono
 Shift times by: -source_start
 Rename: "serialSource"
 
-writeInfoLine: "=== Hexaphonic Serial Audio Processor v0.3 ==="
+writeInfoLine: "=== Hexaphonic Serial Audio Processor v0.4 ==="
 appendInfoLine: "Source: ", soundName$, " (", fixed$(duration, 3), " s)"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Input channels: ", num_channels, " -> stereo serial output"
@@ -459,6 +481,7 @@ appendInfoLine: "Output peak: ", fixed$(peakBefore * safetyGain, 6)
 # VISUALIZATION
 # ============================================================
 if draw_visualization
+    pageHeight = 5.3
     selectObject: soundID
     if num_channels > 1
         vizInput = Convert to mono
@@ -476,7 +499,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "##Hexaphonic Serial Audio Processor##"
+    Text: 0.5, "centre", 0.5, "half", "##Hexaphonic Serial Audio Processor v0.4##"
 
     # Metadata subtitle
     Select outer viewport: 0, 8, 0.38, 0.58
@@ -594,6 +617,13 @@ if draw_visualization
     Font size: 10
     Colour: "Black"
     Line width: 1
+    # Restore full Picture page for export
+    Select outer viewport: 0, 8, 0, pageHeight
+    Axes: 0, 1, 0, 1
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
 endif
 
 if play_result

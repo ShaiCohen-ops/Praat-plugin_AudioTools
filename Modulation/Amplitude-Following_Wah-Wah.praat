@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.5 (2026)
+# Version: 0.6 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -13,6 +13,12 @@
 #   time-varying filter centre: louder -> higher/brighter, quieter ->
 #   lower/darker. The mapping uses a fixed dB range below the observed
 #   envelope peak, avoiding min/max normalization of numerical noise.
+#
+# Changelog v0.6:
+#   - VISUALIZATION STANDARDIZATION ONLY; audio/DSP, analysis,
+#     parameter mapping and rendering logic are unchanged.
+#   - Standardized title/version, Picture-page restoration,
+#     typography and summary/export behavior for AudioTools.
 #
 # Changelog v0.5:
 #   - Standardized visualization typography/layout to the AudioTools reference:
@@ -50,7 +56,7 @@ endTime = Get end time
 nyquist = fs / 2
 
 # === Form ===
-form Amplitude Following Wah-Wah
+form Amplitude Following Wah-Wah v0.6
     comment Select a Sound object first
 
     comment === Preset ===
@@ -300,17 +306,19 @@ else
     # VISUALIZATION
     # ========================================================
     if draw_visualization
+        pageHeight = 5.8
         Erase all
 
         # === TITLE ===
-        Select outer viewport: 0, 8, 0, 0.5
+        Select outer viewport: 0, 8, 0, 0.52
+        Select inner viewport: 0.60, 7.70, 0.02, 0.50
         Axes: 0, 1, 0, 1
         Font size: 12
         Colour: "Black"
-        Text: 0.5, "centre", 0.68, "half", "##Amplitude-Following Wah-Wah##"
+        Text: 0.5, "centre", 0.68, "half", "##Amplitude-Following Wah-Wah v0.6##"
         Font size: 7
         Colour: "{0.35, 0.35, 0.52}"
-        Text: 0.5, "centre", -1.30, "half",
+        Text: 0.5, "centre", 0.22, "half",
         ... name$ + "  |  " + presetName$ + "  |  Envelope follower"
 
         # Input waveform
@@ -420,6 +428,13 @@ else
         Draw rectangle: 0, 1, 0, 1
         Font size: 10
         Colour: "Black"
+        # Restore full Picture page for export
+        Select outer viewport: 0, 8, 0, pageHeight
+        Axes: 0, 1, 0, 1
+        Font size: 10
+        Colour: "Black"
+        Line width: 1
+        Solid line
     endif
 
     # Cleanup intermediates

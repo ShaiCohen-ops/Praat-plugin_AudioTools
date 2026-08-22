@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2026)
+# Version: 0.4 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -16,6 +16,12 @@
 #   This is an audio effect, not a standalone plucked-string generator:
 #   the source continues to excite the loop for the full Sound.
 #   Sample rate, duration, start time, and all channels are preserved.
+#
+# Changelog v0.4:
+#   - VISUALIZATION STANDARDIZATION ONLY; audio/DSP, analysis,
+#     parameter mapping and rendering logic are unchanged.
+#   - Standardized title/version, Picture-page restoration,
+#     typography and summary/export behavior for AudioTools.
 #
 # v0.3 changes:
 #   - Corrects loop tuning for the half-sample phase delay introduced by
@@ -39,7 +45,7 @@ endif
 originalSound = selected("Sound")
 baseName$ = selected$("Sound")
 
-form Karplus-Strong Modulator
+form Karplus-Strong Modulator v0.4
     optionmenu Preset: 1
         option Custom (use settings below)
         option Deep Bass Pluck
@@ -132,7 +138,7 @@ maxTargetFreq = kS_base_frequency_Hz * 2^( abs(kS_mod_depth_semitones) / 12)
 minTapDelayMs = (1 / maxTargetFreq - 0.5 * dt) * 1000
 maxTapDelayMs = (1 / minTargetFreq - 0.5 * dt) * 1000
 
-appendInfoLine: "=== Karplus-Strong Modulator v0.3 ==="
+appendInfoLine: "=== Karplus-Strong Modulator v0.4 ==="
 appendInfoLine: "Source: ", baseName$, " (", fixed$(duration, 3), " s)"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Channels: ", numChannels, " | Sample rate: ", fixed$(sampleRate, 0), " Hz"
@@ -223,6 +229,7 @@ appendInfoLine: "Created: ", selected$("Sound")
 # VISUALIZATION - AudioTools house layout
 # ============================================================
 if draw_visualization
+    pageHeight = 6.6
     if safety_peak > 0
         safeStr$ = fixed$(safety_peak, 2)
     else
@@ -235,14 +242,15 @@ if draw_visualization
     Plain line
 
     # ---- TITLE ----
-    Select outer viewport: 0, 8, 0, 0.65
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##Karplus-Strong Modulator##"
+    Text: 0.5, "centre", 0.68, "half", "##Karplus-Strong Modulator v0.4##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
-    Text: 0.5, "centre", -0.22, "half", baseName$ + "  |  " + presetName$ + "  |  continuously excited feedback resonator"
+    Text: 0.5, "centre", 0.22, "half", baseName$ + "  |  " + presetName$ + "  |  continuously excited feedback resonator"
 
     # ---- INPUT WAVEFORM ----
     Select outer viewport: 0, 4.2, 0.75, 2.30
@@ -346,6 +354,13 @@ if draw_visualization
     Font size: 10
     Colour: "Black"
     Line width: 1
+    # Restore full Picture page for export
+    Select outer viewport: 0, 8, 0, pageHeight
+    Axes: 0, 1, 0, 1
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
 endif
 
 selectObject: finalOutput

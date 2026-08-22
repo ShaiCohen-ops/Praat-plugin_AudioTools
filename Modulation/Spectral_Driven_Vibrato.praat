@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2026)
+# Version: 0.4 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -19,6 +19,12 @@
 #   Vibrato is implemented as a causal fractional-delay modulation.
 #   The requested depth is mapped to an approximately symmetric pitch
 #   excursion in semitones; the positive peak is exact by construction.
+#
+# Changelog v0.4:
+#   - VISUALIZATION STANDARDIZATION ONLY; audio/DSP, analysis,
+#     parameter mapping and rendering logic are unchanged.
+#   - Standardized title/version, Picture-page restoration,
+#     typography and summary/export behavior for AudioTools.
 #
 # v0.3 changes:
 #   - Replaces amplitude-dependent raw-bin "roughness" with normalized
@@ -51,7 +57,7 @@ originalEnd = Get end time
 numChannels = Get number of channels
 nyquist = sampling / 2
 
-form Spectral-Driven Vibrato
+form Spectral-Driven Vibrato v0.4
     optionmenu Preset: 1
         option Custom (use settings below)
         option Subtle Natural
@@ -145,7 +151,7 @@ base_delay_ms = max(0, base_delay_ms)
 dry_wet_percent = min(100, max(0, dry_wet_percent))
 safety_peak = min(1, max(0, safety_peak))
 
-appendInfoLine: "=== Spectral-Driven Vibrato v0.3 ==="
+appendInfoLine: "=== Spectral-Driven Vibrato v0.4 ==="
 appendInfoLine: "Source: ", originalName$, " (", fixed$(duration, 3), " s)"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Channels: ", numChannels, " | Sample rate: ", fixed$(sampling, 0), " Hz"
@@ -363,6 +369,7 @@ appendInfoLine: "Output peak: ", fixed$(outputPeak, 6)
 # VISUALIZATION - AudioTools house layout
 # ============================================================
 if draw_visualization
+    pageHeight = 7.0
     if safety_peak > 0
         safeStr$ = fixed$(safety_peak, 2)
     else
@@ -370,20 +377,21 @@ if draw_visualization
     endif
 
     Erase all
-    Select outer viewport: 0, 8, 0, 8
+    Select outer viewport: 0, 8, 0, pageHeight
     Colour: "Black"
     Font size: 10
     Line width: 1
 
     # ---- TITLE ----
-    Select outer viewport: 0, 8, 0, 0.5
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##Spectral-Driven Vibrato##"
+    Text: 0.5, "centre", 0.68, "half", "##Spectral-Driven Vibrato v0.4##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
-    Text: 0.5, "centre", -1.30, "half", originalName$ + "  |  " + presetName$ + "  |  global spectral mapping"
+    Text: 0.5, "centre", 0.22, "half", originalName$ + "  |  " + presetName$ + "  |  global spectral mapping"
 
     # ---- INPUT ----
     Select outer viewport: 0, 4.2, 0.65, 2.15
@@ -515,6 +523,13 @@ if draw_visualization
     Font size: 10
     Colour: "Black"
     Line width: 1
+    # Restore full Picture page for export
+    Select outer viewport: 0, 8, 0, pageHeight
+    Axes: 0, 1, 0, 1
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
 endif
 
 selectObject: result

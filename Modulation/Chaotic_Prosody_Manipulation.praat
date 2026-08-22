@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.5 (2026)
+# Version: 0.6 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -21,6 +21,17 @@
 #     small perturbation of the original intonation.
 #   - Lorenz_scale=0 disables Lorenz AM (unity multiplier).
 #   - Random_seed affects OU pitch only; 0 uses an unpredictable seed.
+#
+# Changelog v0.7:
+#   - VISUALIZATION ONLY: expanded the Summary strip and split the dense
+#     Lorenz/AM/Wet readout into three evenly spaced lines.
+#   - Synchronized the active Info banner version.
+#
+# Changelog v0.6:
+#   - VISUALIZATION STANDARDIZATION ONLY; audio/DSP, analysis,
+#     parameter mapping and rendering logic are unchanged.
+#   - Standardized title/version, Picture-page restoration,
+#     typography and summary/export behavior for AudioTools.
 #
 # Changelog v0.5:
 #   - Performance: Lorenz AM is now generated at control rate instead of
@@ -57,7 +68,7 @@ num_channels = Get number of channels
 xmin_original = Get start time
 nyquist = sampling_rate / 2
 
-form Chaotic Prosody Manipulation
+form Chaotic Prosody Manipulation v0.7
     comment === Preset ===
     optionmenu Preset 1
         option Custom (use settings below)
@@ -195,7 +206,7 @@ else
     pitchModeShort$ = "OU"
 endif
 
-writeInfoLine: "=== Chaotic Prosody Manipulation v0.4 ==="
+writeInfoLine: "=== Chaotic Prosody Manipulation v0.7 ==="
 appendInfoLine: "Source: ", sound_name$, " (", fixed$(duration, 2), " s)"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Pitch mode: ", pitchModeShort$
@@ -508,6 +519,7 @@ finalName$ = selected$("Sound")
 # VISUALIZATION - AUDIOTOOLS TEXT/LAYOUT STANDARD
 # ============================================================
 if draw_visualization
+    pageHeight = 6.15
     # Zero-based mono display copies so waveform time matches control plots.
     selectObject: original
     if num_channels > 1
@@ -532,14 +544,15 @@ if draw_visualization
     Erase all
 
     # === TITLE ===
-    Select outer viewport: 0, 8, 0, 0.5
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##Chaotic Prosody Manipulation##"
+    Text: 0.5, "centre", 0.68, "half", "##Chaotic Prosody Manipulation v0.7##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
-    Text: 0.5, "centre", -1.30, "half",
+    Text: 0.5, "centre", 0.22, "half",
     ... sound_name$ + "  |  " + presetName$ + "  |  " + pitchModeShort$
 
     # Input waveform.
@@ -657,29 +670,39 @@ if draw_visualization
     Text left: "yes", "AM multiplier"
     Text bottom: "yes", "Time (s)"
 
-    # Summary panel: heading + two short left-aligned lines.
-    Select outer viewport: 0, 8, 4.90, 5.62
+    # Summary panel: heading + three evenly spaced left-aligned lines.
+    Select outer viewport: 0, 8, 4.90, 5.95
+    Select inner viewport: 0.55, 7.75, 4.98, 5.87
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text: 0.02, "left", 0.80, "half", "##Summary##"
+    Text: 0.02, "left", 0.82, "half", "##Summary##"
     Font size: 6
     Colour: "{0.30, 0.30, 0.30}"
     if pitch_mode = 1
-        summaryPitch$ = "Pitch: Logistic r=" + fixed$(logistic_r, 2) + " | depth=" + fixed$(logistic_depth, 2) + " | base F0=" + fixed$(f0_base, 1) + " Hz"
+        summaryPitch$ = "Pitch: Logistic r=" + fixed$(logistic_r, 2) + "  |  depth=" + fixed$(logistic_depth, 2) + "  |  base F0=" + fixed$(f0_base, 1) + " Hz"
     else
-        summaryPitch$ = "Pitch: OU theta=" + fixed$(oU_theta, 2) + " | sigma=" + fixed$(oU_sigma, 1) + " | base F0=" + fixed$(f0_base, 1) + " Hz"
+        summaryPitch$ = "Pitch: OU theta=" + fixed$(oU_theta, 2) + "  |  sigma=" + fixed$(oU_sigma, 1) + "  |  base F0=" + fixed$(f0_base, 1) + " Hz"
     endif
-    Text: 0.02, "left", 0.50, "half", summaryPitch$
-    summaryAM$ = "Lorenz: sigma=" + fixed$(lorenz_sigma, 1) + " | rho=" + fixed$(lorenz_rho, 1) + " | beta=" + fixed$(lorenz_beta, 3) + " | AM scale=" + fixed$(lorenz_scale, 2) + " | Wet=" + fixed$(dry_wet_percent, 0) + "%"
-    Text: 0.02, "left", 0.18, "half", summaryAM$
+    Text: 0.02, "left", 0.56, "half", summaryPitch$
+    summaryLorenz$ = "Lorenz: sigma=" + fixed$(lorenz_sigma, 1) + "  |  rho=" + fixed$(lorenz_rho, 1) + "  |  beta=" + fixed$(lorenz_beta, 3)
+    Text: 0.02, "left", 0.32, "half", summaryLorenz$
+    summaryMix$ = "AM scale=" + fixed$(lorenz_scale, 2) + "  |  Wet=" + fixed$(dry_wet_percent, 0) + "%  |  duration=" + fixed$(duration, 2) + " s  |  channels=" + string$(num_channels)
+    Text: 0.02, "left", 0.10, "half", summaryMix$
 
     Font size: 10
     Colour: "Black"
     Line width: 1
     removeObject: origDisplay, resultDisplay
+    # Restore full Picture page for export
+    Select outer viewport: 0, 8, 0, pageHeight
+    Axes: 0, 1, 0, 1
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
 endif
 
 # ============================================================

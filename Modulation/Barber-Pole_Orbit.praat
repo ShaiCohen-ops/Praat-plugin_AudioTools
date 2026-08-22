@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4 (2026)
+# Version: 0.5 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -15,6 +15,12 @@
 #   IMPORTANT: This is not a Shepard-tone resynthesizer and does not
 #   produce discrete octave pitch layers. "Barber-pole" describes the
 #   perceptual/orbital character of the delay modulation.
+#
+# Changelog v0.5:
+#   - VISUALIZATION STANDARDIZATION ONLY; audio/DSP, analysis,
+#     parameter mapping and rendering logic are unchanged.
+#   - Standardized title/version, Picture-page restoration,
+#     typography and summary/export behavior for AudioTools.
 #
 # Changelog v0.4:
 #   - Corrected the DSP description: the effect is a modulated-delay orbit,
@@ -48,7 +54,7 @@ soundStart = Get start time
 soundEnd = Get end time
 
 # === Form ===
-form Barber-Pole Orbit Effect
+form Barber-Pole Orbit Effect v0.5
     comment Select a Sound object first
 
     comment === Preset ===
@@ -184,7 +190,7 @@ base = max(1, min(maxDelaySamples, base))
 actualBaseDelayMs = base * 1000 / sampling
 
 # === Info ===
-writeInfoLine: "=== Barber-Pole Orbit v0.4 ==="
+writeInfoLine: "=== Barber-Pole Orbit v0.5 ==="
 appendInfoLine: "Source: ", originalName$, " (", fixed$(dur, 2), " s)"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Model: barber-pole-inspired feedforward modulated-delay orbit"
@@ -273,6 +279,7 @@ resultStart = Get start time
 
 # === Visualization ===
 if draw_visualization
+    pageHeight = 5.8
     Erase all
 
     # Title
@@ -280,7 +287,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "##Barber-Pole Orbit##"
+    Text: 0.5, "centre", 0.5, "half", "##Barber-Pole Orbit v0.5##"
 
     # Metadata subtitle
     Select outer viewport: 0, 8, 0.38, 0.62
@@ -401,6 +408,13 @@ if draw_visualization
     Font size: 10
     Colour: "Black"
     Line width: 1
+    # Restore full Picture page for export
+    Select outer viewport: 0, 8, 0, pageHeight
+    Axes: 0, 1, 0, 1
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
 endif
 
 # === Cleanup ===

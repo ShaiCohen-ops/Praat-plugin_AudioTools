@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 2.1 (2025)
+# Version: 2.2 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -13,6 +13,12 @@
 #   (counter-rotating phase drift) modes. Creates thickening,
 #   spatial movement, and ensemble effects.
 #
+# Changelog v2.2:
+#   - VISUALIZATION STANDARDIZATION ONLY; audio/DSP, analysis,
+#     parameter mapping and rendering logic are unchanged.
+#   - Standardized title/version, Picture-page restoration,
+#     typography and summary/export behavior for AudioTools.
+#
 # Changelog v2.1:
 #   - Fixed input check
 #   - Fixed formula syntax (use object IDs)
@@ -21,7 +27,7 @@
 #   - Added info output
 # ============================================================
 
-form Unified Chorus Generator
+form Unified Chorus Generator v2.2
     comment Select a Sound object first
     
     comment === Mode Selection ===
@@ -137,7 +143,7 @@ endif
 base = round(base_delay_ms * sr / 1000)
 
 # === Info ===
-writeInfoLine: "=== Unified Chorus Generator v2.1 ==="
+writeInfoLine: "=== Unified Chorus Generator v2.2 ==="
 appendInfoLine: "Source: ", original_name$, " (", fixed$(duration, 2), " s)"
 appendInfoLine: "Mode: ", modeName$
 appendInfoLine: "Preset: ", presetName$
@@ -220,236 +226,200 @@ Scale peak: scale_peak
 # ============================================================
 
 if draw_visualization
+    pageHeight = 6.6
     Erase all
-    
-    # Title
-    Select outer viewport: 0, 8, 0.1, 0.5
+
+    # === Standard header ===
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
+    Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "Chorus: " + original_name$ + " (" + modeName$ + " - " + presetName$ + ")"
-    
-    # Original waveform
-    Select outer viewport: 0, 8, 0.6, 1.5
-    Select inner viewport: 0.6, 7.6, 0.7, 1.4
+    Text: 0.5, "centre", 0.68, "half", "##Unified Chorus Generator v2.2##"
+    Font size: 7
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half", original_name$ + "  |  " + presetName$ + "  |  " + modeName$
+
+    # Input waveform
+    Select outer viewport: 0, 4, 0.65, 1.65
+    Select inner viewport: 0.60, 3.85, 0.78, 1.52
     selectObject: original
-    Colour: "{0.6, 0.6, 0.6}"
+    Colour: "{0.55, 0.55, 0.55}"
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
-    Font size: 8
-    Text left: "yes", "Original"
-    
-    # Result waveform
-    Select outer viewport: 0, 8, 1.6, 2.5
-    Select inner viewport: 0.6, 7.6, 1.7, 2.4
+    Font size: 7
+    Text left: "yes", "Input"
+
+    # Output waveform
+    Select outer viewport: 4, 8, 0.65, 1.65
+    Select inner viewport: 4.45, 7.70, 0.78, 1.52
     selectObject: result
-    Colour: "{0.5, 0.6, 0.7}"
+    Colour: "{0.22, 0.46, 0.82}"
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
-    Text left: "yes", "Chorus"
-    Text bottom: "yes", "Time (s)"
-    
-    # LFO visualization
-    Select outer viewport: 0, 8, 2.7, 4.0
-    Select inner viewport: 0.6, 7.6, 2.8, 3.9
-    
+    Font size: 7
+    Text left: "yes", "Output"
+
+    # LFO trajectories: the actual delay-control laws used by the selected mode
+    Select outer viewport: 0, 8, 1.85, 3.35
+    Select inner viewport: 0.60, 7.70, 2.00, 3.20
     vizDur = min(2, duration)
     nPoints = 400
-    
-    Axes: 0, vizDur, -1.2, 1.2
-    Paint rectangle: "{0.95, 0.95, 0.95}", 0, vizDur, -1.2, 1.2
-    
-    # Zero line
-    Colour: "{0.85, 0.85, 0.85}"
+    Axes: 0, vizDur, -1.05, 1.05
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, vizDur, -1.05, 1.05
+    Colour: "{0.82, 0.82, 0.82}"
+    Dotted line
     Draw line: 0, 0, vizDur, 0
-    
-    # Draw LFOs based on mode
+    Solid line
     Line width: 1.5
-    
+
     if chorus_Mode = 1
-        # Dual tap - 2 LFOs
-        Colour: "{0.5, 0.6, 0.8}"
+        Colour: "{0.22, 0.46, 0.82}"
         for p from 2 to nPoints
-            t1 = (p - 2) / nPoints * vizDur
-            t2 = (p - 1) / nPoints * vizDur
-            lfo1a = modulation_depth * sin(2*pi*rate_1*t1)
-            lfo1b = modulation_depth * sin(2*pi*rate_1*t2)
-            Draw line: t1, lfo1a * 4, t2, lfo1b * 4
+            t1 = (p - 2) / (nPoints - 1) * vizDur
+            t2 = (p - 1) / (nPoints - 1) * vizDur
+            y1 = sin(2*pi*rate_1*t1)
+            y2 = sin(2*pi*rate_1*t2)
+            Draw line: t1, y1, t2, y2
         endfor
-        
-        Colour: "{0.8, 0.5, 0.5}"
+        Colour: "{0.65, 0.35, 0.55}"
         for p from 2 to nPoints
-            t1 = (p - 2) / nPoints * vizDur
-            t2 = (p - 1) / nPoints * vizDur
-            lfo2a = modulation_depth * sin(2*pi*rate_2*t1 + 2.0)
-            lfo2b = modulation_depth * sin(2*pi*rate_2*t2 + 2.0)
-            Draw line: t1, lfo2a * 4, t2, lfo2b * 4
+            t1 = (p - 2) / (nPoints - 1) * vizDur
+            t2 = (p - 1) / (nPoints - 1) * vizDur
+            y1 = sin(2*pi*rate_2*t1 + 2.0)
+            y2 = sin(2*pi*rate_2*t2 + 2.0)
+            Draw line: t1, y1, t2, y2
         endfor
-        
+        trajectoryLabel$ = "Dual tap: two independent delay trajectories"
     elsif chorus_Mode = 2
-        # Tri tap - 3 LFOs
-        Colour: "{0.5, 0.6, 0.8}"
+        Colour: "{0.22, 0.46, 0.82}"
         for p from 2 to nPoints
-            t1 = (p - 2) / nPoints * vizDur
-            t2 = (p - 1) / nPoints * vizDur
-            lfo1a = modulation_depth * sin(2*pi*rate_1*t1)
-            lfo1b = modulation_depth * sin(2*pi*rate_1*t2)
-            Draw line: t1, lfo1a * 3, t2, lfo1b * 3
+            t1 = (p - 2) / (nPoints - 1) * vizDur
+            t2 = (p - 1) / (nPoints - 1) * vizDur
+            y1 = sin(2*pi*rate_1*t1)
+            y2 = sin(2*pi*rate_1*t2)
+            Draw line: t1, y1, t2, y2
         endfor
-        
-        Colour: "{0.5, 0.8, 0.5}"
+        Colour: "{0.30, 0.62, 0.42}"
         for p from 2 to nPoints
-            t1 = (p - 2) / nPoints * vizDur
-            t2 = (p - 1) / nPoints * vizDur
-            lfo2a = modulation_depth * sin(2*pi*rate_2*t1 + 2.1)
-            lfo2b = modulation_depth * sin(2*pi*rate_2*t2 + 2.1)
-            Draw line: t1, lfo2a * 3, t2, lfo2b * 3
+            t1 = (p - 2) / (nPoints - 1) * vizDur
+            t2 = (p - 1) / (nPoints - 1) * vizDur
+            y1 = sin(2*pi*rate_2*t1 + 2.1)
+            y2 = sin(2*pi*rate_2*t2 + 2.1)
+            Draw line: t1, y1, t2, y2
         endfor
-        
-        Colour: "{0.8, 0.5, 0.5}"
+        Colour: "{0.65, 0.35, 0.55}"
         for p from 2 to nPoints
-            t1 = (p - 2) / nPoints * vizDur
-            t2 = (p - 1) / nPoints * vizDur
-            lfo3a = modulation_depth * sin(2*pi*rate_3*t1 + 4.2)
-            lfo3b = modulation_depth * sin(2*pi*rate_3*t2 + 4.2)
-            Draw line: t1, lfo3a * 3, t2, lfo3b * 3
+            t1 = (p - 2) / (nPoints - 1) * vizDur
+            t2 = (p - 1) / (nPoints - 1) * vizDur
+            y1 = sin(2*pi*rate_3*t1 + 4.2)
+            y2 = sin(2*pi*rate_3*t2 + 4.2)
+            Draw line: t1, y1, t2, y2
         endfor
-        
-    elsif chorus_Mode = 3
-        # Orbit - counter-rotating
-        Colour: "{0.5, 0.6, 0.8}"
+        trajectoryLabel$ = "Tri tap: three phase-separated delay trajectories"
+    else
+        Colour: "{0.22, 0.46, 0.82}"
         for p from 2 to nPoints
-            t1 = (p - 2) / nPoints * vizDur
-            t2 = (p - 1) / nPoints * vizDur
-            lfo1a = modulation_depth * sin(2*pi*rate_1*t1 + 2*pi*phase_drift_hz*t1)
-            lfo1b = modulation_depth * sin(2*pi*rate_1*t2 + 2*pi*phase_drift_hz*t2)
-            Draw line: t1, lfo1a * 4, t2, lfo1b * 4
+            t1 = (p - 2) / (nPoints - 1) * vizDur
+            t2 = (p - 1) / (nPoints - 1) * vizDur
+            y1 = sin(2*pi*rate_1*t1 + 2*pi*phase_drift_hz*t1)
+            y2 = sin(2*pi*rate_1*t2 + 2*pi*phase_drift_hz*t2)
+            Draw line: t1, y1, t2, y2
         endfor
-        
-        Colour: "{0.8, 0.5, 0.5}"
+        Colour: "{0.65, 0.35, 0.55}"
         for p from 2 to nPoints
-            t1 = (p - 2) / nPoints * vizDur
-            t2 = (p - 1) / nPoints * vizDur
-            lfo2a = modulation_depth * sin(2*pi*rate_1*t1 - 2*pi*phase_drift_hz*t1 + 3.14)
-            lfo2b = modulation_depth * sin(2*pi*rate_1*t2 - 2*pi*phase_drift_hz*t2 + 3.14)
-            Draw line: t1, lfo2a * 4, t2, lfo2b * 4
+            t1 = (p - 2) / (nPoints - 1) * vizDur
+            t2 = (p - 1) / (nPoints - 1) * vizDur
+            y1 = sin(2*pi*rate_1*t1 - 2*pi*phase_drift_hz*t1 + pi)
+            y2 = sin(2*pi*rate_1*t2 - 2*pi*phase_drift_hz*t2 + pi)
+            Draw line: t1, y1, t2, y2
         endfor
+        trajectoryLabel$ = "Orbit: counter-rotating phase-drift trajectories"
     endif
-    
     Line width: 1
     Colour: "Black"
     Draw inner box
-    Font size: 6
-    Text left: "yes", "LFO Mod"
+    Font size: 7
+    Text left: "yes", "LFO"
     Text bottom: "yes", "Time (s)"
-    
-    # Mode diagram
-    Select outer viewport: 0, 8, 4.2, 5.2
-    Select inner viewport: 0.6, 7.6, 4.3, 5.1
-    
+    Font size: 6
+    Text top: "no", trajectoryLabel$
+
+    # Transformation law / routing diagram
+    Select outer viewport: 0, 8, 3.55, 5.05
+    Select inner viewport: 0.60, 7.70, 3.70, 4.92
     Axes: 0, 10, 0, 3
-    Paint rectangle: "{0.95, 0.95, 0.95}", 0, 10, 0, 3
-    
-    Font size: 5
-    
-    # Input
-    Paint rectangle: "{0.7, 0.7, 0.7}", 0.3, 1.3, 1.2, 1.8
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, 10, 0, 3
+    Font size: 6
     Colour: "Black"
-    Text: 0.8, "centre", 1.5, "half", "Input"
-    
-    # Split arrows
-    Draw arrow: 1.3, 1.5, 2, 2.5
-    Draw arrow: 1.3, 1.5, 2, 1.5
-    if chorus_Mode = 2
-        Draw arrow: 1.3, 1.5, 2, 0.5
-    endif
-    
-    # Dry path
-    Colour: "{0.6, 0.6, 0.6}"
-    Text: 2.5, "centre", 2.5, "half", "Dry"
-    Draw arrow: 3, 2.5, 6.8, 1.8
-    
-    # Tap boxes
+
+    Paint rectangle: "{0.88, 0.88, 0.88}", 0.3, 1.5, 1.2, 1.8
+    Text: 0.9, "centre", 1.5, "half", "Input"
+    Draw arrow: 1.5, 1.5, 2.3, 2.35
+    Draw arrow: 1.5, 1.5, 2.3, 1.5
+
+    # Dry branch
+    Colour: "{0.55, 0.55, 0.55}"
+    Text: 2.8, "centre", 2.35, "half", "Dry x " + fixed$(dry_Mix, 2)
+    Draw arrow: 3.4, 2.35, 7.0, 1.7
+
+    # Wet branch explicitly represents the average of modulated taps
+    Colour: "{0.22, 0.46, 0.82}"
+    Paint rectangle: "{0.90, 0.94, 0.98}", 2.3, 5.5, 0.65, 1.65
+    Colour: "Black"
     if chorus_Mode = 1
-        # Dual
-        Paint rectangle: "{0.5, 0.6, 0.8}", 2.2, 3.8, 1.2, 1.8
-        Colour: "Black"
-        Text: 3, "centre", 1.5, "half", "Tap1 @" + fixed$(rate_1, 1) + "Hz"
-        
-        Paint rectangle: "{0.8, 0.5, 0.5}", 2.2, 3.8, 0.2, 0.8
-        Text: 3, "centre", 0.5, "half", "Tap2 @" + fixed$(rate_2, 1) + "Hz"
-        
-        Draw arrow: 3.8, 1.5, 4.5, 1.5
-        Draw arrow: 3.8, 0.5, 4.5, 1.2
-        
+        Text: 3.9, "centre", 1.28, "half", "2 delay taps / 2"
+        Text: 3.9, "centre", 0.92, "half", "rates " + fixed$(rate_1, 1) + ", " + fixed$(rate_2, 1) + " Hz"
     elsif chorus_Mode = 2
-        # Tri
-        Paint rectangle: "{0.5, 0.6, 0.8}", 2.2, 3.5, 2.0, 2.4
-        Colour: "Black"
-        Text: 2.85, "centre", 2.2, "half", fixed$(rate_1, 1) + "Hz"
-        
-        Paint rectangle: "{0.5, 0.8, 0.5}", 2.2, 3.5, 1.2, 1.6
-        Text: 2.85, "centre", 1.4, "half", fixed$(rate_2, 1) + "Hz"
-        
-        Paint rectangle: "{0.8, 0.5, 0.5}", 2.2, 3.5, 0.4, 0.8
-        Text: 2.85, "centre", 0.6, "half", fixed$(rate_3, 1) + "Hz"
-        
-        Draw arrow: 3.5, 2.2, 4.2, 1.5
-        Draw arrow: 3.5, 1.4, 4.2, 1.4
-        Draw arrow: 3.5, 0.6, 4.2, 1.3
-        
+        Text: 3.9, "centre", 1.28, "half", "3 delay taps / 3"
+        Text: 3.9, "centre", 0.92, "half", "rates " + fixed$(rate_1, 1) + ", " + fixed$(rate_2, 1) + ", " + fixed$(rate_3, 1) + " Hz"
     else
-        # Orbit
-        Paint rectangle: "{0.5, 0.6, 0.8}", 2.2, 4, 1.2, 1.8
-        Colour: "Black"
-        Text: 3.1, "centre", 1.5, "half", "+" + fixed$(phase_drift_hz, 2) + "Hz drift"
-        
-        Paint rectangle: "{0.8, 0.5, 0.5}", 2.2, 4, 0.2, 0.8
-        Text: 3.1, "centre", 0.5, "half", "-" + fixed$(phase_drift_hz, 2) + "Hz drift"
-        
-        # Circular arrows to show counter-rotation
-        Colour: "{0.5, 0.6, 0.8}"
-        Draw arrow: 4, 1.5, 4.5, 1.5
-        Colour: "{0.8, 0.5, 0.5}"
-        Draw arrow: 4, 0.5, 4.5, 1.2
+        Text: 3.9, "centre", 1.28, "half", "2 counter-rotating taps / 2"
+        Text: 3.9, "centre", 0.92, "half", "rate " + fixed$(rate_1, 1) + " Hz, drift +/-" + fixed$(phase_drift_hz, 2)
     endif
-    
-    # Sum
-    Paint rectangle: "{0.6, 0.7, 0.6}", 4.5, 5.5, 1.0, 2.0
-    Colour: "Black"
-    Text: 5, "centre", 1.5, "half", "Sum"
-    
-    # Mix
-    Draw arrow: 5.5, 1.5, 6.2, 1.5
-    Paint rectangle: "{0.7, 0.7, 0.6}", 6.2, 7.2, 1.0, 2.0
-    Text: 6.7, "centre", 1.5, "half", "Mix"
-    
-    # Output
-    Draw arrow: 7.2, 1.5, 7.8, 1.5
-    Paint rectangle: "{0.6, 0.8, 0.6}", 7.8, 8.8, 1.0, 2.0
-    Text: 8.3, "centre", 1.5, "half", "Out"
-    
+    Draw arrow: 5.5, 1.15, 6.4, 1.15
+    Text: 5.95, "centre", 0.88, "half", "Wet x " + fixed$(wet_Mix, 2)
+
+    Paint rectangle: "{0.92, 0.92, 0.92}", 6.4, 7.6, 1.0, 1.9
+    Text: 7.0, "centre", 1.45, "half", "Sum"
+    Draw arrow: 7.6, 1.45, 8.3, 1.45
+    Paint rectangle: "{0.88, 0.94, 0.88}", 8.3, 9.5, 1.0, 1.9
+    Text: 8.9, "centre", 1.45, "half", "Output"
     Colour: "Black"
     Draw inner box
-    
-    # Parameters
-    Select outer viewport: 0, 8, 5.3, 5.7
     Font size: 7
-    Colour: "{0.4, 0.4, 0.4}"
-    
+    Text top: "no", "Transformation law: dry source + averaged modulated taps"
+
+    # Summary strip
+    Select outer viewport: 0, 8, 5.25, 6.35
+    Select inner viewport: 0.60, 7.70, 5.33, 6.27
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    Colour: "Black"
+    Draw rectangle: 0, 1, 0, 1
+    Font size: 7
+    Text: 0.02, "left", 0.78, "half", "##Summary##"
+    Font size: 6
+    Colour: "{0.25, 0.25, 0.35}"
+    Text: 0.02, "left", 0.50, "half", modeName$ + "  |  " + presetName$ + "  |  base delay " + fixed$(base_delay_ms, 1) + " ms  |  depth " + fixed$(modulation_depth, 2)
     if chorus_Mode = 1
-        param$ = "Rates: " + fixed$(rate_1, 1) + " / " + fixed$(rate_2, 1) + " Hz"
+        rateSummary$ = fixed$(rate_1, 1) + " / " + fixed$(rate_2, 1) + " Hz"
     elsif chorus_Mode = 2
-        param$ = "Rates: " + fixed$(rate_1, 1) + " / " + fixed$(rate_2, 1) + " / " + fixed$(rate_3, 1) + " Hz"
+        rateSummary$ = fixed$(rate_1, 1) + " / " + fixed$(rate_2, 1) + " / " + fixed$(rate_3, 1) + " Hz"
     else
-        param$ = "Rate: " + fixed$(rate_1, 1) + " Hz | Drift: ±" + fixed$(phase_drift_hz, 2) + " Hz"
+        rateSummary$ = fixed$(rate_1, 1) + " Hz +/- " + fixed$(phase_drift_hz, 2) + " Hz drift"
     endif
-    
-    Text: 0.5, "centre", 0.5, "half", "Delay: " + fixed$(base_delay_ms, 1) + " ms | Depth: " + fixed$(modulation_depth, 2) + " | Dry: " + fixed$(dry_Mix, 1) + " | Wet: " + fixed$(wet_Mix, 1) + " | " + param$
-    
+    Text: 0.02, "left", 0.22, "half", "Rates: " + rateSummary$ + "  |  dry/wet gains " + fixed$(dry_Mix, 2) + "/" + fixed$(wet_Mix, 2) + "  |  target peak " + fixed$(scale_peak, 2) + "  |  " + fixed$(duration, 2) + " s"
+
+    # Restore full Picture page for export
+    Select outer viewport: 0, 8, 0, pageHeight
+    Axes: 0, 1, 0, 1
     Font size: 10
     Colour: "Black"
+    Line width: 1
+    Solid line
 endif
 
 # === Final Info ===

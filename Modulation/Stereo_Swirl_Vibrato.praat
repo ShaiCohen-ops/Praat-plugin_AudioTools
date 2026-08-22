@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2026)
+# Version: 0.4 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -16,6 +16,12 @@
 #   modulation rather than literal source panning: 90 degrees means quadrature
 #   modulation and 180 degrees means counter-sweeping pitch trajectories.
 #   A Dry/Wet control allows pure vibrato (100%) or chorus-like mixtures.
+#
+# Changelog v0.4:
+#   - VISUALIZATION STANDARDIZATION ONLY; audio/DSP, analysis,
+#     parameter mapping and rendering logic are unchanged.
+#   - Standardized title/version, Picture-page restoration,
+#     typography and summary/export behavior for AudioTools.
 #
 # Changelog v0.3:
 #   - Removed destructive pre-scaling of the selected stereo Sound.
@@ -31,7 +37,7 @@
 #   - Visualization updated to AudioTools house style.
 # ============================================================
 
-form Stereo Swirl Vibrato v0.3
+form Stereo Swirl Vibrato v0.4
     optionmenu Preset: 1
         option Custom (use settings below)
         option Gentle Stereo Chorus (90 deg subtle)
@@ -175,7 +181,7 @@ endif
 
 # === Info ===
 clearinfo
-writeInfoLine: "=== Stereo Swirl Vibrato v0.3 ==="
+writeInfoLine: "=== Stereo Swirl Vibrato v0.4 ==="
 appendInfoLine: "Source: ", originalName$, " (", fixed$(duration, 2), " s)"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Channels: ", channels, " | Sample rate: ", fixed$(sr, 0), " Hz"
@@ -255,6 +261,7 @@ endif
 
 # === Visualization ===
 if draw_visualization
+    pageHeight = 5.7
     selectObject: result
     resultChannels = Get number of channels
     resultPeak = Get absolute extremum: 0, 0, "None"
@@ -265,14 +272,15 @@ if draw_visualization
     Erase all
 
     # Title / metadata
-    Select outer viewport: 0, 8, 0, 0.5
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##Stereo Swirl Vibrato##"
+    Text: 0.5, "centre", 0.68, "half", "##Stereo Swirl Vibrato v0.4##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
-    Text: 0.5, "centre", -1.30, "half",
+    Text: 0.5, "centre", 0.22, "half",
         ... originalName$ + "  |  " + presetName$
         ... + "  |  " + fixed$(modulation_rate_Hz, 2) + " Hz"
         ... + "  |  " + fixed$(delay_depth_percent, 1) + "% delay depth"
@@ -404,6 +412,13 @@ if draw_visualization
     Colour: "Black"
     Font size: 10
     Line width: 1
+    # Restore full Picture page for export
+    Select outer viewport: 0, 8, 0, pageHeight
+    Axes: 0, 1, 0, 1
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
 endif
 
 # === Final ===

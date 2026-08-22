@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2026)
+# Version: 0.4 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -18,6 +18,12 @@
 #   electromechanical Leslie cabinet simulation with separate horn/drum,
 #   crossover, acceleration constants, cabinet radiation and room acoustics.
 #
+# Changelog v0.4:
+#   - VISUALIZATION STANDARDIZATION ONLY; audio/DSP, analysis,
+#     parameter mapping and rendering logic are unchanged.
+#   - Standardized title/version, Picture-page restoration,
+#     typography and summary/export behavior for AudioTools.
+#
 # Changelog v0.3:
 #   - Replaced rounded sample delay with continuous time-interpolated delay.
 #   - LFO uses local Sound time, so shifted Sounds give the same result.
@@ -31,7 +37,7 @@
 #   - Visualization updated to AudioTools house style.
 # ============================================================
 
-form Stereo Rotary Speaker v0.3
+form Stereo Rotary Speaker v0.4
     optionmenu Preset: 1
         option Custom (use settings below)
         option Chorale (Slow / Hymn)
@@ -175,7 +181,7 @@ endif
 
 # === Info ===
 clearinfo
-writeInfoLine: "=== Stereo Rotary Speaker v0.3 ==="
+writeInfoLine: "=== Stereo Rotary Speaker v0.4 ==="
 appendInfoLine: "Source: ", original_name$, " (", fixed$(duration, 2), " s)"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Model: Leslie-inspired single rotor (not separate horn + drum)"
@@ -282,6 +288,7 @@ endif
 
 # === Visualization ===
 if draw_visualization
+    pageHeight = 5.7
     selectObject: result
     resultChannels = Get number of channels
     resultPeak = Get absolute extremum: 0, 0, "None"
@@ -292,11 +299,12 @@ if draw_visualization
     Erase all
 
     # Title / metadata
-    Select outer viewport: 0, 8, 0, 0.5
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##Stereo Rotary Speaker##"
+    Text: 0.5, "centre", 0.68, "half", "##Stereo Rotary Speaker v0.4##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
     if transitionMode
@@ -304,7 +312,7 @@ if draw_visualization
     else
         speedStr$ = fixed$(rotation_speed_Hz, 2) + " Hz"
     endif
-    Text: 0.5, "centre", -1.30, "half",
+    Text: 0.5, "centre", 0.22, "half",
         ... original_name$ + "  |  " + presetName$
         ... + "  |  " + speedStr$
         ... + "  |  " + fixed$(doppler_delay_depth_ms, 2) + " ms Doppler"
@@ -460,6 +468,13 @@ if draw_visualization
     Font size: 10
     Colour: "Black"
     Line width: 1
+    # Restore full Picture page for export
+    Select outer viewport: 0, 8, 0, pageHeight
+    Axes: 0, 1, 0, 1
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
 endif
 
 selectObject: result

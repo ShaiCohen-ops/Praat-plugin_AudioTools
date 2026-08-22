@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4 (2026)
+# Version: 0.5 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -20,6 +20,12 @@
 #   - XY Stereo Rotation: X warps time, Y rotates each stereo pair with an
 #     orthonormal constant-power matrix. Active mono expands to stereo.
 #
+# Changelog v0.5:
+#   - VISUALIZATION STANDARDIZATION ONLY; audio/DSP, analysis,
+#     parameter mapping and rendering logic are unchanged.
+#   - Standardized title/version, Picture-page restoration,
+#     typography and summary/export behavior for AudioTools.
+#
 # Changelog v0.4:
 #   - Made all trajectory/fade timing local-time invariant.
 #   - Removed unconditional fades and forced peak normalization.
@@ -32,7 +38,7 @@
 #   - Reworked visualization to AudioTools house style with explicit mapping text.
 # ============================================================
 
-form XY Shape LFO Modulation
+form XY Shape LFO Modulation v0.5
     comment === Preset ===
     optionmenu Preset 1
         option Custom (use settings below)
@@ -502,7 +508,7 @@ endif
 # -------------------------------------------------------------------------
 # Info
 # -------------------------------------------------------------------------
-writeInfoLine: "=== XY Shape LFO Modulation v0.4 ==="
+writeInfoLine: "=== XY Shape LFO Modulation v0.5 ==="
 appendInfoLine: "Source: ", originalName$, "  |  Preset: ", preset_name$
 appendInfoLine: "Shape: ", shapeName$, "  |  Mode: ", modeName$
 appendInfoLine: "Rate: ", fixed$(trajectory_rate_Hz,2), " Hz  |  Depth: ", fixed$(depth_percent,1), "%  |  Dry/Wet: ", fixed$(100-dry_wet_percent,0), "/", fixed$(dry_wet_percent,0), "%"
@@ -541,17 +547,19 @@ appendInfoLine: "Output peak: ", fixed$(outputPeak,4), "  |  Safety: ", fixed$(s
 # Visualization
 # -------------------------------------------------------------------------
 if draw_visualization
+    pageHeight = 5.7
     Erase all
 
     # Title / subtitle
-    Select outer viewport: 0, 8, 0, 0.5
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##XY Shape LFO Modulation##"
+    Text: 0.5, "centre", 0.68, "half", "##XY Shape LFO Modulation v0.5##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
-    Text: 0.5, "centre", -1.30, "half", "XY_SHAPE_LFO_-_FREQUENCY_MODULATION.praat  |  " + preset_name$ + "  |  " + shapeName$ + "  |  " + modeName$
+    Text: 0.5, "centre", 0.22, "half", "XY_SHAPE_LFO_-_FREQUENCY_MODULATION.praat  |  " + preset_name$ + "  |  " + shapeName$ + "  |  " + modeName$
 
     # Input
     Select outer viewport: 0, 4, 0.65, 1.65
@@ -703,6 +711,13 @@ if draw_visualization
     Font size: 10
     Colour: "Black"
     Line width: 1
+    # Restore full Picture page for export
+    Select outer viewport: 0, 8, 0, pageHeight
+    Axes: 0, 1, 0, 1
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
 endif
 
 # -------------------------------------------------------------------------

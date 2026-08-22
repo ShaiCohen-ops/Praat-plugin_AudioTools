@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.4 (2026)
+# Version: 1.5 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -16,6 +16,12 @@
 #   applied to odd-numbered channels and R controls to even-numbered
 #   channels. Sample rate, sample count, start time, duration, and all
 #   channels are preserved.
+#
+# Changelog v1.5:
+#   - VISUALIZATION STANDARDIZATION ONLY; audio/DSP, analysis,
+#     parameter mapping and rendering logic are unchanged.
+#   - Standardized title/version, Picture-page restoration,
+#     typography and summary/export behavior for AudioTools.
 #
 # v1.4 changes:
 #   - Replaces interpreted spectral antialias Formula calls with Praat's
@@ -45,7 +51,7 @@ endif
 originalSound = selected("Sound")
 baseName$ = selected$("Sound")
 
-form Hilbert Audio Processor
+form Hilbert Audio Processor v1.5
     optionmenu Preset: 1
         option Custom
         option L: Shift Up (+50) / R: Shift Down (-50)
@@ -123,7 +129,7 @@ shift_amount_Hz_L = min(nyquist, max(0, shift_amount_Hz_L))
 shift_amount_Hz_R = min(nyquist, max(0, shift_amount_Hz_R))
 envelope_lowpass_Hz = min(0.49 * sampleRate, max(0, envelope_lowpass_Hz))
 
-appendInfoLine: "=== Hilbert Audio Processor v1.4 ==="
+appendInfoLine: "=== Hilbert Audio Processor v1.5 ==="
 appendInfoLine: "Source: ", baseName$, " (", fixed$(originalDuration, 3), " s)"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Channels: ", numChannels, " | Sample rate: ", fixed$(sampleRate, 0), " Hz"
@@ -361,6 +367,7 @@ endproc
 # VISUALIZATION - AudioTools house layout
 # ============================================================
 procedure drawViz
+    pageHeight = 5.5
     selectObject: originalSound
     .sr = Get sampling frequency
     .nyq = .sr / 2
@@ -391,19 +398,20 @@ procedure drawViz
     endif
 
     Erase all
-    Select outer viewport: 0, 8, 0, 8
+    Select outer viewport: 0, 8, 0, pageHeight
     Black
     Plain line
 
     # ---- TITLE ----
-    Select outer viewport: 0, 8, 0, 0.65
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##Hilbert Audio Processor##"
+    Text: 0.5, "centre", 0.68, "half", "##Hilbert Audio Processor v1.5##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
-    Text: 0.5, "centre", -0.22, "half", baseName$ + "  |  " + presetName$ + "  |  " + .opStr$
+    Text: 0.5, "centre", 0.22, "half", baseName$ + "  |  " + presetName$ + "  |  " + .opStr$
 
     # ---- INPUT WAVEFORM ----
     Select outer viewport: 0, 4.2, 0.75, 2.30
@@ -499,4 +507,11 @@ procedure drawViz
     Font size: 10
     Colour: "Black"
     Line width: 1
+    # Restore full Picture page for export
+    Select outer viewport: 0, 8, 0, pageHeight
+    Axes: 0, 1, 0, 1
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
 endproc

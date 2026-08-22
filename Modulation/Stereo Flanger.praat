@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2026)
+# Version: 0.4 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -23,6 +23,12 @@
 #   minimum delay is clamped to one sample so the recursive loop remains
 #   causal. "Through-Zero" remains a simulated near-zero-delay preset;
 #   true through-zero flanging would require delaying the dry reference too.
+#
+# Changelog v0.4:
+#   - VISUALIZATION STANDARDIZATION ONLY; audio/DSP, analysis,
+#     parameter mapping and rendering logic are unchanged.
+#   - Standardized title/version, Picture-page restoration,
+#     typography and summary/export behavior for AudioTools.
 #
 # v0.3 changes:
 #   - Replaces the first-reflection approximation with true recursive feedback.
@@ -44,7 +50,7 @@ endif
 original = selected("Sound")
 name$ = selected$("Sound")
 
-form Stereo Flanger
+form Stereo Flanger v0.4
     optionmenu Preset: 1
         option Custom (use settings below)
         option Classic 80s Flanger
@@ -168,7 +174,7 @@ else
     fbType$ = "negative"
 endif
 
-appendInfoLine: "=== Stereo Flanger v0.3 ==="
+appendInfoLine: "=== Stereo Flanger v0.4 ==="
 appendInfoLine: "Source: ", name$, " (", fixed$(duration, 3), " s)"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Channels: ", channels, " | Sample rate: ", fixed$(sr, 0), " Hz"
@@ -266,6 +272,7 @@ appendInfoLine: "=== Done ==="
 appendInfoLine: "Created: ", selected$("Sound")
 
 procedure drawViz
+    pageHeight = 5.5
     if channels = 1 and dry_wet_percent > 0
         .routing$ = "mono -> stereo"
     elsif channels > 1
@@ -281,20 +288,21 @@ procedure drawViz
     endif
 
     Erase all
-    Select outer viewport: 0, 8, 0, 8
+    Select outer viewport: 0, 8, 0, pageHeight
     Colour: "Black"
     Font size: 10
     Line width: 1
 
     # ---- TITLE ----
-    Select outer viewport: 0, 8, 0, 0.65
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##Stereo Flanger##"
+    Text: 0.5, "centre", 0.68, "half", "##Stereo Flanger v0.4##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
-    Text: 0.5, "centre", -0.22, "half", name$ + "  |  " + presetName$ + "  |  " + .routing$
+    Text: 0.5, "centre", 0.22, "half", name$ + "  |  " + presetName$ + "  |  " + .routing$
 
     # ---- INPUT ----
     Select outer viewport: 0, 4.2, 0.75, 2.20
@@ -428,6 +436,13 @@ procedure drawViz
     Font size: 10
     Colour: "Black"
     Line width: 1
+    # Restore full Picture page for export
+    Select outer viewport: 0, 8, 0, pageHeight
+    Axes: 0, 1, 0, 1
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
 endproc
 
 selectObject: result

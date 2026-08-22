@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4 (2026)
+# Version: 0.5 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -16,6 +16,12 @@
 #
 #   This is a PSOLA/PitchTier effect, not a spectral-analysis effect.
 #   The legacy filename is retained for AudioTools compatibility.
+#
+# Changelog v0.5:
+#   - VISUALIZATION STANDARDIZATION ONLY; audio/DSP, analysis,
+#     parameter mapping and rendering logic are unchanged.
+#   - Standardized title/version, Picture-page restoration,
+#     typography and summary/export behavior for AudioTools.
 #
 # Changelog v0.4:
 #   - Visualization-only correction: restored house-style text placement.
@@ -33,7 +39,7 @@
 #   - Updated visualization to AudioTools house style.
 # ============================================================
 
-form Time-Varying PSOLA Vibrato
+form Time-Varying PSOLA Vibrato v0.5
     comment === Preset ===
     optionmenu Preset 1
         option Custom (use settings below)
@@ -262,17 +268,19 @@ appendInfoLine: "Created: ", selected$("Sound")
 # VISUALIZATION
 # ============================================================
 if draw_visualization
+    pageHeight = 5.5
     Erase all
 
     # Title / subtitle
-    Select outer viewport: 0, 8, 0, 0.5
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##Time-Varying PSOLA Vibrato##"
+    Text: 0.5, "centre", 0.68, "half", "##Time-Varying PSOLA Vibrato v0.5##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
-    Text: 0.5, "centre", -1.30, "half", "Time_Varying_Spectral_Vibrato.praat  |  " + presetName$ + "  |  PSOLA/PitchTier"
+    Text: 0.5, "centre", 0.22, "half", "Time_Varying_Spectral_Vibrato.praat  |  " + presetName$ + "  |  PSOLA/PitchTier"
 
     # Input
     Select outer viewport: 0, 4, 0.65, 1.75
@@ -388,6 +396,13 @@ if draw_visualization
     Font size: 10
     Colour: "Black"
     Line width: 1
+    # Restore full Picture page for export
+    Select outer viewport: 0, 8, 0, pageHeight
+    Axes: 0, 1, 0, 1
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
 endif
 
 selectObject: result

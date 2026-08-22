@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2026)
+# Version: 0.4 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -11,6 +11,12 @@
 #   Dual-mode tremolo with two distinct amplitude-modulation styles:
 #   Adaptive mode varies tremolo depth from a smoothed RMS-like signal
 #   envelope; Strong mode uses a full-depth rectified-sine pulse.
+#
+# Changelog v0.4:
+#   - VISUALIZATION STANDARDIZATION ONLY; audio/DSP, analysis,
+#     parameter mapping and rendering logic are unchanged.
+#   - Standardized title/version, Picture-page restoration,
+#     typography and summary/export behavior for AudioTools.
 #
 # Changelog v0.3:
 #   - Adaptive mode now follows a smoothed amplitude envelope instead of
@@ -41,7 +47,7 @@ startTime = Get start time
 nyquist = fs / 2
 
 # === Form ===
-form Dual-Mode Tremolo Generator
+form Dual-Mode Tremolo Generator v0.4
     comment Select a Sound object first
 
     comment === Preset ===
@@ -137,7 +143,7 @@ safety_peak = min(1, max(0, safety_peak))
 wetAmt = wet_dry_percent / 100
 dryAmt = 1 - wetAmt
 
-writeInfoLine: "=== Dual-Mode Tremolo Generator v0.3 ==="
+writeInfoLine: "=== Dual-Mode Tremolo Generator v0.4 ==="
 appendInfoLine: "Source: ", sound$, " (", fixed$(duration, 2), " s)"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Mode: ", modeName$
@@ -241,6 +247,7 @@ endif
 
 # === Visualization ===
 if draw_visualization
+    pageHeight = 4.9
     # Display mono copies only; DSP output itself remains multichannel.
     selectObject: original
     if numChannels > 1
@@ -263,7 +270,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.58, "half", "##Dual-Mode Tremolo Generator##"
+    Text: 0.5, "centre", 0.58, "half", "##Dual-Mode Tremolo Generator v0.4##"
 
     # Metadata subtitle
     Select outer viewport: 0, 8, 0.40, 0.62
@@ -355,6 +362,13 @@ if draw_visualization
     Colour: "Black"
     Font size: 10
     Line width: 1
+    # Restore full Picture page for export
+    Select outer viewport: 0, 8, 0, pageHeight
+    Axes: 0, 1, 0, 1
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
 endif
 
 # === Final Info ===

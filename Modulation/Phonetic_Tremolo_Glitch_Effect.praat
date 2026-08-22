@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2026)
+# Version: 0.4 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -18,6 +18,14 @@
 #   receive a causal delay glitch. Silence regions are attenuated/gated.
 #   Classification is shared across all channels; processing preserves the
 #   input channel count, sample rate, duration, and start time.
+#
+# Changelog v0.4:
+#   - VISUALIZATION / FORM STANDARDIZATION ONLY; audio/DSP, analysis,
+#     parameter mapping and rendering logic are unchanged.
+#   - Standardized title/version, Picture-page restoration,
+#     typography and summary/export behavior for AudioTools.
+#   - Technical controls moved to optional Advanced settings;
+#     defaults remain identical to the previous main form.
 #
 # v0.3 changes:
 #   - Separates analysis/classification from processing and merges adjacent
@@ -46,7 +54,7 @@ sound_xmin = Get start time
 sound_xmax = Get end time
 numChannels = Get number of channels
 
-form Phonetic Tremolo/Glitch Effect
+form Phonetic Tremolo/Glitch Effect v0.4
     optionmenu Preset: 1
         option Custom (use settings below)
         option Subtle Vocal Texture
@@ -56,29 +64,42 @@ form Phonetic Tremolo/Glitch Effect
         option Deep Vowel Tremolo
         option Clean Gated (Silence Removal)
 
-    comment --- Effects ---
+    comment --- Musical effect controls ---
     real Tremolo_rate_hz: 8.0
     real Tremolo_depth: 0.7
     real Fricative_delay_seconds: 0.015
     real Silence_gain: 0.05
     real Transition_ms: 2.0
-
-    comment --- Feature extraction ---
-    real Frame_step_seconds: 0.01
-    real Max_formant_hz: 5500
-
-    comment --- Classification thresholds ---
-    real Vowel_hnr_threshold: 5.0
-    real Vowel_f1_min_hz: 300
-    real Fricative_hnr_max: 3.0
-    real Silence_intensity_threshold: 45
-
-    comment --- Global ---
     real Dry_wet_percent: 100
-    real Safety_peak: 0.99
+
+    boolean Advanced_settings: 0
     boolean Draw_visualization: 1
     boolean Play_result: 1
 endform
+
+# Advanced defaults: identical to the previous main-form defaults.
+frame_step_seconds = 0.01
+max_formant_hz = 5500
+vowel_hnr_threshold = 5.0
+vowel_f1_min_hz = 300
+fricative_hnr_max = 3.0
+silence_intensity_threshold = 45
+safety_peak = 0.99
+
+if advanced_settings
+    beginPause: "Phonetic Tremolo/Glitch Effect v0.4 - Advanced settings"
+        comment: "=== Feature extraction ==="
+        real: "Frame_step_seconds", "0.01"
+        real: "Max_formant_hz", "5500"
+        comment: "=== Classification thresholds ==="
+        real: "Vowel_hnr_threshold", "5.0"
+        real: "Vowel_f1_min_hz", "300"
+        real: "Fricative_hnr_max", "3.0"
+        real: "Silence_intensity_threshold", "45"
+        comment: "=== Output safety ==="
+        real: "Safety_peak", "0.99"
+    clicked = endPause: "Continue", 1
+endif
 
 # ============================================================
 # PRESETS
@@ -146,7 +167,7 @@ if safeMaxFormant < 1200 and dry_wet_percent > 0 and (tremolo_depth > 0 or frica
     exitScript: "Error: Sample rate is too low for the requested formant-based classification."
 endif
 
-appendInfoLine: "=== Phonetic Tremolo/Glitch Effect v0.3 ==="
+appendInfoLine: "=== Phonetic Tremolo/Glitch Effect v0.4 ==="
 appendInfoLine: "Source: ", original_name$, " (", fixed$(duration, 3), " s)"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Channels: ", numChannels, " | Sample rate: ", fixed$(sampling_rate, 0), " Hz"
@@ -424,22 +445,24 @@ appendInfoLine: "Created: ", selected$("Sound")
 # VISUALIZATION - AudioTools house layout
 # ============================================================
 if draw_visualization
+    pageHeight = 5.7
     maxVizFrames = min(numFrames, 500)
 
     Erase all
-    Select outer viewport: 0, 8, 0, 8
+    Select outer viewport: 0, 8, 0, pageHeight
     Black
     Plain line
 
     # ---- TITLE ----
-    Select outer viewport: 0, 8, 0, 0.65
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##Phonetic Tremolo/Glitch##"
+    Text: 0.5, "centre", 0.68, "half", "##Phonetic Tremolo/Glitch v0.4##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
-    Text: 0.5, "centre", -0.22, "half", original_name$ + "  |  " + presetName$ + "  |  acoustic-class proxy"
+    Text: 0.5, "centre", 0.22, "half", original_name$ + "  |  " + presetName$ + "  |  acoustic-class proxy"
 
     # ---- INPUT ----
     Select outer viewport: 0, 4.2, 0.75, 2.25
@@ -530,6 +553,13 @@ if draw_visualization
     Font size: 10
     Colour: "Black"
     Line width: 1
+    # Restore full Picture page for export
+    Select outer viewport: 0, 8, 0, pageHeight
+    Axes: 0, 1, 0, 1
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
 endif
 
 selectObject: result

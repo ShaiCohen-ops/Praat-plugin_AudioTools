@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2026)
+# Version: 0.4 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -18,6 +18,14 @@
 #   never boosts as part of the tremolo itself. The same gain trajectory is
 #   applied to every input channel. Sample rate, start time, duration, and
 #   channel count are preserved.
+#
+# Changelog v0.4:
+#   - VISUALIZATION / FORM STANDARDIZATION ONLY; audio/DSP, analysis,
+#     parameter mapping and rendering logic are unchanged.
+#   - Standardized title/version, Picture-page restoration,
+#     typography and summary/export behavior for AudioTools.
+#   - Technical controls moved to optional Advanced settings;
+#     defaults remain identical to the previous main form.
 #
 # v0.3 changes:
 #   - Replaces level-dependent raw-power roughness with normalized spectral
@@ -47,7 +55,7 @@ soundEnd = Get end time
 numChannels = Get number of channels
 nyquist = sampling / 2
 
-form Spectral-Driven Intensity Modulation
+form Spectral-Driven Intensity Modulation v0.4
     optionmenu Preset: 1
         option Custom (use settings below)
         option Subtle Texture
@@ -56,31 +64,47 @@ form Spectral-Driven Intensity Modulation
         option Voice Protection Mode
         option Maximum Effect
 
-    comment --- Analysis ---
-    natural Num_analysis_points: 8
-    positive Window_size_seconds: 0.2
-    positive Min_frequency_Hz: 80
-    positive Max_frequency_Hz: 5000
-
-    comment --- Modulation mapping ---
+    comment --- Musical modulation mapping ---
     positive Base_depth_dB: 20
     positive Max_depth_dB: 50
     positive Base_mod_speed_Hz: 1.0
     positive Max_mod_speed_Hz: 5.0
-
-    comment --- Tonal / compact-spectrum protection ---
-    positive Tonal_flatness_threshold: 0.3
-    positive Smooth_spread_threshold: 0.12
-    real Tonal_depth_reduction: 0.3
-    real Tonal_speed_reduction: 0.7
-
-    comment --- Output ---
-    positive Time_step: 0.01
     real Dry_wet_percent: 100
-    real Safety_peak: 0.99
+
+    boolean Advanced_settings: 0
     boolean Draw_visualization: 1
     boolean Play_result: 1
 endform
+
+# Advanced defaults: identical to the previous main-form defaults.
+num_analysis_points = 8
+window_size_seconds = 0.2
+min_frequency_Hz = 80
+max_frequency_Hz = 5000
+tonal_flatness_threshold = 0.3
+smooth_spread_threshold = 0.12
+tonal_depth_reduction = 0.3
+tonal_speed_reduction = 0.7
+time_step = 0.01
+safety_peak = 0.99
+
+if advanced_settings
+    beginPause: "Spectral-Driven Intensity Modulation v0.4 - Advanced settings"
+        comment: "=== Analysis ==="
+        natural: "Num_analysis_points", "8"
+        positive: "Window_size_seconds", "0.2"
+        positive: "Min_frequency_Hz", "80"
+        positive: "Max_frequency_Hz", "5000"
+        comment: "=== Tonal / compact-spectrum protection ==="
+        positive: "Tonal_flatness_threshold", "0.3"
+        positive: "Smooth_spread_threshold", "0.12"
+        real: "Tonal_depth_reduction", "0.3"
+        real: "Tonal_speed_reduction", "0.7"
+        comment: "=== Render / output ==="
+        positive: "Time_step", "0.01"
+        real: "Safety_peak", "0.99"
+    clicked = endPause: "Continue", 1
+endif
 
 # ============================================================
 # PRESETS
@@ -157,7 +181,7 @@ else
     controlStep = time_step
 endif
 
-appendInfoLine: "=== Spectral-Driven Intensity Modulation v0.3 ==="
+appendInfoLine: "=== Spectral-Driven Intensity Modulation v0.4 ==="
 appendInfoLine: "Source: ", originalName$, " (", fixed$(duration, 3), " s)"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Channels: ", numChannels, " | Sample rate: ", fixed$(sampling, 0), " Hz"
@@ -449,20 +473,22 @@ appendInfoLine: "Output peak: ", fixed$(outputPeak, 6)
 # VISUALIZATION - AudioTools house layout
 # ============================================================
 if draw_visualization
+    pageHeight = 5.4
     Erase all
-    Select outer viewport: 0, 8, 0, 8
+    Select outer viewport: 0, 8, 0, pageHeight
     Colour: "Black"
     Font size: 10
     Line width: 1
 
-    Select outer viewport: 0, 8, 0, 0.65
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##Spectral-Driven Intensity Modulation##"
+    Text: 0.5, "centre", 0.68, "half", "##Spectral-Driven Intensity Modulation v0.4##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
-    Text: 0.5, "centre", -0.22, "half",
+    Text: 0.5, "centre", 0.22, "half",
         ... originalName$ + "  |  " + presetName$ + "  |  time-varying spectral analysis"
 
     # Input
@@ -564,6 +590,13 @@ if draw_visualization
     Font size: 10
     Colour: "Black"
     Line width: 1
+    # Restore full Picture page for export
+    Select outer viewport: 0, 8, 0, pageHeight
+    Axes: 0, 1, 0, 1
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
 endif
 
 selectObject: result

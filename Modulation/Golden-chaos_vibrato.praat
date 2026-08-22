@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2026)
+# Version: 0.4 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -15,6 +15,12 @@
 #
 #   This is not a chaotic dynamical system. "Golden-Chaos" is retained
 #   as the artistic effect name.
+#
+# Changelog v0.4:
+#   - VISUALIZATION STANDARDIZATION ONLY; audio/DSP, analysis,
+#     parameter mapping and rendering logic are unchanged.
+#   - Standardized title/version, Picture-page restoration,
+#     typography and summary/export behavior for AudioTools.
 #
 # Changelog v0.3:
 #   - Corrected "never repeats / irrational ratios" claims.
@@ -42,7 +48,7 @@ sourceStart = Get start time
 sourceEnd = Get end time
 
 # === Form ===
-form Golden-Chaos Vibrato
+form Golden-Chaos Vibrato v0.4
     comment === Preset ===
     optionmenu Preset 1
         option Custom (use settings below)
@@ -164,7 +170,7 @@ wetAmt = dry_wet_percent / 100
 dryAmt = 1 - wetAmt
 
 # === Info ===
-writeInfoLine: "=== Golden-Chaos Vibrato v0.3 ==="
+writeInfoLine: "=== Golden-Chaos Vibrato v0.4 ==="
 appendInfoLine: "Source: ", original_name$, " (", fixed$(duration, 2), " s)"
 appendInfoLine: "Preset: ", presetName$, " | ", periodicity$
 appendInfoLine: "Channels: ", numChannels, " | Sample rate: ", round(sampling), " Hz"
@@ -247,6 +253,7 @@ Rename: original_name$ + "_golden_" + replace$(presetName$, " ", "_", 0)
 
 # === Visualization ===
 if draw_visualization
+    pageHeight = 4.8
     # Display copies only; DSP objects remain untouched.
     selectObject: original
     if numChannels > 1
@@ -269,7 +276,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.60, "half", "##Golden-Chaos Vibrato##"
+    Text: 0.5, "centre", 0.60, "half", "##Golden-Chaos Vibrato v0.4##"
 
     # --- Metadata subtitle ---
     Select outer viewport: 0, 8, 0.36, 0.58
@@ -358,6 +365,13 @@ if draw_visualization
     Colour: "Black"
     Font size: 10
     Line width: 1
+    # Restore full Picture page for export
+    Select outer viewport: 0, 8, 0, pageHeight
+    Axes: 0, 1, 0, 1
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
 endif
 
 # === Final Info ===

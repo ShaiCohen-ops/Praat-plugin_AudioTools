@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 2.4 (2026)
+# Version: 2.5 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -16,6 +16,12 @@
 #   The modulator is generated once on the source sample grid and shared
 #   by all channels. Sample rate, sample count, duration, start time and
 #   arbitrary channel counts are preserved.
+#
+# Changelog v2.5:
+#   - VISUALIZATION STANDARDIZATION ONLY; audio/DSP, analysis,
+#     parameter mapping and rendering logic are unchanged.
+#   - Standardized title/version, Picture-page restoration,
+#     typography and summary/export behavior for AudioTools.
 #
 # v2.4 changes:
 #   - Correct phase integration for exponential/log sweeps, SinFM,
@@ -30,7 +36,7 @@
 #   - Updates visualization to the AudioTools house text layout.
 # ============================================================
 
-form Metamodulator v2.4
+form Metamodulator v2.5
     optionmenu Preset: 1
         option Custom (Use Manual Settings)
         option --- Cubic Phase Distortion ---
@@ -322,7 +328,7 @@ else
 endif
 
 clearinfo
-appendInfoLine: "=== Metamodulator v2.4 ==="
+appendInfoLine: "=== Metamodulator v2.5 ==="
 appendInfoLine: "Source: ", name$, " (", fixed$(duration, 3), " s)"
 appendInfoLine: "Preset: ", preset$
 appendInfoLine: "Algorithm: ", algo_name$
@@ -436,6 +442,7 @@ appendInfoLine: "Created: ", selected$("Sound")
 # VISUALIZATION - AudioTools house layout
 # ============================================================
 if draw_visualization
+    pageHeight = 6.7
     if safety_peak > 0
         safeStr$ = fixed$(safety_peak, 2)
     else
@@ -464,19 +471,20 @@ if draw_visualization
     endif
 
     Erase all
-    Select outer viewport: 0, 8, 0, 8
+    Select outer viewport: 0, 8, 0, pageHeight
     Black
     Plain line
 
     # Title
-    Select outer viewport: 0, 8, 0, 0.65
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##Metamodulator##"
+    Text: 0.5, "centre", 0.68, "half", "##Metamodulator v2.5##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
-    Text: 0.5, "centre", -0.22, "half", name$ + "  |  " + preset$ + "  |  " + algo_name$
+    Text: 0.5, "centre", 0.22, "half", name$ + "  |  " + preset$ + "  |  " + algo_name$
 
     # Input waveform
     Select outer viewport: 0, 4.2, 0.75, 2.30
@@ -636,6 +644,13 @@ if draw_visualization
     Font size: 10
     Colour: "Black"
     Line width: 1
+    # Restore full Picture page for export
+    Select outer viewport: 0, 8, 0, pageHeight
+    Axes: 0, 1, 0, 1
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
 endif
 
 if modulator <> 0

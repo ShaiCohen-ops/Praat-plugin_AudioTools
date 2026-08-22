@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2026)
+# Version: 0.4 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -17,6 +17,12 @@
 #   Filtering uses Sound & FormantGrid: Filter (no scale), so source
 #   level relationships are not normalised away. Dry/Wet = 0 is an
 #   exact bypass. Safety_peak only attenuates when necessary.
+#
+# Changelog v0.4:
+#   - VISUALIZATION STANDARDIZATION ONLY; audio/DSP, analysis,
+#     parameter mapping and rendering logic are unchanged.
+#   - Standardized title/version, Picture-page restoration,
+#     typography and summary/export behavior for AudioTools.
 #
 # v0.3 changes:
 #   - Uses Filter (no scale) instead of the auto-scaling Filter command.
@@ -45,7 +51,7 @@ sound_xmin = Get start time
 sound_xmax = Get end time
 numChannels = Get number of channels
 
-form Rhythmic LFO Wah-Wah
+form Rhythmic LFO Wah-Wah v0.4
     optionmenu Preset: 1
         option Custom (use settings below)
         option Funky Quarter (120 BPM)
@@ -212,7 +218,7 @@ bandwidth_Hz = max(1, min(bandwidth_Hz, 0.45 * sr))
 dry_wet_percent = min(100, max(0, dry_wet_percent))
 safety_peak = min(1, max(0, safety_peak))
 
-writeInfoLine: "=== Rhythmic LFO Wah-Wah v0.3 ==="
+writeInfoLine: "=== Rhythmic LFO Wah-Wah v0.4 ==="
 appendInfoLine: "Source: ", name$, " (", fixed$(duration, 3), " s)"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Channels: ", numChannels, " | Sample rate: ", fixed$(sr, 0), " Hz"
@@ -314,6 +320,7 @@ appendInfoLine: "Created: ", selected$("Sound")
 # VISUALIZATION - AudioTools house text layout
 # ============================================================
 if draw_visualization
+    pageHeight = 5.7
     if safety_peak > 0
         safeStr$ = fixed$(safety_peak, 2)
     else
@@ -321,19 +328,20 @@ if draw_visualization
     endif
 
     Erase all
-    Select outer viewport: 0, 8, 0, 8
+    Select outer viewport: 0, 8, 0, pageHeight
     Black
     Plain line
 
     # ---- TITLE ----
-    Select outer viewport: 0, 8, 0, 0.65
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##Rhythmic LFO Wah-Wah##"
+    Text: 0.5, "centre", 0.68, "half", "##Rhythmic LFO Wah-Wah v0.4##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
-    Text: 0.5, "centre", -0.22, "half", name$ + "  |  " + presetName$ + "  |  " + noteLabel$ + " " + feelLabel$
+    Text: 0.5, "centre", 0.22, "half", name$ + "  |  " + presetName$ + "  |  " + noteLabel$ + " " + feelLabel$
 
     # ---- INPUT ----
     Select outer viewport: 0, 4.2, 0.75, 2.30
@@ -420,6 +428,13 @@ if draw_visualization
     Font size: 10
     Colour: "Black"
     Line width: 1
+    # Restore full Picture page for export
+    Select outer viewport: 0, 8, 0, pageHeight
+    Axes: 0, 1, 0, 1
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
 endif
 
 selectObject: result

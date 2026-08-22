@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2026)
+# Version: 0.4 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -15,6 +15,12 @@
 #   drives odd/even channels with separate sweep phases.
 #
 #   This replaces v0.2's variable-delay comb/flanger topology.
+#
+# Changelog v0.4:
+#   - VISUALIZATION STANDARDIZATION ONLY; audio/DSP, analysis,
+#     parameter mapping and rendering logic are unchanged.
+#   - Standardized title/version, Picture-page restoration,
+#     typography and summary/export behavior for AudioTools.
 #
 # Changelog v0.3:
 #   - Replaced variable-delay comb with a true all-pass cascade.
@@ -29,7 +35,7 @@
 #     analytical all-pass phaser response instead of a fake comb curve.
 # ============================================================
 
-form Stereo Phaser
+form Stereo Phaser v0.4
     comment === Preset ===
     optionmenu Preset 1
         option Custom (use settings below)
@@ -186,7 +192,7 @@ wet = dry_wet_percent / 100
 dry = 1 - wet
 
 # === Info ===
-writeInfoLine: "=== Stereo Phaser v0.3 ==="
+writeInfoLine: "=== Stereo Phaser v0.4 ==="
 appendInfoLine: "Source: ", name$, " (", fixed$(duration, 3), " s)"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Channels: ", channels, " | Sample rate: ", fixed$(sr, 0), " Hz"
@@ -329,17 +335,19 @@ endif
 # VISUALIZATION
 # ============================================================
 if draw_visualization
+    pageHeight = 6.6
     Erase all
 
     # Title + metadata
-    Select outer viewport: 0, 8, 0, 0.65
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##Stereo Phaser##"
+    Text: 0.5, "centre", 0.68, "half", "##Stereo Phaser v0.4##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
-    Text: 0.5, "centre", -0.22, "half", name$ + "  |  " + presetName$ + "  |  " + string$(stage_count) + " stages  |  " + fixed$(rate_Hz, 2) + " Hz"
+    Text: 0.5, "centre", 0.22, "half", name$ + "  |  " + presetName$ + "  |  " + string$(stage_count) + " stages  |  " + fixed$(rate_Hz, 2) + " Hz"
 
     # Input
     Select outer viewport: 0, 8, 0.72, 1.75
@@ -487,6 +495,13 @@ if draw_visualization
     Font size: 10
     Colour: "Black"
     Line width: 1
+    # Restore full Picture page for export
+    Select outer viewport: 0, 8, 0, pageHeight
+    Axes: 0, 1, 0, 1
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
 endif
 
 # === Final ===

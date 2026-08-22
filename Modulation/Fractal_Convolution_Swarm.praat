@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4 (2026)
+# Version: 0.6 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -13,6 +13,15 @@
 #   delayed taps); Cascade mode applies the same causal delayed blend
 #   recursively in successive stages. "Fractal" refers to the self-similar
 #   delay scaling, not to FFT convolution or a physical-room model.
+#
+# Changelog v0.6:
+# - VISUALIZATION ONLY: expanded Summary strip to three spaced lines.
+#
+# Changelog v0.5:
+#   - VISUALIZATION STANDARDIZATION ONLY; audio/DSP, analysis,
+#     parameter mapping and rendering logic are unchanged.
+#   - Standardized title/version, Picture-page restoration,
+#     typography and summary/export behavior for AudioTools.
 #
 # Changelog v0.4:
 #   - Corrected delay direction: taps are now causal delays, not advances.
@@ -47,7 +56,7 @@ nChannels = Get number of channels
 nSamples = Get number of samples
 
 # === Form ===
-form Fractal Convolution Swarm
+form Fractal Convolution Swarm v0.6
     comment Select a Sound object first
 
     comment === Preset ===
@@ -170,7 +179,7 @@ else
 endif
 
 # === Info ===
-writeInfoLine: "=== Fractal Convolution Swarm v0.4 ==="
+writeInfoLine: "=== Fractal Convolution Swarm v0.6 ==="
 appendInfoLine: "Source: ", originalName$, " (", fixed$(duration, 2), " s)"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Mode: ", procName$, " | Stereo: ", effectiveStereo$
@@ -426,17 +435,19 @@ outPeak = Get absolute extremum: 0, 0, "None"
 
 # === Visualization ===
 if draw_visualization
+    pageHeight = 6.05
     Erase all
 
     # === TITLE + METADATA ===
-    Select outer viewport: 0, 8, 0, 0.5
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##Fractal Convolution Swarm##"
+    Text: 0.5, "centre", 0.68, "half", "##Fractal Convolution Swarm v0.6##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
-    Text: 0.5, "centre", -1.30, "half",
+    Text: 0.5, "centre", 0.22, "half",
     ... originalName$ + "  |  " + presetName$ + "  |  " + procName$ +
     ... "  |  " + effectiveStereo$
 
@@ -513,31 +524,41 @@ if draw_visualization
     Text bottom: "yes", "Offset"
 
     # === SUMMARY ===
-    Select outer viewport: 0, 8, 5.00, 5.65
+    Select outer viewport: 0, 8, 5.00, 5.80
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
     Font size: 7
     Colour: "Black"
-    Text: 0.02, "left", 0.80, "half", "##Summary##"
+    Text: 0.02, "left", 0.84, "half", "##Summary##"
     Font size: 6
     Colour: "{0.28, 0.28, 0.28}"
-    Text: 0.02, "left", 0.50, "half",
-    ... "Mode: " + procName$ + "  |  Stereo: " + effectiveStereo$ +
+    Text: 0.02, "left", 0.58, "half",
+    ... "Mode: " + procName$ +
+    ... "  |  Stereo: " + effectiveStereo$ +
     ... "  |  Depth: " + string$(fractal_depth) +
-    ... "  |  Width: +/-" + string$(convolution_width) +
-    ... "  |  Mix: " + fixed$(mix_amount, 2)
-    Text: 0.02, "left", 0.18, "half",
-    ... "Base: " + fixed$(delayTimes#[1], 2) + " ms" +
+    ... "  |  Width: +/-" + string$(convolution_width)
+    Text: 0.02, "left", 0.34, "half",
+    ... "Mix: " + fixed$(mix_amount, 2) +
+    ... "  |  Base delay: " + fixed$(delayTimes#[1], 2) + " ms" +
     ... "  |  Scale: x" + fixed$(depth_scale_factor, 2) +
-    ... "  |  Max depth delay: " + fixed$(maxDelay, 1) + " ms" +
-    ... "  |  Active: " + string$(opCount) +
-    ... "  |  Safety: " + safetyAction$
+    ... "  |  Max delay: " + fixed$(maxDelay, 1) + " ms"
+    Text: 0.02, "left", 0.11, "half",
+    ... "Active operations: " + string$(opCount) +
+    ... "  |  Safety: " + safetyAction$ +
+    ... "  |  Output peak: " + fixed$(outPeak, 4)
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
 
     Font size: 10
     Colour: "Black"
     Line width: 1
+    # Restore full Picture page for export
+    Select outer viewport: 0, 8, 0, pageHeight
+    Axes: 0, 1, 0, 1
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
 endif
 
 # === Final Info ===
