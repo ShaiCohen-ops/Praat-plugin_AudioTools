@@ -1,0 +1,29 @@
+name: Diagnose macOS external version strings
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/build-macos-version-diagnostic.yml'
+
+jobs:
+  diagnose:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Inspect existing macOS external
+        shell: bash
+        run: |
+          set -euxo pipefail
+          MXO="$GITHUB_WORKSPACE/Max-MSP/AudioToolsPraat_macOS_Universal2/AudioToolsPraat/externals/AudioTools.praat~.mxo"
+          BIN="$MXO/Contents/MacOS/AudioTools.praat~"
+          test -f "$BIN"
+          echo "Architectures: $(lipo -archs "$BIN")"
+          file "$BIN"
+          echo "--- plist ---"
+          plutil -p "$MXO/Contents/Info.plist" || true
+          echo "--- AudioTools/version-like strings ---"
+          strings "$BIN" | grep -E 'AudioTools|praat~|v1\.[0-9]+|version|Version' | head -n 200 || true
+          echo "--- signature ---"
+          codesign -dv --verbose=4 "$MXO" 2>&1 || true
