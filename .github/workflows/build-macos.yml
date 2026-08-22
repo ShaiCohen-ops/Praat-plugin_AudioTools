@@ -42,7 +42,7 @@ jobs:
           set -euxo pipefail
           PART_DIR="Max-MSP/Praat_AudioTools_CI/payload"
           test -d "$PART_DIR"
-          cat "$PART_DIR"/ci_payload.tar.gz.b64.part* | base64 --decode > "$RUNNER_TEMP/ci_payload.tar.gz"
+          cat "$PART_DIR"/ci_payload.tar.gz.b64.part* | base64 -D > "$RUNNER_TEMP/ci_payload.tar.gz"
           echo "$PAYLOAD_SHA256  $RUNNER_TEMP/ci_payload.tar.gz" | shasum -a 256 -c -
           mkdir -p "$RUNNER_TEMP/praat-ci"
           tar -xzf "$RUNNER_TEMP/ci_payload.tar.gz" -C "$RUNNER_TEMP/praat-ci"
@@ -76,15 +76,19 @@ jobs:
           test -n "$MXO"
           BIN="$MXO/Contents/MacOS/AudioTools.praat~"
           test -x "$BIN"
+
           ARCHS="$(lipo -archs "$BIN")"
           echo "External architectures: $ARCHS"
           echo "$ARCHS" | grep -q 'x86_64'
           echo "$ARCHS" | grep -q 'arm64'
+
           codesign --force --deep --sign - "$MXO"
           codesign --verify --deep --strict --verbose=2 "$MXO"
+
           echo "mxo=$MXO" >> "$GITHUB_OUTPUT"
           echo "bin=$BIN" >> "$GITHUB_OUTPUT"
           echo "archs=$ARCHS" >> "$GITHUB_OUTPUT"
+
           file "$BIN"
           otool -L "$BIN"
 
@@ -98,9 +102,14 @@ jobs:
           rm -rf "$STAGE"
           mkdir -p "$STAGE"
           ditto "$RUNNER_TEMP/praat-ci/package_template/Praat_AudioTools" "$PKG"
+
           mkdir -p "$PKG/externals" "$PKG/extras" "$PKG/misc/plugin_AudioTools" "$PKG/examples/Mac_CI_Smoke_Tests"
           ditto "${{ steps.external.outputs.mxo }}" "$PKG/externals/AudioTools.praat~.mxo"
+
+          # The Extras copy is intentionally a launcher-equivalent copy for this CI test build.
           cp "$PKG/patchers/praat.maxpat" "$PKG/extras/Praat AudioTools.maxpat"
+
+          # The repository root is the Praat AudioTools library. Exclude project/distribution material.
           rsync -a \
             --exclude '.git/' \
             --exclude '.github/' \
@@ -108,12 +117,15 @@ jobs:
             --exclude '.DS_Store' \
             --exclude '*.zip' \
             ./ "$PKG/misc/plugin_AudioTools/"
+
           cp "$RUNNER_TEMP/praat-ci/tests/"*.praat "$PKG/examples/Mac_CI_Smoke_Tests/"
+
           SCRIPT_COUNT="$(find "$PKG/misc/plugin_AudioTools" -type f -name '*.praat' | wc -l | tr -d ' ')"
           echo "Bundled .praat files: $SCRIPT_COUNT"
           if [ "$SCRIPT_COUNT" != "481" ]; then
             echo "::warning::Expected 481 .praat files for the current Windows-tested library; repository checkout contains $SCRIPT_COUNT."
           fi
+
           echo "pkg=$PKG" >> "$GITHUB_OUTPUT"
           echo "script_count=$SCRIPT_COUNT" >> "$GITHUB_OUTPUT"
 
@@ -124,14 +136,17 @@ jobs:
           set -euxo pipefail
           DMG="$RUNNER_TEMP/praat.dmg"
           curl --fail --location --retry 3 --retry-delay 3 "$PRAAT_DMG_URL" --output "$DMG"
+
           ATTACH_LOG="$RUNNER_TEMP/hdiutil-attach.txt"
           hdiutil attach -nobrowse -readonly "$DMG" | tee "$ATTACH_LOG"
           MOUNT="$(awk -F '\t' '/\/Volumes\// {print $NF; exit}' "$ATTACH_LOG")"
           test -n "$MOUNT"
+
           PRAAT_APP="$(find "$MOUNT" -maxdepth 2 -type d -name 'Praat.app' -print -quit)"
           test -n "$PRAAT_APP"
           ditto "$PRAAT_APP" "${{ steps.package.outputs.pkg }}/externals/Praat.app"
           hdiutil detach "$MOUNT"
+
           PRAAT_BIN="${{ steps.package.outputs.pkg }}/externals/Praat.app/Contents/MacOS/Praat"
           test -x "$PRAAT_BIN"
           PRAAT_ARCHS="$(lipo -archs "$PRAAT_BIN")"
@@ -139,6 +154,7 @@ jobs:
           echo "$PRAAT_ARCHS" | grep -q 'x86_64'
           echo "$PRAAT_ARCHS" | grep -q 'arm64'
           codesign --verify --deep --strict --verbose=2 "${{ steps.package.outputs.pkg }}/externals/Praat.app"
+
           echo "bin=$PRAAT_BIN" >> "$GITHUB_OUTPUT"
           echo "archs=$PRAAT_ARCHS" >> "$GITHUB_OUTPUT"
 
@@ -159,6 +175,7 @@ jobs:
         run: |
           set -euxo pipefail
           PKG="${{ steps.package.outputs.pkg }}"
+
           test -f "$PKG/package-info.json"
           test -f "$PKG/patchers/praat.maxpat"
           test -f "$PKG/extras/Praat AudioTools.maxpat"
@@ -168,9 +185,11 @@ jobs:
           test -d "$PKG/externals/AudioTools.praat~.mxo"
           test -d "$PKG/externals/Praat.app"
           test -d "$PKG/misc/plugin_AudioTools"
+
           python3 -m json.tool "$PKG/package-info.json" >/dev/null
           grep -q 'Library/Application Support/Praat/plugin_AudioTools' "$PKG/javascript/AudioTools.praat.library.js"
           grep -q 'misc/plugin_AudioTools' "$PKG/javascript/AudioTools.praat.library.js"
+
           codesign --verify --deep --strict "$PKG/externals/AudioTools.praat~.mxo"
           codesign --verify --deep --strict "$PKG/externals/Praat.app"
 
@@ -200,6 +219,7 @@ jobs:
           6. Load a sound and run a simple processor, a generator, and a visualization-enabled script.
           7. Send the Max Console text back to Shai even if everything works.
           EOF
+
           cat >> "$PKG/THIRD_PARTY_NOTICES.md" <<EOF
 
           ## CI bundled version
@@ -208,6 +228,7 @@ jobs:
           EOF
 
       - name: Create distributable ZIP
+        id: archive
         shell: bash
         run: |
           set -euxo pipefail
@@ -217,6 +238,7 @@ jobs:
           ditto -c -k --sequesterRsrc --keepParent "$(basename '${{ steps.package.outputs.pkg }}')" "$OUT"
           shasum -a 256 "$OUT" | tee "$GITHUB_WORKSPACE/Praat_AudioTools_1.0.0_macOS_Universal2.sha256"
           ls -lh "$OUT"
+          echo "zip=$OUT" >> "$GITHUB_OUTPUT"
 
       - name: Upload macOS package artifact
         uses: actions/upload-artifact@v4
