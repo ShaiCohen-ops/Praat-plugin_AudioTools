@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.4 (2026) - Concatenation now follows the computed path
+# Version: 1.5 (2026) - Suite-standard visualization
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -19,6 +19,19 @@
 #   coefficient; neither variant uses variance, deltas, covariance or
 #   DTW. Mean + SD, frame-distribution distance and trajectory DTW are
 #   the obvious extensions if evolution matters for a given collection.
+#
+# Changelog v1.5:
+#   - VISUALIZATION STANDARDIZATION ONLY; analysis, path construction,
+#     concatenation and audio rendering are unchanged.
+#   - Adopted the Praat AudioTools 8-inch page/grid convention with
+#     explicit inner viewports, a wider two-column gutter, and safe
+#     vertical spacing for panel titles and axis labels.
+#   - Standardized the title/subtitle hierarchy, neutral panel and
+#     summary colours, font sizes, reference lines and dense labels.
+#   - Rebuilt the summary as a compact three-line suite-standard strip.
+#   - Escaped underscores in filenames drawn in the path sequence.
+#   - Restores the full-page viewport at the end so Picture export and
+#     clipboard operations capture the complete visualization.
 #
 # Changelog v1.4:
 #
@@ -146,7 +159,7 @@
 #   - Improved visualization layout
 # ============================================================
 
-form Timbral Similarity Browser v1.4
+form Timbral Similarity Browser v1.5
     comment === Audio Folder ===
     comment (Leave blank to pick a folder with a dialog)
     sentence Folder 
@@ -229,7 +242,7 @@ if minAnalysisDur < 0.02
 endif
 
 clearinfo
-writeInfoLine: "=== Timbral Similarity Browser v1.4 ==="
+writeInfoLine: "=== Timbral Similarity Browser v1.5 ==="
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "MFCC coefficients: ", num_coefficients
 appendInfoLine: "Window: ", fixed$(window_length * 1000, 1), " ms | step: ", fixed$(time_step * 1000, 1), " ms"
@@ -961,68 +974,54 @@ endif
 if draw_visualization
     appendInfoLine: ""
     appendInfoLine: "Drawing visualization..."
-    
+
+    pageHeight = 6.70
     Erase all
-    Select outer viewport: 0, 8, 0, 8
-    
-    # === Title ===
-    # v1.3: the subtitle used axis y = -1 inside a 0-0.5 inch title
-    # viewport, which mapped to outer y = 1.0 inches - inside the Output
-    # Waveform panel (outer 0.6-1.9), so it was drawn over the waveform.
-    # It was also placed at x = 0.2 with "centre" alignment, off-centre
-    # against the title above it. Same fix as Self_Attention_Recomposer
-    # v1.1: taller title viewport, subtitle just above the first panel.
-    Select outer viewport: 0, 8, 0, 0.65
+    Select outer viewport: 0, 8, 0, pageHeight
+
+    # === Header ===
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.6, "half", "##Timbral Similarity Browser##"
-    Font size: 9
-    Colour: "{0.4, 0.4, 0.5}"
-    Text: 0.5, "centre", -0.22, "half", presetName$ + " | " + string$(n) + " sounds (" + string$(nValid) + " analyzable) | " + string$(num_coefficients) + " MFCCs | " + metricDesc$
-    
+    Text: 0.5, "centre", 0.68, "half", "##Timbral Similarity Browser v1.5##"
+    Font size: 7
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half", presetName$ + " | " + string$(n) + " sounds (" + string$(nValid) + " analyzable) | " + string$(num_coefficients) + " MFCCs | " + metricDesc$
+
     # === Output Waveform with Boundaries ===
-    Select outer viewport: 0, 8, 0.6, 1.9
-    Select inner viewport: 0.6, 7.7, 0.75, 1.8
-    
+    Select outer viewport: 0, 8, 0.62, 1.95
+    Select inner viewport: 0.60, 7.70, 0.80, 1.73
     selectObject: outputSound
-    Colour: "{0.4, 0.55, 0.7}"
+    Colour: "{0.25, 0.45, 0.75}"
     Draw: 0, 0, 0, 0, "no", "Curve"
-    
-    # Draw sound boundaries
-    Colour: "{0.8, 0.5, 0.4}"
+
+    Colour: "{0.75, 0.45, 0.35}"
     Dashed line
     for i from 2 to n
         boundaryTime = cumulative_pos#[i]
         Draw line: boundaryTime, -0.95, boundaryTime, 0.95
     endfor
     Solid line
-    
+
     Colour: "Black"
     Draw inner box
     Font size: 7
     Text left: "yes", "Output"
     Text bottom: "no", "Time (s)"
-    Text top: "no", "Concatenated (" + fixed$(totalDur, 2) + " s) - dashed lines = boundaries"
-    
+    Text top: "no", "Concatenated output (" + fixed$(totalDur, 2) + " s) | dashed = boundaries"
+
     # === Distance Matrix Heatmap ===
     if n <= 20
-        Select outer viewport: 0, 4, 2.0, 4.3
-        Select inner viewport: 0.6, 3.7, 2.2, 4.1
-        
+        Select outer viewport: 0, 4, 2.10, 4.25
+        Select inner viewport: 0.60, 3.85, 2.30, 4.00
         Axes: 0, n, 0, n
-        
+
         for i from 1 to n
             for j from 1 to n
                 selectObject: distMatrix
                 dist = Get value: i, j
-                
-                # v1.3 (item 5): cells involving an un-analyzable sound
-                # are not distances in the timbral space at all - their
-                # feature row is a fabricated zero vector. They are drawn
-                # in neutral grey instead of being coloured on the
-                # similarity scale, and real distances are clamped to
-                # 0-1 so the colour formulas stay in range.
                 if analyzed_'i' = 0 or analyzed_'j' = 0
                     rVal = 0.85
                     gVal = 0.85
@@ -1039,23 +1038,18 @@ if draw_visualization
                     if intensity > 1
                         intensity = 1
                     endif
-                    
-                    # Blue (similar) to Orange (different)
                     rVal = 0.3 + intensity * 0.5
                     gVal = 0.5 - intensity * 0.2
                     bVal = 0.7 - intensity * 0.4
                 endif
-                
-                rVal$ = fixed$(rVal, 2)
-                gVal$ = fixed$(gVal, 2)
-                bVal$ = fixed$(bVal, 2)
-                
+                rVal$ = fixed$(rVal, 3)
+                gVal$ = fixed$(gVal, 3)
+                bVal$ = fixed$(bVal, 3)
                 Paint rectangle: "{" + rVal$ + ", " + gVal$ + ", " + bVal$ + "}", i - 1, i, n - j, n - j + 1
             endfor
         endfor
-        
-        # Highlight path on matrix (valid segment only)
-        Colour: "{0.9, 0.3, 0.3}"
+
+        Colour: "{0.85, 0.25, 0.25}"
         Line width: 2
         for i from 1 to nValid - 1
             idx1 = path#[i]
@@ -1067,124 +1061,121 @@ if draw_visualization
             Draw line: x1, y1, x2, y2
         endfor
         Line width: 1
-        
+
         Colour: "Black"
         Draw inner box
-        Font size: 6
+        Font size: 7
         Text left: "yes", "Sound #"
         Text bottom: "no", "Sound #"
-        Text top: "no", "Distance Matrix (red = path, grey = un-analyzable)"
+        Text top: "no", "Distance Matrix | red = path | grey = un-analyzable"
     else
-        # Too many sounds - show message
-        Select outer viewport: 0, 4, 2.0, 4.3
-        Select inner viewport: 0.6, 3.7, 2.2, 4.1
+        Select outer viewport: 0, 4, 2.10, 4.25
+        Select inner viewport: 0.60, 3.85, 2.30, 4.00
         Axes: 0, 1, 0, 1
-        Paint rectangle: "{0.95, 0.95, 0.95}", 0, 1, 0, 1
-        Font size: 9
-        Colour: "{0.5, 0.5, 0.5}"
-        Text: 0.5, "centre", 0.5, "half", "Distance matrix too large to display"
-        Text: 0.5, "centre", 0.3, "half", "(" + string$(n) + " × " + string$(n) + " = " + string$(n*n) + " cells)"
+        Paint rectangle: "{0.97, 0.97, 0.97}", 0, 1, 0, 1
+        Font size: 7
+        Colour: "{0.35, 0.35, 0.50}"
+        Text: 0.5, "centre", 0.56, "half", "Distance matrix omitted for readability"
+        Font size: 6
+        Text: 0.5, "centre", 0.40, "half", string$(n) + " × " + string$(n) + " = " + string$(n*n) + " cells"
         Colour: "Black"
         Draw inner box
+        Font size: 7
+        Text top: "no", "Distance Matrix"
     endif
-    
+
     # === Path Distances ===
-    Select outer viewport: 4, 8, 2.0, 4.3
-    Select inner viewport: 4.4, 7.7, 2.2, 4.1
-    
+    Select outer viewport: 4, 8, 2.10, 4.25
+    Select inner viewport: 4.45, 7.70, 2.30, 4.00
     if maxPathDist < 0.1
         maxPathDist = 1
     endif
-    
     Axes: 0, n, 0, maxPathDist * 1.15
-    Paint rectangle: "{0.97, 0.98, 0.97}", 0, n, 0, maxPathDist * 1.15
-    
-    # Mean line
-    Colour: "{0.8, 0.8, 0.8}"
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, n, 0, maxPathDist * 1.15
+
+    Colour: "{0.80, 0.80, 0.80}"
     Dashed line
     Draw line: 0, meanPathDist, n, meanPathDist
     Solid line
-    
-    # Draw path distances as bars (valid segment only)
+
     for i from 1 to nPathSteps
         intensity = pathDist#[i] / maxPathDist
         rVal = 0.4 + intensity * 0.4
         gVal = 0.65 - intensity * 0.25
         bVal = 0.5 - intensity * 0.2
-        rVal$ = fixed$(rVal, 2)
-        gVal$ = fixed$(gVal, 2)
-        bVal$ = fixed$(bVal, 2)
+        rVal$ = fixed$(rVal, 3)
+        gVal$ = fixed$(gVal, 3)
+        bVal$ = fixed$(bVal, 3)
         Paint rectangle: "{" + rVal$ + ", " + gVal$ + ", " + bVal$ + "}", i - 0.35, i + 0.35, 0, pathDist#[i]
     endfor
-    
+
     Colour: "Black"
     Draw inner box
-    Font size: 6
+    Font size: 7
     Text left: "yes", "Distance"
     Text bottom: "no", "Step"
-    Text top: "no", "Path Distances (mean=" + fixed$(meanPathDist, 2) + ")"
-    
+    Text top: "no", "Path Distances | mean = " + fixed$(meanPathDist, 2)
+
     # === Path Sequence ===
-    Select outer viewport: 0, 8, 4.4, 5.8
-    Select inner viewport: 0.6, 7.7, 4.55, 5.7
-    
+    Select outer viewport: 0, 8, 4.45, 5.70
+    Select inner viewport: 0.60, 7.70, 4.65, 5.45
     Axes: 0, n + 1, 0, 1
-    Paint rectangle: "{0.97, 0.97, 0.98}", 0, n + 1, 0, 1
-    
-    Font size: 5
-    Colour: "{0.3, 0.3, 0.4}"
-    
-    # Show path sequence (truncate names if needed)
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, n + 1, 0, 1
+
+    Font size: 6
+    Colour: "{0.25, 0.25, 0.35}"
     maxNameLen = 12
+    if n > 12
+        maxNameLen = 8
+    endif
+    if n > 20
+        maxNameLen = 5
+    endif
+
     for i from 1 to n
         idx = path#[i]
         name$ = sound_name_'idx'$
         if length(name$) > maxNameLen
             name$ = left$(name$, maxNameLen - 2) + ".."
         endif
-        
-        # Alternate colors for readability; appended un-analyzable
-        # sounds are shown in grey so the path proper is legible.
+        vizName$ = replace$(name$, "_", "\_ ", 0)
+
         if i > nValid
             Paint rectangle: "{0.88, 0.88, 0.88}", i - 0.45, i + 0.45, 0.15, 0.85
-        elsif i mod 2 = 0
-            Paint rectangle: "{0.92, 0.94, 0.96}", i - 0.45, i + 0.45, 0.15, 0.85
         else
-            Paint rectangle: "{0.96, 0.94, 0.92}", i - 0.45, i + 0.45, 0.15, 0.85
+            Paint rectangle: "{0.92, 0.94, 0.96}", i - 0.45, i + 0.45, 0.15, 0.85
         endif
-        
-        Colour: "{0.2, 0.2, 0.3}"
-        Text: i, "centre", 0.5, "half", string$(i) + ":" + name$
+
+        Colour: "{0.25, 0.25, 0.35}"
+        Text: i, "centre", 0.5, "half", string$(i) + ":" + vizName$
     endfor
-    
+
     Colour: "Black"
     Draw inner box
-    Font size: 6
-    Text top: "no", "Similarity Path: Start → Most Similar → ... → End   (grey = un-analyzable, appended)"
-    
-    # === Summary Stats ===
-    Select outer viewport: 0, 8, 5.9, 6.5
-    Axes: 0, 1, 0, 1
-    
-    Paint rectangle: "{0.95, 0.97, 0.95}", 0, 1, 0, 1
-    
     Font size: 7
-    Colour: "{0.3, 0.3, 0.4}"
-    
-    Text: 0.10, "centre", 0.72, "half", "Sounds: " + string$(n) + " (" + string$(nValid) + " ok)"
-    Text: 0.30, "centre", 0.72, "half", "MFCCs: " + string$(num_coefficients)
-    Text: 0.50, "centre", 0.72, "half", "Max dist: " + fixed$(maxDist, 2)
-    Text: 0.70, "centre", 0.72, "half", "Path length: " + fixed$(totalPathLength, 2)
-    Text: 0.89, "centre", 0.72, "half", "Duration: " + fixed$(totalDur, 1) + "s"
-    
-    Text: 0.10, "centre", 0.28, "half", "SR: " + string$(targetSR) + " Hz"
-    Text: 0.30, "centre", 0.28, "half", "Start: " + startDesc$
-    Text: 0.58, "centre", 0.28, "half", "Join: " + joinDesc$
-    Text: 0.85, "centre", 0.28, "half", "Level: " + levelDesc$
-    
+    Text top: "no", "Similarity Path | start → most similar → ... → end | grey = appended un-analyzable"
+
+    # === Summary Strip ===
+    Select outer viewport: 0, 8, 5.90, 6.65
+    Select inner viewport: 0.60, 7.70, 5.98, 6.57
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+
+    Font size: 6
+    Colour: "{0.25, 0.25, 0.35}"
+    summary1$ = "##Collection##  " + string$(n) + " sounds (" + string$(nValid) + " analyzable) | " + fixed$(totalDur, 2) + " s | " + string$(targetSR) + " Hz"
+    summary2$ = "##Analysis##  " + presetName$ + " | " + string$(num_coefficients) + " MFCCs | " + metricDesc$ + " | max distance " + fixed$(maxDist, 2)
+    summary3$ = "##Path##  " + startDesc$ + " | length " + fixed$(totalPathLength, 2) + " | mean step " + fixed$(meanPathDist, 2) + " | " + joinDesc$ + " | " + levelDesc$
+    Text: 0.02, "left", 0.78, "half", summary1$
+    Text: 0.02, "left", 0.50, "half", summary2$
+    Text: 0.02, "left", 0.22, "half", summary3$
+
     Colour: "Black"
     Draw inner box
+
+    Select outer viewport: 0, 8, 0, pageHeight
     Font size: 10
+    Colour: "Black"
 endif
 
 # ========== CLEANUP ==========

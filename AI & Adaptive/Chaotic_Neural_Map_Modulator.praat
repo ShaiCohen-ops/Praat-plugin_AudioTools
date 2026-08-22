@@ -3,9 +3,49 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 2.3 (2026)
+# Version: 2.4 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v2.4 (2026) - visualization uniformity pass; no change to
+# analysis, chaos generation, the network, or any synthesis stage:
+#   1. FIX: the title and the subtitle were swapped on the page. With no
+#      inner viewport set, Praat's default margins leave ~0.06 in of
+#      inner height in a 0.45 in band, so y = -1.7 (title) landed BELOW
+#      y = 0.20 (subtitle) and the parameter line printed above the
+#      heading. The band now sets an explicit inner viewport, and the
+#      title/subtitle sit at y = 0.68 / 0.22.
+#   2. FIX: "Time (s)" under the spectrogram collided with the "Training
+#      loss" caption of the panel beneath it - the two shared a 0.05 in
+#      gap, so the label was bisected by the loss panel's top border.
+#      The spectrogram now has a 0.19 in bottom margin, and every panel
+#      carrying a Text top caption has 0.13 in of headroom.
+#   3. FIX: the right-hand "Semitones" y-label overlapped the left
+#      panel's frame. The half-width gutter was 0.35 in; inner
+#      viewports are now 0.60, 3.85 and 4.45, 7.70, a 0.60 in gutter.
+#   4. FIX: the output F0 contour was drawn outside its panel. The axis
+#      range was computed from the input contour only, but the output
+#      contour is that contour shifted by up to +/- the pitch range, and
+#      Praat does not clip to the inner viewport - so the blue trace ran
+#      over the waveform panel above. The range now includes both
+#      contours (and the headroom factors relax from 0.8/1.2 to
+#      0.9/1.1, since the range itself is now wider).
+#   5. FIX: stale version strings. The form said v2.3 while the drawn
+#      title said v2.2 and the Info line said v2.2.
+#   6. Panel grounds unified: {0.97, 0.97, 0.99}, {0.97, 0.98, 0.97} and
+#      {0.97, 0.97, 0.98} were three invisibly different tints of the
+#      same background; all are now {0.97, 0.97, 0.97}. The zero line
+#      moves from {0.85, 0.85, 0.85} to the standard {0.80, 0.80, 0.80}.
+#   7. Four near-identical blues - {0.30, 0.55, 0.70} (output wave),
+#      {0.25, 0.45, 0.75} (output F0), {0.30, 0.45, 0.75} (pitch shift)
+#      and {0.20, 0.40, 0.70} (training loss) - all mean "output or
+#      derived quantity" and now share one value, {0.25, 0.45, 0.75}.
+#      The unvoiced shading, the input grey and the ring-mod green are
+#      unchanged, pending the palette decision.
+#   8. FIX: drawing ended inside the summary strip, so Save as PNG and
+#      Copy to clipboard exported that strip alone rather than the page.
+#      Drawing now ends by re-selecting the full page. Canvas height
+#      stays 8.00 in; v2.2 declared 8 but its content stopped at 7.70.
 #
 # Changelog v2.3 (2026):
 #   - FIX (output-layer activation mismatch, mandatory): training
@@ -194,7 +234,7 @@ endif
 input_sound_original = selected("Sound")
 input_name$ = selected$("Sound")
 
-form Chaotic Neural Map Modulator v2.3
+form Chaotic Neural Map Modulator v2.4
     comment === Presets ===
     optionmenu Preset: 2
         option Custom
@@ -370,7 +410,7 @@ else
 endif
 
 clearinfo
-writeInfoLine: "=== CHAOTIC NEURAL MAP MODULATOR v2.2 ==="
+writeInfoLine: "=== CHAOTIC NEURAL MAP MODULATOR v2.4 ==="
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Instability: ", fixed$(instability, 1), "/10"
 appendInfoLine: "Modulation rate: ", fixed$(modulation_rate_Hz, 2), " Hz"
@@ -1350,26 +1390,32 @@ endif
 if draw_visualization
     appendInfoLine: "Creating visualization..."
     Erase all
-    Select outer viewport: 0, 8, 0, 8
+    Select outer viewport: 0, 8, 0, 8.00
 
     # Title
-    Select outer viewport: 0, 8, 0, 0.45
+    # An explicit inner viewport is set here rather than relying on
+    # Praat's default margins: in a band this shallow the defaults leave
+    # ~0.06 in of inner height, so one axis unit is far smaller than it
+    # looks. That is why v2.2's y = -1.7 / y = 0.20 pair printed the
+    # subtitle ABOVE the title instead of below it.
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.6, 7.7, 0.02, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", -1.7, "half",
-        ... "##Chaotic Neural Map Modulator v2.2##"
+    Text: 0.5, "centre", 0.68, "half",
+        ... "##Chaotic Neural Map Modulator v2.4##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.50}"
-    Text: 0.5, "centre", 0.20, "half",
+    Text: 0.5, "centre", 0.22, "half",
         ... input_name$ + " | " + presetName$
         ... + " | Instab " + fixed$(instability, 1)
         ... + " | ModRate " + fixed$(modulation_rate_Hz, 2) + " Hz"
         ... + " | " + scaleName$
 
     # Input waveform
-    Select outer viewport: 0, 8, 0.50, 1.40
-    Select inner viewport: 0.6, 7.7, 0.55, 1.35
+    Select outer viewport: 0, 8, 0.58, 1.48
+    Select inner viewport: 0.60, 7.70, 0.63, 1.43
     selectObject: input_sound_original
     Colour: "{0.55, 0.55, 0.55}"
     Draw: 0, 0, 0, 0, "no", "Curve"
@@ -1379,10 +1425,10 @@ if draw_visualization
     Text left: "yes", "Input"
 
     # Output waveform
-    Select outer viewport: 0, 8, 1.45, 2.35
-    Select inner viewport: 0.6, 7.7, 1.50, 2.30
+    Select outer viewport: 0, 8, 1.53, 2.43
+    Select inner viewport: 0.60, 7.70, 1.58, 2.38
     selectObject: output_sound
-    Colour: "{0.30, 0.55, 0.70}"
+    Colour: "{0.25, 0.45, 0.75}"
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
@@ -1390,8 +1436,8 @@ if draw_visualization
     Text left: "yes", "Output"
 
     # F0 contour with voiced/unvoiced shading
-    Select outer viewport: 0, 8, 2.40, 3.55
-    Select inner viewport: 0.6, 7.7, 2.50, 3.50
+    Select outer viewport: 0, 8, 2.48, 3.63
+    Select inner viewport: 0.60, 7.70, 2.61, 3.58
 
     f0Lo = 1200
     f0Hi = 50
@@ -1405,15 +1451,32 @@ if draw_visualization
             endif
         endif
     endfor
+    # v2.3: the output F0 contour is the input contour shifted by up to
+    # +/- pitch_range_semitones, so a range taken from the input alone
+    # left part of the blue trace outside the panel. Praat does not clip
+    # to the inner viewport, so those segments were drawn on top of the
+    # waveform panel above. Include the output contour in the range.
+    for ci to num_ctrl
+        if voicedAtCtrl#[ci] = 1
+            f0outRange = f0AtCtrl#[ci] * 2 ^ ((pitchShiftCents#[ci] / 100) / 12)
+            if f0outRange < f0Lo
+                f0Lo = f0outRange
+            endif
+            if f0outRange > f0Hi
+                f0Hi = f0outRange
+            endif
+        endif
+    endfor
+
     if f0Hi <= f0Lo
         f0Lo = 100
         f0Hi = 400
     endif
-    f0Lo = f0Lo * 0.8
-    f0Hi = f0Hi * 1.2
+    f0Lo = f0Lo * 0.9
+    f0Hi = f0Hi * 1.1
 
     Axes: 0, duration, f0Lo, f0Hi
-    Paint rectangle: "{0.97, 0.97, 0.99}", 0, duration, f0Lo, f0Hi
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, duration, f0Lo, f0Hi
 
     # Shade unvoiced regions
     for i from 2 to num_frames
@@ -1466,8 +1529,8 @@ if draw_visualization
     Text top: "no", "F0 contour: grey=input, blue=output, pink=unvoiced"
 
     # Ring-mod frequency trajectory
-    Select outer viewport: 0, 4, 3.60, 4.70
-    Select inner viewport: 0.6, 3.85, 3.70, 4.60
+    Select outer viewport: 0, 4, 3.68, 4.78
+    Select inner viewport: 0.60, 3.85, 3.81, 4.73
 
     rfLo = 1e9
     rfHi = 0
@@ -1487,7 +1550,7 @@ if draw_visualization
     rfHi = rfHi * 1.1
 
     Axes: 0, duration, rfLo, rfHi
-    Paint rectangle: "{0.97, 0.98, 0.97}", 0, duration, rfLo, rfHi
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, duration, rfLo, rfHi
 
     for ci from 2 to num_ctrl
         if voicedAtCtrl#[ci] = 0
@@ -1510,8 +1573,8 @@ if draw_visualization
     Text top: "no", "Ring-mod frequency"
 
     # Pitch-shift trajectory
-    Select outer viewport: 4, 8, 3.60, 4.70
-    Select inner viewport: 4.2, 7.7, 3.70, 4.60
+    Select outer viewport: 4, 8, 3.68, 4.78
+    Select inner viewport: 4.45, 7.70, 3.81, 4.73
 
     # v2.2: with Pitch_range_semitones = 0 (now a legitimate null-test
     # input), pitch_range_semitones * 1.2 would give a zero-height
@@ -1522,10 +1585,10 @@ if draw_visualization
     endif
 
     Axes: 0, duration, -pitchAxisRange, pitchAxisRange
-    Paint rectangle: "{0.97, 0.97, 0.98}",
+    Paint rectangle: "{0.97, 0.97, 0.97}",
         ... 0, duration, -pitchAxisRange, pitchAxisRange
 
-    Colour: "{0.85, 0.85, 0.85}"
+    Colour: "{0.80, 0.80, 0.80}"
     Draw line: 0, 0, duration, 0
 
     for ci from 2 to num_ctrl
@@ -1536,7 +1599,7 @@ if draw_visualization
         endif
     endfor
 
-    Colour: "{0.30, 0.45, 0.75}"
+    Colour: "{0.25, 0.45, 0.75}"
     Line width: 1.2
     prevSt = 0
     for ci from 2 to num_ctrl
@@ -1552,8 +1615,8 @@ if draw_visualization
     Text top: "no", "Pitch shift (scale-quantized)"
 
     # Output spectrogram
-    Select outer viewport: 0, 8, 4.75, 6.20
-    Select inner viewport: 0.6, 7.7, 4.85, 6.15
+    Select outer viewport: 0, 8, 4.83, 6.42
+    Select inner viewport: 0.60, 7.70, 4.96, 6.16
     selectObject: output_sound
     To Spectrogram: 0.005, 5000, 0.002, 20, "Gaussian"
     specOut = selected("Spectrogram")
@@ -1567,8 +1630,8 @@ if draw_visualization
     removeObject: specOut
 
     # Training loss
-    Select outer viewport: 0, 8, 6.25, 7.10
-    Select inner viewport: 0.6, 7.7, 6.35, 7.00
+    Select outer viewport: 0, 8, 6.58, 7.43
+    Select inner viewport: 0.60, 7.70, 6.71, 7.38
 
     lossMin = trainLoss#[1]
     lossMax = trainLoss#[1]
@@ -1588,9 +1651,9 @@ if draw_visualization
     lossYhi = lossMax + lossRange * 0.05
 
     Axes: 0, training_iterations + 1, lossYlo, lossYhi
-    Paint rectangle: "{0.97, 0.97, 0.99}",
+    Paint rectangle: "{0.97, 0.97, 0.97}",
         ... 0, training_iterations + 1, lossYlo, lossYhi
-    Colour: "{0.20, 0.40, 0.70}"
+    Colour: "{0.25, 0.45, 0.75}"
     Line width: 1.5
     for li from 2 to training_iterations
         Draw line: li - 1, trainLoss#[li - 1], li, trainLoss#[li]
@@ -1603,8 +1666,8 @@ if draw_visualization
     Text top: "no", "Training loss"
 
     # Summary strip
-    Select outer viewport: 0, 8, 7.20, 7.70
-    Select inner viewport: 0.6, 7.7, 7.25, 7.65
+    Select outer viewport: 0, 8, 7.50, 8.00
+    Select inner viewport: 0.60, 7.70, 7.55, 7.95
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
     Font size: 6
@@ -1629,6 +1692,10 @@ if draw_visualization
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
 
+    # Restore the full page as the last drawing action, so Save as PNG /
+    # Copy to clipboard capture the whole figure rather than cropping to
+    # the summary strip.
+    Select outer viewport: 0, 8, 0, 8.00
     Font size: 10
     Colour: "Black"
     Line width: 1

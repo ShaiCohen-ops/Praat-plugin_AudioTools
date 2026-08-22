@@ -2,7 +2,43 @@
 # Praat AudioTools - CrossEntropy_Concatenative_Mosaicing.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
-# Version: 1.4 (2026)
+# Version: 1.5 (2026)
+#
+#   v1.5 (2026) -- visualization uniformity pass; no change to analysis,
+#   matching, the stereo chain or synthesis:
+#   - FIX: three percent signs were written bare. In Praat drawn text a
+#     bare % italicizes the character after it and prints nothing, so
+#     the summary read "7 / 25 P-frames used (28.0)" with an italic
+#     bracket instead of "(28.0%)", "R coverage=32.0" with no unit, and
+#     "(95.2 of 2.50 s uncrossfaded)". All three now use \% plus a
+#     spare space, since \% consumes the character that follows it.
+#   - FIX: "max reuse=" printed string$(maxUsage), but v1.4 made
+#     maxUsage a REAL (the R channel accumulates fractional
+#     ambiguity weights rather than +1 per use), so the strip read
+#     "max reuse=16.524415730204918x". Now fixed$(maxUsage, 1).
+#   - FIX: Sound names were drawn raw, and Praat reads "_" as a
+#     subscript marker -- a palette named "my_take_01" printed as
+#     "my(sub t)ake(sub 0)1" with the underscores gone. Names are
+#     escaped for display only; the objects are untouched.
+#   - FIX: drawing ended inside the summary strip, so Save as PNG and
+#     Copy to clipboard exported that strip alone (2375 x 343 px)
+#     instead of the page. Drawing now ends on the full page.
+#   - Half-width gutter widened from 0.45 to 0.60 in: the right
+#     column's rotated y-labels ("H (bits)", "Centroid (kHz)", "Bin")
+#     were touching the left panel's frame. Inner viewports are now
+#     0.60, 3.85 and 4.45, 7.70; panels shift down 0.10 in to clear
+#     the taller standard title band.
+#   - Title band rebuilt to the library standard (0.52 in, explicit
+#     inner viewport, title y = 0.68 / subtitle y = 0.22).
+#   - Colour tuples normalized to the 2-decimal, spaced convention; the
+#     identity-diagonal grey moves to the standard {0.80, 0.80, 0.80}.
+#     The heatmap ramps now emit fixed$(g, 3) rather than string$(g),
+#     which was producing 17-digit colour components.
+#   - NOT changed, needs a decision: "L" is drawn blue in the
+#     reordering map, red in the spectral-H panel, green in the usage
+#     histogram and dark amber in the centroid panel, while "R" is
+#     amber everywhere. The centroid panel therefore carries two
+#     ambers at once. Hues are left as they are pending the palette.
 #
 #   v1.4 (2026) -- second review-driven correctness pass:
 #   - FIX (ambiguity math): v1.3's gap = secondHval - bestHval compared
@@ -227,7 +263,7 @@ endif
 # FORM
 ####################################################################
 
-form Cross-Entropy Concatenative Mosaicing v1.4
+form Cross-Entropy Concatenative Mosaicing v1.5
     comment === Preset Selection ===
     optionmenu Preset 1
         option Custom
@@ -369,7 +405,7 @@ selectObject: soundP_id
 nChP = Get number of channels
 
 clearinfo
-writeInfoLine: "=== Cross-Entropy Concatenative Mosaicing v1.4 ==="
+writeInfoLine: "=== Cross-Entropy Concatenative Mosaicing v1.5 ==="
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Sound P (source palette): """, nameP$, """  — ", numFramesP, " frames"
 appendInfoLine: "Sound Q (target template): """, nameQ$, """  — ", numFramesQ, " frames"
@@ -927,40 +963,47 @@ if draw_visualization
     # === TITLE ===
     # v1.1: explicit inner viewport + in-range y (the old y=-1.7
     # escaped the strip and landed on the first panel row)
-    Select outer viewport: 0, 8, 0, 0.45
-    Select inner viewport: 0, 8, 0, 0.45
+    # v1.5: Praat reads "_" in drawn text as a subscript marker, so a
+    # Sound named "my_take_01" printed as "my(sub t)ake(sub 0)1" and the
+    # underscores vanished. Escape them for display only; the object
+    # names themselves are untouched.
+    vizNameP$ = replace$(nameP$, "_", "\_ ", 0)
+    vizNameQ$ = replace$(nameQ$, "_", "\_ ", 0)
+
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.72, "half",
-        ... "##Cross-Entropy Concatenative Mosaicing v1.4##"
+    Text: 0.5, "centre", 0.68, "half",
+        ... "##Cross-Entropy Concatenative Mosaicing v1.5##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.50}"
-    Text: 0.5, "centre", 0.24, "half",
-        ... nameP$ + " -> " + nameQ$
+    Text: 0.5, "centre", 0.22, "half",
+        ... vizNameP$ + " -> " + vizNameQ$
         ... + " | " + presetName$
         ... + " | " + string$(numFramesP) + " P-frames, " + string$(numFramesQ) + " Q-frames"
         ... + " | frame " + fixed$(frameDur * 1000, 0) + " ms, bins " + string$(nBins)
 
     # === PANEL: REORDERING MAP ===
-    Select outer viewport: 0, 4, 0.55, 2.10
-    Select inner viewport: 0.7, 3.85, 0.67, 1.97
+    Select outer viewport: 0, 4, 0.65, 2.20
+    Select inner viewport: 0.60, 3.85, 0.77, 2.07
 
     Axes: 0, numFramesQ, 0, numFramesP
     Paint rectangle: "{0.97, 0.97, 0.97}", 0, numFramesQ, 0, numFramesP
 
     # Identity-mapping reference (Q-frame j == P-frame j), for scale
-    Colour: "{0.85, 0.85, 0.85}"
+    Colour: "{0.80, 0.80, 0.80}"
     diagEnd = min(numFramesQ, numFramesP)
     Draw line: 0, 0, diagEnd, diagEnd
 
     if stereo_mode = 2
-        Colour: "{0.9, 0.7, 0.4}"
+        Colour: "{0.90, 0.70, 0.40}"
         for j from 1 to numFramesQ - 1
             Draw line: j - 1, secondIndexP#[j], j, secondIndexP#[j + 1]
         endfor
     endif
-    Colour: "{0.2, 0.4, 0.8}"
+    Colour: "{0.20, 0.40, 0.80}"
     Line width: 1.5
     for j from 1 to numFramesQ - 1
         Draw line: j - 1, matchIndexP#[j], j, matchIndexP#[j + 1]
@@ -981,19 +1024,19 @@ if draw_visualization
     # === PANEL: CROSS-ENTROPY MATCH QUALITY ===
     # v1.3: plots pure spectralH (always >= 0), not the variety/
     # continuity-biased selectionCost that argmin actually used.
-    Select outer viewport: 4, 8, 0.55, 2.10
-    Select inner viewport: 4.3, 7.7, 0.67, 1.97
+    Select outer viewport: 4, 8, 0.65, 2.20
+    Select inner viewport: 4.45, 7.70, 0.77, 2.07
 
     Axes: 0, numFramesQ, 0, maxH * 1.05
     Paint rectangle: "{0.97, 0.97, 0.97}", 0, numFramesQ, 0, maxH * 1.05
 
     if stereo_mode = 2
-        Colour: "{0.9, 0.7, 0.4}"
+        Colour: "{0.90, 0.70, 0.40}"
         for j from 1 to numFramesQ - 1
             Draw line: j - 1, secondSpectralH#[j], j, secondSpectralH#[j + 1]
         endfor
     endif
-    Colour: "{0.8, 0.2, 0.4}"
+    Colour: "{0.80, 0.20, 0.40}"
     Line width: 1.5
     for j from 1 to numFramesQ - 1
         Draw line: j - 1, spectralH#[j], j, spectralH#[j + 1]
@@ -1016,18 +1059,18 @@ if draw_visualization
     # on top = R (alternate chain, ambiguity-weighted) usage, so
     # palette coverage of
     # both independent chains is visible.
-    Select outer viewport: 0, 4, 2.45, 4.00
-    Select inner viewport: 0.7, 3.85, 2.57, 3.87
+    Select outer viewport: 0, 4, 2.55, 4.10
+    Select inner viewport: 0.60, 3.85, 2.67, 3.97
 
     Axes: 0, numFramesP, 0, maxUsage * 1.15
     Paint rectangle: "{0.97, 0.97, 0.97}", 0, numFramesP, 0, maxUsage * 1.15
 
     for i to numFramesP
         if usageCount#[i] > 0
-            Paint rectangle: "{0.2, 0.8, 0.4}", i - 1, i, 0, usageCount#[i]
+            Paint rectangle: "{0.20, 0.80, 0.40}", i - 1, i, 0, usageCount#[i]
         endif
         if stereo_mode = 2 and usageCountR#[i] > 0
-            Paint rectangle: "{0.9, 0.7, 0.4}", i - 1, i, usageCount#[i], usageCount#[i] + usageCountR#[i]
+            Paint rectangle: "{0.90, 0.70, 0.40}", i - 1, i, usageCount#[i], usageCount#[i] + usageCountR#[i]
         endif
     endfor
 
@@ -1046,24 +1089,24 @@ if draw_visualization
     # v1.3: x-axis uses the ACTUAL per-frame hop in the finished,
     # crossfade-shortened output (frameHop), not the uncompressed
     # frameDur, so this trace lines up with real playback time.
-    Select outer viewport: 4, 8, 2.45, 4.00
-    Select inner viewport: 4.3, 7.7, 2.57, 3.87
+    Select outer viewport: 4, 8, 2.55, 4.10
+    Select inner viewport: 4.45, 7.70, 2.67, 3.97
 
     Axes: 0, totalDur, 0, maxCentroid / 1000 * 1.05
     Paint rectangle: "{0.97, 0.97, 0.97}", 0, totalDur, 0, maxCentroid / 1000 * 1.05
 
-    Colour: "{0.6, 0.6, 0.6}"
+    Colour: "{0.60, 0.60, 0.60}"
     Line width: 1.5
     for j from 1 to numFramesQ - 1
         Draw line: (j - 1) * frameHop, qCentroid#[j] / 1000, j * frameHop, qCentroid#[j + 1] / 1000
     endfor
     if stereo_mode = 2
-        Colour: "{0.9, 0.7, 0.4}"
+        Colour: "{0.90, 0.70, 0.40}"
         for j from 1 to numFramesQ - 1
             Draw line: (j - 1) * frameHop, blendedRCentroid#[j] / 1000, j * frameHop, blendedRCentroid#[j + 1] / 1000
         endfor
     endif
-    Colour: "{0.8, 0.6, 0.2}"
+    Colour: "{0.80, 0.60, 0.20}"
     for j from 1 to numFramesQ - 1
         Draw line: (j - 1) * frameHop, matchedCentroid#[j] / 1000, j * frameHop, matchedCentroid#[j + 1] / 1000
     endfor
@@ -1076,18 +1119,18 @@ if draw_visualization
     Text top: "no", "Spectral centroid: target vs. resynthesis"
     Text bottom: "yes", "Time (s)"
     Font size: 6
-    Colour: "{0.6, 0.6, 0.6}"
+    Colour: "{0.60, 0.60, 0.60}"
     Text: totalDur * 0.02, "left", maxCentroid / 1000 * 0.95, "half", "Q (target)"
-    Colour: "{0.8, 0.6, 0.2}"
+    Colour: "{0.80, 0.60, 0.20}"
     Text: totalDur * 0.02, "left", maxCentroid / 1000 * 0.86, "half", "L (resynthesis)"
     if stereo_mode = 2
-        Colour: "{0.9, 0.7, 0.4}"
+        Colour: "{0.90, 0.70, 0.40}"
         Text: totalDur * 0.02, "left", maxCentroid / 1000 * 0.77, "half", "R (blended, audible estimate)"
     endif
 
     # === PANEL: Q TARGET PDF HEATMAP ===
-    Select outer viewport: 0, 4, 4.35, 6.55
-    Select inner viewport: 0.7, 3.85, 4.47, 6.42
+    Select outer viewport: 0, 4, 4.45, 6.65
+    Select inner viewport: 0.60, 3.85, 4.57, 6.52
 
     Axes: 0, numFramesQ, 0, nBins
     j = 1
@@ -1096,7 +1139,8 @@ if draw_visualization
         while b <= nBins
             v = qPdf##[j, b]
             g = 1 - min(v * 12, 1)
-            colour$ = "{" + string$(g) + "," + string$(g * 0.7 + 0.3) + "," + string$(g)+ "}"
+            colour$ = "{" + fixed$(g, 3) + ", " + fixed$(g * 0.7 + 0.3, 3)
+                ... + ", " + fixed$(g, 3) + "}"
             jEnd = min(j + strideJ - 1, numFramesQ)
             bEnd = min(b + strideB - 1, nBins)
             Paint rectangle: colour$, j - 1, jEnd, b - 1, bEnd
@@ -1113,8 +1157,8 @@ if draw_visualization
     Text bottom: "yes", "Q-frame index"
 
     # === PANEL: RECONSTRUCTED PDF HEATMAP ===
-    Select outer viewport: 4, 8, 4.35, 6.55
-    Select inner viewport: 4.3, 7.7, 4.47, 6.42
+    Select outer viewport: 4, 8, 4.45, 6.65
+    Select inner viewport: 4.45, 7.70, 4.57, 6.52
 
     Axes: 0, numFramesQ, 0, nBins
     j = 1
@@ -1123,7 +1167,8 @@ if draw_visualization
         while b <= nBins
             v = matchedPdf##[j, b]
             g = 1 - min(v * 12, 1)
-            colour$ = "{" + string$(g) + "," + string$(g) + "," + string$(g * 0.7 + 0.3) + "}"
+            colour$ = "{" + fixed$(g, 3) + ", " + fixed$(g, 3)
+                ... + ", " + fixed$(g * 0.7 + 0.3, 3) + "}"
             jEnd = min(j + strideJ - 1, numFramesQ)
             bEnd = min(b + strideB - 1, nBins)
             Paint rectangle: colour$, j - 1, jEnd, b - 1, bEnd
@@ -1140,8 +1185,8 @@ if draw_visualization
     Text bottom: "yes", "Q-frame index"
 
     # === SUMMARY STRIP ===
-    Select outer viewport: 0, 8, 6.90, 7.60
-    Select inner viewport: 0.6, 7.7, 6.95, 7.55
+    Select outer viewport: 0, 8, 7.00, 7.70
+    Select inner viewport: 0.60, 7.70, 7.05, 7.65
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
 
@@ -1186,12 +1231,12 @@ if draw_visualization
         ... + (if nSilentQ > 0 then "  silent Q-frames=" + string$(nSilentQ) else "" fi)
     Text: 0.02, "left", 0.48, "half",
         ... "##Palette coverage (L)##  " + string$(uniqueUsed) + " / " + string$(numFramesP)
-        ... + " P-frames used (" + fixed$(coveragePct, 1) + "%)"
-        ... + "  max reuse=" + string$(maxUsage) + "x"
-        ... + (if stereo_mode = 2 then "  |  R coverage=" + fixed$(coveragePctR, 1) + "%  mean ambiguity=" + fixed$(meanAmbiguity, 2) else "" fi)
+        ... + " P-frames used (" + fixed$(coveragePct, 1) + "\% )"
+        ... + "  max reuse=" + fixed$(maxUsage, 1) + "x"
+        ... + (if stereo_mode = 2 then "  |  R coverage=" + fixed$(coveragePctR, 1) + "\%   mean ambiguity=" + fixed$(meanAmbiguity, 2) else "" fi)
     Text: 0.02, "left", 0.18, "half",
         ... "##Output##  " + fixed$(totalDur, 2) + " s"
-        ... + " (" + fixed$(timeCompressionPct, 1) + "% of " + fixed$(estimatedDurNoXfade, 2) + " s uncrossfaded)"
+        ... + " (" + fixed$(timeCompressionPct, 1) + "\%  of " + fixed$(estimatedDurNoXfade, 2) + " s uncrossfaded)"
         ... + "  preset=" + presetName$
         ... + "  frame=" + fixed$(frameDur * 1000, 0) + " ms"
         ... + "  continuity=" + fixed$(continuity_bits, 2)
@@ -1201,6 +1246,10 @@ if draw_visualization
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
 
+    # Restore the full page as the last drawing action, so Save as PNG /
+    # Copy to clipboard capture the whole figure rather than cropping to
+    # the summary strip.
+    Select outer viewport: 0, 8, 0, 7.70
     Font size: 10
     Colour: "Black"
     Line width: 1

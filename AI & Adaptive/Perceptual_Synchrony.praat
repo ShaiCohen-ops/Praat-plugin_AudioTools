@@ -3,18 +3,31 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 3.1 (2026) - Alignment tier corrections
+# Version: 3.2 (2026) - Suite-standard visualization
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Perceptual Synchrony over Physical Asynchrony v3.1
+#   Perceptual Synchrony over Physical Asynchrony v3.2
 #   
 #   Creates perceptual synchrony between two sounds by:
 #   1. Detecting similar gesture shapes (PEAK, RISE, FALL, BLOOM, DROP)
 #   2. Clustering gestures by temporal/structural similarity
 #   3. OPTIONALLY time-warping Sound B to align with Sound A
 #   4. Applying timbral binding effects at anchor points
+#
+# Changelog v3.2:
+#   - VISUALIZATION STANDARDIZATION ONLY; gesture analysis, clustering,
+#     alignment, binding effects and audio rendering are unchanged.
+#   - Adopted the Praat AudioTools 8-inch page/grid convention with
+#     explicit inner viewports and safe vertical spacing.
+#   - Standardized title/subtitle hierarchy, font sizes, neutral panel
+#     backgrounds, reference styling and the bottom summary strip.
+#   - Unified centroid and intensity colours across Sound A and Sound B
+#     because the curves carry the same semantic meaning in both panels.
+#   - Escaped underscores in sound names used in drawn text.
+#   - Restores the full-page viewport at the end so Picture export and
+#     clipboard operations capture the complete visualization.
 #
 # Changelog v3.1:
 #   - Alignment tier: inter-anchor segments now form real plateaus
@@ -151,7 +164,7 @@ covarThresh = 0.4
 # === SETUP ===
 clearinfo
 writeInfoLine: "=============================================="
-writeInfoLine: "  PERCEPTUAL SYNCHRONY v3.1"
+writeInfoLine: "  PERCEPTUAL SYNCHRONY v3.2"
 writeInfoLine: "=============================================="
 appendInfoLine: ""
 if sync_mode = 1
@@ -1185,59 +1198,67 @@ removeObject: soundB_processed
 if draw_visualization
     appendInfoLine: ""
     appendInfoLine: "Creating visualization..."
-    
-    Erase all
-    
+
     if sync_mode = 2
-        modeText$ = "ALIGN+ENHANCE"
+        modeText$ = "ALIGN + ENHANCE"
     else
         modeText$ = "ENHANCE ONLY"
     endif
-    
-    # Title
-    Select outer viewport: 0, 8, 0, 0.5
-    Font size: 11
+
+    # Safe display names for Praat Picture text.
+    vizNameA$ = replace$(nameA$, "_", "\_ ", 0)
+    vizNameB$ = replace$(nameB$, "_", "\_ ", 0)
+
+    pageHeight = 6.85
+    Erase all
+    Select outer viewport: 0, 8, 0, pageHeight
+
+    # === Header ===
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
+    Axes: 0, 1, 0, 1
+    Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "##Perceptual Synchrony v3.1## | " + modeText$ + " | Clusters: " + string$(numClusters)
-    
-    # Sound A
-    Select outer viewport: 0, 8, 0.6, 1.8
-    Select inner viewport: 1.0, 7.8, 0.7, 1.7
-    
+    Text: 0.5, "centre", 0.68, "half", "##Perceptual Synchrony v3.2##"
+    Font size: 7
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half", modeText$ + " | " + presetName$ + " | " + string$(numClusters) + " matched gesture clusters"
+
+    # === Sound A features and gestures ===
+    Select outer viewport: 0, 8, 0.68, 1.78
+    Select inner viewport: 0.60, 7.70, 0.88, 1.56
     Axes: 0, durationA, 0, 1
-    
-    Colour: "{0.96, 0.97, 1.0}"
-    Paint rectangle: "{0.96, 0.97, 1.0}", 0, durationA, 0, 1
-    
-    Colour: "{0.2, 0.5, 0.8}"
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, durationA, 0, 1
+
+    Colour: "{0.25, 0.45, 0.75}"
     Line width: 1.5
     for i from 2 to a_numFrames
         Draw line: a_time[i-1], a_normCent[i-1], a_time[i], a_normCent[i]
     endfor
-    
-    Colour: "{0.8, 0.4, 0.2}"
+
+    Colour: "{0.75, 0.45, 0.35}"
     Line width: 1
     for i from 2 to a_numFrames
         Draw line: a_time[i-1], a_normInt[i-1], a_time[i], a_normInt[i]
     endfor
-    
+
     for g from 1 to a_numGestures
         if a_gTagCount[g] > 0
             if a_tag_AP[g] = 1
-                colour$ = "{0.9, 0.25, 0.25}"
+                colour$ = "{0.90, 0.25, 0.25}"
             elsif a_tag_NB[g] = 1
-                colour$ = "{0.9, 0.7, 0.15}"
+                colour$ = "{0.90, 0.70, 0.15}"
             elsif a_tag_BR[g] = 1
-                colour$ = "{0.2, 0.75, 0.3}"
+                colour$ = "{0.20, 0.75, 0.30}"
             elsif a_tag_BF[g] = 1
-                colour$ = "{0.3, 0.55, 0.8}"
+                colour$ = "{0.30, 0.55, 0.80}"
             else
-                colour$ = "{0.6, 0.3, 0.7}"
+                colour$ = "{0.60, 0.30, 0.70}"
             endif
-            
+
             Colour: colour$
             Paint rectangle: colour$, a_gStart[g], a_gEnd[g], 0.92, 0.98
-            
+
             if a_clusterCount[g] > 0
                 Colour: "Black"
                 Line width: 2
@@ -1245,57 +1266,50 @@ if draw_visualization
             endif
         endif
     endfor
-    
+
     Line width: 1
     Colour: "Black"
     Draw inner box
-    
-    Font size: 8
-    Select outer viewport: 0, 1.0, 0.6, 1.8
-    Axes: 0, 1, 0, 1
-    Colour: "{0.3, 0.5, 0.8}"
-    Text: 0.95, "right", 0.7, "half", "Sound A"
-    Font size: 6
-    Text: 0.95, "right", 0.4, "half", nameA$
-    
-    # Sound B
-    Select outer viewport: 0, 8, 1.9, 3.1
-    Select inner viewport: 1.0, 7.8, 2.0, 3.0
-    
+    Font size: 7
+    Text left: "yes", "Normalized feature"
+    Text bottom: "no", "Time (s)"
+    Text top: "no", "Sound A | " + vizNameA$
+
+    # === Sound B features and gestures ===
+    Select outer viewport: 0, 8, 1.98, 3.08
+    Select inner viewport: 0.60, 7.70, 2.18, 2.86
     Axes: 0, durationB, 0, 1
-    
-    Colour: "{1.0, 0.97, 0.96}"
-    Paint rectangle: "{1.0, 0.97, 0.96}", 0, durationB, 0, 1
-    
-    Colour: "{0.5, 0.3, 0.7}"
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, durationB, 0, 1
+
+    Colour: "{0.25, 0.45, 0.75}"
     Line width: 1.5
     for i from 2 to b_numFrames
         Draw line: b_time[i-1], b_normCent[i-1], b_time[i], b_normCent[i]
     endfor
-    
-    Colour: "{0.7, 0.4, 0.5}"
+
+    Colour: "{0.75, 0.45, 0.35}"
     Line width: 1
     for i from 2 to b_numFrames
         Draw line: b_time[i-1], b_normInt[i-1], b_time[i], b_normInt[i]
     endfor
-    
+
     for g from 1 to b_numGestures
         if b_gTagCount[g] > 0
             if b_tag_AP[g] = 1
-                colour$ = "{0.9, 0.25, 0.25}"
+                colour$ = "{0.90, 0.25, 0.25}"
             elsif b_tag_NB[g] = 1
-                colour$ = "{0.9, 0.7, 0.15}"
+                colour$ = "{0.90, 0.70, 0.15}"
             elsif b_tag_BR[g] = 1
-                colour$ = "{0.2, 0.75, 0.3}"
+                colour$ = "{0.20, 0.75, 0.30}"
             elsif b_tag_BF[g] = 1
-                colour$ = "{0.3, 0.55, 0.8}"
+                colour$ = "{0.30, 0.55, 0.80}"
             else
-                colour$ = "{0.6, 0.3, 0.7}"
+                colour$ = "{0.60, 0.30, 0.70}"
             endif
-            
+
             Colour: colour$
             Paint rectangle: colour$, b_gStart[g], b_gEnd[g], 0.92, 0.98
-            
+
             if b_clusterCount[g] > 0
                 Colour: "Black"
                 Line width: 2
@@ -1303,115 +1317,155 @@ if draw_visualization
             endif
         endif
     endfor
-    
+
     Line width: 1
     Colour: "Black"
     Draw inner box
-    
-    Font size: 8
-    Select outer viewport: 0, 1.0, 1.9, 3.1
-    Axes: 0, 1, 0, 1
-    Colour: "{0.5, 0.3, 0.7}"
-    Text: 0.95, "right", 0.7, "half", "Sound B"
-    Font size: 6
-    Text: 0.95, "right", 0.4, "half", nameB$
-    
-    # Cluster connections
-    Select outer viewport: 0, 8, 3.2, 4.4
-    Select inner viewport: 1.0, 7.8, 3.3, 4.3
-    
+    Font size: 7
+    Text left: "yes", "Normalized feature"
+    Text bottom: "no", "Time (s)"
+    Text top: "no", "Sound B | " + vizNameB$
+
+    # === Cluster connections ===
+    Select outer viewport: 0, 8, 3.28, 4.58
+    Select inner viewport: 0.60, 7.70, 3.48, 4.36
+
     globalDur = max(durationA, durationB)
     Axes: 0, globalDur, 0, 2
-    
-    Colour: "{0.98, 0.98, 0.98}"
-    Paint rectangle: "{0.98, 0.98, 0.98}", 0, globalDur, 0, 2
-    
-    Colour: "{0.3, 0.5, 0.8}"
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, globalDur, 0, 2
+
+    Colour: "{0.25, 0.45, 0.75}"
     Line width: 2
     Draw line: 0, 1.75, durationA, 1.75
-    
-    Colour: "{0.5, 0.3, 0.7}"
+
+    Colour: "{0.55, 0.40, 0.70}"
     Draw line: 0, 0.25, durationB, 0.25
-    
+
     for c from 1 to numClusters
         gA = cluster_gA[c]
         gB = cluster_gB[c]
         conf = cluster_conf[c]
-        
+
         midA = (a_gStart[gA] + a_gEnd[gA]) / 2
         midB = (b_gStart[gB] + b_gEnd[gB]) / 2
-        
         lineW = 0.5 + conf * 3
-        
+
         if cluster_mode$[c] = "LOCAL"
-            Colour: "{0.2, 0.7, 0.35}"
+            Colour: "{0.20, 0.70, 0.35}"
         else
-            Colour: "{0.85, 0.5, 0.2}"
+            Colour: "{0.85, 0.50, 0.20}"
         endif
-        
+
         Line width: lineW
         Draw line: midA, 1.75, midB, 0.25
-        
-        Font size: 5
-        Colour: "{0.3, 0.3, 0.3}"
+
+        Font size: 6
+        Colour: "{0.25, 0.25, 0.35}"
         Text: (midA + midB) / 2, "centre", 1.0, "half", string$(c)
     endfor
-    
+
+    Line width: 1
     Colour: "Black"
-    Line width: 0.5
     Draw inner box
-    
-    Font size: 8
-    Select outer viewport: 0, 1.0, 3.2, 4.4
+    Font size: 7
+    Text left: "yes", "A / B"
+    Text bottom: "no", "Time (s)"
+    Text top: "no", "Gesture correspondences | line width = confidence"
+
+    # === Legend ===
+    Select outer viewport: 0, 8, 4.78, 5.50
+    Select inner viewport: 0.60, 7.70, 4.86, 5.42
     Axes: 0, 1, 0, 1
-    Colour: "{0.3, 0.3, 0.35}"
-    Text: 0.95, "right", 0.6, "half", "Clusters"
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, 1, 0, 1
+
     Font size: 6
-    Colour: "{0.5, 0.5, 0.55}"
-    Text: 0.95, "right", 0.35, "half", string$(numClusters) + " links"
-    
-    # Legend
-    Select outer viewport: 0, 8, 4.5, 5.2
-    Axes: 0, 1, 0, 1
-    
-    Font size: 6
-    
-    Colour: "{0.9, 0.25, 0.25}"
-    Paint rectangle: "{0.9, 0.25, 0.25}", 0.02, 0.05, 0.5, 0.8
+
+    # Feature curves
+    Colour: "{0.25, 0.45, 0.75}"
+    Line width: 2
+    Draw line: 0.02, 0.78, 0.055, 0.78
+    Colour: "{0.25, 0.25, 0.35}"
+    Text: 0.065, "left", 0.78, "half", "Centroid"
+
+    Colour: "{0.75, 0.45, 0.35}"
+    Draw line: 0.15, 0.78, 0.185, 0.78
+    Colour: "{0.25, 0.25, 0.35}"
+    Text: 0.195, "left", 0.78, "half", "Intensity"
+
+    # Gesture tags
+    Colour: "{0.90, 0.25, 0.25}"
+    Paint rectangle: "{0.90, 0.25, 0.25}", 0.30, 0.325, 0.68, 0.88
+    Colour: "{0.25, 0.25, 0.35}"
+    Text: 0.335, "left", 0.78, "half", "PEAK"
+
+    Colour: "{0.90, 0.70, 0.15}"
+    Paint rectangle: "{0.90, 0.70, 0.15}", 0.40, 0.425, 0.68, 0.88
+    Colour: "{0.25, 0.25, 0.35}"
+    Text: 0.435, "left", 0.78, "half", "BLOOM"
+
+    Colour: "{0.20, 0.75, 0.30}"
+    Paint rectangle: "{0.20, 0.75, 0.30}", 0.52, 0.545, 0.68, 0.88
+    Colour: "{0.25, 0.25, 0.35}"
+    Text: 0.555, "left", 0.78, "half", "RISE"
+
+    Colour: "{0.30, 0.55, 0.80}"
+    Paint rectangle: "{0.30, 0.55, 0.80}", 0.62, 0.645, 0.68, 0.88
+    Colour: "{0.25, 0.25, 0.35}"
+    Text: 0.655, "left", 0.78, "half", "FALL"
+
+    Colour: "{0.60, 0.30, 0.70}"
+    Paint rectangle: "{0.60, 0.30, 0.70}", 0.72, 0.745, 0.68, 0.88
+    Colour: "{0.25, 0.25, 0.35}"
+    Text: 0.755, "left", 0.78, "half", "DROP"
+
+    # Connection modes and parameters
+    Colour: "{0.20, 0.70, 0.35}"
+    Line width: 2
+    Draw line: 0.02, 0.28, 0.055, 0.28
+    Colour: "{0.25, 0.25, 0.35}"
+    Text: 0.065, "left", 0.28, "half", "LOCAL"
+
+    Colour: "{0.85, 0.50, 0.20}"
+    Draw line: 0.15, 0.28, 0.185, 0.28
+    Colour: "{0.25, 0.25, 0.35}"
+    Text: 0.195, "left", 0.28, "half", "STRUCT"
+
+    Colour: "{0.25, 0.25, 0.35}"
+    Text: 0.32, "left", 0.28, "half", "Window " + fixed$(perceptual_window_ms, 0) + " ms | min conf " + fixed$(min_confidence, 2) + " | boost +" + fixed$(anchorBoostDB, 1) + " dB | stamp +" + fixed$(anchorStampDB, 1) + " dB"
+
+    Line width: 1
     Colour: "Black"
-    Text: 0.06, "left", 0.65, "half", "PEAK"
-    
-    Colour: "{0.9, 0.7, 0.15}"
-    Paint rectangle: "{0.9, 0.7, 0.15}", 0.12, 0.15, 0.5, 0.8
-    Text: 0.16, "left", 0.65, "half", "BLOOM"
-    
-    Colour: "{0.2, 0.75, 0.3}"
-    Paint rectangle: "{0.2, 0.75, 0.3}", 0.24, 0.27, 0.5, 0.8
-    Text: 0.28, "left", 0.65, "half", "RISE"
-    
-    Colour: "{0.3, 0.55, 0.8}"
-    Paint rectangle: "{0.3, 0.55, 0.8}", 0.35, 0.38, 0.5, 0.8
-    Text: 0.39, "left", 0.65, "half", "FALL"
-    
-    Colour: "{0.6, 0.3, 0.7}"
-    Paint rectangle: "{0.6, 0.3, 0.7}", 0.46, 0.49, 0.5, 0.8
-    Text: 0.50, "left", 0.65, "half", "DROP"
-    
-    Colour: "{0.2, 0.7, 0.35}"
-    Text: 0.02, "left", 0.2, "half", "— LOCAL"
-    Colour: "{0.85, 0.5, 0.2}"
-    Text: 0.12, "left", 0.2, "half", "— STRUCT"
-    
-    Font size: 5
-    Colour: "{0.4, 0.4, 0.45}"
-    Text: 0.60, "left", 0.75, "half", "Boost: +" + string$(anchorBoostDB) + "dB"
-    Text: 0.60, "left", 0.45, "half", "Stamp: +" + string$(anchorStampDB) + "dB"
-    Text: 0.60, "left", 0.15, "half", "Preset: " + presetName$
-    
-    Text: 0.80, "left", 0.75, "half", "Mode: " + modeText$
-    Text: 0.80, "left", 0.45, "half", "Window: " + string$(perceptual_window_ms) + "ms"
-    Text: 0.80, "left", 0.15, "half", "Min conf: " + fixed$(min_confidence, 2)
-    
+    Draw inner box
+
+    # === Summary Strip ===
+    Select outer viewport: 0, 8, 5.70, 6.80
+    Select inner viewport: 0.60, 7.70, 5.80, 6.70
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+
+    selectObject: stereoMix
+    outputDur = Get total duration
+
+    Font size: 6
+    Colour: "{0.25, 0.25, 0.35}"
+    summary1$ = "##Input##  A " + fixed$(durationA, 2) + " s | B " + fixed$(durationB, 2) + " s | gestures A=" + string$(a_numGestures) + " B=" + string$(b_numGestures)
+    summary2$ = "##Matching##  " + string$(numClusters) + " clusters | " + modeText$ + " | perceptual window " + fixed$(perceptual_window_ms, 0) + " ms | min confidence " + fixed$(min_confidence, 2)
+
+    if sync_mode = 2 and numClusters > 0
+        summary3$ = "##Output##  " + presetName$ + " | stereo " + fixed$(outputDur, 2) + " s | warped B " + fixed$(warpedDur, 2) + " s | residual " + fixed$((warpedDur - durationA) * 1000, 1) + " ms | clamps " + string$(nClamped)
+    else
+        summary3$ = "##Output##  " + presetName$ + " | stereo " + fixed$(outputDur, 2) + " s | anchor boost +" + fixed$(anchorBoostDB, 1) + " dB | stamp +" + fixed$(anchorStampDB, 1) + " dB | no time warp"
+    endif
+
+    Text: 0.02, "left", 0.76, "half", summary1$
+    Text: 0.02, "left", 0.50, "half", summary2$
+    Text: 0.02, "left", 0.24, "half", summary3$
+
+    Colour: "Black"
+    Draw inner box
+
+    # Restore the complete page for Picture export / clipboard.
+    Select outer viewport: 0, 8, 0, pageHeight
     Font size: 10
     Colour: "Black"
 endif

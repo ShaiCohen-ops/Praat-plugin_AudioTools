@@ -3,7 +3,10 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.7 (2026) - Second correctness pass: overlap/fade now agree,
+# Version: 0.8 (2026) - Visualization uniformity pass: layout, fonts and
+#                        colours brought to the AudioTools library
+#                        standard; summary strip added; export crop fixed.
+#          0.7 (2026) - Second correctness pass: overlap/fade now agree,
 #                        Scale intensity uses dB subtraction not
 #                        multiplication, intensity-window math corrected,
 #                        AGC/dynamics claim reconciled, Pulse honestly
@@ -24,6 +27,40 @@
 # Usage:
 #   Run this script. Type an audio-clip folder path into the form, or
 #   leave the Folder field blank to pick one with a dialog.
+#
+# Changelog v0.8 (2026) - visualization only; no change to analysis,
+#                         classification, timeline or synthesis:
+#   1. Title block rebuilt to the library standard: bold ##...## title at
+#      font 12 in a 0.46 in band, with a font 7 subtitle line beneath it
+#      carrying preset, output level, clip count, segment count and total
+#      duration. v0.7 put the preset name inside the title at font 14 and
+#      had no subtitle line.
+#   2. Timeline panel inner viewport moved from 0.6, 7.6 to the standard
+#      0.6, 7.7, and its background lightened from {0.95, 0.95, 0.95} to
+#      the standard panel grey {0.97, 0.97, 0.97}.
+#   3. Font sizes normalized: segment labels 7 -> 6, axis labels and tick
+#      numbers 10 -> 7, legend 8 -> 6. v0.7 mixed 7/8/10/14 in one figure.
+#   4. Segment index labels drawn in {0.25, 0.25, 0.35} rather than pure
+#      black, so they sit on the coloured bars without competing with the
+#      frame.
+#   5. Class colours reformatted to the 2-decimal convention
+#      ({0.3, 0.6, 0.9} -> {0.30, 0.60, 0.90}). Hues are unchanged.
+#   6. Legend given an inner viewport (0.6, 7.7) so its swatches align
+#      with the timeline panel above; previously it used Praat's default
+#      margins and sat ~0.1 in off the panel's left edge.
+#   7. Summary strip added at the foot of the figure ({0.94, 0.94, 0.94}
+#      ground, font 6, {0.25, 0.25, 0.35} text): composition parameters,
+#      timeline parameters, and the class histogram. This is new content,
+#      not a refinement - every other script in the category carries one.
+#      The Pulse caveat documented at h_pulse is restated there so the
+#      figure does not overstate what the label measures.
+#   8. FIX: drawVisualization now ends by re-selecting the full page
+#      (Select outer viewport: 0, 8, 0, 4.55). Praat exports and prints
+#      only the region of the last selected viewport, so in v0.7 - which
+#      ended inside the legend band - Save as PNG and Copy to clipboard
+#      produced the legend strip alone, not the figure.
+#   9. Canvas height is now 4.55 in (was 4.3) to accommodate the summary
+#      strip. Width is unchanged at 8 in.
 #
 # Changelog v0.7 (2026) - second correctness pass, see code review:
 #   1. buildTimeline's overlap cap changed from 0.8 to 0.5 * min(prev_dur,
@@ -177,7 +214,7 @@
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 # ============================================================
 
-form Bayesian Drone Weaver v0.7
+form Bayesian Drone Weaver v0.8
     comment === Audio Folder ===
     comment (Leave blank to pick a folder with a dialog)
     sentence Folder 
@@ -304,7 +341,7 @@ h_pulse = 5   ; NAMING CAVEAT: scored from intensity std dev, low
 n_hypotheses = 5
 
 clearinfo
-writeInfoLine: "=== Bayesian Drone Weaver v0.7 ==="
+writeInfoLine: "=== Bayesian Drone Weaver v0.8 ==="
 appendInfoLine: "Preset: ", presetName$
 if output_level = 2
     levelName$ = "Even level"
@@ -1048,82 +1085,162 @@ endproc
 
 procedure drawVisualization: .n_clips
     Erase all
-    
-    # Title
-    Select outer viewport: 0, 8, 0, 0.6
-    Font size: 14
+
+    # --- Categorical class colours -------------------------------------
+    # Hues unchanged from v0.7; reformatted to the library's 2-decimal
+    # convention so the same tuple is written the same way everywhere.
+    .colSustain$ = "{0.30, 0.60, 0.90}"
+    .colSwell$ = "{0.40, 0.80, 0.40}"
+    .colTension$ = "{0.90, 0.40, 0.30}"
+    .colAir$ = "{0.70, 0.70, 0.90}"
+    .colPulse$ = "{0.90, 0.70, 0.30}"
+
+    # --- Class histogram for the summary strip --------------------------
+    .nSustain = 0
+    .nSwell = 0
+    .nTension = 0
+    .nAir = 0
+    .nPulse = 0
+    for .i to .n_clips
+        .c = clip_class_'.i'
+        if .c = 1
+            .nSustain += 1
+        elsif .c = 2
+            .nSwell += 1
+        elsif .c = 3
+            .nTension += 1
+        elsif .c = 4
+            .nAir += 1
+        else
+            .nPulse += 1
+        endif
+    endfor
+
+    # === TITLE ==========================================================
+    # An explicit inner viewport is set here rather than relying on
+    # Praat's default margins: in a band this shallow the default
+    # margins leave ~0.06 in of inner height, so one axis unit is far
+    # smaller than it looks and title/subtitle collide.
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.6, 7.7, 0.02, 0.50
+    Axes: 0, 1, 0, 1
+    Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "Bayesian Drone Weaver: " + presetName$
-    
-    # Timeline visualization
-    Select outer viewport: 0, 8, 0.8, 3.5
-    Select inner viewport: 0.6, 7.6, 1.0, 3.3
-    
+    Text: 0.5, "centre", 0.68, "half", "##Bayesian Drone Weaver v0.8##"
+    Font size: 7
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half",
+        ... "[" + presetName$ + "]  " + levelName$
+        ... + "  |  " + string$(.n_clips) + " clips"
+        ... + "  |  " + string$(timeline_n_segments) + " segments"
+        ... + "  |  " + fixed$(timeline_total_duration, 2) + " s"
+
+    # === PANEL 1: Timeline ==============================================
+    Select outer viewport: 0, 8, 0.56, 3.45
+    Select inner viewport: 0.6, 7.7, 0.61, 3.40
     Axes: 0, timeline_total_duration, 0, timeline_n_segments + 1
-    
-    # Background
-    Paint rectangle: "{0.95, 0.95, 0.95}", 0, timeline_total_duration, 0, timeline_n_segments + 1
-    
-    # Draw segments
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, timeline_total_duration,
+        ... 0, timeline_n_segments + 1
+
     for .seg to timeline_n_segments
         .clip_idx = timeline_clip_'.seg'
         .start = timeline_start_'.seg'
         .dur = clip_duration_'.clip_idx'
         .end = .start + .dur
-        
+
         .class = clip_class_'.clip_idx'
-        
-        # Color by class
+
         if .class = 1
-            .col$ = "{0.3, 0.6, 0.9}"
+            .col$ = .colSustain$
         elsif .class = 2
-            .col$ = "{0.4, 0.8, 0.4}"
+            .col$ = .colSwell$
         elsif .class = 3
-            .col$ = "{0.9, 0.4, 0.3}"
+            .col$ = .colTension$
         elsif .class = 4
-            .col$ = "{0.7, 0.7, 0.9}"
+            .col$ = .colAir$
         else
-            .col$ = "{0.9, 0.7, 0.3}"
+            .col$ = .colPulse$
         endif
-        
+
         .y1 = .seg - 0.4
         .y2 = .seg + 0.4
-        
+
         Paint rectangle: .col$, .start, .end, .y1, .y2
-        
-        # Label
-        Colour: "Black"
-        Font size: 7
+
+        Colour: "{0.25, 0.25, 0.35}"
+        Font size: 6
         Text: (.start + .end) / 2, "centre", .seg, "half", string$(.clip_idx)
     endfor
-    
+
     Colour: "Black"
-    Font size: 10
+    Line width: 1
     Draw inner box
+    Font size: 7
     Text left: "yes", "Segment"
     Text bottom: "yes", "Time (s)"
     Marks bottom every: 1, 5, "yes", "yes", "no"
-    
-    # Legend
-    Select outer viewport: 0, 8, 3.7, 4.3
+
+    # === LEGEND =========================================================
+    Select outer viewport: 0, 8, 3.50, 3.92
+    Select inner viewport: 0.6, 7.7, 3.54, 3.88
     Axes: 0, 1, 0, 1
-    Font size: 8
-    
-    Paint rectangle: "{0.3, 0.6, 0.9}", 0.02, 0.06, 0.4, 0.6
-    Text: 0.08, "left", 0.5, "half", "Sustain"
-    
-    Paint rectangle: "{0.4, 0.8, 0.4}", 0.22, 0.26, 0.4, 0.6
-    Text: 0.28, "left", 0.5, "half", "Swell"
-    
-    Paint rectangle: "{0.9, 0.4, 0.3}", 0.42, 0.46, 0.4, 0.6
-    Text: 0.48, "left", 0.5, "half", "Tension"
-    
-    Paint rectangle: "{0.7, 0.7, 0.9}", 0.62, 0.66, 0.4, 0.6
-    Text: 0.68, "left", 0.5, "half", "Air"
-    
-    Paint rectangle: "{0.9, 0.7, 0.3}", 0.82, 0.86, 0.4, 0.6
-    Text: 0.88, "left", 0.5, "half", "Pulse"
-    
+    Font size: 6
+    Colour: "Black"
+
+    Paint rectangle: .colSustain$, 0.02, 0.05, 0.35, 0.65
+    Text: 0.065, "left", 0.5, "half", "Sustain"
+
+    Paint rectangle: .colSwell$, 0.22, 0.25, 0.35, 0.65
+    Text: 0.265, "left", 0.5, "half", "Swell"
+
+    Paint rectangle: .colTension$, 0.42, 0.45, 0.35, 0.65
+    Text: 0.465, "left", 0.5, "half", "Tension"
+
+    Paint rectangle: .colAir$, 0.62, 0.65, 0.35, 0.65
+    Text: 0.665, "left", 0.5, "half", "Air"
+
+    Paint rectangle: .colPulse$, 0.82, 0.85, 0.35, 0.65
+    Text: 0.865, "left", 0.5, "half", "Pulse"
+
+    # === SUMMARY STRIP ==================================================
+    Select outer viewport: 0, 8, 3.98, 4.55
+    Select inner viewport: 0.6, 7.7, 4.03, 4.50
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    Font size: 6
+    Colour: "{0.25, 0.25, 0.35}"
+
+    Text: 0.02, "left", 0.80, "half",
+        ... "##Composition##  preset=" + presetName$
+        ... + "   level=" + levelName$
+        ... + "   clips=" + string$(.n_clips) + "/" + string$(total_files)
+        ... + "   segments=" + string$(timeline_n_segments)
+        ... + "   duration=" + fixed$(timeline_total_duration, 2) + " s"
+
+    Text: 0.02, "left", 0.50, "half",
+        ... "##Timeline##  overlap factor=" + fixed$(overlap_factor, 2)
+        ... + "   max clips=" + string$(max_clips)
+        ... + "   mean segment="
+        ... + fixed$(timeline_total_duration / timeline_n_segments, 2) + " s"
+
+    Text: 0.02, "left", 0.20, "half",
+        ... "##Classes##  Sustain " + string$(.nSustain)
+        ... + "   Swell " + string$(.nSwell)
+        ... + "   Tension " + string$(.nTension)
+        ... + "   Air " + string$(.nAir)
+        ... + "   Pulse " + string$(.nPulse)
+        ... + "   (Pulse is a heuristic 'unsettled/decaying' label,"
+        ... + " not a pulse-rate detector)"
+
+    Colour: "Black"
+    Draw rectangle: 0, 1, 0, 1
+
+    # Restore the full page as the last drawing action, so Save as PNG /
+    # Copy to clipboard capture the whole figure rather than cropping to
+    # the last panel drawn.
+    Select outer viewport: 0, 8, 0, 4.55
     Font size: 10
+    Colour: "Black"
+    Line width: 1
 endproc
 Play

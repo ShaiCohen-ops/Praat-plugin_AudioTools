@@ -1,9 +1,9 @@
 # ============================================================
-# Praat AudioTools - Perceptual_Graph_Explorer.praat
+# Praat AudioTools - Perceptual_Graph.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 3.2 (2026)
+# Version: 3.3 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -19,6 +19,21 @@
 #   - Cluster transition matrix
 #   - Fixed audio scaling for all clusters
 #   - Enhanced cluster colors
+#
+# Changelog v3.3 (2026):
+#   - VISUALIZATION STANDARDIZATION ONLY; feature extraction,
+#     normalization, k-means clustering, transition analysis and
+#     cluster-audio synthesis are unchanged.
+#   - Adopted the Praat AudioTools 8-inch page/grid convention with
+#     explicit 0.60/3.85 and 4.45/7.70 two-column inner viewports.
+#   - Standardized title/subtitle hierarchy, neutral panel colours,
+#     reference lines, font sizes and numeric colour formatting.
+#   - Added dynamic vertical layout for cluster waveforms so the page
+#     grows with the number of generated layers instead of compressing.
+#   - Rebuilt the legend and added a suite-standard three-line summary.
+#   - Escaped underscores in drawn source/cluster names.
+#   - Restores the full-page viewport at the end so Picture export and
+#     clipboard operations capture the complete visualization.
 #
 # Changelog v3.2 (2026):
 #   - FIX (audible): montage fragments were full-length Hanning
@@ -67,7 +82,7 @@
 #     dead code from a previous version).
 # ============================================================
 
-form Perceptual Graph Explorer v3.2
+form Perceptual Graph Explorer v3.3
     comment Select a Sound object first
     
     comment === Preset ===
@@ -161,7 +176,7 @@ clusterColorLight$[8] = "{0.82, 0.88, 0.78}"
 
 clearinfo
 writeInfoLine: "=============================================="
-appendInfoLine: "  PERCEPTUAL GRAPH EXPLORER v3.2"
+appendInfoLine: "  PERCEPTUAL GRAPH EXPLORER v3.3"
 appendInfoLine: "=============================================="
 appendInfoLine: ""
 appendInfoLine: "Source: ", originalName$, " (", fixed$(duration, 2), " s)"
@@ -662,116 +677,97 @@ endfor
 if draw_visualization
     appendInfoLine: ""
     appendInfoLine: "STEP 7: Creating Visualization..."
-    
+
+    # Dynamic page: preserve generous spacing even when Custom uses
+    # several non-empty clusters.
+    waveStart = 3.42
+    waveHeight = 0.56
+    waveEnd = waveStart + soundsCreated * waveHeight
+    legendTop = waveEnd + 0.64
+    summaryTop = legendTop + 0.88
+    pageHeight = summaryTop + 0.05
+
     Erase all
-    
-    # === TITLE ===
-    # v3.2: explicit inner viewport == outer strip (outer-only form
-    # lets font-size margins compress the mapping; the two text
-    # lines collided)
-    Select outer viewport: 0, 8, 0, 0.6
-    Select inner viewport: 0, 8, 0, 0.6
+    Select outer viewport: 0, 8, 0, pageHeight
+
+    vizOriginalName$ = replace$(originalName$, "_", "\_ ", 0)
+
+    # === HEADER ===
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.70, "half", "##Perceptual Graph Explorer v3.2## | " + originalName$
-    Font size: 9
-    Colour: "{0.4, 0.4, 0.5}"
-    Text: 0.5, "centre", 0.28, "half", presetName$ + " | " + string$(number_of_clusters) + " clusters | " + string$(numFrames) + " frames"
-    
-    # === 3D ISOMETRIC SCATTER PLOT ===
-    Select outer viewport: 0, 4.5, 0.7, 3.7
-    Select inner viewport: 0.4, 4.3, 0.8, 3.6
-    
-    # Isometric projection parameters
-    # X-axis: Energy (horizontal right)
-    # Y-axis: Stability (horizontal left)
-    # Z-axis: Brightness (vertical)
-    
+    Text: 0.5, "centre", 0.68, "half", "##Perceptual Graph Explorer v3.3##"
+    Font size: 7
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half", vizOriginalName$ + " | " + presetName$ + " | " + string$(number_of_clusters) + " clusters | " + string$(numFrames) + " frames"
+
+    # === 3D ISOMETRIC PERCEPTUAL SPACE ===
+    Select outer viewport: 0, 4, 0.68, 3.18
+    Select inner viewport: 0.60, 3.85, 0.88, 2.94
+
     isoAngle = 30 * pi / 180
     cosA = cos(isoAngle)
     sinA = sin(isoAngle)
-    
-    # Projection functions (inline calculations)
-    # proj_x = x * cos(30) - y * cos(30) = (x - y) * cos(30)
-    # proj_y = x * sin(30) + y * sin(30) + z = (x + y) * sin(30) + z
-    
-    # Calculate plot bounds
+
     plotMinX = -1.2
     plotMaxX = 1.2
     plotMinY = -0.3
     plotMaxY = 1.8
-    
     Axes: plotMinX, plotMaxX, plotMinY, plotMaxY
-    
-    # Background
-    Paint rectangle: "{0.96, 0.96, 0.97}", plotMinX, plotMaxX, plotMinY, plotMaxY
-    
-    # Draw 3D axes
-    Colour: "{0.6, 0.6, 0.65}"
-    Line width: 1
-    
-    # Origin at (0,0,0) -> projected
-    ox = 0
-    oy = 0
-    
-    # X-axis (Energy): from origin to (1,0,0)
-    ax_x = 1 * cosA
-    ax_y = 1 * sinA
-    Draw arrow: ox, oy, ax_x, ax_y
-    
-    # Y-axis (Stability): from origin to (0,1,0)
-    ay_x = -1 * cosA
-    ay_y = 1 * sinA
-    Draw arrow: ox, oy, ay_x, ay_y
-    
-    # Z-axis (Brightness): from origin to (0,0,1)
-    az_x = 0
-    az_y = 1
-    Draw arrow: ox, oy, az_x, az_y
-    
-    # Axis labels
-    Font size: 7
-    Colour: "{0.4, 0.4, 0.5}"
-    Text: ax_x + 0.1, "left", ax_y, "half", "Energy"
-    Text: ay_x - 0.1, "right", ay_y, "half", "Stability"
-    Text: az_x, "centre", az_y + 0.1, "bottom", "Brightness"
-    
-    # Draw grid on floor (z=0 plane)
-    Colour: "{0.88, 0.88, 0.9}"
+    Paint rectangle: "{0.97, 0.97, 0.97}", plotMinX, plotMaxX, plotMinY, plotMaxY
+
+    # Floor grid and reference axes remain deliberately secondary.
+    Colour: "{0.80, 0.80, 0.80}"
     Line width: 0.5
     for g from 0 to 4
         gVal = g / 4
-        # Lines parallel to X-axis
-        x1 = gVal * cosA - 0 * cosA
-        y1 = gVal * sinA + 0 * sinA
-        x2 = gVal * cosA - 1 * cosA
-        y2 = gVal * sinA + 1 * sinA
+        x1 = gVal * cosA
+        y1 = gVal * sinA
+        x2 = gVal * cosA - cosA
+        y2 = gVal * sinA + sinA
         Draw line: x1, y1, x2, y2
-        
-        # Lines parallel to Y-axis
-        x1 = 0 * cosA - gVal * cosA
-        y1 = 0 * sinA + gVal * sinA
-        x2 = 1 * cosA - gVal * cosA
-        y2 = 1 * sinA + gVal * sinA
+
+        x1 = -gVal * cosA
+        y1 = gVal * sinA
+        x2 = cosA - gVal * cosA
+        y2 = sinA + gVal * sinA
         Draw line: x1, y1, x2, y2
     endfor
-    
-    # Draw convex hull approximations (bounding boxes projected)
+
+    Colour: "{0.55, 0.55, 0.62}"
+    Line width: 1
+    ox = 0
+    oy = 0
+    ax_x = cosA
+    ax_y = sinA
+    ay_x = -cosA
+    ay_y = sinA
+    az_x = 0
+    az_y = 1
+    Draw arrow: ox, oy, ax_x, ax_y
+    Draw arrow: ox, oy, ay_x, ay_y
+    Draw arrow: ox, oy, az_x, az_y
+
+    Font size: 6
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: ax_x + 0.08, "left", ax_y, "half", "Energy"
+    Text: ay_x - 0.08, "right", ay_y, "half", "Stability"
+    Text: az_x, "centre", az_y + 0.08, "bottom", "Brightness"
+
+    # Cluster bounding boxes / hull approximations.
     Line width: 1.5
     for k from 1 to number_of_clusters
         if clusterSize[k] > 0
             Colour: clusterColorLight$[k]
-            
-            # Get hull bounds
             e1 = hull_min_e[k]
             e2 = hull_max_e[k]
             s1 = hull_min_s[k]
             s2 = hull_max_s[k]
             b1 = hull_min_b[k]
             b2 = hull_max_b[k]
-            
-            # Draw bottom face (at b1)
+
             p1x = e1 * cosA - s1 * cosA
             p1y = e1 * sinA + s1 * sinA + b1
             p2x = e2 * cosA - s1 * cosA
@@ -780,14 +776,13 @@ if draw_visualization
             p3y = e2 * sinA + s2 * sinA + b1
             p4x = e1 * cosA - s2 * cosA
             p4y = e1 * sinA + s2 * sinA + b1
-            
+
             Dotted line
             Draw line: p1x, p1y, p2x, p2y
             Draw line: p2x, p2y, p3x, p3y
             Draw line: p3x, p3y, p4x, p4y
             Draw line: p4x, p4y, p1x, p1y
-            
-            # Draw top face (at b2)
+
             q1x = e1 * cosA - s1 * cosA
             q1y = e1 * sinA + s1 * sinA + b2
             q2x = e2 * cosA - s1 * cosA
@@ -796,13 +791,11 @@ if draw_visualization
             q3y = e2 * sinA + s2 * sinA + b2
             q4x = e1 * cosA - s2 * cosA
             q4y = e1 * sinA + s2 * sinA + b2
-            
+
             Draw line: q1x, q1y, q2x, q2y
             Draw line: q2x, q2y, q3x, q3y
             Draw line: q3x, q3y, q4x, q4y
             Draw line: q4x, q4y, q1x, q1y
-            
-            # Draw vertical edges
             Draw line: p1x, p1y, q1x, q1y
             Draw line: p2x, p2y, q2x, q2y
             Draw line: p3x, p3y, q3x, q3y
@@ -810,167 +803,162 @@ if draw_visualization
             Solid line
         endif
     endfor
-    
-    # Draw points
+
+    # Feature nodes.
     selectObject: tableID
     for i from 1 to numFrames
         en = Get value: i, "energy"
         st = Get value: i, "stability"
         br = Get value: i, "brightness"
         cl = Get value: i, "cluster"
-        
-        # Project to 2D isometric
         px = en * cosA - st * cosA
         py = en * sinA + st * sinA + br
-        
-        # Draw point
-        Colour: clusterColor$[cl]
-        dotSize = 0.015
-        Paint circle: clusterColor$[cl], px, py, dotSize
+        Paint circle: clusterColor$[cl], px, py, 0.015
     endfor
-    
-    # Draw centroids
+
+    # Centroids.
     Line width: 2
     for k from 1 to number_of_clusters
         if clusterSize[k] > 0
             cx = clusterEnergy[k] * cosA - clusterStability[k] * cosA
             cy = clusterEnergy[k] * sinA + clusterStability[k] * sinA + clusterBrightness[k]
-            
-            Colour: "Black"
             Paint circle: "White", cx, cy, 0.04
             Colour: clusterColor$[k]
             Draw circle: cx, cy, 0.04
-            
-            Font size: 8
-            Text: cx, "centre", cy + 0.08, "bottom", "C" + string$(k)
+            Font size: 6
+            Text: cx, "centre", cy + 0.07, "bottom", "C" + string$(k)
         endif
     endfor
-    
+
     Line width: 1
     Colour: "Black"
     Draw inner box
-    
-    Font size: 8
-    Text top: "no", "3D Perceptual Space (Isometric)"
-    
-    # === TRANSITION MATRIX HEATMAP ===
-    Select outer viewport: 4.5, 8, 0.7, 3.7
-    Select inner viewport: 5.0, 7.6, 1.0, 3.4
-    
+    Font size: 7
+    Text top: "no", "3D Perceptual Space | Energy · Stability · Brightness"
+
+    # === TRANSITION MATRIX ===
+    Select outer viewport: 4, 8, 0.68, 3.18
+    Select inner viewport: 4.45, 7.70, 0.88, 2.94
     Axes: 0, number_of_clusters, 0, number_of_clusters
-    
-    # Draw cells
+
     for i from 1 to number_of_clusters
         for j from 1 to number_of_clusters
-            # Color intensity based on probability
             prob = transitionProb[i, j]
-            
-            # Interpolate color from white to cluster color
             if prob > 0
                 intensity = prob
                 r = 0.95 - intensity * 0.5
                 g = 0.95 - intensity * 0.5
                 b = 0.95 - intensity * 0.3
-                cellColor$ = "{" + fixed$(r, 2) + "," + fixed$(g, 2) + "," + fixed$(b, 2) + "}"
+                cellColor$ = "{" + fixed$(r, 3) + ", " + fixed$(g, 3) + ", " + fixed$(b, 3) + "}"
             else
                 cellColor$ = "{0.97, 0.97, 0.97}"
             endif
-            
             Paint rectangle: cellColor$, j - 1, j, number_of_clusters - i, number_of_clusters - i + 1
-            
-            # Draw probability text
+
             if prob >= 0.1
                 Colour: "Black"
             else
-                Colour: "{0.6, 0.6, 0.6}"
+                Colour: "{0.55, 0.55, 0.62}"
             endif
-            Font size: 7
+            Font size: 6
             Text: j - 0.5, "centre", number_of_clusters - i + 0.5, "half", fixed$(prob, 2)
         endfor
     endfor
-    
-    # Grid lines
-    Colour: "{0.8, 0.8, 0.8}"
+
+    Colour: "{0.80, 0.80, 0.80}"
     Line width: 0.5
     for i from 0 to number_of_clusters
         Draw line: i, 0, i, number_of_clusters
         Draw line: 0, i, number_of_clusters, i
     endfor
-    
-    # Labels
-    Font size: 7
+
+    Font size: 6
     Colour: "Black"
     for k from 1 to number_of_clusters
-        # Column labels (To)
-        Text: k - 0.5, "centre", number_of_clusters + 0.15, "bottom", "C" + string$(k)
-        # Row labels (From)
-        Text: -0.15, "right", number_of_clusters - k + 0.5, "half", "C" + string$(k)
+        Text: k - 0.5, "centre", number_of_clusters + 0.14, "bottom", "C" + string$(k)
+        Text: -0.14, "right", number_of_clusters - k + 0.5, "half", "C" + string$(k)
     endfor
-    
-    Font size: 6
-    Text: number_of_clusters / 2, "centre", number_of_clusters + 0.4, "bottom", "To"
-    Text special: -0.4, "centre", number_of_clusters / 2, "half", "Helvetica", 6, "90", "From"
-    
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: number_of_clusters / 2, "centre", number_of_clusters + 0.36, "bottom", "To"
+    Text special: -0.36, "centre", number_of_clusters / 2, "half", "Helvetica", 6, "90", "From"
+
     Colour: "Black"
-    Line width: 0.5
+    Line width: 1
     Draw inner box
-    
-    Font size: 8
-    Text top: "no", "Transition Matrix"
-    
+    Font size: 7
+    Text top: "no", "Cluster Transition Matrix | row-normalized probabilities"
+
     # === CLUSTER WAVEFORMS ===
-    vPos = 3.9
-    vHeight = 0.55
-    
+    vPos = waveStart
     for s from 1 to soundsCreated
-        Select outer viewport: 0, 8, vPos, vPos + vHeight
-        Select inner viewport: 0.6, 7.7, vPos + 0.05, vPos + vHeight - 0.05
-        
+        Select outer viewport: 0, 8, vPos, vPos + waveHeight
+        Select inner viewport: 0.60, 7.70, vPos + 0.08, vPos + waveHeight - 0.09
+
         selectObject: createdSounds[s]
         k = createdCluster[s]
-        
         Colour: clusterColor$[k]
         Draw: 0, 0, 0, 0, "no", "Curve"
-        
+
         Colour: "Black"
         Line width: 0.5
         Draw inner box
-        
+
+        vizClusterLabel$ = replace$(createdLabels$[s], "_", "\_ ", 0)
         Font size: 6
         Colour: clusterColor$[k]
-        Text: -0.02, "right", 0, "half", createdLabels$[s]
-        
-        vPos = vPos + vHeight
-    endfor
-    
-    # Time axis label
-    Font size: 7
-    Colour: "Black"
-    Text bottom: "yes", "Time (s)"
-    
-    # === CLUSTER LEGEND ===
-    Select outer viewport: 0, 8, vPos + 0.1, vPos + 0.5
-    Axes: 0, 1, 0, 1
-    
-    Font size: 6
-    xPos = 0.02
-    for k from 1 to number_of_clusters
-        if clusterSize[k] > 0
-            Paint rectangle: clusterColor$[k], xPos, xPos + 0.02, 0.4, 0.7
+        Text top: "no", vizClusterLabel$ + " | " + string$(clusterSize[k]) + " frames"
+
+        if s = soundsCreated
+            Font size: 7
             Colour: "Black"
-            Text: xPos + 0.03, "left", 0.55, "half", clusterLabel$[k] + " (" + string$(clusterSize[k]) + ")"
-            xPos = xPos + 0.18
+            Text bottom: "yes", "Time (s)"
         endif
+
+        vPos = vPos + waveHeight
     endfor
-    
-    # Parameters
-    Colour: "{0.5, 0.5, 0.5}"
-    Font size: 5
-    Text: 0.98, "right", 0.55, "half", "Win:" + string$(window_length_ms) + "ms Step:" + string$(step_size_ms) + "ms"
-    
+
+    # === CLUSTER LEGEND ===
+    legendBottom = waveEnd + 0.12
+    Select outer viewport: 0, 8, legendBottom, legendTop
+    Select inner viewport: 0.60, 7.70, legendBottom + 0.08, legendTop - 0.08
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, 1, 0, 1
+
+    Font size: 6
+    legendStep = 0.96 / number_of_clusters
+    for k from 1 to number_of_clusters
+        xPos = 0.02 + (k - 1) * legendStep
+        Paint rectangle: clusterColor$[k], xPos, xPos + 0.018, 0.37, 0.69
+        Colour: "{0.25, 0.25, 0.35}"
+        Text: xPos + 0.026, "left", 0.53, "half", "C" + string$(k) + "  n=" + string$(clusterSize[k])
+    endfor
+    Colour: "Black"
+    Draw inner box
+
+    # === SUMMARY STRIP ===
+    summaryBottom = legendTop + 0.14
+    Select outer viewport: 0, 8, summaryBottom, summaryTop
+    Select inner viewport: 0.60, 7.70, summaryBottom + 0.08, summaryTop - 0.08
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+
+    Font size: 6
+    Colour: "{0.25, 0.25, 0.35}"
+    summary1$ = "##Input##  " + vizOriginalName$ + " | " + fixed$(duration, 2) + " s | " + string$(sr) + " Hz | " + string$(numFrames) + " frames"
+    summary2$ = "##Features##  Energy " + fixed$(min_en_orig, 1) + "–" + fixed$(max_en_orig, 1) + " dB | Stability " + fixed$(min_st_orig, 1) + "–" + fixed$(max_st_orig, 1) + " | Brightness " + fixed$(min_br_orig, 0) + "–" + fixed$(max_br_orig, 0) + " Hz"
+    summary3$ = "##Clustering / Output##  k-means | " + string$(number_of_clusters) + " clusters | " + string$(totalTransitions) + " transitions | Win " + string$(window_length_ms) + " ms | Step " + string$(step_size_ms) + " ms | 50% Hann OLA | peak " + fixed$(scale_peak, 2)
+    Text: 0.02, "left", 0.78, "half", summary1$
+    Text: 0.02, "left", 0.50, "half", summary2$
+    Text: 0.02, "left", 0.22, "half", summary3$
+
+    Colour: "Black"
+    Draw inner box
+
+    # Always finish on the full page: Praat exports the last viewport.
+    Select outer viewport: 0, 8, 0, pageHeight
     Font size: 10
     Colour: "Black"
-    
+
     appendInfoLine: "  Visualization complete"
 endif
 

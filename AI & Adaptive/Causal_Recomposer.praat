@@ -68,7 +68,7 @@ endif
 snd = selected("Sound")
 sndName$ = selected$("Sound")
 
-form Causal Recomposer v1.3
+form Causal Recomposer v1.4
     optionmenu Preset: 1
         option Custom
         option Lawful to Anomalous
@@ -268,7 +268,7 @@ if nChannels > 1 and strongestRms > 0 and monoRms < 0.1 * strongestRms
 endif
 
 clearinfo
-writeInfoLine: "=== Causal Recomposer v1.3 ==="
+writeInfoLine: "=== Causal Recomposer v1.4 ==="
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Sound: ", sndName$, "  (", fixed$(dur, 2), " s, ", nChannels, " ch)"
 appendInfoLine: "Mono grain pool: ", monoMethod$, " | RMS ", fixed$(monoRms,4)
@@ -783,6 +783,46 @@ outRms = Get root-mean-square: 0, 0
 # VISUALIZATION
 # v1.3: simplified mechanism-first 2x2 layout with generated stereo.
 # Each panel answers one question and uses measured data only.
+#
+# v1.4 (2026) - visualization uniformity pass; no change to analysis,
+# sorting, splicing or synthesis. The 2x2 mechanism-first layout, the
+# lettered A-D sections and every plotted quantity are unchanged.
+#   1. FIX (real defect, not cosmetic): four occurrences of the percent
+#      escape were malformed. In Praat text, \% prints a percent sign
+#      and then CONSUMES the following character. At the end of a
+#      string it had nothing to consume and printed a stray backslash
+#      ("rank separation 0.164\"), and in "output position (\%)" it
+#      swallowed the closing bracket, so both scatter axes were labelled
+#      "output position (" and "source position (". Every \% is now
+#      followed by a spare space.
+#   2. FIX: the figure ended inside the summary strip, so Save as PNG
+#      and Copy to clipboard exported that strip alone (2502 x 293 px)
+#      rather than the whole page. drawing now ends by re-selecting the
+#      full page.
+#   3. Title block rebuilt to the library standard: bold ##...## title
+#      at font 12 with a font 7 subtitle beneath it. The preset name
+#      moves out of the title into the subtitle, which now also carries
+#      sort key, direction, grain count, grain and fade length and
+#      output duration. The "mono grain pool -> ..." chain description
+#      moves to the summary strip, where the other scripts keep it.
+#   4. Column geometry regularized. Outer splits 0.18/3.92 and
+#      4.08/7.82 become 0/4 and 4/8; plot inner viewports become
+#      0.60, 3.85 (left) and 4.45, 7.70 (right), a 0.60 in gutter that
+#      leaves the right column the same y-label room as the left.
+#      Section headers keep their 0.18 in outdent from the column edge.
+#   5. Fonts: tick marks 5 -> 6 (5 was unique to this script in the
+#      whole category), axis labels 6 -> 7, summary 7/6 -> 6 with
+#      ##bold## run-in labels. Section headers stay at 9.
+#   6. Colours normalized to the 2-decimal, spaced convention:
+#      panel ground {0.975,0.975,0.978} -> {0.97, 0.97, 0.97},
+#      summary ground {0.965,0.965,0.970} -> {0.94, 0.94, 0.94},
+#      secondary text {0.34,0.34,0.40} and {0.35,0.35,0.40} ->
+#      {0.35, 0.35, 0.50}, summary text -> {0.25, 0.25, 0.35}.
+#      The two near-identical blues ({0.26,0.46,0.76} for the scatter
+#      dots, {0.26,0.48,0.78} for the lines) collapse to one.
+#      Reference band {0.94,0.94,0.95} -> {0.92, 0.92, 0.92} so it
+#      stays distinct from the summary ground now that both are grey.
+#      Hues are otherwise unchanged, pending the palette decision.
 # ============================================================
 if draw_visualization
     appendInfoLine: "Drawing simplified process visualization..."
@@ -919,32 +959,33 @@ if draw_visualization
 
     Erase all
 
-    # ---------------- Header ----------------
-    Select outer viewport: 0, 8, 0, 0.42
-    Select inner viewport: 0, 8, 0, 0.42
+    # ---------------- Title ----------------
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.62, "half", "Causal Recomposer v1.3 - " + presetName$
-
-    Select outer viewport: 0, 8, 0.43, 0.72
-    Select inner viewport: 0, 8, 0.43, 0.72
-    Axes: 0, 1, 0, 1
+    Text: 0.5, "centre", 0.68, "half", "##Causal Recomposer v1.4##"
     Font size: 7
-    Colour: "{0.34,0.34,0.40}"
-    Text: 0.5, "centre", 0.58, "half", "mono grain pool -> one causal sort -> subtle L/R local swaps -> stereo overlap-add"
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half",
+        ... "[" + presetName$ + "]  " + sortKeyName$ + " / " + sortDirName$
+        ... + "  |  " + string$(nGrains) + " grains"
+        ... + "  |  grain " + fixed$(grain_size_ms, 0) + " ms"
+        ... + "  |  fade " + fixed$(effectiveFadeMs, 1) + " ms"
+        ... + "  |  " + fixed$(outDur, 2) + " s"
 
     # ========================================================
     # A  MODEL
     # ========================================================
-    Select outer viewport: 0.18, 3.92, 0.84, 1.10
-    Select inner viewport: 0.18, 3.92, 0.84, 1.10
+    Select outer viewport: 0, 4, 0.64, 0.90
+    Select inner viewport: 0.18, 3.85, 0.64, 0.90
     Axes: 0, 1, 0, 1
     Font size: 9
     Colour: "Black"
     Text: 0.01, "left", 0.72, "half", "A  MODEL - measured intensity -> centroid law"
     Font size: 6
-    Colour: "{0.35,0.35,0.40}"
+    Colour: "{0.35, 0.35, 0.50}"
     Text: 0.01, "left", 0.18, "half", "R2 " + fixed$(rSquared,3) + " | residual RMS " + fixed$(residualRms,0) + " Hz"
 
     iPad = max(1, 0.04 * (maxI - minI))
@@ -968,13 +1009,13 @@ if draw_visualization
         plotCMax = plotCMin + 100
     endif
 
-    Select outer viewport: 0.18, 3.92, 1.11, 3.12
-    Select inner viewport: 0.62, 3.78, 1.22, 2.94
+    Select outer viewport: 0, 4, 0.90, 3.03
+    Select inner viewport: 0.60, 3.85, 1.01, 2.86
     Axes: plotIMin, plotIMax, plotCMin, plotCMax
-    Paint rectangle: "{0.975,0.975,0.978}", plotIMin, plotIMax, plotCMin, plotCMax
+    Paint rectangle: "{0.97, 0.97, 0.97}", plotIMin, plotIMax, plotCMin, plotCMax
 
     # Fit curve first.
-    Colour: "{0.78,0.28,0.22}"
+    Colour: "{0.78, 0.28, 0.22}"
     Line width: 2
     nCurve = 120
     for q from 1 to nCurve
@@ -1008,47 +1049,47 @@ if draw_visualization
     endif
     for i from 1 to nGrains
         if (i - 1) mod pointStride = 0
-            Paint circle (mm): "{0.26,0.46,0.76}", feat_I#[i], feat_C#[i], 0.48
+            Paint circle (mm): "{0.26, 0.48, 0.78}", feat_I#[i], feat_C#[i], 0.48
         endif
     endfor
-    Select inner viewport: 0.62, 3.78, 1.22, 2.94
+    Select inner viewport: 0.60, 3.85, 1.01, 2.86
     Axes: plotIMin, plotIMax, plotCMin, plotCMax
     Colour: "Black"
     Draw inner box
-    Font size: 5
+    Font size: 6
     @crVizStep: plotIMax - plotIMin, 5
     Marks bottom every: 1, crVizStep.step, "yes", "yes", "no"
     @crVizStep: plotCMax - plotCMin, 5
     Marks left every: 1, crVizStep.step, "yes", "yes", "no"
-    Font size: 6
+    Font size: 7
     Text bottom: "yes", "intensity (dB)"
     Text left: "yes", "centroid (Hz)"
 
     # ========================================================
     # B  ORDER
     # ========================================================
-    Select outer viewport: 4.08, 7.82, 0.84, 1.10
-    Select inner viewport: 4.08, 7.82, 0.84, 1.10
+    Select outer viewport: 4, 8, 0.64, 0.90
+    Select inner viewport: 4.18, 7.70, 0.64, 0.90
     Axes: 0, 1, 0, 1
     Font size: 9
     Colour: "Black"
     Text: 0.01, "left", 0.72, "half", "B  STEREO ORDER - actual L/R output -> source position"
     Font size: 6
-    Colour: "{0.35,0.35,0.40}"
-    Text: 0.01, "left", 0.18, "half", "blue L | red R | positions differ " + fixed$(stereoDifferentPct,1) + "\% | rank separation " + fixed$(stereoOrderSeparationPct,3) + "\%"
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.01, "left", 0.18, "half", "blue L | red R | positions differ " + fixed$(stereoDifferentPct,1) + "\%  | rank separation " + fixed$(stereoOrderSeparationPct,3) + "\%  "
 
-    Select outer viewport: 4.08, 7.82, 1.11, 3.12
-    Select inner viewport: 4.55, 7.68, 1.22, 2.94
+    Select outer viewport: 4, 8, 0.90, 3.03
+    Select inner viewport: 4.45, 7.70, 1.01, 2.86
     Axes: 0, 100, 0, 100
-    Paint rectangle: "{0.975,0.975,0.978}", 0, 100, 0, 100
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, 100, 0, 100
 
     # Grey diagonal = unchanged chronology.
-    Colour: "{0.76,0.76,0.79}"
+    Colour: "{0.76, 0.76, 0.79}"
     Line width: 1
     Draw line: 0, 0, 100, 100
 
     # LEFT actual permutation.
-    Colour: "{0.26,0.48,0.78}"
+    Colour: "{0.26, 0.48, 0.78}"
     Line width: 1.5
     for g from 2 to nGrains
         x0 = 100 * (g - 2) / (nGrains - 1)
@@ -1059,7 +1100,7 @@ if draw_visualization
     endfor
 
     # RIGHT actual permutation.
-    Colour: "{0.78,0.28,0.22}"
+    Colour: "{0.78, 0.28, 0.22}"
     Line width: 1.3
     for g from 2 to nGrains
         x0 = 100 * (g - 2) / (nGrains - 1)
@@ -1070,28 +1111,28 @@ if draw_visualization
     endfor
     Line width: 1
 
-    Select inner viewport: 4.55, 7.68, 1.22, 2.94
+    Select inner viewport: 4.45, 7.70, 1.01, 2.86
     Axes: 0, 100, 0, 100
     Colour: "Black"
     Draw inner box
-    Font size: 5
+    Font size: 6
     Marks bottom every: 1, 20, "yes", "yes", "no"
     Marks left every: 1, 20, "yes", "yes", "no"
-    Font size: 6
-    Text bottom: "yes", "output position (\%)"
-    Text left: "yes", "source position (\%)"
+    Font size: 7
+    Text bottom: "yes", "output position (\% )"
+    Text left: "yes", "source position (\% )"
 
     # ========================================================
     # C  SPLICE
     # ========================================================
-    Select outer viewport: 0.18, 3.92, 3.30, 3.56
-    Select inner viewport: 0.18, 3.92, 3.30, 3.56
+    Select outer viewport: 0, 4, 3.13, 3.39
+    Select inner viewport: 0.18, 3.85, 3.13, 3.39
     Axes: 0, 1, 0, 1
     Font size: 9
     Colour: "Black"
     Text: 0.01, "left", 0.72, "half", "C  SPLICE - actual edge taper + OLA denominator"
     Font size: 6
-    Colour: "{0.35,0.35,0.40}"
+    Colour: "{0.35, 0.35, 0.50}"
     Text: 0.01, "left", 0.18, "half", "blue = one source-grain gain | red = normalization weight | fade " + fixed$(effectiveFadeMs,1) + " ms | hop " + fixed$(1000*synthStepSec,1) + " ms"
 
     geomXmax = grainSec + 2 * synthStepSec
@@ -1123,13 +1164,13 @@ if draw_visualization
     endfor
     geomYmax = max(1.15, 1.10 * geomMax)
 
-    Select outer viewport: 0.18, 3.92, 3.57, 5.48
-    Select inner viewport: 0.62, 3.78, 3.68, 5.30
+    Select outer viewport: 0, 4, 3.39, 5.52
+    Select inner viewport: 0.60, 3.85, 3.50, 5.35
     Axes: 0, 1000*geomXmax, 0, geomYmax
-    Paint rectangle: "{0.975,0.975,0.978}", 0, 1000*geomXmax, 0, geomYmax
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, 1000*geomXmax, 0, geomYmax
 
     # One actual local grain gain window.
-    Colour: "{0.26,0.48,0.78}"
+    Colour: "{0.26, 0.48, 0.78}"
     Line width: 2
     nDraw = 160
     for q from 1 to nDraw
@@ -1158,7 +1199,7 @@ if draw_visualization
     endfor
 
     # Red = actual normalization denominator from the overlap pattern.
-    Colour: "{0.78,0.28,0.22}"
+    Colour: "{0.78, 0.28, 0.22}"
     Line width: 1.5
     for q from 1 to 220
         t0 = geomXmax * (q - 1) / 220
@@ -1202,54 +1243,54 @@ if draw_visualization
     endfor
     Line width: 1
 
-    Select inner viewport: 0.62, 3.78, 3.68, 5.30
+    Select inner viewport: 0.60, 3.85, 3.50, 5.35
     Axes: 0, 1000*geomXmax, 0, geomYmax
     Colour: "Black"
     Draw inner box
-    Font size: 5
+    Font size: 6
     @crVizStep: 1000*geomXmax, 5
     Marks bottom every: 1, crVizStep.step, "yes", "yes", "no"
     @crVizStep: geomYmax, 4
     Marks left every: 1, crVizStep.step, "yes", "yes", "no"
-    Font size: 6
+    Font size: 7
     Text bottom: "yes", "time (ms)"
     Text left: "yes", "gain / weight"
 
     # ========================================================
     # D  CHECK
     # ========================================================
-    Select outer viewport: 4.08, 7.82, 3.30, 3.56
-    Select inner viewport: 4.08, 7.82, 3.30, 3.56
+    Select outer viewport: 4, 8, 3.13, 3.39
+    Select inner viewport: 4.18, 7.70, 3.13, 3.39
     Axes: 0, 1, 0, 1
     Font size: 9
     Colour: "Black"
     Text: 0.01, "left", 0.72, "half", "D  CHECK - stereo MID spectral-shape difference"
     Font size: 6
-    Colour: "{0.35,0.35,0.40}"
+    Colour: "{0.35, 0.35, 0.50}"
     Text: 0.01, "left", 0.18, "half", "MID - mono source | shape RMSE " + fixed$(shapeRmseDb,2) + " dB | SIDE/MID " + sideMidLabel$
 
-    Select outer viewport: 4.08, 7.82, 3.57, 5.48
-    Select inner viewport: 4.55, 7.68, 3.68, 5.30
+    Select outer viewport: 4, 8, 3.39, 5.52
+    Select inner viewport: 4.45, 7.70, 3.50, 5.35
     Axes: logFmin, logFmax, -specDiffRange, specDiffRange
-    Paint rectangle: "{0.975,0.975,0.978}", logFmin, logFmax, -specDiffRange, specDiffRange
+    Paint rectangle: "{0.97, 0.97, 0.97}", logFmin, logFmax, -specDiffRange, specDiffRange
     # Quiet reference band around zero.
     bandRef = min(3, specDiffRange)
-    Paint rectangle: "{0.94,0.94,0.95}", logFmin, logFmax, -bandRef, bandRef
-    Colour: "{0.60,0.60,0.64}"
+    Paint rectangle: "{0.92, 0.92, 0.92}", logFmin, logFmax, -bandRef, bandRef
+    Colour: "{0.60, 0.60, 0.64}"
     Draw line: logFmin, 0, logFmax, 0
 
-    Colour: "{0.26,0.48,0.78}"
+    Colour: "{0.26, 0.48, 0.78}"
     Line width: 1.8
     for q from 2 to nSpecPoints
         Draw line: log10(specFreq#[q-1]), specDelta#[q-1], log10(specFreq#[q]), specDelta#[q]
     endfor
     Line width: 1
 
-    Select inner viewport: 4.55, 7.68, 3.68, 5.30
+    Select inner viewport: 4.45, 7.70, 3.50, 5.35
     Axes: logFmin, logFmax, -specDiffRange, specDiffRange
     Colour: "Black"
     Draw inner box
-    Font size: 5
+    Font size: 6
     Marks left every: 1, max(5, specDiffRange/2), "yes", "yes", "no"
     freqTicks# = {50,100,200,500,1000,2000,5000,10000,16000}
     for k from 1 to size(freqTicks#)
@@ -1263,22 +1304,41 @@ if draw_visualization
             One mark bottom: log10(ft), "no", "yes", "no", flab$
         endif
     endfor
-    Font size: 6
+    Font size: 7
     Text bottom: "yes", "frequency (Hz, log)"
     Text left: "yes", "MID - mono source (dB)"
 
-    # ---------------- Bottom summary ----------------
-    Select outer viewport: 0.18, 7.82, 5.67, 6.18
-    Select inner viewport: 0.18, 7.82, 5.67, 6.18
+    # ---------------- Summary strip ----------------
+    Select outer viewport: 0, 8, 5.62, 6.19
+    Select inner viewport: 0.60, 7.70, 5.67, 6.14
     Axes: 0, 1, 0, 1
-    Paint rectangle: "{0.965,0.965,0.970}", 0, 1, 0, 1
-    Colour: "Black"
-    Draw inner box
-    Font size: 7
-    Text: 0.02, "left", 0.67, "half", "SORT  " + sortKeyName$ + " / " + sortDirName$ + "     GRAINS  " + string$(nGrains) + "     GENERATED STEREO  " + fixed$(stereo_divergence_percent,0) + "\%"
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
     Font size: 6
-    Colour: "{0.35,0.35,0.40}"
-    Text: 0.02, "left", 0.24, "half", "mono pool " + monoMethod$ + " | stereo " + fixed$(stereo_divergence_percent,0) + "\% | rank sep " + fixed$(stereoOrderSeparationPct,3) + "\% | SIDE/MID " + sideMidLabel$
+    Colour: "{0.25, 0.25, 0.35}"
+    Text: 0.02, "left", 0.80, "half",
+        ... "##Sort##  " + sortKeyName$ + " / " + sortDirName$
+        ... + "   ##Grains##  " + string$(nGrains)
+        ... + "   ##Stereo##  " + fixed$(stereo_divergence_percent, 0) + "\%  generated"
+        ... + "   ##Fade##  " + fixed$(effectiveFadeMs, 1) + " ms"
+    Text: 0.02, "left", 0.50, "half",
+        ... "##Pool##  mono " + monoMethod$
+        ... + "   rank sep " + fixed$(stereoOrderSeparationPct, 3) + "\%  "
+        ... + "   L/R differ " + fixed$(stereoDifferentPct, 1) + "\%  "
+        ... + "   SIDE/MID " + sideMidLabel$
+        ... + "   fit R^2 " + fixed$(rSquared, 3)
+    Text: 0.02, "left", 0.20, "half",
+        ... "##Chain##  mono grain pool -> one causal sort"
+        ... + " -> subtle L/R local swaps -> stereo overlap-add"
+    Colour: "Black"
+    Draw rectangle: 0, 1, 0, 1
+
+    # Restore the full page as the last drawing action, so Save as PNG /
+    # Copy to clipboard capture the whole figure rather than cropping to
+    # the summary strip.
+    Select outer viewport: 0, 8, 0, 6.19
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
 
     removeObject: vizL, vizR, vizMid, vizSide, srcSpec, outSpec, srcLtas, outLtas
 endif

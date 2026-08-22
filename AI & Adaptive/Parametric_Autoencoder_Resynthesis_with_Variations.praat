@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.1 (2026)
+# Version: 1.2 (2026) - Suite-standard visualization
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -11,6 +11,17 @@
 #   True autoencoder with latent space perturbation for novel variations.
 #   Uses KlattGrid source-filter synthesis to render independent F0 and
 #   F1-F4 trajectories. Dynamic voicing amplitude for natural silence.
+#
+# Changelog v1.2 (2026):
+#   - VISUALIZATION STANDARDIZATION ONLY; analysis, network training,
+#     latent transforms, KlattGrid synthesis and output rendering are unchanged.
+#   - Standardized both visualization modes (Network and Latent and outputs)
+#     to the Praat AudioTools 8-inch page convention with explicit inner
+#     viewports, suite-standard header, typography, neutral colours,
+#     summary strip and full-page export viewport.
+#   - The variation page height now expands dynamically with the number
+#     of output rows instead of compressing or clipping the grid.
+#   - Added draw-safe source names and clearer measured/model summaries.
 #
 # Changelog v0.9 (2026):
 #   - TIMBRE: Added source-naturalness controls to reduce the "plastic"
@@ -62,7 +73,7 @@ endif
 sound_orig = selected()
 sound_name$ = selected$("Sound")
 
-form Parametric Autoencoder v1.1
+form Parametric Autoencoder v1.2
     choice Preset_selection: 1
         button Clean - Dynamic Amplitude - 6 Params
         button Glitch - Constant Drone - 5 Params
@@ -178,7 +189,7 @@ if bottleneck_size >= nparams
 endif
 
 clearinfo
-writeInfoLine: "=== Parametric Autoencoder v1.1 ==="
+writeInfoLine: "=== Parametric Autoencoder v1.2 ==="
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Parameters: ", nparams, " | Bottleneck: ", bottleneck_size
 appendInfoLine: ""
@@ -516,73 +527,91 @@ Learn: epochs, 0.001, "Minimum-squared-error"
 # ===== DRAW NETWORK =====
 if draw_network = 1
     appendInfoLine: "Drawing network visualization..."
+
+    pageHeight = 7.45
     Erase all
     Line width: 1
+    Select outer viewport: 0, 8, 0, pageHeight
 
-    # ---- Title block (suite standard) ----
-    Select outer viewport: 0, 8, 0, 0.33
+    vizSoundName$ = replace$(sound_name$, "_", "\_ ", 0)
+
+    # === Header ===
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "##Parametric Autoencoder v1.1 - Network##"
+    Text: 0.5, "centre", 0.68, "half", "##Parametric Autoencoder v1.2 - Network##"
+    Font size: 7
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half", vizSoundName$ + " | " + presetName$ + " | " + string$(nparams) + " params -> " + string$(bottleneck_size) + " latent -> " + string$(nparams) + " params | " + string$(epochs) + " epochs"
 
-    # ---- Subtitle band ----
-    Select outer viewport: 0, 8, 0.33, 0.5
-    Axes: 0, 1, 0, 1
-    Font size: 9
-    Colour: "{0.4, 0.4, 0.5}"
-    Text: 0.5, "centre", 0.5, "half", sound_name$ + "   |   " + presetName$ + "   |   " + string$(nparams) + " params -> " + string$(bottleneck_size) + " latent -> " + string$(nparams) + " params   |   " + string$(epochs) + " epochs"
-
-    # ---- Encoder topology (left) ----
-    Select outer viewport: 0.1, 3.95, 0.62, 0.92
-    Axes: 0, 1, 0, 1
-    Font size: 8
-    Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "##Encoder##   " + string$(nparams) + " -> " + string$(bottleneck_size)
-    Select outer viewport: 0.3, 3.75, 0.95, 3.45
+    # === Encoder topology ===
+    Select outer viewport: 0, 4, 0.70, 3.35
+    Select inner viewport: 0.60, 3.85, 0.96, 3.13
     selectObject: autoencoder
     Draw topology
-
-    # ---- Decoder topology (right) ----
-    Select outer viewport: 4.05, 7.9, 0.62, 0.92
+    Select outer viewport: 0, 4, 0.70, 3.35
+    Select inner viewport: 0.60, 3.85, 0.72, 0.94
     Axes: 0, 1, 0, 1
-    Font size: 8
+    Font size: 7
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "##Decoder##   " + string$(bottleneck_size) + " -> " + string$(nparams)
-    Select outer viewport: 4.25, 7.7, 0.95, 3.45
+    Text: 0.5, "centre", 0.5, "half", "##Encoder##  " + string$(nparams) + " -> " + string$(bottleneck_size)
+
+    # === Decoder topology ===
+    Select outer viewport: 4, 8, 0.70, 3.35
+    Select inner viewport: 4.45, 7.70, 0.96, 3.13
     selectObject: decoder
     Draw topology
-
-    # ---- Encoder weights (left) ----
-    Select outer viewport: 0.1, 3.95, 3.75, 4.05
+    Select outer viewport: 4, 8, 0.70, 3.35
+    Select inner viewport: 4.45, 7.70, 0.72, 0.94
     Axes: 0, 1, 0, 1
-    Font size: 8
+    Font size: 7
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "##Encoder weights##   (Input -> Latent)"
-    Select outer viewport: 0.3, 3.75, 4.08, 6.5
+    Text: 0.5, "centre", 0.5, "half", "##Decoder##  " + string$(bottleneck_size) + " -> " + string$(nparams)
+
+    # === Encoder weights ===
+    Select outer viewport: 0, 4, 3.55, 6.35
+    Select inner viewport: 0.60, 3.85, 3.86, 6.13
     selectObject: autoencoder
     Draw weights: 1, "yes"
-
-    # ---- Decoder weights (right) ----
-    Select outer viewport: 4.05, 7.9, 3.75, 4.05
+    Select outer viewport: 0, 4, 3.55, 6.35
+    Select inner viewport: 0.60, 3.85, 3.57, 3.82
     Axes: 0, 1, 0, 1
-    Font size: 8
+    Font size: 7
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "##Decoder weights##   (Latent -> Output)"
-    Select outer viewport: 4.25, 7.7, 4.08, 6.5
+    Text: 0.5, "centre", 0.5, "half", "##Encoder weights##  Input -> Latent"
+
+    # === Decoder weights ===
+    Select outer viewport: 4, 8, 3.55, 6.35
+    Select inner viewport: 4.45, 7.70, 3.86, 6.13
     selectObject: decoder
     Draw weights: 1, "yes"
+    Select outer viewport: 4, 8, 3.55, 6.35
+    Select inner viewport: 4.45, 7.70, 3.57, 3.82
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text: 0.5, "centre", 0.5, "half", "##Decoder weights##  Latent -> Output"
 
-    # ---- Summary panel (grey, suite standard) ----
-    Select outer viewport: 0, 8, 6.7, 7.3
-    Select inner viewport: 0.6, 7.7, 6.78, 7.22
+    # === Summary strip ===
+    Select outer viewport: 0, 8, 6.55, 7.40
+    Select inner viewport: 0.60, 7.70, 6.63, 7.32
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    Font size: 6
+    Colour: "{0.25, 0.25, 0.35}"
+    netSummary1$ = "##Input##  " + vizSoundName$ + " | preset " + presetName$ + " | " + string$(nparams) + " normalized synthesis parameters"
+    netSummary2$ = "##Architecture##  encoder " + string$(nparams) + " -> " + string$(bottleneck_size) + " | secondary decoder " + string$(bottleneck_size) + " -> " + string$(nparams) + " | " + string$(epochs) + " epochs"
+    netSummary3$ = "##Latent##  range [" + fixed$(latent_min, 2) + ", " + fixed$(latent_max, 2) + "] | requested outputs " + string$(num_variations + 1) + " including baseline reconstruction"
+    Text: 0.02, "left", 0.78, "half", netSummary1$
+    Text: 0.02, "left", 0.50, "half", netSummary2$
+    Text: 0.02, "left", 0.22, "half", netSummary3$
     Colour: "Black"
-    Draw rectangle: 0, 1, 0, 1
-    Font size: 7
-    Colour: "{0.3, 0.3, 0.3}"
-    Text: 0.02, "left", 0.5, "half", "Preset: " + presetName$ + "    Params: " + string$(nparams) + "    Latent: " + string$(bottleneck_size) + "    Epochs: " + string$(epochs) + "    Variations: " + string$(num_variations + 1) + "    Latent range: [" + fixed$(latent_min, 2) + ", " + fixed$(latent_max, 2) + "]"
+    Draw inner box
+
+    # Restore complete page for Picture export / clipboard.
+    Select outer viewport: 0, 8, 0, pageHeight
     Font size: 10
     Colour: "Black"
 endif
@@ -1074,33 +1103,68 @@ endfor
 if draw_visualization = 1 and draw_network = 0
     appendInfoLine: "Drawing visualization..."
 
-    Erase all
-    Font size: 10
+    grid_cols = 4
+    grid_rows = (n_outputs + grid_cols - 1) div grid_cols
+    panel_h = 1.05
+    grid_y0 = 2.82
+    grid_y1 = grid_y0 + grid_rows * panel_h
+    summary_y0 = grid_y1 + 0.22
+    summary_y1 = summary_y0 + 0.90
+    pageHeight = summary_y1 + 0.05
 
-    # ====== TITLE ======
-    Select outer viewport: 0, 8, 0, 0.5
+    Erase all
+    Select outer viewport: 0, 8, 0, pageHeight
+
+    vizSoundName$ = replace$(sound_name$, "_", "\_ ", 0)
+
+    if intensity_mapping = 1
+        intensityDesc$ = "preserve dB contour"
+    else
+        intensityDesc$ = "expand to full Klatt range"
+    endif
+
+    if protect_mode = 1
+        protectDesc$ = "protect baseline"
+    elsif protect_mode = 2
+        protectDesc$ = "protect all variations"
+    else
+        protectDesc$ = "protection disabled"
+    endif
+
+    if output_level_mode = 1
+        levelDesc$ = "preserve decoded amplitude"
+    elsif output_level_mode = 2
+        levelDesc$ = "conditional limiter"
+    else
+        levelDesc$ = "normalize all variations"
+    endif
+
+    # === Header ===
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
+    Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "##Parametric Autoencoder v1.1## | " + sound_name$ + " [" + presetName$ + "]"
+    Text: 0.5, "centre", 0.68, "half", "##Parametric Autoencoder v1.2##"
+    Font size: 7
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half", vizSoundName$ + " | " + presetName$ + " | " + string$(nparams) + " params -> " + string$(bottleneck_size) + " latent | " + string$(n_outputs) + " outputs"
 
-    # ====== ORIGINAL WAVEFORM (full width) ======
-    Select outer viewport: 0, 8, 0.5, 1.5
-    Select inner viewport: 0.6, 7.7, 0.65, 1.4
+    # === Original waveform ===
+    Select outer viewport: 0, 8, 0.66, 1.54
+    Select inner viewport: 0.60, 7.70, 0.78, 1.37
     selectObject: sound_orig
-    Colour: "{0.4, 0.4, 0.45}"
+    Colour: "{0.55, 0.55, 0.55}"
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
-    Line width: 0.5
     Draw inner box
     Font size: 7
     Text left: "yes", "Original"
+    Text top: "no", "Source Sound"
 
-    # ====== LATENT-SPACE HEATMAP (full width) ======
-    # Show bottleneck activations as a heatmap: rows = latent dim,
-    # cols = time frames. hidden_matrix is shape (nFrames, bottleneck)
-    # so we transpose for visual layout.
-    Select outer viewport: 0, 8, 1.5, 2.5
-    Select inner viewport: 0.6, 7.7, 1.65, 2.4
+    # === Latent-space heatmap ===
+    Select outer viewport: 0, 8, 1.70, 2.60
+    Select inner viewport: 0.60, 7.70, 1.83, 2.43
     selectObject: hidden_matrix
     latent_t = Transpose
     Paint cells: 0, 0, 0, 0
@@ -1109,21 +1173,13 @@ if draw_visualization = 1 and draw_network = 0
     Draw inner box
     Font size: 7
     Text left: "yes", "Latent (" + string$(bottleneck_size) + "d)"
+    Text top: "no", "Latent Activations | time ->"
 
-    # ====== VARIATION GRID ======
-    # 4 columns × ceil(n_outputs / 4) rows of variation waveforms.
-    # Each panel ~1.85" wide, ~1" tall.
-    grid_cols = 4
-    grid_rows = (n_outputs + grid_cols - 1) div grid_cols
+    # === Variation waveform grid ===
     grid_x0 = 0.0
     grid_x1 = 8.0
-    grid_y0 = 2.5
-    panel_h = 1.0
     panel_w = (grid_x1 - grid_x0) / grid_cols
 
-    # Variation labels parallel to outputIDs# — index 1 = Original
-    # then 1..num_variations follow the variation type.
-    Font size: 7
     for v from 1 to n_outputs
         var_idx_zero = v - 1
         if var_idx_zero = 0
@@ -1153,12 +1209,13 @@ if draw_visualization = 1 and draw_network = 0
         py0 = grid_y0 + row_idx * panel_h
         py1 = py0 + panel_h
 
+        # Keep an explicit gutter inside every cell.
         Select outer viewport: px0, px1, py0, py1
-        Select inner viewport: px0 + 0.15, px1 - 0.1, py0 + 0.18, py1 - 0.05
+        Select inner viewport: px0 + 0.18, px1 - 0.12, py0 + 0.22, py1 - 0.12
         selectObject: outputIDs#[v]
-        # Color per variation type: original blue-grey, perturbations warmer
+
         if var_idx_zero = 0
-            Colour: "{0.30, 0.45, 0.65}"
+            Colour: "{0.25, 0.45, 0.75}"
         elsif var_idx_zero = 1
             Colour: "{0.75, 0.45, 0.30}"
         elsif var_idx_zero = 2
@@ -1176,36 +1233,40 @@ if draw_visualization = 1 and draw_network = 0
         else
             Colour: "{0.50, 0.50, 0.55}"
         endif
+
         Draw: 0, 0, 0, 0, "no", "Curve"
         Colour: "Black"
-        Line width: 0.5
         Draw inner box
-        # Label inside the panel (top-left)
-        Font size: 6
+
+        # Label in a dedicated top strip so it cannot collide with the waveform.
         Select outer viewport: px0, px1, py0, py1
+        Select inner viewport: px0 + 0.18, px1 - 0.12, py0 + 0.02, py0 + 0.20
         Axes: 0, 1, 0, 1
-        Text: 0.05, "left", 0.92, "half", label$
+        Font size: 6
+        Colour: "{0.25, 0.25, 0.35}"
+        Text: 0.02, "left", 0.5, "half", label$
     endfor
 
-    # ====== STATS PANEL ======
-    stats_y0 = grid_y0 + grid_rows * panel_h + 0.05
-    stats_y1 = stats_y0 + 0.5
-    Select outer viewport: 0, 8, stats_y0, stats_y1
-    Select inner viewport: 0.6, 7.7, stats_y0 + 0.05, stats_y1 - 0.05
-    Colour: "{0.94, 0.94, 0.94}"
-    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
-    Colour: "Black"
-    Draw rectangle: 0, 1, 0, 1
-
-    Font size: 7
+    # === Summary strip ===
+    Select outer viewport: 0, 8, summary_y0, summary_y1
+    Select inner viewport: 0.60, 7.70, summary_y0 + 0.08, summary_y1 - 0.08
     Axes: 0, 1, 0, 1
-    Text: 0.02, "left", 0.5, "half", "Preset: " + presetName$
-    Text: 0.18, "left", 0.5, "half", "Params: " + string$(nparams)
-    Text: 0.30, "left", 0.5, "half", "Bottleneck: " + string$(bottleneck_size)
-    Text: 0.46, "left", 0.5, "half", "Epochs: " + string$(epochs)
-    Text: 0.60, "left", 0.5, "half", "Variations: " + string$(num_variations + 1)
-    Text: 0.78, "left", 0.5, "half", "Latent: [" + fixed$(latent_min, 2) + ", " + fixed$(latent_max, 2) + "]"
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
 
+    Font size: 6
+    Colour: "{0.25, 0.25, 0.35}"
+    summary1$ = "##Model##  " + presetName$ + " | " + string$(nparams) + " params -> " + string$(bottleneck_size) + " latent -> " + string$(nparams) + " params | " + string$(epochs) + " epochs"
+    summary2$ = "##Latent & reconstruction##  range [" + fixed$(latent_min, 2) + ", " + fixed$(latent_max, 2) + "] | baseline MSE " + fixed$(baselineMSE, 6) + " | " + protectDesc$
+    summary3$ = "##Synthesis & output##  " + string$(n_outputs) + " outputs | " + intensityDesc$ + " | " + levelDesc$ + " | KlattGrid source-filter"
+    Text: 0.02, "left", 0.78, "half", summary1$
+    Text: 0.02, "left", 0.50, "half", summary2$
+    Text: 0.02, "left", 0.22, "half", summary3$
+
+    Colour: "Black"
+    Draw inner box
+
+    # Restore complete page for Picture export / clipboard.
+    Select outer viewport: 0, 8, 0, pageHeight
     Font size: 10
     Colour: "Black"
 endif

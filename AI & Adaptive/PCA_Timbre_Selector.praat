@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.5 (2025) - Direct selection + PCA visualization
+# Version: 1.6 (2026) - Suite-standard visualization
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -11,6 +11,16 @@
 #   PCA Timbre Selector - Analyzes timbre and selects segments
 #   using direct feature selection for presets, with PCA
 #   visualization for understanding the timbre space.
+#
+# Changelog v1.6:
+#   - VISUALIZATION STANDARDIZATION ONLY; PCA analysis, direct feature
+#     selection, chunk construction, joins and output rendering are unchanged.
+#   - Adopted the Praat AudioTools 8-inch page/grid convention with explicit
+#     inner viewports, suite-standard title/subtitle, typography, neutral
+#     panel colours, summary strip, and full-page export viewport.
+#   - Preserved all original visual information: source/output waveforms,
+#     selection mask, three PCA projections, loadings, and selection score.
+#   - Standardized PCA loading colours and draw-safe object names.
 #
 # Changelog v1.3:
 #   - Fixed info banner (3 writeInfoLine -> 1 + appendInfoLine; the
@@ -36,7 +46,7 @@ endif
 snd = selected("Sound")
 sndName$ = selected$("Sound")
 
-form PCA Timbre Selector v1.5
+form PCA Timbre Selector v1.6
     optionmenu Preset: 1
         option Custom (within-file PCA targeting)
         option Bright (high spectral centroid)
@@ -152,7 +162,7 @@ endif
 
 # ===== 1. SETUP =====
 writeInfoLine: "=============================================="
-appendInfoLine: "  PCA TIMBRE SELECTOR v1.5"
+appendInfoLine: "  PCA TIMBRE SELECTOR v1.6"
 appendInfoLine: "=============================================="
 appendInfoLine: ""
 appendInfoLine: "Source: ", sndName$
@@ -843,171 +853,215 @@ else
     exitScript: "No segments created."
 endif
 
-# ===== 7. VISUALIZATION (Restored from v1.0) =====
+# ===== 7. VISUALIZATION =====
 if draw_visualization
     appendInfoLine: ""
     appendInfoLine: "STEP 6: Visualization..."
-    
+
+    pageHeight = 8.45
     Erase all
-    Select outer viewport: 0, 8, 0, 8
-    
-    # === Title ===
-    Select outer viewport: 0, 8, 0, 0.6
+    Select outer viewport: 0, 8, 0, pageHeight
+
+    # Draw-safe source name
+    vizSndName$ = replace$(sndName$, "_", "\_ ", 0)
+
+    if pca_whiten = 2
+        whitenDesc$ = "whitened PCA"
+    else
+        whitenDesc$ = "raw PCA"
+    endif
+
+    if join_mode = 1
+        joinDesc$ = "hard montage"
+    elsif join_mode = 2
+        joinDesc$ = "short crossfade"
+    else
+        joinDesc$ = "Hann phrase shaping"
+    endif
+
+    if output_level_mode = 1
+        levelDesc$ = "preserve source gain"
+    elsif output_level_mode = 2
+        levelDesc$ = "conditional limiter"
+    else
+        levelDesc$ = "normalize peak to 0.99"
+    endif
+
+    # === Header ===
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.65, "half", "##PCA Timbre Selector## | " + sndName$
-    Font size: 9
-    Colour: "{0.4, 0.4, 0.5}"
-    Text: 0.5, "centre", -1.0, "half", presetName$ + " | " + fixed$(100 * selected_frame_count / nF, 0) + "% selected | " + string$(chunk_count) + " segments"
-    
-    # === Waveforms ===
-    Select outer viewport: 0, 8, 0.6, 1.5
-    Select inner viewport: 0.6, 7.7, 0.65, 1.45
+    Text: 0.5, "centre", 0.68, "half", "##PCA Timbre Selector v1.6##"
+    Font size: 7
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half", vizSndName$ + " | " + presetName$ + " | " + fixed$(100 * selected_frame_count / nF, 1) + "\% selected | " + string$(chunk_count) + " segments"
+
+    # === Source waveform ===
+    Select outer viewport: 0, 8, 0.66, 1.52
+    Select inner viewport: 0.60, 7.70, 0.78, 1.36
     selectObject: snd
-    Colour: "{0.6, 0.6, 0.6}"
+    Colour: "{0.55, 0.55, 0.55}"
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "Original"
-    
-    Select outer viewport: 0, 8, 1.5, 2.4
-    Select inner viewport: 0.6, 7.7, 1.55, 2.35
+    Text left: "yes", "Source"
+    Text top: "no", "Original Sound"
+
+    # === Selected output waveform ===
+    Select outer viewport: 0, 8, 1.66, 2.52
+    Select inner viewport: 0.60, 7.70, 1.78, 2.36
     selectObject: finalSnd
-    Colour: "{0.3, 0.65, 0.4}"
+    Colour: "{0.25, 0.55, 0.35}"
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", presetName$
-    Text bottom: "yes", "Time (s)"
-    
-    # === Selection Timeline ===
-    Select outer viewport: 0, 8, 2.5, 3.0
-    Select inner viewport: 0.6, 7.7, 2.55, 2.95
+    Text left: "yes", "Output"
+    Text bottom: "no", "Time (s)"
+    Text top: "no", presetName$ + " selection | " + fixed$(finalDur, 2) + " s"
+
+    # === Selection timeline ===
+    Select outer viewport: 0, 8, 2.68, 3.28
+    Select inner viewport: 0.60, 7.70, 2.78, 3.14
     Axes: 0, dur, 0, 1
-    
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, dur, 0, 1
+
     for i from 1 to nF
         t_s = time_vals#[i] - dt/2
         t_e = time_vals#[i] + dt/2
         if selected_mask#[i] = 1
-            Paint rectangle: "{0.3, 0.75, 0.45}", t_s, t_e, 0, 1
+            Paint rectangle: "{0.30, 0.70, 0.40}", t_s, t_e, 0, 1
         else
-            Paint rectangle: "{0.88, 0.88, 0.88}", t_s, t_e, 0, 1
+            Paint rectangle: "{0.86, 0.86, 0.86}", t_s, t_e, 0, 1
         endif
     endfor
-    
+
     Colour: "Black"
     Draw inner box
     Font size: 7
     Text left: "yes", "Mask"
-    
-    # === PCA Scatter Plots ===
+    Text top: "no", "Frame Selection Timeline | green = selected | grey = rejected"
+
+    # === PCA scatter plots ===
     minPC1 = min(pc1_vals#)
     maxPC1 = max(pc1_vals#)
     minPC2 = min(pc2_vals#)
     maxPC2 = max(pc2_vals#)
     minPC3 = min(pc3_vals#)
     maxPC3 = max(pc3_vals#)
-    
+
     pc1Range = max(maxPC1 - minPC1, 0.1)
     pc2Range = max(maxPC2 - minPC2, 0.1)
     pc3Range = max(maxPC3 - minPC3, 0.1)
-    
+
     # PC1 vs PC2
-    Select outer viewport: 0, 2.7, 3.1, 5.0
-    Select inner viewport: 0.5, 2.5, 3.3, 4.9
-    
+    Select outer viewport: 0, 2.75, 3.48, 5.32
+    Select inner viewport: 0.60, 2.55, 3.68, 5.08
     Axes: minPC1 - pc1Range * 0.1, maxPC1 + pc1Range * 0.1, minPC2 - pc2Range * 0.1, maxPC2 + pc2Range * 0.1
-    Paint rectangle: "{0.97, 0.97, 0.98}", minPC1 - pc1Range * 0.1, maxPC1 + pc1Range * 0.1, minPC2 - pc2Range * 0.1, maxPC2 + pc2Range * 0.1
-    
+    Paint rectangle: "{0.97, 0.97, 0.97}", minPC1 - pc1Range * 0.1, maxPC1 + pc1Range * 0.1, minPC2 - pc2Range * 0.1, maxPC2 + pc2Range * 0.1
+
     for i from 1 to nF
         if selected_mask#[i] = 1
-            Paint circle: "{0.3, 0.7, 0.4}", pc1_vals#[i], pc2_vals#[i], pc1Range * 0.015
+            Paint circle: "{0.30, 0.70, 0.40}", pc1_vals#[i], pc2_vals#[i], pc1Range * 0.015
         else
-            Paint circle: "{0.8, 0.8, 0.8}", pc1_vals#[i], pc2_vals#[i], pc1Range * 0.012
+            Paint circle: "{0.80, 0.80, 0.80}", pc1_vals#[i], pc2_vals#[i], pc1Range * 0.012
         endif
     endfor
-    
     if selectionFeature$ = "PCA"
-        Paint circle: "{0.9, 0.2, 0.2}", t1, t2, pc1Range * 0.04
+        Paint circle: "{0.90, 0.20, 0.20}", t1, t2, pc1Range * 0.04
     endif
-    
+
     Colour: "Black"
     Draw inner box
     Font size: 6
     Text left: "yes", "PC2"
-    Text bottom: "yes", "PC1"
+    Text bottom: "no", "PC1"
+    Font size: 7
     Text top: "no", "PC1 vs PC2"
-    
+
     # PC1 vs PC3
-    Select outer viewport: 2.7, 5.4, 3.1, 5.0
-    Select inner viewport: 3.1, 5.2, 3.3, 4.9
-    
+    Select outer viewport: 2.75, 5.25, 3.48, 5.32
+    Select inner viewport: 3.00, 5.05, 3.68, 5.08
     Axes: minPC1 - pc1Range * 0.1, maxPC1 + pc1Range * 0.1, minPC3 - pc3Range * 0.1, maxPC3 + pc3Range * 0.1
-    Paint rectangle: "{0.97, 0.97, 0.98}", minPC1 - pc1Range * 0.1, maxPC1 + pc1Range * 0.1, minPC3 - pc3Range * 0.1, maxPC3 + pc3Range * 0.1
-    
+    Paint rectangle: "{0.97, 0.97, 0.97}", minPC1 - pc1Range * 0.1, maxPC1 + pc1Range * 0.1, minPC3 - pc3Range * 0.1, maxPC3 + pc3Range * 0.1
+
     for i from 1 to nF
         if selected_mask#[i] = 1
-            Paint circle: "{0.3, 0.7, 0.4}", pc1_vals#[i], pc3_vals#[i], pc1Range * 0.015
+            Paint circle: "{0.30, 0.70, 0.40}", pc1_vals#[i], pc3_vals#[i], pc1Range * 0.015
         else
-            Paint circle: "{0.8, 0.8, 0.8}", pc1_vals#[i], pc3_vals#[i], pc1Range * 0.012
+            Paint circle: "{0.80, 0.80, 0.80}", pc1_vals#[i], pc3_vals#[i], pc1Range * 0.012
         endif
     endfor
-    
     if selectionFeature$ = "PCA"
-        Paint circle: "{0.9, 0.2, 0.2}", t1, t3, pc1Range * 0.04
+        Paint circle: "{0.90, 0.20, 0.20}", t1, t3, pc1Range * 0.04
     endif
-    
+
     Colour: "Black"
     Draw inner box
     Font size: 6
     Text left: "yes", "PC3"
-    Text bottom: "yes", "PC1"
+    Text bottom: "no", "PC1"
+    Font size: 7
     Text top: "no", "PC1 vs PC3"
-    
+
     # PC2 vs PC3
-    Select outer viewport: 5.4, 8, 3.1, 5.0
-    Select inner viewport: 5.7, 7.8, 3.3, 4.9
-    
+    Select outer viewport: 5.25, 8, 3.48, 5.32
+    Select inner viewport: 5.50, 7.70, 3.68, 5.08
     Axes: minPC2 - pc2Range * 0.1, maxPC2 + pc2Range * 0.1, minPC3 - pc3Range * 0.1, maxPC3 + pc3Range * 0.1
-    Paint rectangle: "{0.97, 0.97, 0.98}", minPC2 - pc2Range * 0.1, maxPC2 + pc2Range * 0.1, minPC3 - pc3Range * 0.1, maxPC3 + pc3Range * 0.1
-    
+    Paint rectangle: "{0.97, 0.97, 0.97}", minPC2 - pc2Range * 0.1, maxPC2 + pc2Range * 0.1, minPC3 - pc3Range * 0.1, maxPC3 + pc3Range * 0.1
+
     for i from 1 to nF
         if selected_mask#[i] = 1
-            Paint circle: "{0.3, 0.7, 0.4}", pc2_vals#[i], pc3_vals#[i], pc2Range * 0.015
+            Paint circle: "{0.30, 0.70, 0.40}", pc2_vals#[i], pc3_vals#[i], pc2Range * 0.015
         else
-            Paint circle: "{0.8, 0.8, 0.8}", pc2_vals#[i], pc3_vals#[i], pc2Range * 0.012
+            Paint circle: "{0.80, 0.80, 0.80}", pc2_vals#[i], pc3_vals#[i], pc2Range * 0.012
         endif
     endfor
-    
     if selectionFeature$ = "PCA"
-        Paint circle: "{0.9, 0.2, 0.2}", t2, t3, pc2Range * 0.04
+        Paint circle: "{0.90, 0.20, 0.20}", t2, t3, pc2Range * 0.04
     endif
-    
+
     Colour: "Black"
     Draw inner box
     Font size: 6
     Text left: "yes", "PC3"
-    Text bottom: "yes", "PC2"
+    Text bottom: "no", "PC2"
+    Font size: 7
     Text top: "no", "PC2 vs PC3"
-    
-    # === Eigenvector Loadings ===
-    Select outer viewport: 0, 4, 5.1, 6.5
-    Select inner viewport: 0.6, 3.8, 5.3, 6.4
-    
+
+    # === Compact scatter legend ===
+    Select outer viewport: 0, 8, 5.34, 5.64
+    Select inner viewport: 0.60, 7.70, 5.36, 5.62
+    Axes: 0, 1, 0, 1
+    Font size: 6
+    Paint circle: "{0.30, 0.70, 0.40}", 0.12, 0.5, 0.012
+    Colour: "{0.25, 0.25, 0.35}"
+    Text: 0.14, "left", 0.5, "half", "Selected"
+    Paint circle: "{0.80, 0.80, 0.80}", 0.31, 0.5, 0.010
+    Text: 0.33, "left", 0.5, "half", "Rejected"
+    if selectionFeature$ = "PCA"
+        Paint circle: "{0.90, 0.20, 0.20}", 0.50, 0.5, 0.015
+        Text: 0.52, "left", 0.5, "half", "Target"
+    endif
+    Text: 0.98, "right", 0.5, "half", "Variance PC1/2/3 = " + fixed$(var1 * 100, 1) + "/" + fixed$(var2 * 100, 1) + "/" + fixed$(var3 * 100, 1) + "\% "
+
+    # === Eigenvector loadings ===
+    Select outer viewport: 0, 4, 5.80, 7.18
+    Select inner viewport: 0.60, 3.85, 6.00, 6.96
     Axes: 0, 6, -1, 1
-    Paint rectangle: "{0.98, 0.98, 0.98}", 0, 6, -1, 1
-    
-    Colour: "{0.7, 0.7, 0.7}"
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, 6, -1, 1
+
+    Colour: "{0.80, 0.80, 0.80}"
     Draw line: 0, 0, 6, 0
-    
+
     barWidth = 0.25
-    colours$[1] = "{0.8, 0.4, 0.4}"
-    colours$[2] = "{0.4, 0.6, 0.8}"
-    colours$[3] = "{0.5, 0.8, 0.5}"
-    
+    colours$[1] = "{0.75, 0.25, 0.25}"
+    colours$[2] = "{0.25, 0.55, 0.25}"
+    colours$[3] = "{0.25, 0.35, 0.75}"
+
     for f from 1 to 5
         baseX = f - 0.3
         for pc from 1 to 3
@@ -1017,44 +1071,34 @@ if draw_visualization
             Paint rectangle: colours$[pc], x1, x2, 0, val
         endfor
     endfor
-    
+
     Colour: "Black"
     Draw inner box
-    Font size: 5
-    
+    Font size: 6
     for f from 1 to 5
-        Text: f, "centre", -1.15, "top", feature$[f]
+        Text: f, "centre", -1.10, "top", feature$[f]
     endfor
-    
     Text left: "yes", "Loading"
-    Text top: "no", "PCA Loadings"
-    
-    # Loadings legend
-    Font size: 5
-    Paint rectangle: colours$[1], 0.3, 0.5, 0.8, 0.95
-    Text: 0.55, "left", 0.875, "half", "PC1"
-    Paint rectangle: colours$[2], 1.3, 1.5, 0.8, 0.95
-    Text: 1.55, "left", 0.875, "half", "PC2"
-    Paint rectangle: colours$[3], 2.3, 2.5, 0.8, 0.95
-    Text: 2.55, "left", 0.875, "half", "PC3"
-    
-    # === Distance Over Time ===
-    Select outer viewport: 4, 8, 5.1, 6.5
-    Select inner viewport: 4.5, 7.8, 5.3, 6.4
-    
+    Font size: 7
+    Text top: "no", "PCA Loadings | PC1 red | PC2 green | PC3 blue"
+
+    # === Selection score over time ===
+    Select outer viewport: 4, 8, 5.80, 7.18
+    Select inner viewport: 4.45, 7.70, 6.00, 6.96
+
     maxDist = max(dist_vals#)
     if maxDist < 0.1
         maxDist = 1
     endif
-    
+
     Axes: 0, dur, 0, maxDist * 1.1
-    Paint rectangle: "{0.98, 0.98, 0.98}", 0, dur, 0, maxDist * 1.1
-    
-    Colour: "{0.4, 0.5, 0.7}"
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, dur, 0, maxDist * 1.1
+
+    Colour: "{0.25, 0.45, 0.75}"
     for i from 2 to nF
         Draw line: time_vals#[i-1], dist_vals#[i-1], time_vals#[i], dist_vals#[i]
     endfor
-    
+
     Colour: "Black"
     Draw inner box
     Font size: 6
@@ -1063,28 +1107,30 @@ if draw_visualization
     else
         Text left: "yes", "|z-score|"
     endif
-    Text bottom: "yes", "Time (s)"
-    Text top: "no", "Selection Score"
-    
-    # === Legend ===
-    Select outer viewport: 0, 8, 6.6, 7.0
-    Axes: 0, 1, 0, 1
+    Text bottom: "no", "Time (s)"
     Font size: 7
-    
-    Paint circle: "{0.3, 0.7, 0.4}", 0.1, 0.5, 0.015
-    Text: 0.13, "left", 0.5, "half", "Selected"
-    
-    Paint circle: "{0.8, 0.8, 0.8}", 0.35, 0.5, 0.012
-    Text: 0.38, "left", 0.5, "half", "Rejected"
-    
-    if selectionFeature$ = "PCA"
-        Paint circle: "{0.9, 0.2, 0.2}", 0.58, 0.5, 0.02
-        Text: 0.61, "left", 0.5, "half", "Target"
-    endif
-    
-    Colour: "{0.5, 0.5, 0.5}"
-    Text: 0.85, "centre", 0.5, "half", "Var: " + fixed$(var1*100,0) + "/" + fixed$(var2*100,0) + "/" + fixed$(var3*100,0) + "%"
-    
+    Text top: "no", "Selection Score | " + selectionFeature$
+
+    # === Summary strip ===
+    Select outer viewport: 0, 8, 7.42, 8.38
+    Select inner viewport: 0.60, 7.70, 7.50, 8.30
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+
+    Font size: 6
+    Colour: "{0.25, 0.25, 0.35}"
+    summary1$ = "##Input##  " + vizSndName$ + " | " + fixed$(dur, 2) + " s | " + string$(nF) + " frames | analysis window " + fixed$(analysis_window_ms, 0) + " ms"
+    summary2$ = "##Selection##  " + presetName$ + " | " + fixed$(selection_percentile, 1) + "\% requested | " + string$(selected_frame_count) + " frames selected | " + string$(chunk_count) + " segments | " + whitenDesc$
+    summary3$ = "##Output##  " + fixed$(finalDur, 2) + " s (" + fixed$(100 * finalDur / dur, 1) + "\% of source) | " + joinDesc$ + " | " + levelDesc$
+    Text: 0.02, "left", 0.78, "half", summary1$
+    Text: 0.02, "left", 0.50, "half", summary2$
+    Text: 0.02, "left", 0.22, "half", summary3$
+
+    Colour: "Black"
+    Draw inner box
+
+    # Restore complete page for Picture export / clipboard.
+    Select outer viewport: 0, 8, 0, pageHeight
     Font size: 10
     Colour: "Black"
 endif

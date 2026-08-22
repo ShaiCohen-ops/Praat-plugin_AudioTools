@@ -15,6 +15,46 @@
 #   combination of onset density, spectral similarity to input, and
 #   envelope regularity.
 #
+# Changelog v1.6 (2026) -- visualization uniformity pass; no change to
+# the GA, segmentation, synthesis or fitness evaluation:
+#   - FIX: five caption/label collisions. Panels were stacked with
+#     ~0.10 in of margin while carrying BOTH a Text top caption and a
+#     Text bottom axis label, and Praat does not clip either to the
+#     viewport. In v1.5: the GA Result panel's duration caption printed
+#     on top of the Original panel's bottom border; "Time (s)" landed on
+#     the "Evolution:" caption; "Generation" landed on the "Segment
+#     pool" caption; "Output time (s)" landed on "Result spectrogram";
+#     and the spectrogram's "Time (s)" was partly hidden behind the
+#     summary strip. Every panel now gets 0.15 in of headroom above the
+#     inner viewport when it carries a top caption and 0.30 in below it
+#     when it carries a bottom label. Page height grows 8.00 -> 8.25 in.
+#   - FIX: two bare percent signs. A bare % in Praat drawn text
+#     italicizes the following character and prints nothing, so the
+#     summary read "Reorder: 0" and "Silence: 8, 30-69 ms" instead of
+#     "Reorder: 0\%" and "Silence: 8\%, 30-69 ms".
+#   - FIX: the Sound name was drawn raw and Praat reads "_" as a
+#     subscript marker, so "a_vox" printed as "a(sub v)ox". Escaped for
+#     display only.
+#   - FIX: drawing ended inside the summary strip, so Save as PNG and
+#     Copy to clipboard exported that strip alone (2375 x 268 px)
+#     rather than the page. Drawing now ends on the full page.
+#   - Title block to the library standard: explicit inner viewport,
+#     title y = 0.68 / subtitle y = 0.22, subtitle font 9 -> 7 and
+#     colour {0.4, 0.4, 0.5} -> {0.35, 0.35, 0.50}.
+#   - Half-width inner viewports 0.6/3.7 and 4.4/7.7 -> the standard
+#     0.60/3.85 and 4.45/7.70.
+#   - Fonts: the fitness and genome panels labelled their axes at 6
+#     while every other panel used 7; the genome bar labels were at 5,
+#     a size used nowhere else in the category. Now 7 and 6.
+#   - Colours: three near-identical panel grounds ({0.97, 0.98, 0.97},
+#     {0.98, 0.97, 0.97}, {0.98, 0.98, 0.96}) unified to
+#     {0.97, 0.97, 0.97}; the two input-waveform greys ({0.6, 0.6, 0.6}
+#     and {0.65, 0.65, 0.65}, both meaning "the input") unified to
+#     {0.60, 0.60, 0.60}; reference diagonal to {0.80, 0.80, 0.80};
+#     bar-label text {0.3, 0.3, 0.3} -> {0.25, 0.25, 0.35}. All tuples
+#     rewritten to the 2-decimal convention. Hues otherwise unchanged,
+#     pending the palette decision.
+#
 # Changelog v1.5 (2026) -- fourth review-driven correctness pass:
 #   - FIX (spectral silence-gating was still gain-dependent): every
 #     candidate is peak-normalized (Scale peak: 0.95) before its chunk
@@ -270,7 +310,7 @@ endif
 inputSound = selected("Sound")
 soundName$ = selected$("Sound")
 
-form GA Segment Recombination v1.5
+form GA Segment Recombination v1.6
     comment === Presets ===
     optionmenu Preset: 1
         option Custom
@@ -406,7 +446,7 @@ endif
 ###############################################################################
 
 clearinfo
-writeInfoLine: "=== GA Segment Recomposer v1.5 ==="
+writeInfoLine: "=== GA Segment Recomposer v1.6 ==="
 appendInfoLine: "Input: ", soundName$
 appendInfoLine: "Target duration: ", target_duration_s, " s"
 appendInfoLine: "Preset: ", presetName$
@@ -808,21 +848,29 @@ if draw_visualization
     appendInfoLine: "Creating visualization..."
     
     Erase all
-    Select outer viewport: 0, 8, 0, 8
-    
-    Select outer viewport: 0, 8, 0, 0.5
+    Select outer viewport: 0, 8, 0, 8.25
+
+    # v1.6: Praat reads "_" in drawn text as a subscript marker, so a
+    # Sound named "a_vox" printed as "a(sub v)ox". Escape for display
+    # only; the object name itself is untouched.
+    vizSoundName$ = replace$(soundName$, "_", "\_ ", 0)
+
+    Select outer viewport: 0, 8, 0, 0.50
+    Select inner viewport: 0.60, 7.70, 0.02, 0.48
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.6, "half", "##GA Segment Recomposer v1.5##"
-    Font size: 9
-    Colour: "{0.4, 0.4, 0.5}"
-    Text: 0.5, "centre", -1.2, "half", soundName$ + " | " + presetName$ + " | Strength: " + string$(effect_strength)
+    Text: 0.5, "centre", 0.68, "half", "##GA Segment Recomposer v1.6##"
+    Font size: 7
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half",
+        ... vizSoundName$ + " | " + presetName$
+        ... + " | Strength: " + string$(effect_strength)
     
-    Select outer viewport: 0, 8, 0.6, 1.4
-    Select inner viewport: 0.6, 7.7, 0.7, 1.35
+    Select outer viewport: 0, 8, 0.60, 1.42
+    Select inner viewport: 0.60, 7.70, 0.75, 1.37
     selectObject: inputSound
-    Colour: "{0.6, 0.6, 0.6}"
+    Colour: "{0.60, 0.60, 0.60}"
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
@@ -830,10 +878,10 @@ if draw_visualization
     Text left: "yes", "Original"
     Text top: "no", fixed$(inputDuration, 2) + " s"
     
-    Select outer viewport: 0, 8, 1.4, 2.2
-    Select inner viewport: 0.6, 7.7, 1.5, 2.15
+    Select outer viewport: 0, 8, 1.52, 2.52
+    Select inner viewport: 0.60, 7.70, 1.67, 2.22
     selectObject: finalSound
-    Colour: "{0.3, 0.6, 0.5}"
+    Colour: "{0.30, 0.60, 0.50}"
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
@@ -842,8 +890,8 @@ if draw_visualization
     Text bottom: "yes", "Time (s)"
     Text top: "no", fixed$(finalDuration, 2) + " s (target: " + fixed$(target_duration_s, 1) + "s)"
     
-    Select outer viewport: 0, 4, 2.3, 3.8
-    Select inner viewport: 0.6, 3.7, 2.5, 3.7
+    Select outer viewport: 0, 4, 2.62, 4.02
+    Select inner viewport: 0.60, 3.85, 2.77, 3.72
 
     # Find overall fitness extent across min and max histories.
     minFit = fitnessHistMin#[1]
@@ -865,7 +913,7 @@ if draw_visualization
     maxFit = maxFit + fitRange * 0.08
 
     Axes: 0, generations + 1, minFit, maxFit
-    Paint rectangle: "{0.97, 0.98, 0.97}", 0, generations + 1, minFit, maxFit
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, generations + 1, minFit, maxFit
 
     # Shaded band between min and max (population spread).
     # Drawn as a series of thin vertical rectangles at each generation
@@ -903,16 +951,16 @@ if draw_visualization
 
     Colour: "Black"
     Draw inner box
-    Font size: 6
+    Font size: 7
     Text left: "yes", "Fitness"
     Text bottom: "yes", "Generation"
     Text top: "no", "Evolution: green=max, olive=mean, brown=min, shaded=spread"
     
-    Select outer viewport: 4, 8, 2.3, 3.8
-    Select inner viewport: 4.4, 7.7, 2.5, 3.7
+    Select outer viewport: 4, 8, 2.62, 4.02
+    Select inner viewport: 4.45, 7.70, 2.77, 3.72
     
     Axes: 0, 8, 0, 1.1
-    Paint rectangle: "{0.98, 0.97, 0.97}", 0, 8, 0, 1.1
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, 8, 0, 1.1
     
     param1 = (bestSegMin - eff_min_seg_ms) / (eff_max_seg_ms - eff_min_seg_ms + 0.001)
     param2 = (bestSegMax - eff_min_seg_ms) / (eff_max_seg_ms - eff_min_seg_ms + 0.001)
@@ -934,19 +982,19 @@ if draw_visualization
     
     barW = 0.7
     
-    Paint rectangle: "{0.5, 0.7, 0.5}", 0.5 - barW/2, 0.5 + barW/2, 0, param1
-    Paint rectangle: "{0.5, 0.7, 0.5}", 1.5 - barW/2, 1.5 + barW/2, 0, param2
-    Paint rectangle: "{0.6, 0.6, 0.7}", 2.5 - barW/2, 2.5 + barW/2, 0, param3
-    Paint rectangle: "{0.7, 0.5, 0.5}", 3.5 - barW/2, 3.5 + barW/2, 0, param4
-    Paint rectangle: "{0.6, 0.7, 0.6}", 4.5 - barW/2, 4.5 + barW/2, 0, param5
-    Paint rectangle: "{0.7, 0.6, 0.5}", 5.5 - barW/2, 5.5 + barW/2, 0, param6
-    Paint rectangle: "{0.5, 0.6, 0.7}", 6.5 - barW/2, 6.5 + barW/2, 0, param7
-    Paint rectangle: "{0.5, 0.6, 0.7}", 7.5 - barW/2, 7.5 + barW/2, 0, param8
+    Paint rectangle: "{0.50, 0.70, 0.50}", 0.5 - barW/2, 0.5 + barW/2, 0, param1
+    Paint rectangle: "{0.50, 0.70, 0.50}", 1.5 - barW/2, 1.5 + barW/2, 0, param2
+    Paint rectangle: "{0.60, 0.60, 0.70}", 2.5 - barW/2, 2.5 + barW/2, 0, param3
+    Paint rectangle: "{0.70, 0.50, 0.50}", 3.5 - barW/2, 3.5 + barW/2, 0, param4
+    Paint rectangle: "{0.60, 0.70, 0.60}", 4.5 - barW/2, 4.5 + barW/2, 0, param5
+    Paint rectangle: "{0.70, 0.60, 0.50}", 5.5 - barW/2, 5.5 + barW/2, 0, param6
+    Paint rectangle: "{0.50, 0.60, 0.70}", 6.5 - barW/2, 6.5 + barW/2, 0, param7
+    Paint rectangle: "{0.50, 0.60, 0.70}", 7.5 - barW/2, 7.5 + barW/2, 0, param8
     
     Colour: "Black"
     Draw inner box
-    Font size: 5
-    Colour: "{0.3, 0.3, 0.3}"
+    Font size: 6
+    Colour: "{0.25, 0.25, 0.35}"
     Text: 0.5, "centre", -0.08, "half", "SegMin"
     Text: 1.5, "centre", -0.08, "half", "SegMax"
     Text: 2.5, "centre", -0.08, "half", "Bias"
@@ -956,7 +1004,7 @@ if draw_visualization
     Text: 6.5, "centre", -0.08, "half", "SilMin"
     Text: 7.5, "centre", -0.08, "half", "SilMax"
     
-    Font size: 6
+    Font size: 7
     Text left: "yes", "Normalized"
     Text top: "no", "Best Genome Parameters"
     
@@ -965,11 +1013,11 @@ if draw_visualization
     # marked. Reused segments (those that appear in the output) are
     # highlighted in green; unused segments stay grey.
     # ========================================================
-    Select outer viewport: 0, 8, 3.9, 5.15
-    Select inner viewport: 0.6, 7.7, 4.0, 5.05
+    Select outer viewport: 0, 8, 4.12, 5.10
+    Select inner viewport: 0.60, 7.70, 4.27, 5.05
 
     selectObject: inputSound
-    Colour: "{0.65, 0.65, 0.65}"
+    Colour: "{0.60, 0.60, 0.60}"
     Draw: 0, 0, 0, 0, "no", "Curve"
 
     # Determine which segment indices were used in the output.
@@ -1046,15 +1094,15 @@ if draw_visualization
     # sourceStart + duration). Silences are flat lines at y = -1
     # for visibility.
     # ========================================================
-    Select outer viewport: 0, 8, 5.20, 6.40
-    Select inner viewport: 0.6, 7.7, 5.30, 6.30
+    Select outer viewport: 0, 8, 5.20, 6.30
+    Select inner viewport: 0.60, 7.70, 5.35, 6.00
 
     Axes: 0, target_duration_s, -0.1, inputDuration
-    Paint rectangle: "{0.98, 0.98, 0.96}",
+    Paint rectangle: "{0.97, 0.97, 0.97}",
         ... 0, target_duration_s, -0.1, inputDuration
 
     # Diagonal reference line (what a pure copy would look like)
-    Colour: "{0.85, 0.85, 0.85}"
+    Colour: "{0.80, 0.80, 0.80}"
     Dotted line
     Draw line: 0, 0, target_duration_s,
         ... min(target_duration_s, inputDuration)
@@ -1087,8 +1135,8 @@ if draw_visualization
     # ========================================================
     # Output spectrogram (kept; useful reference)
     # ========================================================
-    Select outer viewport: 0, 8, 6.45, 7.55
-    Select inner viewport: 0.6, 7.7, 6.55, 7.45
+    Select outer viewport: 0, 8, 6.40, 7.55
+    Select inner viewport: 0.60, 7.70, 6.55, 7.25
 
     selectObject: finalSound
     if inputChannels > 1
@@ -1112,8 +1160,8 @@ if draw_visualization
 
     removeObject: finalSpec, tmpFinal
     
-    Select outer viewport: 0, 8, 7.60, 8.00
-    Select inner viewport: 0.6, 7.7, 7.63, 7.98
+    Select outer viewport: 0, 8, 7.65, 8.25
+    Select inner viewport: 0.60, 7.70, 7.70, 8.20
 
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
@@ -1124,10 +1172,10 @@ if draw_visualization
         ... "##Best genome##   Seg: " + fixed$(bestSegMin, 1)
         ... + "-" + fixed$(bestSegMax, 1) + " ms"
         ... + "   |   Bias: " + fixed$(bestBias, 2)
-        ... + "   |   Reorder: " + fixed$(bestReorder * 100, 0) + "%"
+        ... + "   |   Reorder: " + fixed$(bestReorder * 100, 0) + "\%  "
         ... + "   |   Xfade: " + fixed$(bestXfade, 1) + " ms"
         ... + "   |   Silence: " + fixed$(bestSilProb * 100, 0)
-        ... + "%, " + fixed$(bestSilMin, 0) + "-" + fixed$(bestSilMax, 0) + " ms"
+        ... + "\% , " + fixed$(bestSilMin, 0) + "-" + fixed$(bestSilMax, 0) + " ms"
     Text: 0.02, "left", 0.30, "half",
         ... "##Evolution##   Pop: " + string$(pop_size)
         ... + "   Gens: " + string$(generations)
@@ -1142,7 +1190,13 @@ if draw_visualization
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
 
+    # Restore the full page as the last drawing action, so Save as PNG /
+    # Copy to clipboard capture the whole figure rather than cropping to
+    # the summary strip.
+    Select outer viewport: 0, 8, 0, 8.25
     Font size: 10
+    Colour: "Black"
+    Line width: 1
 endif
 
 appendInfoLine: ""

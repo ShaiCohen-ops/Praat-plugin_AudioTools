@@ -1,6 +1,6 @@
 # ============================================================
 # Praat AudioTools - PCA_Tone_Shaper.praat
-# Version: 0.9 (2026) - Formant validity + full-file dynamic EQ
+# Version: 1.0 (2026) - Suite-standard visualization
 # Author: Shai Cohen
 # License: MIT
 # ============================================================
@@ -15,6 +15,13 @@
 #   * Fixed EQ bands are filtered once; PCA trajectories drive smooth
 #     IntensityTier gains. No per-chunk FFT/WOLA is needed.
 #   * Analysis may be mono; processing preserves all input channels.
+# v1.0 visualization update
+#   * Audio analysis, PCA control generation, adaptive EQ and rendering
+#     are unchanged from v0.9.
+#   * Standardized the 8-inch Praat AudioTools page, title/subtitle,
+#     explicit inner viewports, typography, neutral panel colours,
+#     summary strip and full-page export viewport.
+#   * Added explicit panel titles and safe escaping for drawn object names.
 # ============================================================
 
 if numberOfSelected("Sound") <> 1
@@ -24,7 +31,7 @@ endif
 origSnd = selected("Sound")
 origName$ = selected$("Sound")
 
-form PCA Tone Shaper v0.9  (validity-aware adaptive EQ)
+form PCA Tone Shaper v1.0  (validity-aware adaptive EQ)
     optionmenu Preset: 1
         option Manual
         option Low crossover (200/2000 Hz)
@@ -109,7 +116,7 @@ else
 endif
 
 clearinfo
-writeInfoLine: "=== PCA Tone Shaper v0.9 ==="
+writeInfoLine: "=== PCA Tone Shaper v1.0 ==="
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Validity-aware FormantPath analysis; full-file dynamic 3-band EQ"
 appendInfoLine: ""
@@ -746,85 +753,132 @@ appendInfoLine: "Done."
 
 # ---------- visualization ----------
 if draw_visualization
+    pageHeight = 6.90
     Erase all
-    Select outer viewport: 0, 8, 0.1, 0.65
-    Axes: 0, 1, 0, 1
-    Font size: 13
-    Text: 0.5, "centre", 0.5, "half", "PCA Tone Shaper v0.9 | " + presetName$
+    Select outer viewport: 0, 8, 0, pageHeight
 
-    # PC trajectories
-    Select outer viewport: 0, 8, 0.8, 2.2
-    Select inner viewport: 0.8, 7.6, 0.95, 2.05
-    Axes: xmin, xmax, -1.1, 1.1
+    # Draw-safe source name
+    vizOrigName$ = replace$(origName$, "_", "\_ ", 0)
+
+    if output_level_mode = 1
+        levelMode$ = "Preserve gain"
+    elsif output_level_mode = 2
+        levelMode$ = "Conditional limiter"
+    else
+        levelMode$ = "Normalize to headroom"
+    endif
+
+    # === Header ===
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
+    Axes: 0, 1, 0, 1
+    Font size: 12
     Colour: "Black"
-    Draw inner box
-    Font size: 8
-    Text left: "yes", "PC control"
-    Text bottom: "yes", "Time (s)"
-    Colour: "{0.75,0.25,0.25}"
+    Text: 0.5, "centre", 0.68, "half", "##PCA Tone Shaper v1.0##"
+    Font size: 7
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half", vizOrigName$ + " | " + presetName$ + " | PCA strength " + fixed$(pca_strength, 2) + " | depth " + fixed$(depth_dB, 1) + " dB"
+
+    # === PC trajectories ===
+    Select outer viewport: 0, 8, 0.65, 2.25
+    Select inner viewport: 0.60, 7.70, 0.84, 2.03
+    Axes: xmin, xmax, -1.1, 1.1
+    Paint rectangle: "{0.97, 0.97, 0.97}", xmin, xmax, -1.1, 1.1
+
+    Colour: "{0.75, 0.25, 0.25}"
     for i from 2 to nF
         Draw line: time#[i-1], sm1#[i-1], time#[i], sm1#[i]
     endfor
-    Colour: "{0.25,0.55,0.25}"
+    Colour: "{0.25, 0.55, 0.25}"
     for i from 2 to nF
         Draw line: time#[i-1], sm2#[i-1], time#[i], sm2#[i]
     endfor
-    Colour: "{0.25,0.35,0.75}"
+    Colour: "{0.25, 0.35, 0.75}"
     for i from 2 to nF
         Draw line: time#[i-1], sm3#[i-1], time#[i], sm3#[i]
     endfor
 
-    # Gain trajectories
-    Select outer viewport: 0, 8, 2.55, 3.95
-    Select inner viewport: 0.8, 7.6, 2.7, 3.8
-    Axes: xmin, xmax, -capdB, capdB
     Colour: "Black"
     Draw inner box
-    Font size: 8
-    Text left: "yes", "Gain (dB)"
-    Text bottom: "yes", "Time (s)"
-    Colour: "{0.75,0.25,0.25}"
+    Font size: 7
+    Text left: "yes", "PC control"
+    Text bottom: "no", "Time (s)"
+    Text top: "no", "PCA Control Trajectories | PC1 = red | PC2 = green | PC3 = blue"
+
+    # === Gain trajectories ===
+    Select outer viewport: 0, 8, 2.45, 4.05
+    Select inner viewport: 0.60, 7.70, 2.64, 3.83
+    Axes: xmin, xmax, -capdB, capdB
+    Paint rectangle: "{0.97, 0.97, 0.97}", xmin, xmax, -capdB, capdB
+
+    Colour: "{0.80, 0.80, 0.80}"
+    Dashed line
+    Draw line: xmin, 0, xmax, 0
+    Solid line
+
+    Colour: "{0.75, 0.25, 0.25}"
     for i from 2 to nF
         Draw line: time#[i-1], gLdB#[i-1], time#[i], gLdB#[i]
     endfor
-    Colour: "{0.25,0.55,0.25}"
+    Colour: "{0.25, 0.55, 0.25}"
     for i from 2 to nF
         Draw line: time#[i-1], gMdB#[i-1], time#[i], gMdB#[i]
     endfor
-    Colour: "{0.25,0.35,0.75}"
+    Colour: "{0.25, 0.35, 0.75}"
     for i from 2 to nF
         Draw line: time#[i-1], gHdB#[i-1], time#[i], gHdB#[i]
     endfor
 
-    # Output waveform display (mono copy only for drawing)
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text left: "yes", "Gain (dB)"
+    Text bottom: "no", "Time (s)"
+    Text top: "no", "Dynamic EQ Gains | low = red | mid = green | high = blue"
+
+    # === Output waveform display (mono copy only for drawing) ===
     selectObject: outS
     if nch > 1
         disp = Convert to mono
     else
         disp = Copy: "PCA_display"
     endif
-    Select outer viewport: 0, 8, 4.25, 5.45
-    Select inner viewport: 0.8, 7.6, 4.4, 5.3
+
+    Select outer viewport: 0, 8, 4.25, 5.78
+    Select inner viewport: 0.60, 7.70, 4.44, 5.56
     selectObject: disp
-    Colour: "{0.30,0.45,0.65}"
+    Colour: "{0.25, 0.45, 0.75}"
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
-    Font size: 8
+    Font size: 7
     Text left: "yes", "Output"
-    Text bottom: "yes", "Time (s)"
+    Text bottom: "no", "Time (s)"
+    Text top: "no", "Processed Output | " + string$(nch) + " channel(s) preserved | peak " + fixed$(outPeakFinal, 3)
     removeObject: disp
 
-    Select outer viewport: 0, 8, 5.75, 6.65
+    # === Summary strip ===
+    Select outer viewport: 0, 8, 5.98, 6.85
+    Select inner viewport: 0.60, 7.70, 6.06, 6.77
     Axes: 0, 1, 0, 1
-    Paint rectangle: "{0.94,0.94,0.94}", 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+
+    Font size: 6
+    Colour: "{0.25, 0.25, 0.35}"
+    summary1$ = "##Input##  " + vizOrigName$ + " | " + string$(nch) + " channel(s) | formant-valid frames " + fixed$(100 * fmtFrac, 1) + "\% "
+    summary2$ = "##Analysis##  formant PCA " + formantState$ + " | smoothing " + fixed$(chunk_ms, 0) + " ms | frame step " + fixed$(frame_step_seconds * 1000, 1) + " ms"
+    summary3$ = "##EQ & Output##  crossovers " + fixed$(low_hi_crossover1_hz, 0) + " / " + fixed$(low_hi_crossover2_hz, 0) + " Hz | high top " + fixed$(high_band_top_hz, 0) + " Hz | " + levelMode$ + " | peak " + fixed$(outPeakFinal, 3)
+    Text: 0.02, "left", 0.78, "half", summary1$
+    Text: 0.02, "left", 0.50, "half", summary2$
+    Text: 0.02, "left", 0.22, "half", summary3$
+
     Colour: "Black"
     Draw inner box
-    Font size: 8
-    Text: 0.03, "left", 0.74, "half", "Formant-valid frames: " + fixed$(100*fmtFrac,1) + "%"
-    Text: 0.03, "left", 0.26, "half", "Formant PCA dimensions: " + formantState$
-    Text: 0.50, "left", 0.74, "half", "Channels preserved: " + string$(nch)
-    Text: 0.50, "left", 0.26, "half", "Control smoothing: " + fixed$(chunk_ms,0) + " ms"
+
+    # Restore the complete page for Picture export / clipboard.
+    Select outer viewport: 0, 8, 0, pageHeight
+    Font size: 10
+    Colour: "Black"
 endif
 
 # cleanup analysis and band intermediates

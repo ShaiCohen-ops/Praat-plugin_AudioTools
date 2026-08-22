@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.5.0 (2026)
+# Version: 0.5.1 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -14,6 +14,45 @@
 #   and gestural motion. Creates variants with pitch/formant/
 #   duration shifts, then selects a path through timbral space
 #   following a dissimilarity budget schedule.
+#
+# Changelog v0.5.1 (2026) -- visualization uniformity pass; no change
+# to variant generation, feature space, path selection or synthesis:
+#   - FIX: "Transition #" printed as "Transition". In Praat drawn text
+#     "#" is the bold marker: it bolds the character after it and
+#     prints nothing itself, so a trailing "#" vanishes entirely (and
+#     mid-string, "item #3" renders as "item" + bold 3). Now "\# ".
+#   - FIX: the last overlap bar was drawn through the panel's right
+#     frame. Bars span i - 0.4 to i + 0.4 for i up to sel_count, so the
+#     final one reached sel_count + 0.4 while the axis stopped at
+#     sel_count, and Praat does not clip to the inner viewport. The
+#     axis now carries half a step of margin at each end.
+#   - FIX: Sound names were drawn raw and Praat reads "_" as a
+#     subscript marker. "a_vox" printed as "a(sub v)ox", and the
+#     composite name "a_vox_canon_Custom" lost both underscores in the
+#     summary strip. Escaped for display only.
+#   - FIX: drawing ended inside the summary strip, so Save as PNG and
+#     Copy to clipboard exported that strip alone (2361 x 314 px)
+#     rather than the page. Drawing now ends on the full page, and the
+#     opening Select outer viewport declares the real height (6.40 in)
+#     instead of 8.
+#   - Panels C/D's bottom axis labels sat 0.10 in below their frames
+#     with panel E's caption 0.35 in further on; the two lines read as
+#     one block. Vertical margins are now 0.15 in above a panel with a
+#     top caption and 0.30 in below one with a bottom label. Page
+#     height is unchanged at 6.40 in.
+#   - Half-width geometry regularized: outer splits 0/4.2 and 4.2/8
+#     become 0/4 and 4/8; inner viewports 0.55/4.00 and 4.55/7.75
+#     become the standard 0.60/3.85 and 4.45/7.70. Full-width panels
+#     move from 0.55/7.72 to 0.60/7.70.
+#   - Fonts: five panels labelled their axes at 6 while captioning at
+#     7 in the same panel; axis labels are now 7 throughout.
+#   - Colours: the reference cross and inactive variant dots move from
+#     {0.78, 0.78, 0.82} to the standard grid grey {0.80, 0.80, 0.80};
+#     summary text {0.28, 0.28, 0.28} -> {0.25, 0.25, 0.35}; subtitle
+#     {0.35, 0.35, 0.52} -> {0.35, 0.35, 0.50}. Hues otherwise
+#     unchanged, pending the palette decision.
+#   - File converted from CRLF to LF, the convention everywhere else
+#     in the category.
 #
 # Changelog v0.5.0:
 #
@@ -159,7 +198,7 @@ if numberOfSelected("Sound") <> 1
     exitScript: "Please select exactly one Sound object."
 endif
 
-form Gestural Accumulator v0.5.0
+form Gestural Accumulator v0.5.1
     optionmenu Preset: 1
         option Custom
         option Smooth Drift (Hide Ruptures)
@@ -876,22 +915,30 @@ final_duration = Get total duration
 
 if draw_visualization
     Erase all
-    Select outer viewport: 0, 8, 0, 8
+    Select outer viewport: 0, 8, 0, 6.40
     Black
     Plain line
 
     # ----------------------------------------------------------
     # TITLE BAR
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 0, 0.65
+    # v0.5.1: Praat reads "_" in drawn text as a subscript marker, so
+    # "a_vox" printed as "a(sub v)ox" and the composite object name
+    # "a_vox_canon_Custom" lost both underscores. Escape for display
+    # only; the objects themselves are untouched.
+    vizUserName$ = replace$(user_name$, "_", "\_ ", 0)
+    vizCompositeName$ = replace$(compositeName$, "_", "\_ ", 0)
+
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
     Text: 0.5, "centre", 0.68, "half", "##GESTURAL ACCUMULATOR##"
     Font size: 7
-    Colour: "{0.35, 0.35, 0.52}"
-    Text: 0.5, "centre", -0.22, "half",
-        ... user_name$
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half",
+        ... vizUserName$
         ... + "  |  " + presetName$
         ... + "  |  " + string$(n_variants) + " variants -> " + string$(sel_count) + " sel"
         ... + "  |  Pacing: " + pacing_curve$
@@ -900,8 +947,8 @@ if draw_visualization
     # ----------------------------------------------------------
     # PANEL A (left): ORIGINAL WAVEFORM
     # ----------------------------------------------------------
-    Select outer viewport: 0, 4.2, 0.75, 2.30
-    Select inner viewport: 0.55, 4.00, 0.95, 2.18
+    Select outer viewport: 0, 4, 0.62, 2.10
+    Select inner viewport: 0.60, 3.85, 0.77, 2.05
 
     selectObject: user_original_id
     Colour: "{0.55, 0.55, 0.60}"
@@ -911,14 +958,14 @@ if draw_visualization
     Draw inner box
     Font size: 7
     Text top: "no", "Original waveform  (" + fixed$(original_duration, 2) + " s)"
-    Font size: 6
+    Font size: 7
     Text left: "yes", "Amp"
 
     # ----------------------------------------------------------
     # PANEL B (right): CANON WAVEFORM
     # ----------------------------------------------------------
-    Select outer viewport: 4.2, 8, 0.75, 2.30
-    Select inner viewport: 4.55, 7.75, 0.95, 2.18
+    Select outer viewport: 4, 8, 0.62, 2.10
+    Select inner viewport: 4.45, 7.70, 0.77, 2.05
 
     selectObject: result_id
     Colour: "{0.20, 0.50, 0.80}"
@@ -928,14 +975,14 @@ if draw_visualization
     Draw inner box
     Font size: 7
     Text top: "no", "Canon result  (" + fixed$(final_duration, 2) + " s,  " + fixed$(final_duration / original_duration, 1) + "x)"
-    Font size: 6
+    Font size: 7
     Text left: "yes", "Amp"
 
     # ----------------------------------------------------------
     # PANEL C (left): DISSIMILARITY TRAJECTORY
     # ----------------------------------------------------------
-    Select outer viewport: 0, 4.2, 2.40, 4.40
-    Select inner viewport: 0.55, 4.00, 2.60, 4.30
+    Select outer viewport: 0, 4, 2.20, 4.25
+    Select inner viewport: 0.60, 3.85, 2.35, 3.95
 
     # Scale axis to the larger of (current_accum, max scheduled value)
     max_accum = current_accum
@@ -990,22 +1037,22 @@ if draw_visualization
     Draw inner box
     Font size: 7
     Text top: "no", "Dissimilarity trajectory  (grey dotted = target schedule)"
-    Font size: 6
+    Font size: 7
     Text left: "yes", "Cumulative (median units)"
     Text bottom: "yes", "Step"
 
     # ----------------------------------------------------------
     # PANEL D (right): VARIANT TRANSFORM SCATTER
     # ----------------------------------------------------------
-    Select outer viewport: 4.2, 8, 2.40, 4.40
-    Select inner viewport: 4.55, 7.75, 2.60, 4.30
+    Select outer viewport: 4, 8, 2.20, 4.25
+    Select inner viewport: 4.45, 7.70, 2.35, 3.95
 
     Axes: -pitch_range_st, pitch_range_st, 1.0 - formant_shift_range, 1.0 + formant_shift_range
     Paint rectangle: "{0.97, 0.97, 0.97}",
         ... -pitch_range_st, pitch_range_st, 1.0 - formant_shift_range, 1.0 + formant_shift_range
 
     # Reference cross (faint)
-    Colour: "{0.78, 0.78, 0.82}"
+    Colour: "{0.80, 0.80, 0.80}"
     Dotted line
     Draw line: -pitch_range_st, 1.0, pitch_range_st, 1.0
     Draw line: 0, 1.0 - formant_shift_range, 0, 1.0 + formant_shift_range
@@ -1013,7 +1060,7 @@ if draw_visualization
 
     # All variants in grey
     for i to n_variants
-        Paint circle (mm): "{0.78, 0.78, 0.82}",
+        Paint circle (mm): "{0.80, 0.80, 0.80}",
             ... variant_pitch_shift[i], variant_formant_shift[i], 0.6
     endfor
 
@@ -1046,15 +1093,15 @@ if draw_visualization
     Draw inner box
     Font size: 7
     Text top: "no", "Variant space  (grey = all, blue->red = selected path)"
-    Font size: 6
+    Font size: 7
     Text left: "yes", "Formant"
     Text bottom: "yes", "Pitch shift (st)"
 
     # ----------------------------------------------------------
     # PANEL E: OVERLAP ANALYSIS  (full width)
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 4.50, 5.60
-    Select inner viewport: 0.55, 7.72, 4.65, 5.50
+    Select outer viewport: 0, 8, 4.35, 5.60
+    Select inner viewport: 0.60, 7.70, 4.50, 5.30
 
     # v0.4.2 fix: gate on sel_count > start_pos (not sel_count > 1).
     # v0.4.1 had `if sel_count > 1` which entered the block when
@@ -1072,9 +1119,15 @@ if draw_visualization
             max_overlap = 0.001
         endif
 
-        Axes: start_pos, sel_count, 0, max_overlap * 1.1
+        # v0.5.1: bars span i - 0.4 to i + 0.4 for i in
+        # start_pos+1 .. sel_count, so the last bar reached
+        # sel_count + 0.4 while the axis stopped at sel_count and
+        # Praat does not clip -- the final bar was drawn straight
+        # through the panel's right frame. Half a step of margin on
+        # each side frames every bar.
+        Axes: start_pos + 0.5, sel_count + 0.5, 0, max_overlap * 1.1
         Paint rectangle: "{0.97, 0.97, 0.97}",
-            ... start_pos, sel_count, 0, max_overlap * 1.1
+            ... start_pos + 0.5, sel_count + 0.5, 0, max_overlap * 1.1
 
         for i from start_pos + 1 to sel_count
             norm = overlap_duration[i] / max(max_overlap, 0.001)
@@ -1097,9 +1150,9 @@ if draw_visualization
         Draw inner box
         Font size: 7
         Text top: "no", "Transition overlaps  (color encodes overlap magnitude per " + overlap_mode$ + ")"
-        Font size: 6
+        Font size: 7
         Text left: "yes", "Overlap (s)"
-        Text bottom: "yes", "Transition #"
+        Text bottom: "yes", "Transition \# "
     else
         # Not enough transitions to plot
         Axes: 0, 1, 0, 1
@@ -1123,12 +1176,12 @@ if draw_visualization
     # v0.4.1 inherited Axes from the panel above and placed text
     # at unpredictable outer y positions.
     Select outer viewport: 0, 8, 5.70, 6.40
-    Select inner viewport: 0.55, 7.72, 5.77, 6.35
+    Select inner viewport: 0.60, 7.70, 5.75, 6.35
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
 
     Font size: 6
-    Colour: "{0.28, 0.28, 0.28}"
+    Colour: "{0.25, 0.25, 0.35}"
 
     if track_motion_variance
         motionLabel$ = motion_measure$
@@ -1144,7 +1197,7 @@ if draw_visualization
 
     Text: 0.02, "left", 0.82, "half",
         ... "##" + presetName$ + "##"
-        ... + "  " + user_name$
+        ... + "  " + vizUserName$
         ... + "  |  Variants: " + string$(n_variants) + " -> Selected: " + string$(sel_count)
         ... + "  |  Budget concept/audible/target: " + fixed$(current_accum, 2)
         ... + " / " + fixed$(audible_accum, 2) + " / " + fixed$(target_budget, 2)
@@ -1158,7 +1211,7 @@ if draw_visualization
         ... + "  |  Formant: +/-" + fixed$(formant_shift_range, 2)
 
     Text: 0.02, "left", 0.18, "half",
-        ... "Obj: " + compositeName$
+        ... "Obj: " + vizCompositeName$
         ... + "  |  Dur: " + fixed$(final_duration, 2) + " s ("
         ... + fixed$(final_duration / original_duration, 2) + "x)"
         ... + "  |  Med dist: " + fixed$(global_median_dist, 3)
@@ -1169,6 +1222,10 @@ if draw_visualization
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
 
+    # Restore the full page as the last drawing action, so Save as PNG /
+    # Copy to clipboard capture the whole figure rather than cropping to
+    # the summary strip.
+    Select outer viewport: 0, 8, 0, 6.40
     Font size: 10
     Colour: "Black"
     Line width: 1

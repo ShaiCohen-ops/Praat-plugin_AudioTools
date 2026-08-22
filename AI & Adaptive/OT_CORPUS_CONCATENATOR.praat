@@ -3,13 +3,43 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.5 (2026) - Standardized folder field (blank-to-dialog idiom)
+# Version: 0.9 (2026) - Suite visualization + Bayesian-style folder entry
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
 #   OT Corpus Concatenator - Optimality Theory-inspired audio
 #   selection and concatenation based on weighted constraint violations.
+#
+# Changelog v0.8:
+#   - VISUALIZATION STANDARDIZATION ONLY; corpus analysis, normalized
+#     violations, weighted Harmony ranking, selection, joins and output
+#     rendering are unchanged from v0.7.
+#   - Adopted the Praat AudioTools 8-inch page convention with explicit
+#     inner viewports, suite-standard title/subtitle, typography, neutral
+#     panel colours, summary strip and full-page export viewport.
+#   - Preserved the output waveform, Harmony ranking and Energy/C1
+#     scatter; constraint weights are now consolidated in the summary.
+#   - Harmony plot now states explicitly that lower scores rank better.
+#
+# Changelog v0.9:
+#   - Added the same visible Audio Folder text field used by
+#     Bayesian_Drone_Weaver: type/paste a path, or leave blank to
+#     open the folder chooser.
+#   - Retains the suite-standard visualization introduced in v0.8.
+#   - Corpus analysis, Harmony ranking, concatenation and rendering
+#     are unchanged.
+#
+# Changelog v0.8:
+#   - VISUALIZATION STANDARDIZATION ONLY; corpus analysis, normalized
+#     violations, weighted Harmony ranking, selection, joins and output
+#     rendering are unchanged from v0.7.
+#   - Adopted the Praat AudioTools 8-inch page convention with explicit
+#     inner viewports, suite-standard title/subtitle, typography, neutral
+#     panel colours, summary strip and full-page export viewport.
+#   - Preserved the output waveform, Harmony ranking and Energy/C1
+#     scatter; constraint weights are consolidated in the summary.
+#   - Harmony plot states explicitly that lower scores rank better.
 #
 # Changelog v0.5:
 #   - Standardized the Folder field to the shared blank-to-dialog idiom
@@ -116,7 +146,7 @@
 #
 # ============================================================
 
-form OT Corpus Concatenator v0.7  (weighted-sum / Harmonic Grammar)
+form OT Corpus Concatenator v0.9  (weighted-sum / Harmonic Grammar)
     optionmenu Preset: 1
         option Manual
         option Bright & Energetic
@@ -124,8 +154,11 @@ form OT Corpus Concatenator v0.7  (weighted-sum / Harmonic Grammar)
         option Balanced
         option Maximum Energy
         option Timbral Consistency
+    comment === Audio Folder ===
+    comment (Leave blank to pick a folder with a dialog)
+    sentence Folder 
+    comment === Selection ===
     integer Limit_files 10
-    sentence Folder_path
     real Weight_darkness 0.0
     real Weight_brightness 1.0
     real Weight_energy 2.0
@@ -143,7 +176,7 @@ form OT Corpus Concatenator v0.7  (weighted-sum / Harmonic Grammar)
     boolean Play_result 1
 endform
 
-# Leave Folder_path blank to pick a folder with a dialog.
+# Type/paste Folder directly, or leave it blank to pick a folder with a dialog.
 # Violations are min-max normalised ACROSS THE CORPUS before the
 # weights are applied, so the weights are directly comparable.
 # C0 tracks recorded level, so Maximum Energy selects for file gain,
@@ -198,7 +231,7 @@ endif
 # ============================================
 
 clearinfo
-writeInfoLine: "=== OT Corpus Concatenator v0.7 ==="
+writeInfoLine: "=== OT Corpus Concatenator v0.9 ==="
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
 
@@ -225,16 +258,16 @@ endif
 # the Folder field is left blank. Trim whitespace and trailing slashes
 # first; the OS-specific trailing-slash normalization just below re-adds
 # the separator for the *.wav glob.
-directory$ = replace_regex$(folder_path$, "^[ \t]*|[ \t]*$", "", 0)
+directory$ = replace_regex$(folder$, "^[ \t]*|[ \t]*$", "", 0)
 directory$ = replace_regex$(directory$, "[\\/]+$", "", 0)
 
 if directory$ == ""
-    directory$ = chooseFolder$: "Choose the folder containing your audio files"
+    directory$ = chooseFolder$: "Select folder with audio clips"
     directory$ = replace_regex$(directory$, "[\\/]+$", "", 0)
 endif
 
 if directory$ == ""
-    exitScript: "Operation cancelled. Please supply a valid folder path."
+    exitScript: "Operation cancelled. Please supply a valid audio folder path."
 endif
 
 if right$(directory$, 1) <> "/" and right$(directory$, 1) <> "\"
@@ -717,63 +750,98 @@ finalDur = Get total duration
 
 if draw_visualization
     appendInfoLine: "Drawing visualization..."
-    
+
+    pageHeight = 5.55
     Erase all
-    
-    # Title
-    Select outer viewport: 1, 8, 0.1, 0.5
+    Select outer viewport: 0, 8, 0, pageHeight
+
+    if stability_measure = 1
+        stabilityDesc$ = "dispersion (SD of C1)"
+    else
+        stabilityDesc$ = "temporal mean |delta C1|"
+    endif
+
+    if join_mode = 1
+        joinDesc$ = "hard cut"
+    elsif join_mode = 2
+        joinDesc$ = "short crossfade " + fixed$(crossfade_ms, 0) + " ms"
+    else
+        joinDesc$ = "long crossfade " + fixed$(crossfade_ms * 4, 0) + " ms"
+    endif
+
+    if normalize_output_peak
+        levelDesc$ = "normalize peak to 0.99"
+    else
+        levelDesc$ = "preserve gain; limit only if clipping"
+    endif
+
+    # === Header ===
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
+    Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "OT Corpus Concatenator [" + presetName$ + "]"
-    
-    # Output waveform
-    Select outer viewport: 0, 8, 0.6, 1.8
-    Select inner viewport: 0.6, 7.6, 0.8, 1.7
+    Text: 0.5, "centre", 0.68, "half", "##OT Corpus Concatenator v0.9##"
+    Font size: 7
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half", presetName$ + " | " + string$(nFilesValid) + " valid candidates | top " + string$(n_target) + " selected | weighted-sum Harmony"
+
+    # === Output waveform ===
+    Select outer viewport: 0, 8, 0.66, 1.88
+    Select inner viewport: 0.60, 7.70, 0.84, 1.66
     selectObject: finalID
-    Colour: "{0.3, 0.5, 0.7}"
+    Colour: "{0.25, 0.45, 0.75}"
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
-    Font size: 8
+    Font size: 7
     Text left: "yes", "Output"
-    Text bottom: "yes", "Time (s)"
-    Text top: "no", "Duration: " + fixed$(finalDur, 2) + " s"
-    
-    # Harmony scores bar chart
-    Select outer viewport: 0, 4, 2.0, 3.5
-    Select inner viewport: 0.6, 3.6, 2.2, 3.4
-    
+    Text bottom: "no", "Time (s)"
+    Text top: "no", "Concatenated Output | " + fixed$(finalDur, 2) + " s | " + string$(n_target) + " files"
+
+    # === Harmony scores ===
+    Select outer viewport: 0, 4, 2.08, 4.02
+    Select inner viewport: 0.60, 3.85, 2.32, 3.78
+
     maxHarmony = harmony_scores#[n_target]
     if maxHarmony < 1
         maxHarmony = 1
     endif
-    
-    Axes: 0, n_target + 1, 0, maxHarmony * 1.1
-    Paint rectangle: "{0.97, 0.97, 0.97}", 0, n_target + 1, 0, maxHarmony * 1.1
-    
+
+    Axes: 0, n_target + 1, 0, maxHarmony * 1.12
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, n_target + 1, 0, maxHarmony * 1.12
+
     for i from 1 to n_target
-        intensity = 1 - (i / n_target) * 0.7
-        rVal$ = fixed$(0.2 + intensity * 0.3, 2)
-        gVal$ = fixed$(0.5 + intensity * 0.3, 2)
-        bVal$ = fixed$(0.3 + intensity * 0.4, 2)
-        Paint rectangle: "{" + rVal$ + ", " + gVal$ + ", " + bVal$ + "}", i - 0.4, i + 0.4, 0, harmony_scores#[i]
+        if n_target > 1
+            rankFrac = (i - 1) / (n_target - 1)
+        else
+            rankFrac = 0
+        endif
+        rVal = 0.25 + 0.35 * rankFrac
+        gVal = 0.45 + 0.25 * rankFrac
+        bVal = 0.75 + 0.12 * rankFrac
+        rVal$ = fixed$(rVal, 3)
+        gVal$ = fixed$(gVal, 3)
+        bVal$ = fixed$(bVal, 3)
+        Paint rectangle: "{" + rVal$ + ", " + gVal$ + ", " + bVal$ + "}", i - 0.38, i + 0.38, 0, harmony_scores#[i]
     endfor
-    
+
     Colour: "Black"
     Draw inner box
-    Font size: 8
+    Font size: 7
     Text left: "yes", "Harmony"
-    Text bottom: "yes", "Rank"
-    
-    # Energy vs Tilt scatter
-    Select outer viewport: 4, 8, 2.0, 3.5
-    Select inner viewport: 4.4, 7.6, 2.2, 3.4
-    
+    Text bottom: "no", "Rank"
+    Text top: "no", "Harmony Ranking | lower = better"
+
+    # === Energy vs Tilt scatter ===
+    Select outer viewport: 4, 8, 2.08, 4.02
+    Select inner viewport: 4.45, 7.70, 2.32, 3.78
+
     minEnergy = energy_vals#[1]
     maxEnergy = energy_vals#[1]
     minTilt = tilt_vals#[1]
     maxTilt = tilt_vals#[1]
-    
+
     for i from 2 to n_target
         if energy_vals#[i] < minEnergy
             minEnergy = energy_vals#[i]
@@ -788,7 +856,7 @@ if draw_visualization
             maxTilt = tilt_vals#[i]
         endif
     endfor
-    
+
     energyRange = maxEnergy - minEnergy
     if energyRange < 1
         energyRange = 1
@@ -797,48 +865,61 @@ if draw_visualization
     if tiltRange < 1
         tiltRange = 1
     endif
-    
-    Axes: minEnergy - energyRange * 0.1, maxEnergy + energyRange * 0.1, minTilt - tiltRange * 0.1, maxTilt + tiltRange * 0.1
-    Paint rectangle: "{0.97, 0.97, 0.97}", minEnergy - energyRange * 0.1, maxEnergy + energyRange * 0.1, minTilt - tiltRange * 0.1, maxTilt + tiltRange * 0.1
-    
-    # Draw points as small rectangles
-    pointSize = energyRange * 0.03
-    pointSizeY = tiltRange * 0.03
-    
+
+    xMinPlot = minEnergy - energyRange * 0.1
+    xMaxPlot = maxEnergy + energyRange * 0.1
+    yMinPlot = minTilt - tiltRange * 0.1
+    yMaxPlot = maxTilt + tiltRange * 0.1
+
+    Axes: xMinPlot, xMaxPlot, yMinPlot, yMaxPlot
+    Paint rectangle: "{0.97, 0.97, 0.97}", xMinPlot, xMaxPlot, yMinPlot, yMaxPlot
+
+    pointSize = energyRange * 0.025
+    pointSizeY = tiltRange * 0.025
+
     for i from 1 to n_target
-        intensity = 1 - (i / n_target) * 0.7
-        rVal = 0.2 + intensity * 0.5
-        gVal = 0.4 + intensity * 0.4
-        bVal = 0.6 + intensity * 0.2
-        # Clamp to valid range
-        rVal = max(0, min(1, rVal))
-        gVal = max(0, min(1, gVal))
-        bVal = max(0, min(1, bVal))
-        rVal$ = fixed$(rVal, 2)
-        gVal$ = fixed$(gVal, 2)
-        bVal$ = fixed$(bVal, 2)
-        
-        # Use Paint rectangle instead of Paint circle
+        if n_target > 1
+            rankFrac = (i - 1) / (n_target - 1)
+        else
+            rankFrac = 0
+        endif
+        rVal = 0.25 + 0.35 * rankFrac
+        gVal = 0.45 + 0.25 * rankFrac
+        bVal = 0.75 + 0.12 * rankFrac
+        rVal$ = fixed$(rVal, 3)
+        gVal$ = fixed$(gVal, 3)
+        bVal$ = fixed$(bVal, 3)
         x = energy_vals#[i]
         y = tilt_vals#[i]
         Paint rectangle: "{" + rVal$ + ", " + gVal$ + ", " + bVal$ + "}", x - pointSize, x + pointSize, y - pointSizeY, y + pointSizeY
     endfor
-    
+
     Colour: "Black"
     Draw inner box
-    Font size: 8
+    Font size: 7
     Text left: "yes", "Tilt (C1)"
-    Text bottom: "yes", "Energy (C0)"
-    
-    # Constraint weights
-    Select outer viewport: 0, 8, 3.7, 4.3
-    Font size: 9
-    Colour: "{0.3, 0.3, 0.3}"
-    Text: 0.15, "centre", 0.5, "half", "*DARK: " + fixed$(weight_darkness, 1)
-    Text: 0.38, "centre", 0.5, "half", "*BRIGHT: " + fixed$(weight_brightness, 1)
-    Text: 0.62, "centre", 0.5, "half", "*ENERGY: " + fixed$(weight_energy, 1)
-    Text: 0.85, "centre", 0.5, "half", "*STABLE: " + fixed$(weight_stability, 1)
-    
+    Text bottom: "no", "Energy (C0)"
+    Text top: "no", "Selected Corpus Space | darker = higher rank"
+
+    # === Summary strip ===
+    Select outer viewport: 0, 8, 4.23, 5.50
+    Select inner viewport: 0.60, 7.70, 4.31, 5.42
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+
+    Font size: 6
+    Colour: "{0.25, 0.25, 0.35}"
+    summary1$ = "##Corpus##  " + string$(nFiles) + " files | " + string$(nFilesValid) + " valid | " + string$(n_target) + " selected | output " + fixed$(finalDur, 2) + " s"
+    summary2$ = "##Constraints##  DARK " + fixed$(weight_darkness, 1) + " | BRIGHT " + fixed$(weight_brightness, 1) + " | ENERGY " + fixed$(weight_energy, 1) + " | STABLE " + fixed$(weight_stability, 1) + " | " + stabilityDesc$
+    summary3$ = "##Output##  " + joinDesc$ + " | " + levelDesc$ + " | C0 = recorded-level proxy | C1 sign: + dark / - bright"
+    Text: 0.02, "left", 0.78, "half", summary1$
+    Text: 0.02, "left", 0.50, "half", summary2$
+    Text: 0.02, "left", 0.22, "half", summary3$
+
+    Colour: "Black"
+    Draw inner box
+
+    Select outer viewport: 0, 8, 0, pageHeight
     Font size: 10
     Colour: "Black"
 endif
