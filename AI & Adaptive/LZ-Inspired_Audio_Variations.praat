@@ -3,189 +3,181 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.7 (2026) - Suite-standard visualization
+# Version: 0.8 (2026) - real Lempel-Ziv parsing
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
+# WHAT THIS SCRIPT DOES
+#   The source is quantized into a stream of symbols, that stream is
+#   parsed by Lempel-Ziv into a dictionary of variable-length PHRASES,
+#   and the output is generated from that dictionary. Every phrase is a
+#   run of consecutive source windows, so a phrase renders as one
+#   contiguous extract of audio.
+#
+# Changelog v0.8 (2026):
+#
+#   THE MODEL CHANGED. v0.7 and earlier did not encode anything with
+#   Lempel-Ziv. They built an all-pairs feature-distance sweep and kept
+#   the pairs under a threshold - an undirected similarity graph over
+#   windows, with no symbols, no sequential parse, no phrases and no
+#   dictionary in the LZ sense. Renaming it (v0.4, v0.7) described the
+#   gap accurately but did not close it. v0.8 closes it.
+#
+#   1 - NEW: symbolization (the step that was missing). Lempel-Ziv
+#     needs a STRING; continuous feature vectors are not one. Each
+#     window's (feature1, feature2) pair is min-max normalized and
+#     vector-quantized by k-means (k-means++ seeding, Lloyd iteration,
+#     empty-cluster re-seeding) into Alphabet_size codewords. Clusters
+#     are then renumbered by ascending feature1 centroid so symbol
+#     order is interpretable. Windows with no defined feature - the
+#     unvoiced ones Pitch analysis produces - get their own symbol
+#     rather than being dropped, so the stream stays contiguous and
+#     silence becomes part of the grammar instead of a hole in it.
+#
+#   2 - NEW: LZ78 incremental parse. The symbol stream is parsed left
+#     to right against a trie: each new phrase is the longest phrase
+#     already in the dictionary plus one new symbol. Stored per node:
+#     parent, symbol, depth, traversal count and the window index of
+#     its first occurrence. Node depth IS phrase length in windows, and
+#     first-occurrence + depth maps every phrase back to a contiguous
+#     stretch of source audio. This is the dictionary; it is directed,
+#     sequential, and prefix-closed.
+#
+#   3 - NEW: real LZ measures reported. Phrase count c(n) is the
+#     Lempel-Ziv complexity of the symbolized source; normalized
+#     complexity c(n)*log_A(n)/n approaches 1 for a random stream and
+#     falls toward 0 for a repetitive one. Symbol entropy and a
+#     first-order coded-size estimate are reported alongside. These are
+#     properties of the piece, not of the renderer.
+#
+#   4 - REPLACED: Random / Chain / Hybrid are gone. They were walks on
+#     the old similarity graph and have no meaning here. Three
+#     generation modes, all derived from the parse:
+#       Parse and substitute - replay the source's own LZ token stream
+#         and swap phrases for other dictionary entries of the SAME
+#         DEPTH at rate Novelty. At Novelty 0 this is a straight decode
+#         of the encoding, so it doubles as a correctness test: the
+#         output should be the source, window for window.
+#       Incremental parsing - variable-order Markov continuation over
+#         the LZ78 trie, sampling children by traversal count and
+#         escaping to the root at rate Novelty. This is the
+#         Dubnov / Assayag incremental-parsing method used for machine
+#         improvisation; it is LZ78 read as a predictor.
+#       LZ77 copy and deviate - the classic sliding-window form. Find
+#         the longest match of the recent OUTPUT inside the source
+#         symbol stream, copy forward from there for up to
+#         Max_copy_windows windows, then emit one literal that breaks
+#         the match. Tokens are (offset, length, literal) triples.
+#         Ties in match length are broken at random, which is what
+#         makes it recombine rather than replay.
+#
+#   5 - AUDIBLE: segments are contiguous again. A phrase of depth d
+#     covers d consecutive windows and is extracted in ONE call, so
+#     there are no internal joins inside a phrase. v0.7 crossfaded
+#     every window boundary; v0.8 crossfades only at phrase
+#     boundaries, and those fall where the parse says the material
+#     actually changes. Measured on a 6 s test source at the stock
+#     settings: 119 segments for 200 windows of output.
+#
+#   11 - THE CROSSFADE IS NOW THE ANALYSIS OVERLAP, not a fixed 2 ms.
+#     Found by testing, and it was a real error, not a refinement.
+#     Phrases tile the WINDOW-INDEX stream with a stride of one hop,
+#     but a phrase of L windows spans window_size + (L-1)*hop of
+#     AUDIO. Butt-joining those with a 2 ms crossfade advances the
+#     output by roughly one hop too much per phrase. Overlapping the
+#     joins by overlap*window_size makes the two agree exactly:
+#       runDur - xfade = w + (L-1)w(1-ov) - w*ov = L*w(1-ov) = L*hop
+#     i.e. ordinary overlap-add. Verified on 6.4.06 that Praat's
+#     Concatenate with overlap is amplitude-complementary, so a
+#     20-segment chain at 70% overlap reconstructs its source to 2e-13
+#     - a large crossfade is safe and correct here. Time stretch can
+#     still shorten a segment below the crossfade; that case is capped
+#     and reported rather than aborting.
+#
+#   12 - FIX: windows are quantized to WHOLE SAMPLES. A 0.025 s hop at
+#     44100 is 1102.5 samples, so alternate window boundaries land on
+#     opposite sub-sample phases and Extract part rounds. Measured 4
+#     samples of accumulated drift over 6 s - every window still
+#     correlating 1.0000 at its own lag, but the whole file sliding.
+#     Integer-sample boundaries fall midway between sample centres,
+#     where Extract part is exact. The adjustment is reported when it
+#     changes the requested values.
+#
+#   13 - The incremental-parsing walk uses BACKOFF, not a carried node
+#     pointer. A raw LZ78 trie is mostly leaves, so a walk that simply
+#     advances hits a dead end almost every step and falls to the
+#     root: measured 146 root-falls in 193 tokens at Novelty 0.35,
+#     which is first-order behaviour wearing a variable-order name.
+#     v0.8 re-descends from the root along the last k output symbols
+#     and drops the oldest symbol until it finds a node with
+#     continuations. Escapes then match Novelty (122/324 = 0.38 at
+#     0.35) and the mean order actually used is reported, so the claim
+#     "variable order" is checkable rather than asserted.
+#
+#   VERIFICATION. Preset "Faithful Re-decode" sets Novelty 0 and
+#   variation None, which replays the parse in order and should return
+#   the source. Measured on a 6 s test file, Praat 6.4.06 headless:
+#   r = 0.9952 against the source excluding the 5 ms edge fades, zero
+#   global lag, and exactly one 50 ms window anywhere in the file
+#   deviating by more than 0.05 - the faded head. Before fixes 11 and
+#   12 the same test gave r = 0.04. If a future change breaks the
+#   encoding, this preset is where it will show.
+#
+#   6 - REMOVED: Similarity_threshold, Distance_metric, Min_separation_s.
+#     All three were properties of the pairwise sweep. The separation
+#     rule in particular is no longer needed: overlapping windows now
+#     yield repeated symbols, which the parse absorbs by EXTENDING a
+#     phrase. Redundancy that used to corrupt the dictionary now
+#     shortens the encoding, which is the correct behaviour.
+#
+#   7 - REMOVED: the feature Table sort. The sort existed only to prune
+#     the O(n^2) sweep, and it was the direct cause of the v0.6
+#     CRITICAL 1 index-aliasing bug (sorted rows indexed by original
+#     window number). With no sweep there is no sort and no second set
+#     of arrays to keep in step. One indexing scheme, original window
+#     order, everywhere.
+#
+#   8 - FIX: stereo input. To Manipulation, To Spectrum and mono
+#     Concatenate all fail on a multi-channel Sound, so v0.7 crashed on
+#     any stereo source depending on the variation method. The input is
+#     converted to mono up front and the conversion is reported.
+#
+#   9 - FIX: PSOLA guard. To Manipulation refuses a Sound shorter than
+#     3 / pitch-floor = 40 ms at floor 75. Pitch shift and Time stretch
+#     on a 50 ms window (the Glitch preset's setting) therefore aborted
+#     the script. Short segments now pass through unvaried and the
+#     count of skipped segments is reported.
+#
+#   10 - NEW: variation method "None", for hearing the parse itself.
+#
+#   Kept from v0.6 / v0.7: the exact-duration trim-or-pad, the single
+#   pair of edge fades on the finished output (no double envelope), the
+#   granular-shuffle fixes, seeding, input validation, and the 8-inch
+#   page convention.
+#
 # Changelog v0.7 (2026):
-#   - VISUALIZATION STANDARDIZATION ONLY; feature extraction, similarity
-#     dictionary construction, temporal-separation rule, Random/Chain/
-#     Hybrid selection, variation processing and audio rendering are
-#     unchanged from v0.6.
-#   - Adopted the Praat AudioTools 8-inch page convention with explicit
-#     inner viewports, standard title/subtitle, suite typography,
-#     neutral panel backgrounds, summary strip and full-page export.
-#   - Preserved the defining visual structure: output-to-source
-#     dictionary usage, per-window feature distribution, neighbor-count
-#     histogram and rendered output waveform.
-#   - Clarified the chain-link display as feature-similarity navigation,
-#     not Lempel-Ziv compression.
-#
+#   - Visualization standardization only.
 # Changelog v0.6 (2026):
-#
-#   NOTE: audio is NOT comparable to v0.5. Until now the renderer was
-#   playing different windows from the ones the dictionary chose.
-#
-#   CRITICAL 1 - the chosen window and the rendered audio were not the
-#     same window. The feature Table was sorted by feature1 for the
-#     sweep, and start_times#/end_times# were then RELOADED in sorted
-#     order - but the dictionary stored ORIGINAL window indices, and
-#     the renderer indexed the sorted time arrays with them. Measured
-#     on a 6 s source at the defaults: all 119 windows changed position
-#     under the sort, and 63 of 63 rendered segments - 100% - played a
-#     different window from the one selected. Sorted row 17 held
-#     original window 86, so choosing window 17 rendered 4.250 s
-#     instead of 0.800 s. Every similarity fix from v0.4 and v0.5 was
-#     therefore inaudible, and Panel B plotted one window's links over
-#     another window's coordinates.
-#     Confirmed by correlating the rendered head against the audio of
-#     the window the dictionary actually chose: v0.5 selected window 68
-#     (true start 3.350 s), rendered 5.550 s, and correlated -0.070 -
-#     unrelated material. v0.6 selects window 98, renders 4.850 s, and
-#     correlates 1.00000.
-#     v0.6 keeps two separate sets of arrays: startByOrig#/endByOrig#
-#     indexed by original window number, and sortedF1#/sortedF2#/
-#     sortedOrig# used only by the sweep. Nothing overwrites the first
-#     set.
-#
-#   CRITICAL 2 - every join carried two envelopes. v0.5 added 2 ms
-#     raised-cosine fades to each segment AND then joined with
-#     Concatenate with overlap, which applies its own crossfade over
-#     the same samples. The per-segment fades are gone; Praat's
-#     crossfade handles the internal joins and a single fade is applied
-#     to the head and tail of the finished output.
-#
-#   3 - The output now reaches the requested duration in every mode.
-#     v0.5 assumed each segment stayed window_size_s long, which Time
-#     stretch (0.5x to 2x) and Granular shuffle (which dropped the
-#     remainder past the last whole 20 ms grain) both break. Segments
-#     are now generated until the accumulated duration passes the
-#     target, and the result is trimmed - or padded, if the material
-#     genuinely runs out - to land exactly.
-#
-#   4 - "Correlation" and "Cosine" were neither. Both reduced to
-#     (max - min) / max on absolute values, so they ranked almost
-#     identically and threw away sign - which matters for the negative
-#     values intensity analysis produces. Renamed to what they compute:
-#     Mean relative difference and Mean magnitude-ratio difference.
-#     Implementing a real cosine would need the two features treated as
-#     one vector on comparable scales; that is a larger change and is
-#     not smuggled in here.
-#
-#   5 - Pair storage is no longer allocated at O(n^2). v0.5 allocated
-#     num_windows*(num_windows-1)/2 slots in each of three arrays
-#     before finding a single pair: 10,000 windows would have demanded
-#     roughly 50 million slots per array, three times over, before the
-#     loop began. The sweep now runs twice - once to count, once to
-#     fill exactly the space needed. Measured at the defaults: 2778
-#     pairs against 7021 slots previously reserved.
-#
-#   6 - Minimum temporal separation. Nothing stopped windows 20 and 21
-#     from pairing even though at 70% overlap they share 70% of their
-#     samples, so the "dictionary of recurring patterns" filled up with
-#     trivially adjacent matches. Measured on the Ambient Drift preset:
-#     44 of 222 pairs, 19.8%, overlapped in time. Min_separation_s
-#     defaults to the window size, which admits only non-overlapping
-#     pairs; set it to 0 for the old behaviour.
-#
-#   7 - Granular shuffle. Two problems. (a) amount = 0 was documented
-#     as identity but still cut the segment into Hann-windowed 20 ms
-#     grains and butt-joined them, putting a dip every 20 ms; the
-#     segment is now copied through untouched at 0. (b) Displacement
-#     was drawn then CLAMPED to [1, num_grains], which piles a large
-#     share of high-amount draws onto the first and last grain. The
-#     source index is now drawn uniformly from the valid range around
-#     each grain. The trailing partial grain is also kept rather than
-#     discarded.
-#
-#   8 - Random_seed added (0 = unpredictable); the generator is
-#     returned to its safe state at the end.
-#
-#   9 - Input validation for overlap, threshold, amount, window size
-#     and duration, with the adjustments reported rather than silent.
-#
-#   10 - Pitch mode reports how many windows were excluded for having
-#     no defined F0, and says so plainly when the dictionary ends up
-#     empty because of it. (A voiced-fraction feature would serve
-#     percussive material better; that is a model change, not a fix,
-#     and is left for a later pass.)
-#
-# Changelog v0.5 (2026):
-#   - FIX (audible): output segments were rectangular and plain-
-#     Concatenated -- a discontinuity CLICK at every segment
-#     boundary, on every preset. v0.5 applies 2 ms raised-cosine
-#     edge fades to each varied segment and joins with
-#     Concatenate-with-overlap (2 ms crossfades). (v0.6: the
-#     per-segment fades were the double-envelope bug above.)
-#   - FIX: Correlation and Cosine read feature1 alone; both metrics
-#     now average per-feature relative distances over both.
-#   - FIX: Spectrum analysis used a hardcoded 5000 Hz scale for
-#     similarity/pruning; now sample_rate / 2.
-#   - FIX: the time-stretch duration-tier point now sits at the
-#     segment's own midpoint.
-#
-# Changelog v0.4:
-#   - Fix (Spectral filter, variation method 4): two bugs.
-#     (a) v0.3 attenuated frequencies BELOW the cutoff
-#     (high-pass), even though "Spectral filter" with a
-#     "cutoff" parameter implies low-pass. Renamed option
-#     to "Spectral lowpass" and inverted the comparison.
-#     (b) `varied_segment = To Sound` on a Spectrum returns
-#     a Sound padded to the next power of 2 above 2x duration.
-#     v0.3 didn't trim back, producing segments that were
-#     ~2x as long as expected and concatenating into a
-#     wrong-length output. Fixed with Extract part to the
-#     original segment duration.
-#   - Fix (Granular shuffle, variation method 6): v0.3's
-#     `variation_amount` was ignored — every run produced the
-#     same character of shuffle. v0.4 uses variation_amount
-#     to control the maximum displacement of each grain from
-#     its original position (0 = no displacement, identity;
-#     1 = unrestricted shuffle). Now the parameter does
-#     what its name implies.
-#   - Speed: dictionary now stored as parallel arrays
-#     (pairLeft#, pairRight#, pairDist#) instead of a Praat
-#     Table with Append row + Set value per pair. The Table
-#     is still built for visualization compatibility, but the
-#     output loop uses arrays. ~10-50x speedup on dictionary
-#     construction and lookup.
-#   - Sweep now uses feature2 as a secondary acceptance check.
-#     v0.3 sorted by feature1 and pruned only on feature1 distance,
-#     so two windows with identical mean-F0 but very different
-#     vibrato (stdev_F0) were reported as similar. v0.4 still
-#     sorts by feature1 (preserving the O(n log n) advantage),
-#     but the similarity check now uses both features in the
-#     distance calculation as before — and the early-termination
-#     comparison properly accounts for feature2's potential
-#     contribution. False positives caused by stdev mismatch
-#     are now correctly excluded.
-#   - NEW: Output_mode form parameter. Three options:
-#       Random   - v0.3 behavior (random pick from dictionary)
-#       Chain    - follow similarity chains for cohesion
-#       Hybrid   - default. Chain for ~3 windows, then jump.
-#     Hybrid produces audibly recurring patterns without
-#     getting stuck in dead-end loops on sparse dictionaries.
-#   - Visualization rewritten to suite 8x8 standard with title
-#     bar + metadata subtitle, aligned panel titles, and a
-#     proper summary stats bar.
-#   - Header description rewrites the LZ framing honestly:
-#     this is feature-similarity-driven concatenation, not
-#     Lempel-Ziv compression. Filename unchanged.
-# Changelog v0.3:
-#   - Fixed Formula variable expansion
-#   - Fixed PitchTier multiplication
-#   - Added preset name to output
+#   - CRITICAL: chosen window and rendered audio were different windows
+#     (sorted/original index aliasing). CRITICAL: double envelope at
+#     every join. Plus exact output duration, honest metric names,
+#     O(n) pair allocation, temporal-separation rule, granular-shuffle
+#     fixes, seeding and input validation.
+# Changelog v0.5 / v0.4 / v0.3:
+#   - Click removal at joins, spectral-lowpass direction and trimming,
+#     granular amount actually used, array-based dictionary, output
+#     modes, formula-expansion and PitchTier fixes.
 # ============================================================
 
 # === Check Input ===
-if numberOfSelected("Sound") <> 1
+if numberOfSelected ("Sound") <> 1
     exitScript: "Please select exactly one Sound object"
 endif
 
-original_sound = selected("Sound")
-sound_name$ = selected$("Sound")
+original_input = selected ("Sound")
+sound_name$ = selected$ ("Sound")
 
-form Feature-Similarity Audio Variations v0.7
+form Lempel-Ziv Audio Variations v0.8
     optionmenu Preset: 1
         option Custom
         option Subtle Texture
@@ -193,18 +185,20 @@ form Feature-Similarity Audio Variations v0.7
         option Spectral Morph
         option Glitch Variations
         option Ambient Drift
+        option Faithful Re-decode (test)
     optionmenu Analysis_type: 1
         option Pitch
         option Spectrum
         option Intensity
     positive Window_size_s 0.1
     real Overlap 0.5
-    positive Similarity_threshold 0.8
-    optionmenu Distance_metric: 1
-        option Euclidean
-        option Mean relative difference
-        option Mean magnitude-ratio difference
-    real Min_separation_s -1
+    integer Alphabet_size 12
+    optionmenu Generation_mode: 2
+        option Parse and substitute (LZ78 re-decode)
+        option Incremental parsing (LZ78 continuation)
+        option LZ77 copy and deviate
+    real Novelty 0.35
+    integer Max_copy_windows 8
     optionmenu Variation_method: 1
         option Pitch shift
         option Time stretch
@@ -212,21 +206,21 @@ form Feature-Similarity Audio Variations v0.7
         option Spectral lowpass
         option Reverse
         option Granular shuffle
+        option None
     real Variation_amount 0.5
     positive Output_duration_s 10
-    optionmenu Output_mode: 3
-        option Random (incoherent scatter)
-        option Chain (follow similarity links)
-        option Hybrid (chain ~3, then jump)
     integer Random_seed 0
     boolean Draw_visualization 1
     boolean Play_result 1
 endform
 
-# Min_separation_s: minimum distance in time between the two windows of
-# a dictionary pair. -1 means "one window length", which admits only
-# pairs that do not overlap at all. 0 restores the v0.5 behaviour, where
-# adjacent windows sharing most of their samples counted as recurrences.
+# Novelty is the single "how far from the source" control:
+#   mode 1 - probability that a phrase is replaced by another
+#            dictionary phrase of the same length
+#   mode 2 - probability of escaping to the root of the trie, i.e.
+#            abandoning the current context and starting a new phrase
+#   mode 3 - probability of emitting a literal that breaks the copy
+# Novelty 0 in mode 1 decodes the source; use it to verify the encoding.
 
 # === Apply Presets ===
 if preset = 2
@@ -234,63 +228,78 @@ if preset = 2
     analysis_type = 1
     window_size_s = 0.15
     overlap = 0.6
-    similarity_threshold = 0.85
-    distance_metric = 1
+    alphabet_size = 10
+    generation_mode = 2
+    novelty = 0.25
+    max_copy_windows = 8
     variation_method = 1
     variation_amount = 0.3
-    output_mode = 3
     presetName$ = "SubtleTexture"
 elsif preset = 3
     # Rhythmic Shuffle
     analysis_type = 3
     window_size_s = 0.08
     overlap = 0.4
-    similarity_threshold = 0.75
-    distance_metric = 1
+    alphabet_size = 8
+    generation_mode = 3
+    novelty = 0.45
+    max_copy_windows = 6
     variation_method = 6
     variation_amount = 0.6
-    output_mode = 3
     presetName$ = "RhythmicShuffle"
 elsif preset = 4
     # Spectral Morph
     analysis_type = 2
     window_size_s = 0.12
     overlap = 0.5
-    similarity_threshold = 0.8
-    distance_metric = 3
+    alphabet_size = 14
+    generation_mode = 1
+    novelty = 0.5
+    max_copy_windows = 8
     variation_method = 4
     variation_amount = 0.5
-    output_mode = 2
     presetName$ = "SpectralMorph"
 elsif preset = 5
     # Glitch Variations
     analysis_type = 2
     window_size_s = 0.05
     overlap = 0.3
-    similarity_threshold = 0.7
-    distance_metric = 1
+    alphabet_size = 16
+    generation_mode = 3
+    novelty = 0.8
+    max_copy_windows = 4
     variation_method = 5
     variation_amount = 0.8
-    output_mode = 1
     presetName$ = "Glitch"
 elsif preset = 6
     # Ambient Drift
     analysis_type = 1
     window_size_s = 0.2
     overlap = 0.7
-    similarity_threshold = 0.9
-    distance_metric = 2
+    alphabet_size = 8
+    generation_mode = 2
+    novelty = 0.15
+    max_copy_windows = 12
     variation_method = 2
     variation_amount = 0.4
-    output_mode = 2
     presetName$ = "AmbientDrift"
+elsif preset = 7
+    # Faithful Re-decode - decodes the LZ encoding with no substitution
+    # and no variation. The output should be the source. This preset
+    # exists to make the encoding falsifiable by ear.
+    analysis_type = 2
+    window_size_s = 0.05
+    overlap = 0.5
+    alphabet_size = 20
+    generation_mode = 1
+    novelty = 0
+    max_copy_windows = 8
+    variation_method = 7
+    variation_amount = 0
+    presetName$ = "Redecode"
 else
     presetName$ = "Custom"
 endif
-
-selectObject: original_sound
-sample_rate = Get sampling frequency
-total_duration = Get total duration
 
 # === Resolve display names ===
 if analysis_type = 1
@@ -311,20 +320,25 @@ elsif variation_method = 4
     variation_name$ = "Lowpass"
 elsif variation_method = 5
     variation_name$ = "Reverse"
-else
+elsif variation_method = 6
     variation_name$ = "Granular"
+else
+    variation_name$ = "None"
 endif
 
-if output_mode = 1
-    output_mode_name$ = "Random"
-elsif output_mode = 2
-    output_mode_name$ = "Chain"
+if generation_mode = 1
+    mode_name$ = "Parse+substitute"
+    mode_long$ = "LZ78 parse, phrase substitution"
+elsif generation_mode = 2
+    mode_name$ = "Incremental parsing"
+    mode_long$ = "LZ78 trie continuation, variable order"
 else
-    output_mode_name$ = "Hybrid"
+    mode_name$ = "LZ77 copy+deviate"
+    mode_long$ = "LZ77 sliding window, offset/length/literal"
 endif
 
 # ============================================================
-# VALIDATION  (v0.6 fix 9)
+# VALIDATION
 # ============================================================
 warnLines$ = ""
 
@@ -336,17 +350,17 @@ if overlap > 0.95
     overlap = 0.95
     warnLines$ = warnLines$ + "  ! Overlap >= 1 gives a zero or negative hop -> capped at 0.95" + newline$
 endif
-if similarity_threshold <= 0
-    similarity_threshold = 0.01
-    warnLines$ = warnLines$ + "  ! Similarity_threshold <= 0 -> 0.01" + newline$
+if novelty < 0
+    novelty = 0
+    warnLines$ = warnLines$ + "  ! Novelty < 0 -> 0" + newline$
 endif
-if similarity_threshold > 1
-    similarity_threshold = 1
-    warnLines$ = warnLines$ + "  ! Similarity_threshold > 1 -> 1" + newline$
+if novelty > 1
+    novelty = 1
+    warnLines$ = warnLines$ + "  ! Novelty > 1 -> 1" + newline$
 endif
 if variation_amount < 0
     variation_amount = 0
-    warnLines$ = warnLines$ + "  ! Variation_amount < 0 (negative sd / gain) -> 0" + newline$
+    warnLines$ = warnLines$ + "  ! Variation_amount < 0 -> 0" + newline$
 endif
 if variation_amount > 1
     variation_amount = 1
@@ -360,36 +374,64 @@ if output_duration_s <= 0
     output_duration_s = 1
     warnLines$ = warnLines$ + "  ! Output_duration_s <= 0 -> 1 s" + newline$
 endif
-
-# -1 means one window length: only non-overlapping windows may pair
-if min_separation_s < 0
-    min_separation_s = window_size_s
+if alphabet_size < 2
+    alphabet_size = 2
+    warnLines$ = warnLines$ + "  ! Alphabet_size < 2 -> 2" + newline$
+endif
+if alphabet_size > 64
+    alphabet_size = 64
+    warnLines$ = warnLines$ + "  ! Alphabet_size > 64 -> 64 (LZ needs recurrence; a large alphabet prevents it)" + newline$
+endif
+if max_copy_windows < 1
+    max_copy_windows = 1
+    warnLines$ = warnLines$ + "  ! Max_copy_windows < 1 -> 1" + newline$
 endif
 
-# v0.6 fix 8: reproducibility. v0.5 had no seed at all, though window
-# choice, chain steps, pitch shift, stretch, reverse and grain
-# displacement are all random.
+# v0.6 fix 8: reproducibility.
 if random_seed > 0
     random_initializeWithSeedUnsafelyButPredictably (random_seed)
-    seedLabel$ = string$(random_seed)
+    seedLabel$ = string$ (random_seed)
 else
     random_initializeSafelyAndUnpredictably ()
     seedLabel$ = "unpredictable"
 endif
 
+# ============================================================
+# v0.8 fix 8: mono. To Manipulation / To Spectrum / Concatenate all
+# fail on a multi-channel Sound.
+# ============================================================
+selectObject: original_input
+nInputCh = Get number of channels
+madeMono = 0
+if nInputCh > 1
+    original_sound = Convert to mono
+    Rename: sound_name$ + "_mono"
+    madeMono = 1
+else
+    original_sound = original_input
+endif
+
+selectObject: original_sound
+sample_rate = Get sampling frequency
+total_duration = Get total duration
+
 # === Info ===
 clearinfo
-writeInfoLine: "=== Feature-Similarity Audio Variations v0.7 ==="
-appendInfoLine: "Source: ", sound_name$, " (", fixed$(total_duration, 2), " s)"
+writeInfoLine: "=== Lempel-Ziv Audio Variations v0.8 ==="
+appendInfoLine: "Source: ", sound_name$, " (", fixed$ (total_duration, 2), " s)"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
 appendInfoLine: "Analysis: ", analysis_name$
 appendInfoLine: "Window: ", window_size_s, " s | Overlap: ", overlap * 100, "%"
-appendInfoLine: "Similarity threshold: ", similarity_threshold
+appendInfoLine: "Alphabet: ", alphabet_size, " codewords requested"
+appendInfoLine: "Generation: ", mode_name$, " (", mode_long$, ")"
+appendInfoLine: "Novelty: ", novelty
 appendInfoLine: "Variation: ", variation_name$, " (amount=", variation_amount, ")"
-appendInfoLine: "Output mode: ", output_mode_name$
 appendInfoLine: "Seed: ", seedLabel$
-appendInfoLine: "Min pair separation: ", fixed$(min_separation_s * 1000, 1), " ms"
+if madeMono
+    appendInfoLine: ""
+    appendInfoLine: "  Input had ", nInputCh, " channels; converted to mono for analysis and rendering."
+endif
 if warnLines$ <> ""
     appendInfoLine: ""
     appendInfoLine: "Adjustments:"
@@ -398,651 +440,1066 @@ endif
 appendInfoLine: ""
 
 # === Calculate Windows ===
-hop_size = window_size_s * (1 - overlap)
-num_windows = floor((total_duration - window_size_s) / hop_size) + 1
+# v0.8: quantize the window and hop to WHOLE SAMPLES. With a
+# fractional hop (0.025 s at 44100 = 1102.5 samples) every second
+# window boundary lands on the opposite sub-sample phase, Extract part
+# rounds, and the error accumulates - measured 4 samples of drift over
+# 6 s before this change, with every window still correlating 1.0000 at
+# its own lag. Integer-sample boundaries fall midway between sample
+# centres, where Extract part is exact, so the tiling is exact too.
+win_samples = round (window_size_s * sample_rate)
+if win_samples < 4
+    win_samples = 4
+endif
+hop_samples = round (window_size_s * (1 - overlap) * sample_rate)
+if hop_samples < 1
+    hop_samples = 1
+endif
+if hop_samples > win_samples
+    hop_samples = win_samples
+endif
+quantWarn$ = ""
+if abs (win_samples / sample_rate - window_size_s) > 1e-9
+    quantWarn$ = "  Window quantized to " + fixed$ (1000 * win_samples / sample_rate, 4) + " ms (" + string$ (win_samples) + " samples)"
+endif
+window_size_s = win_samples / sample_rate
+hop_size = hop_samples / sample_rate
+overlap = 1 - hop_samples / win_samples
 
-if num_windows < 2
-    exitScript: "Source too short for the chosen window/overlap settings."
+num_windows = floor ((total_duration - window_size_s) / hop_size) + 1
+
+if num_windows < 4
+    exitScript: "Source too short for the chosen window/overlap settings (need at least 4 windows to parse)."
 endif
 
 appendInfoLine: "Windows: ", num_windows
-appendInfoLine: ""
+if quantWarn$ <> ""
+    appendInfoLine: quantWarn$, ", hop ", hop_samples,
+        ... " samples, effective overlap ", fixed$ (overlap, 4)
+endif
 
-# === STEP 1: Extract Features ===
+# ============================================================
+# STEP 1: Extract features  (unchanged from v0.7)
+# ============================================================
+appendInfoLine: ""
 appendInfoLine: "Extracting features..."
 
-features = Create Table with column names: "features", num_windows, "start end index"
+startByOrig# = zero# (num_windows)
+endByOrig# = zero# (num_windows)
+featOrig1# = zero# (num_windows)
+featOrig2# = zero# (num_windows)
 
 for i to num_windows
-    start_time = (i - 1) * hop_size
-    end_time = start_time + window_size_s
-    
-    selectObject: features
-    Set numeric value: i, "start", start_time
-    Set numeric value: i, "end", end_time
-    Set numeric value: i, "index", i
+    startByOrig# [i] = (i - 1) * hop_size
+    endByOrig# [i] = (i - 1) * hop_size + window_size_s
 endfor
 
 selectObject: original_sound
 
 if analysis_type = 1
-    # PITCH ANALYSIS
     pitch = To Pitch: 0, 75, 600
-    
     for i to num_windows
-        selectObject: features
-        start_time = Get value: i, "start"
-        end_time = Get value: i, "end"
-        
         selectObject: pitch
-        mean_f0 = Get mean: start_time, end_time, "Hertz"
-        stdev_f0 = Get standard deviation: start_time, end_time, "Hertz"
-        
-        selectObject: features
-        if i = 1
-            Append column: "mean_f0"
-            Append column: "stdev_f0"
-        endif
-        Set numeric value: i, "mean_f0", mean_f0
-        Set numeric value: i, "stdev_f0", stdev_f0
+        featOrig1# [i] = Get mean: startByOrig# [i], endByOrig# [i], "Hertz"
+        featOrig2# [i] = Get standard deviation: startByOrig# [i], endByOrig# [i], "Hertz"
     endfor
-    
 elsif analysis_type = 2
-    # SPECTRAL ANALYSIS
     for i to num_windows
-        selectObject: features
-        start_time = Get value: i, "start"
-        end_time = Get value: i, "end"
-        
         selectObject: original_sound
-        segment = Extract part: start_time, end_time, "rectangular", 1, "no"
+        segment = Extract part: startByOrig# [i], endByOrig# [i], "rectangular", 1, "no"
         spectrum = To Spectrum: "yes"
-        
-        cog = Get centre of gravity: 2
-        stdev = Get standard deviation: 2
-        
+        featOrig1# [i] = Get centre of gravity: 2
+        featOrig2# [i] = Get standard deviation: 2
         removeObject: segment, spectrum
-        
-        selectObject: features
-        if i = 1
-            Append column: "spectral_cog"
-            Append column: "spectral_stdev"
-        endif
-        Set numeric value: i, "spectral_cog", cog
-        Set numeric value: i, "spectral_stdev", stdev
     endfor
-    
 else
-    # INTENSITY ANALYSIS
     intensity = To Intensity: 100, 0, "yes"
-    
     for i to num_windows
-        selectObject: features
-        start_time = Get value: i, "start"
-        end_time = Get value: i, "end"
-        
         selectObject: intensity
-        mean_int = Get mean: start_time, end_time, "energy"
-        max_int = Get maximum: start_time, end_time, "Parabolic"
-        
-        selectObject: features
-        if i = 1
-            Append column: "mean_intensity"
-            Append column: "max_intensity"
-        endif
-        Set numeric value: i, "mean_intensity", mean_int
-        Set numeric value: i, "max_intensity", max_int
+        featOrig1# [i] = Get mean: startByOrig# [i], endByOrig# [i], "energy"
+        featOrig2# [i] = Get maximum: startByOrig# [i], endByOrig# [i], "Parabolic"
     endfor
 endif
 
-# === Load features into arrays ===
-appendInfoLine: "Loading features..."
-
-# v0.6 CRITICAL 1: TWO separate sets of arrays.
-#   startByOrig#/endByOrig#  - indexed by ORIGINAL window number, and
-#                              never touched by the sort. The renderer
-#                              and the visualization use only these.
-#   sortedF1#/sortedF2#/sortedOrig# - feature-sorted, used only by the
-#                              sweep.
-# v0.5 had one set, reloaded in sorted order after the sort, while the
-# dictionary went on storing original indices - so the renderer looked
-# up sorted row N for original window N. Measured at the defaults: all
-# 119 windows moved under the sort and 63 of 63 rendered segments
-# played the wrong window.
-selectObject: features
-startByOrig# = zero#(num_windows)
-endByOrig# = zero#(num_windows)
-featOrig1# = zero#(num_windows)
-featOrig2# = zero#(num_windows)
-
-for i to num_windows
-    selectObject: features
-    oi = Get value: i, "index"
-    startByOrig#[oi] = Get value: i, "start"
-    endByOrig#[oi] = Get value: i, "end"
-
-    if analysis_type = 1
-        featOrig1#[oi] = Get value: i, "mean_f0"
-        featOrig2#[oi] = Get value: i, "stdev_f0"
-    elsif analysis_type = 2
-        featOrig1#[oi] = Get value: i, "spectral_cog"
-        featOrig2#[oi] = Get value: i, "spectral_stdev"
-    else
-        featOrig1#[oi] = Get value: i, "mean_intensity"
-        featOrig2#[oi] = Get value: i, "max_intensity"
-    endif
-endfor
-
-# v0.6 fix 10: report what Pitch mode had to discard.
-if analysis_type = 1
-    nUnvoiced = 0
-    for w to num_windows
-        if featOrig1#[w] = undefined
-            nUnvoiced += 1
-        endif
-    endfor
-    if nUnvoiced > 0
-        appendInfoLine: "  ", nUnvoiced, "/", num_windows,
-            ... " windows have no defined F0 and cannot enter the dictionary"
-    endif
-    if nUnvoiced = num_windows
-        appendInfoLine: "  ! No window is voiced: the similarity mechanism"
-        appendInfoLine: "    cannot run and output falls back to sequential order."
-        appendInfoLine: "    Try Spectrum or Intensity analysis for this material."
-    endif
-endif
-
-# Legacy names kept for the visualization, which reads by original index
-start_times# = startByOrig#
-end_times# = endByOrig#
+# v0.8 fix 7: no Table, no sort, one indexing scheme. The v0.6 CRITICAL 1
+# aliasing bug was only possible because two differently-ordered views of
+# the same windows existed at once. There is now one.
 feature1# = featOrig1#
 feature2# = featOrig2#
 
-# === Sort by feature1 for sweep pruning ===
-appendInfoLine: "Sorting for efficient comparison..."
-
-if analysis_type = 1
-    selectObject: features
-    Sort rows: "mean_f0"
-elsif analysis_type = 2
-    selectObject: features
-    Sort rows: "spectral_cog"
-else
-    selectObject: features
-    Sort rows: "mean_intensity"
-endif
-
-# Sorted views - these exist ONLY for the sweep
-sortedOrig# = zero#(num_windows)
-sortedF1# = zero#(num_windows)
-sortedF2# = zero#(num_windows)
-sortedStart# = zero#(num_windows)
-
-for i to num_windows
-    selectObject: features
-    sortedOrig#[i] = Get value: i, "index"
-    sortedStart#[i] = Get value: i, "start"
-
-    if analysis_type = 1
-        sortedF1#[i] = Get value: i, "mean_f0"
-        sortedF2#[i] = Get value: i, "stdev_f0"
-    elsif analysis_type = 2
-        sortedF1#[i] = Get value: i, "spectral_cog"
-        sortedF2#[i] = Get value: i, "spectral_stdev"
-    else
-        sortedF1#[i] = Get value: i, "mean_intensity"
-        sortedF2#[i] = Get value: i, "max_intensity"
+nUndefWin = 0
+for w to num_windows
+    if featOrig1# [w] = undefined
+        nUndefWin = nUndefWin + 1
     endif
 endfor
+if nUndefWin > 0
+    appendInfoLine: "  ", nUndefWin, "/", num_windows,
+        ... " windows have no defined ", analysis_name$, " value -> assigned their own symbol"
+endif
+if nUndefWin >= num_windows - 2
+    exitScript: "Almost no window has a defined " + analysis_name$ + " value. Try Spectrum or Intensity analysis for this material."
+endif
 
-# === STEP 2: Build Dictionary  (arrays + Table for viz) ===
+# ============================================================
+# STEP 2 (NEW): Symbolize - vector-quantize the windows
+# This is the step that turns the signal into a STRING. Without it
+# there is nothing for Lempel-Ziv to parse.
+# ============================================================
 appendInfoLine: ""
-appendInfoLine: "Building similarity dictionary..."
-
-# Empty Table kept for visualization compatibility — populated at end
-dictionary = Create Table with column names: "dictionary", 0, "window_id similar_to distance"
-
-# v0.6 fix 5: the sweep runs TWICE - pass 1 counts, pass 2 fills arrays
-# sized exactly. v0.5 allocated num_windows*(num_windows-1)/2 slots in
-# each of three arrays before finding a single pair, so 10,000 windows
-# would have demanded ~50 million slots per array up front. Measured at
-# the defaults: 2778 pairs actually found against 7021 slots reserved.
-num_pairs = 0
-comparisons_made = 0
-comparisons_skipped = 0
-rejectedNear = 0
-
-if analysis_type = 1
-    max_acceptable_diff = 600 * (1 - similarity_threshold)
-    max_dist_global = 600
-elsif analysis_type = 2
-    # v0.5: spectral CoG ranges to Nyquist, not 5000 Hz
-    max_dist_global = sample_rate / 2
-    max_acceptable_diff = max_dist_global * (1 - similarity_threshold)
-else
-    max_acceptable_diff = 100 * (1 - similarity_threshold)
-    max_dist_global = 100
-endif
-
-# metrics 2/3 average per-feature relative distances, so the feature1
-# term alone may reach twice the threshold while the average passes
-if distance_metric <> 1
-    max_acceptable_diff = max_acceptable_diff * 2
-endif
+appendInfoLine: "Quantizing windows into a symbol alphabet..."
 
 stopwatch
 
-for pass to 2
-    if pass = 2
-        # exact allocation, now that the count is known
-        allocPairs = num_pairs
-        if allocPairs < 1
-            allocPairs = 1
-        endif
-        pairLeft# = zero# (allocPairs)
-        pairRight# = zero# (allocPairs)
-        pairDist# = zero# (allocPairs)
-        num_pairs = 0
+isValid# = zero# (num_windows)
+validCount = 0
+for w to num_windows
+    if featOrig1# [w] <> undefined
+        isValid# [w] = 1
+        validCount = validCount + 1
     endif
+endfor
 
-    for i to num_windows - 1
-        f1_i = sortedF1#[i]
-        f2_i = sortedF2#[i]
-        idx_i = sortedOrig#[i]
-
-        if f1_i <> undefined
-            j = i + 1
-            innerActive = 1
-            while j <= num_windows and innerActive = 1
-                f1_j = sortedF1#[j]
-                f2_j = sortedF2#[j]
-
-                if f1_j <> undefined
-                    idx_j = sortedOrig#[j]
-
-                    primary_diff = abs(f1_j - f1_i)
-
-                    if primary_diff > max_acceptable_diff
-                        if pass = 1
-                            comparisons_skipped += (num_windows - j + 1)
-                        endif
-                        innerActive = 0
-                    else
-                        if pass = 1
-                            comparisons_made += 1
-                        endif
-
-                        f2ok = 1
-                        if f2_i = undefined or f2_j = undefined
-                            f2ok = 0
-                        endif
-
-                        if distance_metric = 1
-                            # Euclidean
-                            if f2ok
-                                dist = sqrt((f1_i - f1_j)^2 + (f2_i - f2_j)^2)
-                            else
-                                dist = abs(f1_i - f1_j)
-                            endif
-                            max_dist = max_dist_global
-                        elsif distance_metric = 2
-                            # v0.6 fix 4: mean RELATIVE difference. v0.5
-                            # called this "Correlation"; it is not one -
-                            # no covariance is computed anywhere, and the
-                            # abs() discards sign, which matters for the
-                            # negative values intensity analysis yields.
-                            d1rel = abs(f1_i - f1_j) / max(abs(f1_i), abs(f1_j) + 0.0001)
-                            if f2ok
-                                d2rel = abs(f2_i - f2_j) / max(abs(f2_i), abs(f2_j) + 0.0001)
-                                dist = 0.5 * (d1rel + d2rel)
-                            else
-                                dist = d1rel
-                            endif
-                            max_dist = 1
-                        else
-                            # v0.6 fix 4: mean MAGNITUDE-RATIO difference.
-                            # v0.5 called this "Cosine"; for positive
-                            # values it reduces to (max-min)/max, the same
-                            # ordering as metric 2. A real cosine needs the
-                            # features treated as one vector on comparable
-                            # scales.
-                            d1rel = 1 - (min(abs(f1_i), abs(f1_j)) / (max(abs(f1_i), abs(f1_j)) + 0.0001))
-                            if f2ok
-                                d2rel = 1 - (min(abs(f2_i), abs(f2_j)) / (max(abs(f2_i), abs(f2_j)) + 0.0001))
-                                dist = 0.5 * (d1rel + d2rel)
-                            else
-                                dist = d1rel
-                            endif
-                            max_dist = 1
-                        endif
-
-                        similarity = 1 - (dist / max_dist)
-
-                        if similarity >= similarity_threshold
-                            # v0.6 fix 6: windows that overlap in time are
-                            # not recurrences. At 70% overlap two adjacent
-                            # windows share 70% of their samples and match
-                            # trivially - measured 19.8% of the Ambient
-                            # Drift dictionary before this filter.
-                            sepOK = 1
-                            if min_separation_s > 0
-                                if abs(idx_i - idx_j) * hop_size < min_separation_s
-                                    sepOK = 0
-                                endif
-                            endif
-                            if sepOK
-                                num_pairs += 1
-                                if pass = 2
-                                    pairLeft#[num_pairs] = idx_i
-                                    pairRight#[num_pairs] = idx_j
-                                    pairDist#[num_pairs] = dist
-                                endif
-                            elsif pass = 1
-                                rejectedNear += 1
-                            endif
-                        endif
-                    endif
+# min-max normalization over defined values only
+minA = undefined
+maxA = undefined
+minB = undefined
+maxB = undefined
+for w to num_windows
+    if isValid# [w] = 1
+        v = featOrig1# [w]
+        if minA = undefined
+            minA = v
+            maxA = v
+        else
+            if v < minA
+                minA = v
+            endif
+            if v > maxA
+                maxA = v
+            endif
+        endif
+        u = featOrig2# [w]
+        if u <> undefined
+            if minB = undefined
+                minB = u
+                maxB = u
+            else
+                if u < minB
+                    minB = u
                 endif
-                j += 1
-            endwhile
+                if u > maxB
+                    maxB = u
+                endif
+            endif
+        endif
+    endif
+endfor
+if maxA - minA < 1e-12
+    maxA = minA + 1
+endif
+if minB = undefined
+    minB = 0
+    maxB = 1
+endif
+if maxB - minB < 1e-12
+    maxB = minB + 1
+endif
+
+vIdx# = zero# (validCount)
+vx# = zero# (validCount)
+vy# = zero# (validCount)
+vn = 0
+for w to num_windows
+    if isValid# [w] = 1
+        vn = vn + 1
+        vIdx# [vn] = w
+        vx# [vn] = (featOrig1# [w] - minA) / (maxA - minA)
+        if featOrig2# [w] = undefined
+            vy# [vn] = 0.5
+        else
+            vy# [vn] = (featOrig2# [w] - minB) / (maxB - minB)
+        endif
+    endif
+endfor
+
+kClusters = alphabet_size
+if kClusters > validCount
+    kClusters = validCount
+endif
+if kClusters < 2
+    kClusters = 2
+endif
+
+# --- k-means++ seeding ---
+cx# = zero# (kClusters)
+cy# = zero# (kClusters)
+d2# = zero# (validCount)
+
+firstPick = randomInteger (1, validCount)
+cx# [1] = vx# [firstPick]
+cy# [1] = vy# [firstPick]
+for i to validCount
+    d2# [i] = (vx# [i] - cx# [1]) ^ 2 + (vy# [i] - cy# [1]) ^ 2
+endfor
+
+for c from 2 to kClusters
+    totD = 0
+    for i to validCount
+        totD = totD + d2# [i]
+    endfor
+    if totD <= 0
+        pick = randomInteger (1, validCount)
+    else
+        target = randomUniform (0, totD)
+        acc = 0
+        pick = validCount
+        found = 0
+        for i to validCount
+            if found = 0
+                acc = acc + d2# [i]
+                if acc >= target
+                    pick = i
+                    found = 1
+                endif
+            endif
+        endfor
+    endif
+    cx# [c] = vx# [pick]
+    cy# [c] = vy# [pick]
+    for i to validCount
+        dd = (vx# [i] - cx# [c]) ^ 2 + (vy# [i] - cy# [c]) ^ 2
+        if dd < d2# [i]
+            d2# [i] = dd
         endif
     endfor
 endfor
 
-dictBuildTime = stopwatch
-appendInfoLine: "  Dictionary built in ", fixed$(dictBuildTime, 3), " s"
+# --- Lloyd iteration ---
+assign# = zero# (validCount)
+kmIters = 0
+kmChanged = 1
+while kmChanged = 1 and kmIters < 40
+    kmChanged = 0
+    kmIters = kmIters + 1
 
-# Populate the visualization Table (one-shot, after array building)
-selectObject: dictionary
-for p to num_pairs
-    Append row
-    Set numeric value: p, "window_id", pairLeft#[p]
-    Set numeric value: p, "similar_to", pairRight#[p]
-    Set numeric value: p, "distance", pairDist#[p]
-endfor
-
-appendInfoLine: "Found ", num_pairs, " similar pattern pairs"
-if rejectedNear > 0
-    appendInfoLine: "  (", rejectedNear,
-        ... " above-threshold pairs rejected as overlapping in time)"
-endif
-appendInfoLine: "Comparisons: ", comparisons_made, " made, ", comparisons_skipped, " skipped"
-
-total_possible = (num_windows * (num_windows - 1)) / 2
-speedup = 1
-if comparisons_made > 0
-    speedup = total_possible / comparisons_made
-    appendInfoLine: "Pruning speedup: ", fixed$(speedup, 2), "x vs naive O(n^2)"
-endif
-
-# ============================================================
-# Build "neighbor list" for chain mode
-# windowNeighborCount#[w] = how many similar partners window w has
-# windowNeighbor#[w][k]  = the k-th partner of window w
-# ============================================================
-windowNeighborCount# = zero# (num_windows)
-
-# First pass: count neighbors per window
-for p to num_pairs
-    pL = pairLeft#[p]
-    pR = pairRight#[p]
-    if pL >= 1 and pL <= num_windows
-        windowNeighborCount#[pL] = windowNeighborCount#[pL] + 1
-    endif
-    if pR >= 1 and pR <= num_windows
-        windowNeighborCount#[pR] = windowNeighborCount#[pR] + 1
-    endif
-endfor
-
-# Find max neighbor count to allocate the inner array
-maxNeighbors = 1
-for w to num_windows
-    if windowNeighborCount#[w] > maxNeighbors
-        maxNeighbors = windowNeighborCount#[w]
-    endif
-endfor
-
-# Allocate a flat 1D array as a 2D table: windowNeighbor[w, k] at index (w-1)*maxNeighbors + k
-totalNeighborSlots = num_windows * maxNeighbors
-windowNeighbor# = zero# (totalNeighborSlots)
-windowNeighborFill# = zero# (num_windows)
-
-for p to num_pairs
-    pL = pairLeft#[p]
-    pR = pairRight#[p]
-    if pL >= 1 and pL <= num_windows
-        windowNeighborFill#[pL] = windowNeighborFill#[pL] + 1
-        slotL = (pL - 1) * maxNeighbors + windowNeighborFill#[pL]
-        windowNeighbor#[slotL] = pR
-    endif
-    if pR >= 1 and pR <= num_windows
-        windowNeighborFill#[pR] = windowNeighborFill#[pR] + 1
-        slotR = (pR - 1) * maxNeighbors + windowNeighborFill#[pR]
-        windowNeighbor#[slotR] = pL
-    endif
-endfor
-
-# === STEP 3: Generate Output ===
-appendInfoLine: ""
-appendInfoLine: "Creating variations..."
-
-# v0.5: headroom for the 2 ms crossfade shrink at every join;
-# the trim below lands the exact target
-xfadeSec = 0.002
-effAdvance = window_size_s - xfadeSec
-if effAdvance < 0.005
-    effAdvance = 0.005
-endif
-# v0.6 fix 3: v0.5 assumed each segment stayed window_size_s long,
-# which Time stretch (0.5x-2x) and Granular shuffle both break, so the
-# output could stop short with no way to notice. The cap below is only
-# an upper bound; the loop stops once the accumulated duration passes
-# the target, and the result is trimmed - or padded - to land exactly.
-num_output_windows = ceiling(output_duration_s / effAdvance) + 1
-if num_output_windows < 1
-    num_output_windows = 1
-endif
-maxOutputWindows = num_output_windows * 4 + 16
-accumDur = 0
-nSegs = 0
-
-segment_ids# = zero#(maxOutputWindows)
-used_windows# = zero#(maxOutputWindows)
-
-# Chain-mode state
-chainCurrent = 0
-chainStepsRemaining = 0
-
-for out_i to maxOutputWindows
-  if accumDur < output_duration_s + xfadeSec
-    if out_i mod 20 = 0
-        appendInfoLine: "  ", floor(min(100, 100 * accumDur / output_duration_s)), "%"
-    endif
-    
-    # ---- Pick window_idx based on output_mode ----
-    if num_pairs = 0
-        # No similar pairs found — fall back to sequential pick
-        window_idx = ((out_i - 1) mod num_windows) + 1
-    elsif output_mode = 1
-        # RANDOM (v0.3 behavior)
-        random_pair = randomInteger(1, num_pairs)
-        if randomUniform(0, 1) > 0.5
-            window_idx = pairLeft#[random_pair]
-        else
-            window_idx = pairRight#[random_pair]
+    for i to validCount
+        bestC = 1
+        bestD = (vx# [i] - cx# [1]) ^ 2 + (vy# [i] - cy# [1]) ^ 2
+        for c from 2 to kClusters
+            dd = (vx# [i] - cx# [c]) ^ 2 + (vy# [i] - cy# [c]) ^ 2
+            if dd < bestD
+                bestD = dd
+                bestC = c
+            endif
+        endfor
+        if assign# [i] <> bestC
+            assign# [i] = bestC
+            kmChanged = 1
         endif
-    elsif output_mode = 2 or output_mode = 3
-        # CHAIN or HYBRID
-        # Both follow similarity links; HYBRID resets chain after ~3 steps
-        if chainCurrent = 0 or windowNeighborCount#[chainCurrent] = 0 or chainStepsRemaining = 0
-            # Start new chain: random pick from any window with neighbors
-            chainAttempts = 0
-            done = 0
-            while done = 0 and chainAttempts < 20
-                candidate = randomInteger(1, num_windows)
-                if windowNeighborCount#[candidate] > 0
-                    chainCurrent = candidate
-                    done = 1
+    endfor
+
+    sumX# = zero# (kClusters)
+    sumY# = zero# (kClusters)
+    cnt# = zero# (kClusters)
+    for i to validCount
+        a = assign# [i]
+        sumX# [a] = sumX# [a] + vx# [i]
+        sumY# [a] = sumY# [a] + vy# [i]
+        cnt# [a] = cnt# [a] + 1
+    endfor
+    for c to kClusters
+        if cnt# [c] > 0
+            cx# [c] = sumX# [c] / cnt# [c]
+            cy# [c] = sumY# [c] / cnt# [c]
+        else
+            # empty cluster: re-seed at the point worst served by its own centre
+            farI = 1
+            farD = -1
+            for i to validCount
+                a = assign# [i]
+                dd = (vx# [i] - cx# [a]) ^ 2 + (vy# [i] - cy# [a]) ^ 2
+                if dd > farD
+                    farD = dd
+                    farI = i
                 endif
-                chainAttempts = chainAttempts + 1
-            endwhile
-            if done = 0
-                # Couldn't find any window with neighbors — fall back
-                chainCurrent = randomInteger(1, num_windows)
-            endif
-            if output_mode = 3
-                # Hybrid: chain length 2-4 random
-                chainStepsRemaining = randomInteger(2, 4)
-            else
-                # Pure chain: long chain
-                chainStepsRemaining = num_output_windows
-            endif
-            window_idx = chainCurrent
-        else
-            # Step within current chain — pick a random neighbor
-            nC = windowNeighborCount#[chainCurrent]
-            if nC > 0
-                pickK = randomInteger(1, nC)
-                slot = (chainCurrent - 1) * maxNeighbors + pickK
-                next_w = windowNeighbor#[slot]
-                window_idx = next_w
-                chainCurrent = next_w
-                chainStepsRemaining = chainStepsRemaining - 1
-            else
-                # No neighbors (shouldn't happen given check above)
-                window_idx = chainCurrent
-                chainStepsRemaining = 0
+            endfor
+            cx# [c] = vx# [farI]
+            cy# [c] = vy# [farI]
+            kmChanged = 1
+        endif
+    endfor
+endwhile
+
+# --- renumber clusters by ascending feature1 centroid ---
+rankOf# = zero# (kClusters)
+taken# = zero# (kClusters)
+for r to kClusters
+    bestC = 0
+    bestV = 0
+    for c to kClusters
+        if taken# [c] = 0
+            if bestC = 0 or cx# [c] < bestV
+                bestC = c
+                bestV = cx# [c]
             endif
         endif
+    endfor
+    taken# [bestC] = 1
+    rankOf# [bestC] = r
+endfor
+ordCx# = zero# (kClusters)
+ordCy# = zero# (kClusters)
+for c to kClusters
+    ordCx# [rankOf# [c]] = cx# [c]
+    ordCy# [rankOf# [c]] = cy# [c]
+endfor
+
+symbol# = zero# (num_windows)
+for i to validCount
+    symbol# [vIdx# [i]] = rankOf# [assign# [i]]
+endfor
+
+if nUndefWin > 0
+    alphabet = kClusters + 1
+    undefSymbol = alphabet
+    for w to num_windows
+        if isValid# [w] = 0
+            symbol# [w] = undefSymbol
+        endif
+    endfor
+else
+    alphabet = kClusters
+    undefSymbol = 0
+endif
+
+# --- symbol statistics + occurrence lists ---
+symCount# = zero# (alphabet)
+for w to num_windows
+    s = symbol# [w]
+    symCount# [s] = symCount# [s] + 1
+endfor
+
+symEntropy = 0
+symUsed = 0
+for s to alphabet
+    if symCount# [s] > 0
+        symUsed = symUsed + 1
+        p = symCount# [s] / num_windows
+        symEntropy = symEntropy - p * log2 (p)
     endif
-    
-    if window_idx < 1
-        window_idx = 1
+endfor
+
+symStart# = zero# (alphabet)
+accS = 0
+for s to alphabet
+    symStart# [s] = accS
+    accS = accS + symCount# [s]
+endfor
+symWin# = zero# (num_windows)
+symFill# = zero# (alphabet)
+for w to num_windows
+    s = symbol# [w]
+    symFill# [s] = symFill# [s] + 1
+    symWin# [symStart# [s] + symFill# [s]] = w
+endfor
+
+vqTime = stopwatch
+extraSym = 0
+if nUndefWin > 0
+    extraSym = 1
+endif
+if extraSym = 1
+    appendInfoLine: "  ", kClusters, " codewords + 1 undefined symbol -> alphabet ", alphabet
+else
+    appendInfoLine: "  ", kClusters, " codewords -> alphabet ", alphabet
+endif
+appendInfoLine: "  k-means converged in ", kmIters, " iterations (", fixed$ (vqTime, 3), " s)"
+appendInfoLine: "  Symbols actually used: ", symUsed, "/", alphabet,
+    ... " | entropy ", fixed$ (symEntropy, 3), " bits (max ", fixed$ (log2 (alphabet), 3), ")"
+
+# ============================================================
+# STEP 3 (NEW): LZ78 incremental parse
+#
+# Walk the symbol stream left to right. At each step follow the trie as
+# far as it goes, then add ONE new node for the symbol that broke the
+# match. That node is a new dictionary phrase. Node depth = phrase
+# length in windows; nodeFirstWin = where the phrase first occurred, so
+# (firstWin, depth) is a contiguous stretch of source audio.
+# ============================================================
+appendInfoLine: ""
+appendInfoLine: "Parsing the symbol stream with LZ78..."
+
+stopwatch
+
+maxNodes = num_windows + 2
+nodeParent# = zero# (maxNodes)
+nodeSymbol# = zero# (maxNodes)
+nodeDepth# = zero# (maxNodes)
+nodeCount# = zero# (maxNodes)
+nodeFirstWin# = zero# (maxNodes)
+childOf# = zero# (maxNodes * alphabet)
+
+nNodes = 1
+nodeParent# [1] = 0
+nodeSymbol# [1] = 0
+nodeDepth# [1] = 0
+nodeCount# [1] = 0
+nodeFirstWin# [1] = 1
+
+maxPhrases = num_windows + 1
+phraseNode# = zero# (maxPhrases)
+phraseStart# = zero# (maxPhrases)
+phraseLen# = zero# (maxPhrases)
+nPhrases = 0
+
+t = 1
+while t <= num_windows
+    curNode = 1
+    startT = t
+    scanning = 1
+    while scanning = 1
+        if t > num_windows
+            scanning = 0
+        else
+            ch = childOf# [(curNode - 1) * alphabet + symbol# [t]]
+            if ch > 0
+                curNode = ch
+                nodeCount# [curNode] = nodeCount# [curNode] + 1
+                t = t + 1
+            else
+                scanning = 0
+            endif
+        endif
+    endwhile
+
+    if t <= num_windows
+        nNodes = nNodes + 1
+        newNode = nNodes
+        childOf# [(curNode - 1) * alphabet + symbol# [t]] = newNode
+        nodeParent# [newNode] = curNode
+        nodeSymbol# [newNode] = symbol# [t]
+        nodeDepth# [newNode] = nodeDepth# [curNode] + 1
+        nodeCount# [newNode] = 1
+        nodeFirstWin# [newNode] = startT
+        nPhrases = nPhrases + 1
+        phraseNode# [nPhrases] = newNode
+        phraseStart# [nPhrases] = startT
+        phraseLen# [nPhrases] = nodeDepth# [newNode]
+        t = t + 1
+    else
+        # stream ended inside an existing phrase: emit that node
+        if curNode > 1
+            nPhrases = nPhrases + 1
+            phraseNode# [nPhrases] = curNode
+            phraseStart# [nPhrases] = startT
+            phraseLen# [nPhrases] = num_windows - startT + 1
+        endif
     endif
-    if window_idx > num_windows
-        window_idx = num_windows
+endwhile
+
+parseTime = stopwatch
+
+# --- LZ measures ---
+lzComplexity = nPhrases
+lzNorm = undefined
+if alphabet > 1 and num_windows > 1
+    lzNorm = lzComplexity * (ln (num_windows) / ln (alphabet)) / num_windows
+endif
+maxPhraseLen = 0
+sumPhraseLen = 0
+for p to nPhrases
+    if phraseLen# [p] > maxPhraseLen
+        maxPhraseLen = phraseLen# [p]
     endif
-    
-    # v0.6 CRITICAL 1: indexed by ORIGINAL window number, in arrays the
-    # sort never touched.
-    start_time = startByOrig#[window_idx]
-    end_time = endByOrig#[window_idx]
-    
+    sumPhraseLen = sumPhraseLen + phraseLen# [p]
+endfor
+meanPhraseLen = 0
+if nPhrases > 0
+    meanPhraseLen = sumPhraseLen / nPhrases
+endif
+
+bitsRaw = num_windows * log2 (alphabet)
+bitsLZ = nPhrases * (log2 (max (2, nPhrases)) + log2 (alphabet))
+codeRatio = undefined
+if bitsLZ > 0
+    codeRatio = bitsRaw / bitsLZ
+endif
+
+appendInfoLine: "  ", nPhrases, " phrases parsed in ", fixed$ (parseTime, 3), " s"
+appendInfoLine: "  Phrase length: mean ", fixed$ (meanPhraseLen, 2),
+    ... " windows, longest ", maxPhraseLen
+appendInfoLine: "  Trie nodes: ", nNodes
+appendInfoLine: "  Lempel-Ziv complexity c(n) = ", lzComplexity
+if lzNorm <> undefined
+    appendInfoLine: "  Normalized complexity c(n)*log_A(n)/n = ", fixed$ (lzNorm, 4),
+        ... "  (-> 1 random, -> 0 repetitive)"
+endif
+if codeRatio <> undefined
+    appendInfoLine: "  Coded-size estimate: ", fixed$ (bitsLZ, 0), " vs ", fixed$ (bitsRaw, 0),
+        ... " bits (", fixed$ (codeRatio, 2), "x)"
+endif
+
+# --- depth lists, for same-length phrase substitution in mode 1 ---
+maxDepth = 1
+for n from 2 to nNodes
+    if nodeDepth# [n] > maxDepth
+        maxDepth = nodeDepth# [n]
+    endif
+endfor
+depthCount# = zero# (maxDepth)
+for n from 2 to nNodes
+    d = nodeDepth# [n]
+    depthCount# [d] = depthCount# [d] + 1
+endfor
+depthStart# = zero# (maxDepth)
+accD = 0
+for d to maxDepth
+    depthStart# [d] = accD
+    accD = accD + depthCount# [d]
+endfor
+if accD < 1
+    accD = 1
+endif
+depthNodes# = zero# (accD)
+depthFill# = zero# (maxDepth)
+for n from 2 to nNodes
+    d = nodeDepth# [n]
+    depthFill# [d] = depthFill# [d] + 1
+    depthNodes# [depthStart# [d] + depthFill# [d]] = n
+endfor
+
+# ============================================================
+# STEP 4 (NEW): Generate a token stream from the parse
+#
+# Every mode emits RUNS: (source window, length in windows). A run is a
+# contiguous stretch of the source, so it is extracted in one call and
+# has no internal splices. Only run boundaries are crossfaded.
+# ============================================================
+appendInfoLine: ""
+appendInfoLine: "Generating from the dictionary (", mode_name$, ")..."
+
+# v0.8: the crossfade is the ANALYSIS OVERLAP, not an arbitrary 2 ms.
+# Phrases tile the window-index stream with a stride of one hop, so a
+# phrase of L windows must ADVANCE the output by L*hop - but it spans
+# window_size + (L-1)*hop of audio. Overlapping the joins by
+# overlap*window_size makes the two agree exactly:
+#   runDur - xfade = w + (L-1)*w*(1-ov) - w*ov = L*w*(1-ov) = L*hop
+# which is ordinary overlap-add, and is what makes a novelty-0 decode
+# reconstruct the source instead of drifting one hop per phrase.
+xfadeSec = overlap * window_size_s
+if xfadeSec < 0.002
+    xfadeSec = 0.002
+endif
+effAdvance = hop_size
+if effAdvance < 0.002
+    effAdvance = 0.002
+endif
+
+maxRuns = ceiling (output_duration_s / effAdvance) * 2 + 32
+if maxRuns > 20000
+    maxRuns = 20000
+endif
+maxHist = maxRuns * max_copy_windows + 8
+if maxHist > 200000
+    maxHist = 200000
+endif
+ctxMax = 8
+
+runSrc# = zero# (maxRuns)
+runLen# = zero# (maxRuns)
+runKind# = zero# (maxRuns)
+runInfo# = zero# (maxRuns)
+outSym# = zero# (maxHist)
+
+nRuns = 0
+estDur = 0
+histLen = 0
+lastWin = 0
+parsePos = 0
+ipNode = 1
+nSubst = 0
+nEscape = 0
+nLiteral = 0
+sumOrder = 0
+nOrder = 0
+# estDur now tracks the EXACT advance (len * hop), so the only reason
+# to over-generate is a variation that shortens segments. Time stretch
+# can reach 0.5x; nothing else changes duration. Over-generating 2.5x
+# for every method cost 10.7 s of LZ77 search on a 2987-window source
+# and threw 60% of it away.
+if variation_method = 2
+    genMargin = 2.3
+else
+    genMargin = 1.12
+endif
+targetEst = output_duration_s * genMargin + window_size_s
+
+procedure emitRun: .src, .len, .kind, .info
+    if .src < 1
+        .src = 1
+    endif
+    if .src > num_windows
+        .src = num_windows
+    endif
+    if .src + .len - 1 > num_windows
+        .len = num_windows - .src + 1
+    endif
+    if .len < 1
+        .len = 1
+    endif
+    nRuns = nRuns + 1
+    runSrc# [nRuns] = .src
+    runLen# [nRuns] = .len
+    runKind# [nRuns] = .kind
+    runInfo# [nRuns] = .info
+    estDur = estDur + .len * hop_size
+    for .k to .len
+        if histLen < maxHist
+            histLen = histLen + 1
+            outSym# [histLen] = symbol# [.src + .k - 1]
+        endif
+    endfor
+    lastWin = .src + .len - 1
+endproc
+
+stopwatch
+
+genActive = 1
+while genActive = 1
+    if nRuns >= maxRuns - 2 or estDur >= targetEst
+        genActive = 0
+    else
+
+        # ------------------------------------------------------------
+        if generation_mode = 1
+            # PARSE AND SUBSTITUTE
+            # Replay the source's own LZ token stream. With probability
+            # Novelty, swap the phrase for another dictionary entry of
+            # the SAME DEPTH - same number of windows, different audio.
+            parsePos = parsePos + 1
+            if parsePos > nPhrases
+                parsePos = 1
+            endif
+            baseNode = phraseNode# [parsePos]
+            srcW = phraseStart# [parsePos]
+            lenW = phraseLen# [parsePos]
+            kind = 0
+            info = baseNode
+
+            dd = nodeDepth# [baseNode]
+            if dd < 1
+                dd = 1
+            endif
+            if novelty > 0 and dd <= maxDepth
+                if randomUniform (0, 1) < novelty and depthCount# [dd] > 1
+                    tries = 0
+                    okPick = 0
+                    while okPick = 0 and tries < 12
+                        cand = depthNodes# [depthStart# [dd] + randomInteger (1, depthCount# [dd])]
+                        if cand <> baseNode and cand > 1
+                            srcW = nodeFirstWin# [cand]
+                            lenW = nodeDepth# [cand]
+                            kind = 1
+                            info = cand
+                            okPick = 1
+                            nSubst = nSubst + 1
+                        endif
+                        tries = tries + 1
+                    endwhile
+                endif
+            endif
+            @emitRun: srcW, lenW, kind, info
+
+        # ------------------------------------------------------------
+        elsif generation_mode = 2
+            # INCREMENTAL PARSING (LZ78 read as a variable-order model)
+            # Sample a child of the current trie node in proportion to
+            # how often the parse traversed it; escape to the root at
+            # rate Novelty, or whenever the context runs out of
+            # continuations. Consecutive symbols that happen to be
+            # consecutive in the source are merged into one run, so
+            # long verbatim copies emerge from the walk rather than
+            # being imposed on it.
+            # Context selection by BACKOFF, not by carrying a node
+            # pointer. A raw LZ78 trie is mostly leaves, so a walk that
+            # simply advances hits a dead end almost every step and
+            # falls back to the root - which collapses the model to
+            # first order and makes Novelty meaningless. Instead:
+            # re-descend from the root along the last ctxDepth output
+            # symbols, and if that node has no continuations, drop the
+            # oldest symbol and try again. The order actually used is
+            # whatever the dictionary can support at this point, which
+            # is what "variable order" means.
+            escaped = 0
+            ctxDepth = ctxMax
+            if ctxDepth > histLen
+                ctxDepth = histLen
+            endif
+            if novelty > 0
+                if randomUniform (0, 1) < novelty
+                    ctxDepth = 0
+                    escaped = 1
+                endif
+            endif
+
+            ipNode = 1
+            totW = 0
+            searching = 1
+            while searching = 1
+                nTry = 1
+                okDesc = 1
+                for k to ctxDepth
+                    if okDesc = 1
+                        ch = childOf# [(nTry - 1) * alphabet + outSym# [histLen - ctxDepth + k]]
+                        if ch > 0
+                            nTry = ch
+                        else
+                            okDesc = 0
+                        endif
+                    endif
+                endfor
+                if okDesc = 1
+                    totW = 0
+                    for sy to alphabet
+                        ch = childOf# [(nTry - 1) * alphabet + sy]
+                        if ch > 0
+                            totW = totW + nodeCount# [ch]
+                        endif
+                    endfor
+                    if totW > 0
+                        ipNode = nTry
+                        searching = 0
+                    endif
+                endif
+                if searching = 1
+                    if ctxDepth <= 0
+                        searching = 0
+                        ipNode = 1
+                        totW = 0
+                        for sy to alphabet
+                            ch = childOf# [(ipNode - 1) * alphabet + sy]
+                            if ch > 0
+                                totW = totW + nodeCount# [ch]
+                            endif
+                        endfor
+                    else
+                        ctxDepth = ctxDepth - 1
+                    endif
+                endif
+            endwhile
+            sumOrder = sumOrder + ctxDepth
+            nOrder = nOrder + 1
+
+            chosenChild = 0
+            if totW > 0
+                target = randomUniform (0, totW)
+                acc = 0
+                for sy to alphabet
+                    if chosenChild = 0
+                        ch = childOf# [(ipNode - 1) * alphabet + sy]
+                        if ch > 0
+                            acc = acc + nodeCount# [ch]
+                            if acc >= target
+                                chosenChild = ch
+                            endif
+                        endif
+                    endif
+                endfor
+            endif
+
+            if chosenChild = 0
+                wantSym = symbol# [randomInteger (1, num_windows)]
+                escaped = 1
+            else
+                wantSym = nodeSymbol# [chosenChild]
+            endif
+            if escaped = 1
+                nEscape = nEscape + 1
+            endif
+
+            srcW = 0
+            if lastWin > 0 and lastWin < num_windows
+                if symbol# [lastWin + 1] = wantSym
+                    srcW = lastWin + 1
+                endif
+            endif
+            if srcW = 0
+                if symCount# [wantSym] > 0
+                    srcW = symWin# [symStart# [wantSym] + randomInteger (1, symCount# [wantSym])]
+                else
+                    srcW = randomInteger (1, num_windows)
+                endif
+            endif
+
+            merged = 0
+            if nRuns > 0 and escaped = 0
+                if srcW = runSrc# [nRuns] + runLen# [nRuns] and runLen# [nRuns] < max_copy_windows
+                    runLen# [nRuns] = runLen# [nRuns] + 1
+                    estDur = estDur + hop_size
+                    if histLen < maxHist
+                        histLen = histLen + 1
+                        outSym# [histLen] = symbol# [srcW]
+                    endif
+                    lastWin = srcW
+                    merged = 1
+                endif
+            endif
+            if merged = 0
+                @emitRun: srcW, 1, escaped, ctxDepth
+            endif
+
+        # ------------------------------------------------------------
+        else
+            # LZ77 COPY AND DEVIATE
+            # Longest match of the recent OUTPUT inside the source
+            # symbol stream, then copy forward from just after it.
+            # Candidates are restricted to occurrences of the last
+            # output symbol, so the search is O(n/A * ctx) rather than
+            # O(n * ctx). Ties are broken at random: that is where the
+            # recombination comes from.
+            matchLen = 0
+            q = 0
+            if histLen = 0
+                q = randomInteger (1, num_windows)
+            else
+                lastSym = outSym# [histLen]
+                nc = symCount# [lastSym]
+                bestLen = 0
+                nBest = 0
+                for c to nc
+                    p = symWin# [symStart# [lastSym] + c]
+                    if p < num_windows
+                        ml = 1
+                        cont = 1
+                        while cont = 1
+                            if ml >= ctxMax or ml >= histLen or p - ml < 1
+                                cont = 0
+                            else
+                                if symbol# [p - ml] = outSym# [histLen - ml]
+                                    ml = ml + 1
+                                else
+                                    cont = 0
+                                endif
+                            endif
+                        endwhile
+                        if ml > bestLen
+                            bestLen = ml
+                            nBest = 1
+                        elsif ml = bestLen
+                            nBest = nBest + 1
+                        endif
+                    endif
+                endfor
+
+                if nBest = 0
+                    q = randomInteger (1, num_windows)
+                else
+                    pickN = randomInteger (1, nBest)
+                    seen = 0
+                    for c to nc
+                        if q = 0
+                            p = symWin# [symStart# [lastSym] + c]
+                            if p < num_windows
+                                ml = 1
+                                cont = 1
+                                while cont = 1
+                                    if ml >= ctxMax or ml >= histLen or p - ml < 1
+                                        cont = 0
+                                    else
+                                        if symbol# [p - ml] = outSym# [histLen - ml]
+                                            ml = ml + 1
+                                        else
+                                            cont = 0
+                                        endif
+                                    endif
+                                endwhile
+                                if ml = bestLen
+                                    seen = seen + 1
+                                    if seen = pickN
+                                        q = p + 1
+                                        matchLen = bestLen
+                                    endif
+                                endif
+                            endif
+                        endif
+                    endfor
+                    if q = 0
+                        q = randomInteger (1, num_windows)
+                    endif
+                endif
+            endif
+
+            lenW = randomInteger (1, max_copy_windows)
+            if q + lenW - 1 > num_windows
+                lenW = num_windows - q + 1
+            endif
+            if lenW < 1
+                lenW = 1
+            endif
+            @emitRun: q, lenW, 0, matchLen
+
+            # the literal that breaks the match
+            if novelty > 0 and nRuns < maxRuns - 1
+                if randomUniform (0, 1) < novelty
+                    nextW = q + lenW
+                    litW = randomInteger (1, num_windows)
+                    if nextW <= num_windows
+                        litTries = 0
+                        while symbol# [litW] = symbol# [nextW] and litTries < 12
+                            litW = randomInteger (1, num_windows)
+                            litTries = litTries + 1
+                        endwhile
+                    endif
+                    nLiteral = nLiteral + 1
+                    @emitRun: litW, 1, 1, 0
+                endif
+            endif
+        endif
+
+    endif
+endwhile
+
+genTime = stopwatch
+appendInfoLine: "  ", nRuns, " tokens generated in ", fixed$ (genTime, 3), " s"
+if generation_mode = 1
+    appendInfoLine: "  Phrases substituted: ", nSubst, "/", nRuns
+elsif generation_mode = 2
+    meanOrder = 0
+    if nOrder > 0
+        meanOrder = sumOrder / nOrder
+    endif
+    appendInfoLine: "  Forced escapes: ", nEscape, "/", nOrder,
+        ... " steps | mean context order actually used: ", fixed$ (meanOrder, 2)
+else
+    appendInfoLine: "  Literals emitted: ", nLiteral, "/", nRuns
+endif
+
+# ============================================================
+# STEP 5: Render
+# ============================================================
+appendInfoLine: ""
+appendInfoLine: "Rendering..."
+
+segment_ids# = zero# (maxRuns)
+usedSrc# = zero# (maxRuns)
+usedLen# = zero# (maxRuns)
+usedKind# = zero# (maxRuns)
+nSegs = 0
+accumDur = 0
+minSegDur = 0
+psolaSkipped = 0
+minPsolaDur = 3 / 75
+
+for r to nRuns
+  if accumDur < output_duration_s + xfadeSec
+    w0 = runSrc# [r]
+    lenW = runLen# [r]
+    if w0 + lenW - 1 > num_windows
+        lenW = num_windows - w0 + 1
+    endif
+    start_time = startByOrig# [w0]
+    end_time = endByOrig# [w0 + lenW - 1]
+
     selectObject: original_sound
     segment = Extract part: start_time, end_time, "rectangular", 1, "no"
-    
     selectObject: segment
     seg_dur = Get total duration
-    
+
     varied_segment = segment
-    
-    # ---- Apply variation ----
+
     if variation_method = 1
         # Pitch shift (PSOLA)
-        shift_semitones = randomGauss(0, 12 * variation_amount)
-        shift_factor = 2^(shift_semitones/12)
-        shiftStr$ = string$(shift_factor)
-        
-        selectObject: segment
-        manipulation = To Manipulation: 0.01, 75, 600
-        pitch_tier = Extract pitch tier
-        Formula: "self * " + shiftStr$
-        plusObject: manipulation
-        Replace pitch tier
-        selectObject: manipulation
-        varied_segment = Get resynthesis (overlap-add)
-        removeObject: manipulation, pitch_tier
-    
+        # v0.8 fix 9: To Manipulation refuses a Sound shorter than
+        # 3/pitchFloor. A 50 ms window at floor 75 aborted v0.7.
+        if seg_dur >= minPsolaDur
+            shift_semitones = randomGauss (0, 12 * variation_amount)
+            shift_factor = 2 ^ (shift_semitones / 12)
+            shiftStr$ = string$ (shift_factor)
+            selectObject: segment
+            manipulation = To Manipulation: 0.01, 75, 600
+            pitch_tier = Extract pitch tier
+            Formula: "self * " + shiftStr$
+            plusObject: manipulation
+            Replace pitch tier
+            selectObject: manipulation
+            varied_segment = Get resynthesis (overlap-add)
+            removeObject: manipulation, pitch_tier
+        else
+            psolaSkipped = psolaSkipped + 1
+        endif
+
     elsif variation_method = 2
         # Time stretch
-        stretch_factor = 1 + randomGauss(0, variation_amount)
-        stretch_factor = max(0.5, min(2, stretch_factor))
-        selectObject: segment
-        manipulation = To Manipulation: 0.01, 75, 600
-        duration_tier = Extract duration tier
-        # v0.5: the segment is extracted rebased to 0, so the tier
-        # point belongs at the SEGMENT midpoint (the old original-
-        # time coordinate worked only via constant extrapolation)
-        Add point: seg_dur / 2, stretch_factor
-        plusObject: manipulation
-        Replace duration tier
-        selectObject: manipulation
-        varied_segment = Get resynthesis (overlap-add)
-        removeObject: manipulation, duration_tier
-    
+        if seg_dur >= minPsolaDur
+            stretch_factor = 1 + randomGauss (0, variation_amount)
+            stretch_factor = max (0.5, min (2, stretch_factor))
+            selectObject: segment
+            manipulation = To Manipulation: 0.01, 75, 600
+            duration_tier = Extract duration tier
+            Add point: seg_dur / 2, stretch_factor
+            plusObject: manipulation
+            Replace duration tier
+            selectObject: manipulation
+            varied_segment = Get resynthesis (overlap-add)
+            removeObject: manipulation, duration_tier
+        else
+            psolaSkipped = psolaSkipped + 1
+        endif
+
     elsif variation_method = 3
         # Amplitude modulation
         selectObject: segment
         varied_segment = Copy: "modulated"
         mod_freq = 10 * (1 + variation_amount * 10)
-        varAmtStr$ = string$(variation_amount)
-        modFreqStr$ = string$(mod_freq)
+        varAmtStr$ = string$ (variation_amount)
+        modFreqStr$ = string$ (mod_freq)
         Formula: "self * (1 + " + varAmtStr$ + " * sin(2*pi*" + modFreqStr$ + "*x))"
-    
+
     elsif variation_method = 4
-        # SPECTRAL LOWPASS (FIXED v0.4)
-        # v0.3 attenuated below cutoff (high-pass) and didn't trim
-        # the To Sound output. v0.4 attenuates above cutoff (true
-        # low-pass) and trims to original segment duration.
+        # Spectral lowpass
         selectObject: segment
         spectrum = To Spectrum: "yes"
-        cutoff = 1000 + randomUniform(-500, 500) * variation_amount
-        cutoffStr$ = string$(cutoff)
-        attenStr$ = string$(1 - variation_amount)
-        # Attenuate frequencies ABOVE cutoff (proper lowpass)
+        cutoff = 1000 + randomUniform (-500, 500) * variation_amount
+        cutoffStr$ = string$ (cutoff)
+        attenStr$ = string$ (1 - variation_amount)
         Formula: "if x > " + cutoffStr$ + " then self * " + attenStr$ + " else self fi"
         sound_padded = To Sound
-        # Trim back to original segment duration (v0.3 bug fix)
         selectObject: sound_padded
         varied_segment = Extract part: 0, seg_dur, "rectangular", 1, "no"
         removeObject: spectrum, sound_padded
-    
+
     elsif variation_method = 5
         # Reverse
-        if randomUniform(0, 1) < variation_amount
+        if randomUniform (0, 1) < variation_amount
             selectObject: segment
             varied_segment = Copy: "reversed"
             Reverse
         endif
-    
-    else
+
+    elsif variation_method = 6
         # Granular shuffle
-        # v0.6 fix 7a: amount = 0 is now genuinely identity. v0.5
-        # documented it that way but still cut the segment into
-        # Hann-windowed 20 ms grains and butt-joined them, so the
-        # "identity" setting put an amplitude dip every 20 ms.
         if variation_amount <= 0.0001
             selectObject: segment
             varied_segment = Copy: "granular_identity"
         else
             grain_size = 0.02
-            num_grains = floor(seg_dur / grain_size)
-            # v0.6 fix 7c: keep the trailing partial grain. v0.5 dropped
-            # everything past the last whole grain, so a 150 ms segment
-            # came back 140 ms - one more reason the output ran short.
+            num_grains = floor (seg_dur / grain_size)
             remainder = seg_dur - num_grains * grain_size
-            hasRemainder = 0
             if remainder > 0.0005
-                hasRemainder = 1
-                num_grains += 1
+                num_grains = num_grains + 1
             endif
             if num_grains < 1
                 num_grains = 1
             endif
 
-            maxShift = round(num_grains * variation_amount)
+            maxShift = round (num_grains * variation_amount)
             if maxShift < 1
                 maxShift = 1
             endif
 
-            grain_ids# = zero#(num_grains)
-
+            grain_ids# = zero# (num_grains)
             for g to num_grains
-                # v0.6 fix 7b: draw uniformly from the valid range around
-                # this grain. v0.5 drew a displacement and then CLAMPED
-                # it into [1, num_grains], which piles a large share of
-                # high-amount draws onto the first and last grain - not a
-                # shuffle but jittered resampling with edge build-up.
                 lowIdx = g - maxShift
                 if lowIdx < 1
                     lowIdx = 1
@@ -1051,50 +1508,47 @@ for out_i to maxOutputWindows
                 if highIdx > num_grains
                     highIdx = num_grains
                 endif
-                shuffled_idx = randomInteger(lowIdx, highIdx)
-
+                shuffled_idx = randomInteger (lowIdx, highIdx)
                 shuffled_start = (shuffled_idx - 1) * grain_size
-                shuffled_end = min(shuffled_start + grain_size, seg_dur)
-
+                shuffled_end = min (shuffled_start + grain_size, seg_dur)
                 if shuffled_end - shuffled_start > 0.0005
                     selectObject: segment
                     temp_grain = Extract part: shuffled_start, shuffled_end, "Hanning", 1, "no"
-                    grain_ids#[g] = temp_grain
+                    grain_ids# [g] = temp_grain
                 else
                     Create Sound from formula: "grain", 1, 0, 0.001, sample_rate, "0"
-                    grain_ids#[g] = selected("Sound")
+                    grain_ids# [g] = selected ("Sound")
                 endif
             endfor
 
-            selectObject: grain_ids#[1]
+            selectObject: grain_ids# [1]
             for g from 2 to num_grains
-                plusObject: grain_ids#[g]
+                plusObject: grain_ids# [g]
             endfor
             if num_grains >= 2
                 varied_segment = Concatenate
             else
                 varied_segment = Copy: "single_grain"
             endif
-
             for g to num_grains
-                removeObject: grain_ids#[g]
+                removeObject: grain_ids# [g]
             endfor
         endif
     endif
-    
-    # v0.6 CRITICAL 2: NO per-segment fades. v0.5 applied a 2 ms
-    # raised-cosine fade to each end AND then joined with
-    # Concatenate with overlap, which applies its own crossfade over
-    # exactly those samples - two envelopes at every boundary. Praat's
-    # crossfade handles the internal joins; the head and tail of the
-    # finished output are faded once, after assembly.
+    # variation_method = 7 (None): the extracted run passes through
+
     selectObject: varied_segment
     vsDur = Get total duration
 
-    nSegs += 1
-    segment_ids#[nSegs] = varied_segment
-    used_windows#[nSegs] = window_idx
-    accumDur += vsDur - xfadeSec
+    nSegs = nSegs + 1
+    segment_ids# [nSegs] = varied_segment
+    usedSrc# [nSegs] = w0
+    usedLen# [nSegs] = lenW
+    usedKind# [nSegs] = runKind# [r]
+    accumDur = accumDur + vsDur - xfadeSec
+    if nSegs = 1 or vsDur < minSegDur
+        minSegDur = vsDur
+    endif
 
     if varied_segment <> segment
         removeObject: segment
@@ -1102,31 +1556,44 @@ for out_i to maxOutputWindows
   endif
 endfor
 
-num_output_windows = nSegs
+if psolaSkipped > 0
+    appendInfoLine: "  ", psolaSkipped, " segments shorter than ",
+        ... fixed$ (1000 * minPsolaDur, 0), " ms passed through unvaried (PSOLA minimum)"
+endif
 
-# === Concatenate All Segments ===
-appendInfoLine: ""
-appendInfoLine: "Concatenating ", num_output_windows, " segments..."
+# === Concatenate ===
+# Concatenate with overlap needs a crossfade shorter than every
+# segment. Measured on 6.4.06: Praat's crossfade is amplitude-
+# complementary and a 20-segment chain at 70% overlap reconstructs the
+# original to 2e-13, so a large crossfade is safe and correct - the cap
+# below exists only for Time stretch, which can halve a segment. When
+# it fires the tiling is no longer exact and the trim absorbs it.
+xfadeUsed = xfadeSec
+if nSegs > 0 and xfadeUsed > 0.9 * minSegDur
+    xfadeUsed = 0.9 * minSegDur
+    appendInfoLine: "  Crossfade capped at ", fixed$ (1000 * xfadeUsed, 1),
+        ... " ms by the shortest segment (", fixed$ (1000 * minSegDur, 1), " ms)"
+endif
+appendInfoLine: "  Joining ", nSegs, " segments (", nSegs - 1, " crossfades of ",
+    ... fixed$ (1000 * xfadeUsed, 1), " ms)..."
 
-selectObject: segment_ids#[1]
-for i from 2 to num_output_windows
-    plusObject: segment_ids#[i]
+selectObject: segment_ids# [1]
+for i from 2 to nSegs
+    plusObject: segment_ids# [i]
 endfor
 
-if num_output_windows >= 2
-    output = Concatenate with overlap: xfadeSec
+if nSegs >= 2
+    output = Concatenate with overlap: xfadeUsed
 else
     output = Copy: "single"
 endif
 Rename: sound_name$ + "_LZ_" + presetName$
 
-for i to num_output_windows
-    removeObject: segment_ids#[i]
+for i to nSegs
+    removeObject: segment_ids# [i]
 endfor
 
-# v0.6 fix 3: land the requested duration exactly, in BOTH directions.
-# v0.5 trimmed an overshoot but silently accepted an undershoot, which
-# Time stretch and Granular shuffle could both produce.
+# exact duration, both directions
 selectObject: output
 current_duration = Get total duration
 if current_duration > output_duration_s
@@ -1135,11 +1602,11 @@ if current_duration > output_duration_s
     removeObject: output
     output = trimmed
 elsif current_duration < output_duration_s - 0.0005
-    appendInfoLine: "  Material ran short (", fixed$(current_duration, 3),
-        ... " s); padding to the requested ", fixed$(output_duration_s, 3), " s"
+    appendInfoLine: "  Material ran short (", fixed$ (current_duration, 3),
+        ... " s); padding to the requested ", fixed$ (output_duration_s, 3), " s"
     Create Sound from formula: "lz_pad", 1, 0,
         ... output_duration_s - current_duration, sample_rate, "0"
-    padSnd = selected("Sound")
+    padSnd = selected ("Sound")
     selectObject: output
     plusObject: padSnd
     joined = Concatenate
@@ -1149,8 +1616,7 @@ endif
 selectObject: output
 Rename: sound_name$ + "_LZ_" + presetName$
 
-# v0.6 CRITICAL 2 / fix 3: one fade at each end of the finished sound.
-# The trim can land mid-segment at a non-zero amplitude.
+# one fade at each end of the finished sound
 selectObject: output
 finalDurNow = Get total duration
 edgeFade = 0.005
@@ -1158,7 +1624,7 @@ if edgeFade > finalDurNow * 0.1
     edgeFade = finalDurNow * 0.1
 endif
 if edgeFade > 0.0002
-    efs$ = fixed$(edgeFade, 8)
+    efs$ = fixed$ (edgeFade, 8)
     selectObject: output
     Formula: "if x - xmin < " + efs$ + " then self * ((x - xmin) / " + efs$ + ") else self fi"
     selectObject: output
@@ -1170,14 +1636,41 @@ Scale peak: 0.95
 final_duration = Get total duration
 final_peak = Get absolute extremum: 0, 0, "None"
 
-# v0.6 fix 8: all random draws are done.
 random_initializeSafelyAndUnpredictably ()
 
 # ============================================================
 # VISUALIZATION
+# Panels follow the parse, not a similarity graph:
+#   A - the symbol stream with the LZ phrase boundaries on it
+#   B - phrase length against phrase index (the LZ growth curve)
+#   C - phrase-length distribution
+#   D - the generated token stream mapped back to source windows
+#   E - the rendered output
 # ============================================================
 
+procedure symColour: .s
+    if undefSymbol > 0 and .s = undefSymbol
+        .rgb$ = "{0.62, 0.62, 0.66}"
+    else
+        .tt = 0
+        if kClusters > 1
+            .tt = (.s - 1) / (kClusters - 1)
+        endif
+        .r = 0.22 + .tt * 0.62
+        .g = 0.52 - .tt * 0.16
+        .b = 0.78 - .tt * 0.54
+        if .g < 0
+            .g = 0
+        endif
+        if .b < 0
+            .b = 0
+        endif
+        .rgb$ = "{" + fixed$ (.r, 3) + ", " + fixed$ (.g, 3) + ", " + fixed$ (.b, 3) + "}"
+    endif
+endproc
+
 if draw_visualization
+    appendInfoLine: ""
     appendInfoLine: "Drawing visualization..."
 
     selectObject: output
@@ -1188,28 +1681,9 @@ if draw_visualization
     endif
     ampViz = outPeakViz * 1.15
 
-    vizName$ = replace$(sound_name$, "_", "\_ ", 0)
+    vizName$ = replace$ (sound_name$, "_", "\_ ", 0)
 
-    if distance_metric = 1
-        distanceName$ = "Euclidean"
-    elsif distance_metric = 2
-        distanceName$ = "mean relative difference"
-    else
-        distanceName$ = "mean magnitude-ratio difference"
-    endif
-
-    if nResultCh = 1
-        channelDesc$ = "mono"
-    else
-        channelDesc$ = string$(nResultCh) + " ch"
-    endif
-
-    neighborDen = maxNeighbors
-    if neighborDen < 1
-        neighborDen = 1
-    endif
-
-    pageHeight = 7.25
+    pageHeight = 9.10
     Erase all
     Line width: 1
     Colour: "Black"
@@ -1222,247 +1696,273 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##Feature-Similarity Audio Variations v0.7##"
+    Text: 0.5, "centre", 0.68, "half", "##Lempel-Ziv Audio Variations v0.8##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.50}"
-    Text: 0.5, "centre", 0.22, "half", vizName$ + " | " + presetName$ + " | " + analysis_name$ + " analysis | " + output_mode_name$ + " | " + variation_name$
+    Text: 0.5, "centre", 0.22, "half", vizName$ + " | " + presetName$ + " | " + analysis_name$ + " analysis | " + mode_long$ + " | " + variation_name$
 
-    # === Dictionary usage map ===
-    Select outer viewport: 0, 4, 0.72, 4.08
-    Select inner viewport: 0.60, 3.85, 1.02, 3.84
-    Axes: 0, num_output_windows + 1, 0, num_windows + 1
-    Paint rectangle: "{0.97, 0.97, 0.97}", 0, num_output_windows + 1, 0, num_windows + 1
+    # === A: symbol stream + LZ phrase parse ===
+    Select outer viewport: 0, 8, 0.72, 2.60
+    Select inner viewport: 0.60, 7.70, 1.02, 2.36
+    Axes: 0.5, num_windows + 0.5, 0.3, alphabet + 0.7
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0.5, num_windows + 0.5, 0.3, alphabet + 0.7
 
-    Colour: "{0.82, 0.82, 0.82}"
+    # alternating bands = LZ phrases
+    if nPhrases <= 600
+        for p to nPhrases
+            if p mod 2 = 0
+                pStart = phraseStart# [p] - 0.5
+                pEnd = phraseStart# [p] + phraseLen# [p] - 0.5
+                Paint rectangle: "{0.912, 0.918, 0.936}", pStart, pEnd, 0.3, alphabet + 0.7
+            endif
+        endfor
+    endif
+
+    Select inner viewport: 0.60, 7.70, 1.02, 2.36
+    Axes: 0.5, num_windows + 0.5, 0.3, alphabet + 0.7
+
+    # symbols
+    cellW = 0.4
+    if num_windows > 800
+        cellW = num_windows / 2000
+    endif
+    if num_windows <= 1200
+        for w to num_windows
+            @symColour: symbol# [w]
+            Paint rectangle: symColour.rgb$, w - cellW, w + cellW, symbol# [w] - 0.36, symbol# [w] + 0.36
+        endfor
+    else
+        Line width: 1
+        Colour: "{0.28, 0.45, 0.72}"
+        for w from 2 to num_windows
+            Draw line: w - 1, symbol# [w - 1], w, symbol# [w]
+        endfor
+    endif
+
+    # phrase boundaries
+    if nPhrases <= 600
+        Line width: 1
+        Colour: "{0.45, 0.45, 0.55}"
+        for p to nPhrases
+            bX = phraseStart# [p] - 0.5
+            Draw line: bX, 0.3, bX, alphabet + 0.7
+        endfor
+    endif
+
+    Line width: 1
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text left: "no", "Symbol"
+    Text bottom: "no", "Source window"
+    Text top: "no", "Symbol Stream and LZ78 Parse | vertical rules and shaded bands are phrase boundaries"
+
+    # === B: phrase length against phrase index ===
+    Select outer viewport: 0, 4, 2.60, 4.30
+    Select inner viewport: 0.60, 3.85, 2.86, 4.06
+    growTop = maxPhraseLen + 1
+    if growTop < 2
+        growTop = 2
+    endif
+    Axes: 0, nPhrases + 1, 0, growTop
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, nPhrases + 1, 0, growTop
+
+    if nPhrases <= 800
+        barW = 0.42
+        if nPhrases > 200
+            barW = nPhrases / 500
+        endif
+        for p to nPhrases
+            Paint rectangle: "{0.30, 0.48, 0.74}", p - barW, p + barW, 0, phraseLen# [p]
+        endfor
+    else
+        Colour: "{0.30, 0.48, 0.74}"
+        for p from 2 to nPhrases
+            Draw line: p - 1, phraseLen# [p - 1], p, phraseLen# [p]
+        endfor
+    endif
+
+    Select inner viewport: 0.60, 3.85, 2.86, 4.06
+    Axes: 0, nPhrases + 1, 0, growTop
+    Line width: 1
+    Colour: "{0.80, 0.35, 0.20}"
+    Dashed line
+    Draw line: 0, meanPhraseLen, nPhrases + 1, meanPhraseLen
+    Solid line
+
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text left: "no", "Phrase length"
+    Text bottom: "no", "Phrase index"
+    Text top: "no", "LZ78 Growth | dashed = mean " + fixed$ (meanPhraseLen, 2) + " windows"
+
+    # === C: phrase-length distribution ===
+    Select outer viewport: 4, 8, 2.60, 4.30
+    Select inner viewport: 4.45, 7.70, 2.86, 4.06
+
+    lenHistMax = maxPhraseLen
+    if lenHistMax < 2
+        lenHistMax = 2
+    endif
+    if lenHistMax > 40
+        lenHistMax = 40
+    endif
+    lenHist# = zero# (lenHistMax)
+    for p to nPhrases
+        lv = phraseLen# [p]
+        if lv < 1
+            lv = 1
+        endif
+        if lv > lenHistMax
+            lv = lenHistMax
+        endif
+        lenHist# [lv] = lenHist# [lv] + 1
+    endfor
+    lenPeak = 1
+    for b to lenHistMax
+        if lenHist# [b] > lenPeak
+            lenPeak = lenHist# [b]
+        endif
+    endfor
+
+    Axes: 0.5, lenHistMax + 0.5, 0, lenPeak * 1.15
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0.5, lenHistMax + 0.5, 0, lenPeak * 1.15
+    for b to lenHistMax
+        if lenHist# [b] > 0
+            ratio = (b - 1) / max (1, lenHistMax - 1)
+            cR = 0.25 + ratio * 0.55
+            cG = 0.48 - ratio * 0.14
+            cB = 0.76 - ratio * 0.50
+            if cB < 0
+                cB = 0
+            endif
+            rgb$ = "{" + fixed$ (cR, 3) + ", " + fixed$ (cG, 3) + ", " + fixed$ (cB, 3) + "}"
+            Paint rectangle: rgb$, b - 0.4, b + 0.4, 0, lenHist# [b]
+        endif
+    endfor
+
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text left: "no", "Phrases"
+    Text bottom: "no", "Phrase length (windows)"
+    Text top: "no", "Dictionary Profile | phrase-length distribution"
+
+    # === D: generated token stream -> source windows ===
+    Select outer viewport: 0, 8, 4.30, 6.20
+    Select inner viewport: 0.60, 7.70, 4.56, 5.96
+    Axes: 0, nSegs + 1, 0, num_windows + 1
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, nSegs + 1, 0, num_windows + 1
+
+    Colour: "{0.84, 0.84, 0.84}"
     Dotted line
-    grid_step = round(num_windows / 8)
+    grid_step = round (num_windows / 8)
     if grid_step < 1
         grid_step = 1
     endif
     yg = grid_step
     while yg <= num_windows
-        Draw line: 0, yg, num_output_windows + 1, yg
+        Draw line: 0, yg, nSegs + 1, yg
         yg = yg + grid_step
     endwhile
     Solid line
 
-    # Chain-link structure.
-    if output_mode = 2 or output_mode = 3
-        Colour: "{0.78, 0.70, 0.45}"
-        for o from 2 to num_output_windows
-            prev = used_windows#[o - 1]
-            curr = used_windows#[o]
-            if prev > 0 and curr > 0
-                Draw line: o - 1, prev, o, curr
-            endif
-        endfor
-    endif
-
-    # Selected source windows.
-    for i to num_output_windows
-        srcWin = used_windows#[i]
-        if srcWin > 0
-            if num_windows > 1
-                colorVal = (srcWin - 1) / (num_windows - 1)
-            else
-                colorVal = 0
-            endif
-            cR = 0.25 + colorVal * 0.50
-            cG = 0.55 - colorVal * 0.25
-            cB = 0.75 - colorVal * 0.35
-            if cG < 0
-                cG = 0
-            endif
-            if cB < 0
-                cB = 0
-            endif
-            rgb$ = "{" + fixed$(cR, 3) + ", " + fixed$(cG, 3) + ", " + fixed$(cB, 3) + "}"
-            Paint circle (mm): rgb$, i, srcWin, 1.25
-        endif
+    # trajectory first, tokens on top (grid/connector under the data)
+    Line width: 1
+    Colour: "{0.72, 0.76, 0.84}"
+    for i from 2 to nSegs
+        yA = usedSrc# [i - 1] + (usedLen# [i - 1] - 1) / 2
+        yB = usedSrc# [i] + (usedLen# [i] - 1) / 2
+        Draw line: i - 1, yA, i, yB
     endfor
+
+    # every token gets real vertical extent, so a one-window token is
+    # still a visible bar rather than a sub-pixel dot
+    minBar = num_windows / 90
+    if minBar < 0.6
+        minBar = 0.6
+    endif
+    Line width: 3
+    if nSegs > 300
+        Line width: 2
+    endif
+    if nSegs > 900
+        Line width: 1
+    endif
+    for i to nSegs
+        y0 = usedSrc# [i]
+        y1 = usedSrc# [i] + usedLen# [i] - 1
+        if y1 - y0 < minBar
+            yMid = (y0 + y1) / 2
+            y0 = yMid - minBar / 2
+            y1 = yMid + minBar / 2
+        endif
+        if usedKind# [i] = 0
+            Colour: "{0.22, 0.42, 0.74}"
+        else
+            Colour: "{0.88, 0.52, 0.12}"
+        endif
+        Draw line: i, y0, i, y1
+    endfor
+    Line width: 1
 
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "Source window"
-    Text bottom: "no", "Output window"
-    Text top: "no", "Dictionary Usage | points = chosen source windows | lines = similarity-chain links"
-
-    # === Feature distribution ===
-    Select outer viewport: 4, 8, 0.72, 2.56
-    Select inner viewport: 4.45, 7.70, 1.02, 2.32
-
-    minF1 = undefined
-    maxF1 = undefined
-    for i to num_windows
-        if feature1#[i] <> undefined
-            if minF1 = undefined
-                minF1 = feature1#[i]
-                maxF1 = feature1#[i]
-            else
-                if feature1#[i] < minF1
-                    minF1 = feature1#[i]
-                endif
-                if feature1#[i] > maxF1
-                    maxF1 = feature1#[i]
-                endif
-            endif
-        endif
-    endfor
-
-    if minF1 = undefined
-        minF1 = 0
-        maxF1 = 1
-    endif
-    if minF1 = maxF1
-        maxF1 = minF1 + 1
+    Text left: "no", "Source window"
+    Text bottom: "no", "Output token"
+    if generation_mode = 1
+        Text top: "no", "Token Stream | bar = one phrase, its length = phrase depth | amber = substituted phrase"
+    elsif generation_mode = 2
+        Text top: "no", "Token Stream | bar = a contiguous run of the trie walk | amber = escape to root"
+    else
+        Text top: "no", "Token Stream | bar = one LZ77 copy (offset, length) | amber = literal"
     endif
 
-    fPad = (maxF1 - minF1) * 0.08
-    Axes: 0, num_windows + 1, minF1 - fPad, maxF1 + fPad
-    Paint rectangle: "{0.97, 0.97, 0.97}", 0, num_windows + 1, minF1 - fPad, maxF1 + fPad
-
-    if num_pairs > 0 and num_pairs < 200
-        Colour: "{0.78, 0.78, 0.55}"
-        for p to num_pairs
-            pL = pairLeft#[p]
-            pR = pairRight#[p]
-            if pL >= 1 and pL <= num_windows and pR >= 1 and pR <= num_windows
-                if feature1#[pL] <> undefined and feature1#[pR] <> undefined
-                    Draw line: pL, feature1#[pL], pR, feature1#[pR]
-                endif
-            endif
-        endfor
-    endif
-
-    for i to num_windows
-        if feature1#[i] <> undefined
-            nC = windowNeighborCount#[i]
-            ratio = nC / neighborDen
-            mm = 1.0 + ratio * 2.0
-            cR = 0.25 + ratio * 0.50
-            cG = 0.45
-            cB = 0.75 - ratio * 0.45
-            if cB < 0
-                cB = 0
-            endif
-            rgb$ = "{" + fixed$(cR, 3) + ", " + fixed$(cG, 3) + ", " + fixed$(cB, 3) + "}"
-            Paint circle (mm): rgb$, i, feature1#[i], mm
-        endif
-    endfor
-
-    Colour: "Black"
-    Draw inner box
-    Font size: 7
-    Text left: "yes", analysis_name$
-    Text bottom: "no", "Source window"
-    Text top: "no", "Feature Distribution | point size and color encode neighbor count"
-
-    # === Neighbor-count histogram ===
-    Select outer viewport: 4, 8, 2.76, 4.08
-    Select inner viewport: 4.45, 7.70, 2.98, 3.84
-
-    histMaxBin = maxNeighbors
-    if histMaxBin < 4
-        histMaxBin = 4
-    endif
-    if histMaxBin > 32
-        histMaxBin = 32
-    endif
-
-    histN# = zero# (histMaxBin + 1)
-    for w to num_windows
-        nC = windowNeighborCount#[w]
-        if nC > histMaxBin
-            nC = histMaxBin
-        endif
-        histN#[nC + 1] = histN#[nC + 1] + 1
-    endfor
-
-    histPeak = 1
-    for b to histMaxBin + 1
-        if histN#[b] > histPeak
-            histPeak = histN#[b]
-        endif
-    endfor
-
-    Axes: -0.5, histMaxBin + 0.5, 0, histPeak * 1.15
-    Paint rectangle: "{0.97, 0.97, 0.97}", -0.5, histMaxBin + 0.5, 0, histPeak * 1.15
-
-    for b to histMaxBin + 1
-        nC = b - 1
-        if histN#[b] > 0
-            ratio = nC / neighborDen
-            if ratio > 1
-                ratio = 1
-            endif
-            cR = 0.25 + ratio * 0.50
-            cG = 0.45
-            cB = 0.75 - ratio * 0.45
-            if cB < 0
-                cB = 0
-            endif
-            rgb$ = "{" + fixed$(cR, 3) + ", " + fixed$(cG, 3) + ", " + fixed$(cB, 3) + "}"
-            Paint rectangle: rgb$, nC - 0.4, nC + 0.4, 0, histN#[b]
-        endif
-    endfor
-
-    Colour: "Black"
-    Draw inner box
-    Font size: 7
-    Text left: "yes", "Windows"
-    Text bottom: "no", "Similar neighbors"
-    Text top: "no", "Dictionary Connectivity | neighbor-count histogram"
-
-    # === Output waveform ===
-    Select outer viewport: 0, 8, 4.30, 5.54
-    Select inner viewport: 0.60, 7.70, 4.50, 5.30
+    # === E: rendered output ===
+    Select outer viewport: 0, 8, 6.20, 7.55
+    Select inner viewport: 0.60, 7.70, 6.42, 7.22
     Axes: 0, final_duration, -ampViz, ampViz
     Paint rectangle: "{0.97, 0.97, 0.97}", 0, final_duration, -ampViz, ampViz
+
+    selectObject: output
+    Colour: "{0.25, 0.45, 0.75}"
+    Draw: 0, 0, -ampViz, ampViz, "no", "Curve"
+
+    Select inner viewport: 0.60, 7.70, 6.42, 7.22
+    Axes: 0, final_duration, -ampViz, ampViz
     Colour: "{0.80, 0.80, 0.80}"
     Draw line: 0, 0, final_duration, 0
 
-    selectObject: output
-    if nResultCh = 1
-        Colour: "{0.25, 0.45, 0.75}"
-        Draw: 0, 0, -ampViz, ampViz, "no", "Curve"
-    else
-        Extract one channel: 1
-        vCh1 = selected("Sound")
-        Colour: "{0.25, 0.45, 0.75}"
-        Draw: 0, 0, -ampViz, ampViz, "no", "Curve"
-        removeObject: vCh1
-
-        selectObject: output
-        Extract one channel: 2
-        vCh2 = selected("Sound")
-        Colour: "{0.75, 0.45, 0.25}"
-        Draw: 0, 0, -ampViz, ampViz, "no", "Curve"
-        removeObject: vCh2
-    endif
-
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "Amp"
+    Text left: "no", "Amp"
     Text bottom: "no", "Time (s)"
-    if nResultCh > 1
-        Text top: "no", "Rendered Output | blue L | amber R | " + fixed$(final_duration, 2) + " s"
-    else
-        Text top: "no", "Rendered Output | mono | " + fixed$(final_duration, 2) + " s"
-    endif
+    Text top: "no", "Rendered Output | " + fixed$ (final_duration, 2) + " s | " + string$ (nSegs) + " segments joined by " + fixed$ (1000 * xfadeUsed, 0) + " ms overlap-add"
 
     # === Summary strip ===
-    Select outer viewport: 0, 8, 5.76, 7.20
-    Select inner viewport: 0.60, 7.70, 5.86, 7.10
+    Select outer viewport: 0, 8, 7.60, 9.05
+    Select inner viewport: 0.60, 7.70, 7.70, 8.95
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
 
     Font size: 6
     Colour: "{0.25, 0.25, 0.35}"
-    summary1$ = "##Dictionary##  " + string$(num_windows) + " windows | " + string$(num_pairs) + " similar pairs | threshold " + fixed$(similarity_threshold, 2) + " | separation " + fixed$(1000 * min_separation_s, 1) + " ms | pruning " + fixed$(speedup, 1) + "x"
-    summary2$ = "##Analysis & navigation##  " + analysis_name$ + " | " + distanceName$ + " | window " + fixed$(window_size_s, 3) + " s | overlap " + fixed$(100 * overlap, 0) + "\% | " + output_mode_name$ + " | seed " + seedLabel$
-    summary3$ = "##Variation & output##  " + variation_name$ + " amount " + fixed$(variation_amount, 2) + " | " + string$(num_output_windows) + " output segments | " + channelDesc$ + " | " + fixed$(final_duration, 2) + " s | peak " + fixed$(final_peak, 3)
+    if lzNorm = undefined
+        lzNormStr$ = "n/a"
+    else
+        lzNormStr$ = fixed$ (lzNorm, 4)
+    endif
+    if codeRatio = undefined
+        codeStr$ = "n/a"
+    else
+        codeStr$ = fixed$ (codeRatio, 2) + "x"
+    endif
+    summary1$ = "##Symbolization##  " + string$ (num_windows) + " windows | alphabet " + string$ (alphabet) + " (" + string$ (symUsed) + " used) | entropy " + fixed$ (symEntropy, 2) + " of " + fixed$ (log2 (alphabet), 2) + " bits | window " + fixed$ (window_size_s, 3) + " s | overlap " + fixed$ (overlap, 2)
+    summary2$ = "##LZ78 parse##  " + string$ (nPhrases) + " phrases | mean " + fixed$ (meanPhraseLen, 2) + " longest " + string$ (maxPhraseLen) + " windows | c(n) " + string$ (lzComplexity) + " | normalized " + lzNormStr$ + " | coded size " + codeStr$
+    summary3$ = "##Generation & output##  " + mode_long$ + " | novelty " + fixed$ (novelty, 2) + " | max copy " + string$ (max_copy_windows) + " | " + string$ (nRuns) + " tokens | " + variation_name$ + " amount " + fixed$ (variation_amount, 2) + " | " + fixed$ (final_duration, 2) + " s | peak " + fixed$ (final_peak, 3) + " | seed " + seedLabel$
     Text: 0.02, "left", 0.78, "half", summary1$
     Text: 0.02, "left", 0.50, "half", summary2$
     Text: 0.02, "left", 0.22, "half", summary3$
@@ -1470,7 +1970,7 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
 
-    # Restore complete page for Picture export / clipboard.
+    # Restore the complete page for Picture export / clipboard.
     Select outer viewport: 0, 8, 0, pageHeight
     Font size: 10
     Colour: "Black"
@@ -1482,9 +1982,9 @@ endif
 selectObject: output
 appendInfoLine: ""
 appendInfoLine: "=== Done ==="
-appendInfoLine: "Output: ", selected$("Sound")
-appendInfoLine: "Duration: ", fixed$(final_duration, 2), " s"
-appendInfoLine: "Dictionary: ", num_pairs, " pairs"
+appendInfoLine: "Output: ", selected$ ("Sound")
+appendInfoLine: "Duration: ", fixed$ (final_duration, 2), " s"
+appendInfoLine: "Dictionary: ", nPhrases, " LZ78 phrases over an alphabet of ", alphabet
 
 # === Cleanup ===
 if analysis_type = 1
@@ -1492,8 +1992,9 @@ if analysis_type = 1
 elsif analysis_type = 3
     removeObject: intensity
 endif
-
-removeObject: features, dictionary
+if madeMono
+    removeObject: original_sound
+endif
 
 # === Play ===
 if play_result
