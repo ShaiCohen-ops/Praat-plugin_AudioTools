@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4 (2026)
+# Version: 0.5 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -12,6 +12,19 @@
 #   effects through layered sinusoidal sample displacement. Each
 #   layer modulates at a different frequency with feedback,
 #   creating rich, swirling textures.
+#
+# Changelog v0.5:
+#   - VIS: replaced the text-only footer emphasis with a central phase-displacement
+#     field that directly shows each modulation layer as a sinusoidally shifted
+#     read path around its unshifted reference line. Curve rate follows the real
+#     per-layer modulator frequency; curve excursion follows the real modulation
+#     depth relative to the deepest layer.
+#   - VIS: Input and Output waveforms now share one amplitude scale.
+#   - VIS: title/subtitle, panel greys, typography and summary strip aligned to
+#     the Praat AudioTools library visual standard.
+#   - VIS: final full-page viewport is re-selected so Picture export saves the
+#     complete figure rather than the final strip only.
+#   - No DSP changes.
 #
 # Changelog v0.4:
 #   - API COMPATIBILITY: the public form is byte-for-byte unchanged.
@@ -207,7 +220,7 @@ else
 endif
 
 # === Info ===
-writeInfoLine: "=== Phase Modulation Matrix ==="
+writeInfoLine: "=== Phase Modulation Matrix v0.5 ==="
 appendInfoLine: "Source: ", original_name$, " (", fixed$(duration, 2), " s)"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
@@ -288,39 +301,163 @@ endif
 # === Visualization ===
 if draw_visualization
     Erase all
-    
-    # Title
-    Select outer viewport: 0, 8, 0.1, 0.5
+    Select outer viewport: 0, 8, 0, 7.05
+
+    # Display-safe source name.
+    vizName$ = replace$(original_name$, "_", "\_ ", 0)
+
+    # Zero-based visualization copies so time axes stay musical even when
+    # the source Sound has a non-zero xmin.
+    selectObject: original
+    vizInput = Copy: "pm_viz_input"
+    Shift times to: "start time", 0
+    selectObject: result
+    vizOutput = Copy: "pm_viz_output"
+    Shift times to: "start time", 0
+
+    # Shared waveform scale.
+    selectObject: vizInput
+    inPeak = Get absolute extremum: 0, 0, "None"
+    selectObject: vizOutput
+    outPeak = Get absolute extremum: 0, 0, "None"
+    sharedPeak = max(inPeak, outPeak)
+    if sharedPeak < 0.01
+        sharedPeak = 0.01
+    endif
+    sharedAmp = sharedPeak * 1.10
+
+    # Title block.
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
+    Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "Phase Modulation: " + original_name$ + " (" + presetName$ + ")"
-    
-    # Original waveform
-    Select outer viewport: 0, 8, 0.6, 2.0
-    Select inner viewport: 0.6, 7.6, 0.7, 1.9
-    selectObject: original
-    Colour: "{0.6, 0.6, 0.6}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
+    Text: 0.5, "centre", 0.68, "half", "##Phase Modulation Matrix v0.5##"
+    Font size: 7
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half",
+        ... vizName$ + " | " + presetName$
+        ... + " | " + string$(modulation_layers) + " layers"
+        ... + " | carrier " + fixed$(carrierFreq, 3) + " Hz"
+
+    # Input waveform.
+    Select outer viewport: 0, 8, 0.62, 1.42
+    Select inner viewport: 0.60, 7.70, 0.68, 1.37
+    Axes: 0, duration, -sharedAmp, sharedAmp
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, duration, -sharedAmp, sharedAmp
+    Colour: "{0.82, 0.82, 0.82}"
+    Draw line: 0, 0, duration, 0
+    selectObject: vizInput
+    Colour: "{0.55, 0.55, 0.55}"
+    Line width: 1
+    Draw: 0, 0, -sharedAmp, sharedAmp, "no", "Curve"
     Colour: "Black"
     Draw inner box
-    Font size: 8
-    Text left: "yes", "Original"
-    
-    # Result waveform
-    Select outer viewport: 0, 8, 2.1, 3.5
-    Select inner viewport: 0.6, 7.6, 2.2, 3.4
-    selectObject: result
-    Colour: "{0.5, 0.3, 0.7}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
+    Font size: 7
+    Text left: "yes", "Input"
+
+    # Output waveform.
+    Select outer viewport: 0, 8, 1.50, 2.30
+    Select inner viewport: 0.60, 7.70, 1.56, 2.25
+    Axes: 0, duration, -sharedAmp, sharedAmp
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, duration, -sharedAmp, sharedAmp
+    Colour: "{0.82, 0.82, 0.82}"
+    Draw line: 0, 0, duration, 0
+    selectObject: vizOutput
+    Colour: "{0.25, 0.45, 0.75}"
+    Line width: 1
+    Draw: 0, 0, -sharedAmp, sharedAmp, "no", "Curve"
     Colour: "Black"
     Draw inner box
-    Text left: "yes", "Phase Mod"
+    Font size: 7
+    Text left: "yes", "Output"
+
+    # ----------------------------------------------------------
+    # PHASE-DISPLACEMENT FIELD
+    # Each lane is one real processing layer. The grey line is the
+    # unshifted read position; the amber curve is the displaced read path.
+    # Frequency and relative depth come directly from the DSP parameters.
+    # ----------------------------------------------------------
+    maxShownLayers = 8
+    shownLayers = min(modulation_layers, maxShownLayers)
+
+    # Find the largest displayed depth so lane excursions preserve the
+    # actual relative depth relationship between layers.
+    maxVizDepth = 0
+    for vi to shownLayers
+        if modulation_layers <= maxShownLayers
+            actualLayer = vi
+        else
+            actualLayer = round(1 + (vi - 1) * (modulation_layers - 1) / (shownLayers - 1))
+        endif
+        if use_fixed_ms_depth
+            vizDepth = fixed_depth_ms / 1000
+        else
+            vizDepth = duration / (mod_depth_base + actualLayer * mod_depth_increment)
+        endif
+        if vizDepth > maxVizDepth
+            maxVizDepth = vizDepth
+        endif
+    endfor
+    if maxVizDepth <= 0
+        maxVizDepth = 1
+    endif
+
+    Select outer viewport: 0, 8, 2.43, 4.22
+    Select inner viewport: 0.60, 7.70, 2.58, 4.12
+    Axes: 0, duration, 0.35, shownLayers + 0.65
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, duration, 0.35, shownLayers + 0.65
+
+    # Draw from top layer downward so layer 1 is visually first.
+    for vi to shownLayers
+        if modulation_layers <= maxShownLayers
+            actualLayer = vi
+        else
+            actualLayer = round(1 + (vi - 1) * (modulation_layers - 1) / (shownLayers - 1))
+        endif
+
+        laneY = shownLayers - vi + 1
+        if use_fixed_ms_depth
+            vizDepth = fixed_depth_ms / 1000
+        else
+            vizDepth = duration / (mod_depth_base + actualLayer * mod_depth_increment)
+        endif
+        vizFreq = carrierFreq * (actualLayer + 1)
+        vizAmp = 0.27 * vizDepth / maxVizDepth
+
+        Colour: "{0.82, 0.82, 0.82}"
+        Line width: 1
+        Draw line: 0, laneY, duration, laneY
+
+        Colour: "{0.80, 0.60, 0.20}"
+        Line width: 1.5
+        nViz = 180
+        prevT = 0
+        prevY = laneY + vizAmp * sin(0)
+        for k from 1 to nViz
+            tViz = duration * k / nViz
+            yViz = laneY + vizAmp * sin(2 * pi * vizFreq * tViz)
+            Draw line: prevT, prevY, tViz, yViz
+            prevT = tViz
+            prevY = yViz
+        endfor
+
+        Font size: 6
+        Colour: "{0.35, 0.35, 0.50}"
+        Text: duration * 0.01, "left", laneY + 0.22, "half", "L" + string$(actualLayer)
+    endfor
+
+    Line width: 1
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text top: "no", "Phase-displacement field"
     Text bottom: "yes", "Time (s)"
-    
-    # Original spectrogram
-    Select outer viewport: 0, 4, 3.7, 5.3
-    Select inner viewport: 0.6, 3.8, 3.9, 5.2
-    selectObject: original
+
+    # Input spectrogram.
+    Select outer viewport: 0, 4, 4.40, 6.18
+    Select inner viewport: 0.60, 3.85, 4.58, 6.07
+    selectObject: vizInput
     nch = Get number of channels
     if nch > 1
         origMono = Convert to mono
@@ -335,12 +472,12 @@ if draw_visualization
     Draw inner box
     Font size: 7
     Text left: "yes", "Freq"
-    Text bottom: "yes", "Original (s)"
-    
-    # Result spectrogram
-    Select outer viewport: 4, 8, 3.7, 5.3
-    Select inner viewport: 4.4, 7.6, 3.9, 5.2
-    selectObject: result
+    Text top: "no", "Input spectrum"
+
+    # Output spectrogram.
+    Select outer viewport: 4, 8, 4.40, 6.18
+    Select inner viewport: 4.45, 7.70, 4.58, 6.07
+    selectObject: vizOutput
     nch = Get number of channels
     if nch > 1
         resMono = Convert to mono
@@ -355,16 +492,40 @@ if draw_visualization
     Draw inner box
     Font size: 7
     Text left: "yes", "Freq"
-    Text bottom: "yes", "Phase Mod (s)"
-    
-    # Legend
-    Select outer viewport: 0, 8, 5.4, 5.7
-    Font size: 7
-    Colour: "{0.4, 0.4, 0.4}"
-    Text: 0.5, "centre", 0.5, "half", "Layers: " + string$(modulation_layers) + " | Carrier: " + fixed$(carrierFreq, 3) + " Hz | Feedback: " + fixed$(feedback_base, 2) + " | Gain: " + fixed$(layer_gain_base, 2)
-    
+    Text top: "no", "Output spectrum"
+
+    # Compact summary strip.
+    Select outer viewport: 0, 8, 6.32, 6.92
+    Select inner viewport: 0.60, 7.70, 6.38, 6.86
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    Font size: 6
+    Colour: "{0.25, 0.25, 0.35}"
+    if use_fixed_ms_depth
+        depthSummary$ = fixed$(fixed_depth_ms, 1) + " ms fixed"
+    else
+        depthSummary$ = "duration-relative"
+    endif
+    Text: 0.02, "left", 0.67, "half",
+        ... "##" + presetName$ + "##  |  layers " + string$(modulation_layers)
+        ... + "  |  carrier " + fixed$(carrierFreq, 3) + " Hz"
+        ... + "  |  depth " + depthSummary$
+    Text: 0.02, "left", 0.25, "half",
+        ... "feedback " + fixed$(feedback_base, 2)
+        ... + "  |  layer gain " + fixed$(layer_gain_base, 2)
+        ... + " - " + fixed$(layer_gain_rate, 2) + " / layer"
+        ... + "  |  peak " + fixed$(scale_peak, 2)
+    Colour: "Black"
+    Draw rectangle: 0, 1, 0, 1
+
     Font size: 10
     Colour: "Black"
+    Line width: 1
+
+    removeObject: vizInput, vizOutput
+
+    # Ensure full-page export, not the last selected strip.
+    Select outer viewport: 0, 8, 0, 7.05
 endif
 
 # === Final Info ===

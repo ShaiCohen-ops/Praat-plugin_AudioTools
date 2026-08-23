@@ -3,12 +3,27 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.2 (2026)
+# Version: 1.3 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
 #   Paulstretch - extreme time stretching with phase randomization.
+#
+# Changelog v1.3 (visualization only; DSP unchanged):
+#   - Rebuilt the title/subtitle band to the Praat AudioTools library standard.
+#   - Input visualization now shows the mono engine input and shares an
+#     amplitude scale with the stretched output.
+#   - Added an explanatory process panel: window -> magnitude -> randomized
+#     phase -> overlap-add, including the actual input/output hop relationship.
+#   - Spectrogram panels retained but re-spaced to avoid title/axis collisions.
+#   - Palette normalized: source grey, output L blue, output R amber; process
+#     colours are semantic and spectrograms remain neutral.
+#   - Summary strip normalized and percent-sign rendering fixed.
+#   - Visualization now ends by re-selecting the full page, fixing PNG/EPS/
+#     clipboard export of only the last viewport.
+#   - FIX: processing-time reporting now uses Praat's stopwatch correctly;
+#     repeated runs in one session no longer show negative render times.
 #
 # Changelog v1.2 (internal DSP / compatibility pass):
 #   Public parameter signature is intentionally unchanged from v1.1; only the form title version is updated.
@@ -95,7 +110,7 @@
 #     the same phase value for both cos() and sin().
 # ============================================================
 
-form Paulstretch v1.2
+form Paulstretch v1.3
     comment === Preset ===
     optionmenu Preset 1
         option Custom
@@ -258,7 +273,7 @@ endif
 frameSeeds# = randomInteger#(nFrames, 1, 2000000000)
 
 # Info
-writeInfoLine: "=== Paulstretch v1.2 ==="
+writeInfoLine: "=== Paulstretch v1.3 ==="
 appendInfoLine: "Preset: ", preset_name$
 appendInfoLine: "Speed:  ", speedStr$
 appendInfoLine: "Source: ", original_name$, " (", fixed$(inputDuration, 2), " s)"
@@ -483,160 +498,270 @@ removeObject: sourceSound
 
 selectObject: result
 finalDuration = Get total duration
-processingTime = stopwatch - startTime
+processingTime = stopwatch
 vizMaxHz = min(5000, sampleRate / 2)
 
 # Visualization
 if draw_visualization
     Erase all
-    Select outer viewport: 0, 8, 0, 8
+    Select outer viewport: 0, 8, 0, 5.95
+
+    # Display names: Praat interprets underscore as subscript markup.
+    vizName$ = replace$(original_name$, "_", "\_ ", 0)
+
+    # The Paulstretch engine works on mono. Show that same signal in the
+    # input panel rather than an arbitrary original channel layout.
+    selectObject: original
+    if numChannels > 1
+        vizInput = Convert to mono
+    else
+        vizInput = Copy: "ps_viz_input"
+    endif
+    selectObject: vizInput
+    Shift times to: "start time", 0
+
+    # Prepare output channels once and use a common amplitude scale.
+    selectObject: result
+    nChResult = Get number of channels
+    vizOutL = Extract one channel: 1
+    if nChResult > 1
+        selectObject: result
+        vizOutR = Extract one channel: 2
+    else
+        selectObject: vizOutL
+        vizOutR = Copy: "ps_viz_output_copy"
+    endif
+
+    selectObject: vizInput
+    inPeak = Get absolute extremum: 0, 0, "None"
+    selectObject: vizOutL
+    outLPeak = Get absolute extremum: 0, 0, "None"
+    selectObject: vizOutR
+    outRPeak = Get absolute extremum: 0, 0, "None"
+    sharedPeak = max(inPeak, max(outLPeak, outRPeak))
+    if sharedPeak < 0.01
+        sharedPeak = 0.01
+    endif
+    sharedAmp = sharedPeak * 1.10
 
     # ----------------------------------------------------------
-    # Title
+    # Title band -- library standard
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 0, 0.45
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.65, "half", "##Paulstretch - Spectral Time Stretch##"
+    Text: 0.5, "centre", 0.68, "half", "##Paulstretch - Spectral Time Stretch v1.3##"
     Font size: 7
-    Colour: "{0.35, 0.35, 0.52}"
-    Text: 0.5, "centre", -0.25, "half",
-        ... original_name$ + "  |  " + preset_name$
-        ... + "  |  " + fixed$(stretch_factor, 1) + "x"
-        ... + "  |  " + speedStr$
-        ... + "  |  " + fixed$(processingTime, 1) + "s"
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half",
+        ... vizName$ + " | " + preset_name$
+        ... + " | " + fixed$(stretch_factor, 1) + "x"
+        ... + " | " + speedStr$
+        ... + " | " + string$(numChannels) + " ch in -> " + string$(nChResult) + " ch out"
 
     # ----------------------------------------------------------
-    # Input waveform
+    # Engine input waveform
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 0.52, 1.42
-    Select inner viewport: 0.55, 7.65, 0.57, 1.37
-    selectObject: original
+    Select outer viewport: 0, 8, 0.60, 1.35
+    Select inner viewport: 0.60, 7.70, 0.65, 1.30
+    Axes: 0, inputDuration, -sharedAmp, sharedAmp
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, inputDuration, -sharedAmp, sharedAmp
+    Colour: "{0.82, 0.82, 0.82}"
+    Draw line: 0, 0, inputDuration, 0
+    selectObject: vizInput
     Colour: "{0.55, 0.55, 0.55}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
+    Draw: 0, inputDuration, -sharedAmp, sharedAmp, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 7
     Text left: "yes", "Input"
-    Text top: "no", "Original  (" + fixed$(inputDuration, 2) + " s)"
+    Text top: "no", "Engine input (mono) - " + fixed$(inputDuration, 2) + " s"
 
     # ----------------------------------------------------------
-    # Output waveform
+    # Stretched output waveform
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 1.46, 2.36
-    Select inner viewport: 0.55, 7.65, 1.51, 2.31
-    selectObject: result
-    nChResult = Get number of channels
+    Select outer viewport: 0, 8, 1.42, 2.17
+    Select inner viewport: 0.60, 7.70, 1.47, 2.12
+    Axes: 0, finalDuration, -sharedAmp, sharedAmp
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, finalDuration, -sharedAmp, sharedAmp
+    Colour: "{0.82, 0.82, 0.82}"
+    Draw line: 0, 0, finalDuration, 0
+
+    selectObject: vizOutL
+    Colour: "{0.25, 0.45, 0.75}"
+    Line width: 1
+    Draw: 0, finalDuration, -sharedAmp, sharedAmp, "no", "Curve"
     if nChResult > 1
-        Extract one channel: 1
-        vizL = selected("Sound")
-        Colour: "{0.25, 0.50, 0.82}"
-        Draw: 0, 0, 0, 0, "no", "Curve"
-        selectObject: result
-        Extract one channel: 2
-        vizR = selected("Sound")
-        Colour: "{0.82, 0.45, 0.25}"
-        Draw: 0, 0, 0, 0, "no", "Curve"
-        removeObject: vizL, vizR
-    else
-        selectObject: result
-        Colour: "{0.35, 0.58, 0.78}"
-        Draw: 0, 0, 0, 0, "no", "Curve"
+        selectObject: vizOutR
+        Colour: "{0.90, 0.70, 0.40}"
+        Draw: 0, finalDuration, -sharedAmp, sharedAmp, "no", "Curve"
     endif
+
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "Stretched"
-    Text bottom: "yes", "Time (s)"
-    Text top: "no", "Output  (" + fixed$(finalDuration, 2) + " s,  " + fixed$(stretch_factor, 1) + "x)"
+    Text left: "yes", "Output"
+    if nChResult > 1
+        Text top: "no", "Stretched output - blue L / amber R - " + fixed$(finalDuration, 2) + " s"
+    else
+        Text top: "no", "Stretched output - " + fixed$(finalDuration, 2) + " s"
+    endif
 
     # ----------------------------------------------------------
-    # Original spectrogram (left half)
+    # Process explanation
     # ----------------------------------------------------------
-    Select outer viewport: 0, 4.1, 2.44, 3.84
-    Select inner viewport: 0.55, 3.85, 2.54, 3.74
-    selectObject: original
-    if numChannels > 1
-        Extract one channel: 1
-        vizSpecOrig = selected("Sound")
-    else
-        Copy: "vizSpecOrig"
-        vizSpecOrig = selected("Sound")
+    Select outer viewport: 0, 8, 2.30, 3.18
+    Select inner viewport: 0.60, 7.70, 2.35, 3.13
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, 1, 0, 1
+
+    Font size: 7
+    Colour: "Black"
+    Text: 0.50, "centre", 0.91, "half", "How Paulstretch makes time longer without lowering pitch"
+
+    # Step 1: overlapping time windows
+    Paint rectangle: "{0.92, 0.92, 0.92}", 0.03, 0.21, 0.28, 0.72
+    Colour: "{0.55, 0.55, 0.55}"
+    for wi from 0 to 3
+        wx = 0.055 + wi * 0.035
+        Draw rectangle: wx, wx + 0.075, 0.39, 0.61
+    endfor
+    Font size: 6
+    Colour: "{0.25, 0.25, 0.35}"
+    Text: 0.12, "centre", 0.20, "half", "1  WINDOW"
+
+    # Step 2: retain the spectral magnitude shape
+    Colour: "{0.80, 0.60, 0.20}"
+    for bi from 1 to 7
+        bx = 0.285 + bi * 0.016
+        bh = 0.08 + 0.14 * abs(sin(bi * 1.37))
+        Draw line: bx, 0.39, bx, 0.39 + bh
+    endfor
+    Font size: 6
+    Colour: "{0.25, 0.25, 0.35}"
+    Text: 0.35, "centre", 0.20, "half", "2  KEEP MAGNITUDE"
+
+    # Step 3: phase is deliberately de-correlated
+    Colour: "{0.78, 0.28, 0.22}"
+    for ph from 1 to 7
+        px = 0.515 + ph * 0.016
+        py = 0.50 + 0.13 * sin(ph * 2.11)
+        Draw line: px - 0.007, py - 0.025, px + 0.007, py + 0.025
+        Draw line: px - 0.007, py + 0.025, px + 0.007, py - 0.025
+    endfor
+    Font size: 6
+    Colour: "{0.25, 0.25, 0.35}"
+    Text: 0.58, "centre", 0.20, "half", "3  RANDOMIZE PHASE"
+
+    # Step 4: overlap-add creates the long texture
+    Colour: "{0.25, 0.45, 0.75}"
+    for oi from 0 to 4
+        ox = 0.745 + oi * 0.035
+        Draw rectangle: ox, ox + 0.09, 0.38, 0.62
+    endfor
+    Font size: 6
+    Colour: "{0.25, 0.25, 0.35}"
+    Text: 0.84, "centre", 0.20, "half", "4  OVERLAP-ADD"
+
+    # Arrows between stages
+    Colour: "{0.60, 0.60, 0.60}"
+    Font size: 8
+    Text: 0.235, "centre", 0.50, "half", "->"
+    Text: 0.465, "centre", 0.50, "half", "->"
+    Text: 0.700, "centre", 0.50, "half", "->"
+
+    # The hop relationship is the clearest user-facing explanation of stretch.
+    Font size: 6
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.50, "centre", 0.06, "half",
+        ... "Source advances " + fixed$(hopIn * 1000, 1) + " ms per frame; output advances "
+        ... + fixed$(hopOut * 1000, 1) + " ms -> " + fixed$(stretch_factor, 1) + "x longer"
+    if create_stereo
+        Colour: "{0.55, 0.45, 0.25}"
+        Text: 0.965, "right", 0.91, "half",
+            ... "R phase offset = " + fixed$(stereo_phase_offset, 2) + " x pi"
     endif
+
+    Colour: "Black"
+    Draw inner box
+
+    # ----------------------------------------------------------
+    # Spectrograms -- preserved comparison, cleaner geometry
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 4, 3.34, 4.86
+    Select inner viewport: 0.60, 3.85, 3.46, 4.72
+    selectObject: vizInput
     To Spectrogram: 0.03, vizMaxHz, 0.01, 20, "Gaussian"
     origSpec = selected("Spectrogram")
-    Paint: 0, 0, 0, vizMaxHz, 100, "yes", 50, 6, 0, "no"
-    removeObject: origSpec, vizSpecOrig
+    Paint: 0, inputDuration, 0, vizMaxHz, 100, "yes", 50, 6, 0, "no"
+    removeObject: origSpec
     Colour: "Black"
     Draw inner box
     Font size: 7
     Text left: "yes", "Hz"
     Text bottom: "yes", "Time (s)"
-    Text top: "no", "Original spectrogram"
+    Text top: "no", "Input spectrum"
 
-    # ----------------------------------------------------------
-    # Stretched spectrogram (right half)
-    # ----------------------------------------------------------
-    Select outer viewport: 4.1, 8, 2.44, 3.84
-    Select inner viewport: 4.40, 7.65, 2.54, 3.74
-    selectObject: result
-    if nChResult > 1
-        Extract one channel: 1
-        vizSpecOut = selected("Sound")
-    else
-        Copy: "vizSpecOut"
-        vizSpecOut = selected("Sound")
-    endif
-    resDur = Get total duration
-    showDur = min(10, resDur)
+    Select outer viewport: 4, 8, 3.34, 4.86
+    Select inner viewport: 4.45, 7.70, 3.46, 4.72
+    selectObject: vizOutL
+    showDur = min(10, finalDuration)
     To Spectrogram: 0.03, vizMaxHz, 0.01, 20, "Gaussian"
-    resSpec = selected("Spectrogram")
+    outSpec = selected("Spectrogram")
     Paint: 0, showDur, 0, vizMaxHz, 100, "yes", 50, 6, 0, "no"
-    removeObject: resSpec, vizSpecOut
+    removeObject: outSpec
     Colour: "Black"
     Draw inner box
     Font size: 7
     Text left: "yes", "Hz"
     Text bottom: "yes", "Time (s)"
-    Text top: "no", "Stretched spectrogram"
+    if finalDuration > 10
+        Text top: "no", "Stretched spectrum - first 10 s"
+    else
+        Text top: "no", "Stretched spectrum"
+    endif
 
     # ----------------------------------------------------------
-    # Summary panel
+    # Summary strip
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 3.92, 4.72
-    Select inner viewport: 0.55, 7.65, 3.98, 4.66
+    Select outer viewport: 0, 8, 5.00, 5.78
+    Select inner viewport: 0.60, 7.70, 5.06, 5.72
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
-    Font size: 7
-    Colour: "Black"
-    Text: 0.02, "left", 0.82, "half", "##Summary##"
-    Font size: 6
-    Colour: "{0.30, 0.30, 0.30}"
 
     if create_stereo
-        stereoStr$ = "Stereo (offset=" + fixed$(stereo_phase_offset, 2) + ")"
+        stereoStr$ = "Stereo; phase offset " + fixed$(stereo_phase_offset, 2) + " x pi"
     else
         stereoStr$ = "Mono"
     endif
 
-    Text: 0.02, "left", 0.52, "half",
-        ... "Preset: " + preset_name$
-        ... + "  |  Stretch: " + fixed$(stretch_factor, 1) + "x"
-        ... + "  |  Window: " + fixed$(window_size_s, 3) + " s (" + string$(windowSamples) + " smp)"
-        ... + "  |  Overlap: " + fixed$(overlap_percent, 0) + "%"
-        ... + "  |  " + stereoStr$
-    Text: 0.02, "left", 0.18, "half",
-        ... "In: " + fixed$(inputDuration, 2) + " s -> Out: " + fixed$(finalDuration, 2) + " s"
-        ... + "  |  " + speedStr$
-        ... + "  |  Frames: " + string$(nFrames)
-        ... + "  |  Render: " + fixed$(processingTime, 1) + " s"
+    Font size: 6
+    Colour: "{0.25, 0.25, 0.35}"
+    Text: 0.02, "left", 0.70, "half",
+        ... "##Stretch## " + fixed$(stretch_factor, 1) + "x"
+        ... + " | ##Window## " + fixed$(window_size_s * 1000, 1) + " ms (" + string$(windowSamples) + " samples)"
+        ... + " | ##Overlap## " + fixed$(overlap_percent, 0) + "\% "
+        ... + " | ##Frames## " + string$(nFrames)
+    Text: 0.02, "left", 0.28, "half",
+        ... "##Duration## " + fixed$(inputDuration, 2) + " -> " + fixed$(finalDuration, 2) + " s"
+        ... + " | ##Mode## " + stereoStr$
+        ... + " | ##Quality## " + speedStr$
+        ... + " | ##Render## " + fixed$(processingTime, 1) + " s"
+
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
+
+    # Cleanup visualization objects.
+    removeObject: vizInput, vizOutL, vizOutR
 
     Font size: 10
     Colour: "Black"
     Line width: 1
+
+    # Critical for complete Picture-window export.
+    Select outer viewport: 0, 8, 0, 5.95
 endif
 
 # Final Info

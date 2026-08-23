@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.3 (2026)
+# Version: 1.4 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -25,6 +25,19 @@
 #     IC 3 (m3/M6) = 0.50  MEDIUM
 #     IC 4 (M3/m6) = 0.10  CONSONANT
 #     IC 5 (P4/P5) = 0.10  CONSONANT
+#
+# Changelog v1.4:
+#   - Visualization-only AudioTools uniformity pass; DSP and score computation unchanged.
+#   - Title/subtitle, panel geometry, fonts, greys and summary strip aligned to
+#     the library standard; Sound names are escaped for Praat Picture text.
+#   - Original/output waveforms now share one amplitude scale.
+#   - Output uses the library blue; tension classes use semantic green/amber/red
+#     consistently in both the sorted curve and histogram (blue no longer has
+#     two unrelated meanings).
+#   - Tension panel uses the absolute 0..1 score scale so the fixed 0.35/0.75
+#     class boundaries have a stable visual meaning across sources and presets.
+#   - FIX: drawing ends by re-selecting the full page, so Picture export saves
+#     the whole visualization rather than only the footer/last viewport.
 #
 # Changelog v1.3:
 #   - FIX: visualization cleanup could leave no Sound selected; the Final Info
@@ -67,7 +80,7 @@
 #      distribution histogram, spectrogram, stats footer)
 # ============================================================
 
-form Harmonic Tension Sorted Grains v1.2
+form Harmonic Tension Sorted Grains v1.4
     comment Select a Sound object first
 
     comment === Preset ===
@@ -591,37 +604,58 @@ mean_score = sumScore / grainCount
 # ============================================================
 if draw_visualization and grainCount > 0
     Erase all
+    Select outer viewport: 0, 8, 0, 6.45
 
-    # --- Title ---
-    Select outer viewport: 0, 8, 0.05, 0.55
-    Axes: 0, 1, 0, 1
-    Font size: 13
-    Colour: "Black"
     if sort_direction = 1
         sortLabel$ = "Chaos -> Clarity"
     else
         sortLabel$ = "Clarity -> Chaos"
     endif
-    Text: 0.5, "centre", 0.5, "half",
-        ..."Harmonic Tension:  " + sound_name$ + "     [" + sortLabel$ + "]     preset: " + preset_name$
 
-    # --- Original Waveform ---
-    Select outer viewport: 0, 8, 0.6, 1.65
-    Select inner viewport: 0.6, 7.6, 0.7, 1.6
+    # Escape underscores because Praat Picture text treats them as markup.
+    vizName$ = replace$(sound_name$, "_", "\_ ", 0)
+
+    # Shared waveform amplitude scale: comparison now reflects real level.
     selectObject: original
-    Colour: "{0.6, 0.6, 0.6}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
+    vizInPeak = Get absolute extremum: 0, 0, "None"
+    selectObject: result
+    vizOutPeak = Get absolute extremum: 0, 0, "None"
+    vizAmp = max(vizInPeak, vizOutPeak)
+    if vizAmp < 1e-12
+        vizAmp = 1
+    endif
+    vizAmp *= 1.05
+
+    # --- Library-standard title block -----------------------
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
+    Axes: 0, 1, 0, 1
+    Font size: 12
+    Colour: "Black"
+    Text: 0.5, "centre", 0.68, "half", "##Harmonic Tension Sorted Grains v1.4##"
+    Font size: 7
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half",
+        ...vizName$ + " | " + preset_name$ + " | " + sortLabel$
+        ...+ " | " + string$(grainCount) + " grains | " + fixed$(output_duration, 2) + " s"
+
+    # --- Original waveform ---------------------------------
+    Select outer viewport: 0, 8, 0.60, 1.45
+    Select inner viewport: 0.60, 7.70, 0.65, 1.40
+    selectObject: original
+    Colour: "{0.55, 0.55, 0.55}"
+    Draw: 0, 0, -vizAmp, vizAmp, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 7
     Text left: "yes", "Original"
 
-    # --- Sorted Output Waveform ---
-    Select outer viewport: 0, 8, 1.7, 2.75
-    Select inner viewport: 0.6, 7.6, 1.75, 2.7
+    # --- Sorted output waveform ----------------------------
+    Select outer viewport: 0, 8, 1.50, 2.35
+    Select inner viewport: 0.60, 7.70, 1.55, 2.30
     selectObject: result
-    Colour: "{0.25, 0.50, 0.85}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
+    Colour: "{0.25, 0.45, 0.75}"
+    Draw: 0, 0, -vizAmp, vizAmp, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 7
@@ -629,76 +663,46 @@ if draw_visualization and grainCount > 0
     Text bottom: "yes", "Time (s)"
 
     # -------------------------------------------------------
-    # --- Tension Curve (main panel) ------------------------
+    # --- Sorted tension trajectory -------------------------
     # -------------------------------------------------------
-    Select outer viewport: 0, 8, 2.85, 4.65
-    Select inner viewport: 0.6, 7.6, 2.95, 4.6
-
-    scoreRange = maxScore - minScore
-    if scoreRange < 0.05
-        scoreRange = 0.05
-    endif
-    yLo = max(0, minScore - scoreRange * 0.10)
-    yHi = maxScore + scoreRange * 0.15
-
+    Select outer viewport: 0, 8, 2.48, 4.38
+    Select inner viewport: 0.60, 7.70, 2.60, 4.25
+    yLo = 0
+    yHi = 1.05
     Axes: 0, grainCount + 1, yLo, yHi
 
-    # Background
     Paint rectangle: "{0.97, 0.97, 0.97}", 0, grainCount + 1, yLo, yHi
+    Paint rectangle: "{0.91, 0.96, 0.91}", 0, grainCount + 1, 0, 0.35
+    Paint rectangle: "{0.98, 0.95, 0.86}", 0, grainCount + 1, 0.35, 0.75
+    Paint rectangle: "{0.98, 0.90, 0.89}", 0, grainCount + 1, 0.75, yHi
 
-    # Zone shading: consonant (green), medium (yellow), tension (red)
-    consHi = min(0.35, yHi)
-    if consHi > yLo
-        Paint rectangle: "{0.87, 0.96, 0.87}", 0, grainCount + 1, yLo, consHi
-    endif
-    medLo = max(0.35, yLo)
-    medHi = min(0.75, yHi)
-    if medHi > medLo
-        Paint rectangle: "{0.97, 0.97, 0.83}", 0, grainCount + 1, medLo, medHi
-    endif
-    hiLo = max(0.75, yLo)
-    if yHi > hiLo
-        Paint rectangle: "{0.99, 0.87, 0.87}", 0, grainCount + 1, hiLo, yHi
-    endif
-
-    # Zone threshold lines
     Colour: "{0.72, 0.72, 0.72}"
     Dotted line
-    if 0.35 > yLo and 0.35 < yHi
-        Draw line: 0, 0.35, grainCount + 1, 0.35
-    endif
-    if 0.75 > yLo and 0.75 < yHi
-        Draw line: 0, 0.75, grainCount + 1, 0.75
-    endif
+    Draw line: 0, 0.35, grainCount + 1, 0.35
+    Draw line: 0, 0.75, grainCount + 1, 0.75
     Solid line
 
-    # Bars: color gradient blue (consonant) -> yellow -> red (tension)
+    # Semantic class colours: consonant / medium / high tension.
     for i from 1 to grainCount
         s = grainScore#[i]
-        normS = (s - yLo) / (yHi - yLo)
-        if normS < 0
-            normS = 0
+        if s < 0.35
+            barColor$ = "{0.35, 0.60, 0.40}"
+        elsif s < 0.75
+            barColor$ = "{0.80, 0.60, 0.20}"
+        else
+            barColor$ = "{0.78, 0.28, 0.22}"
         endif
-        if normS > 1
-            normS = 1
-        endif
-        r_bar = min(1.0, normS * 2.0)
-        g_bar = max(0.0, 1.0 - abs(normS - 0.5) * 2.2)
-        b_bar = max(0.0, 1.0 - normS * 2.0)
-        barColor$ = "{" + fixed$(r_bar, 2) + ", " + fixed$(g_bar, 2) + ", " + fixed$(b_bar, 2) + "}"
-        Paint rectangle: barColor$, i - 0.8, i - 0.2, yLo, s
+        Paint rectangle: barColor$, i - 0.8, i - 0.2, 0, s
     endfor
 
-    # Trend line
-    Colour: "{0.1, 0.1, 0.1}"
-    Line width: 2
+    Colour: "{0.25, 0.25, 0.35}"
+    Line width: 1.7
     for i from 2 to grainCount
         Draw line: i - 1.5, grainScore#[i-1], i - 0.5, grainScore#[i]
     endfor
     Line width: 1
 
-    # Mean score line
-    Colour: "{0.3, 0.3, 0.7}"
+    Colour: "{0.35, 0.35, 0.50}"
     Dotted line
     Draw line: 0, mean_score, grainCount + 1, mean_score
     Solid line
@@ -708,37 +712,29 @@ if draw_visualization and grainCount > 0
     Marks left every: 1, 0.1, "yes", "yes", "no"
     Marks bottom every: 1, max(1, round(grainCount / 8)), "yes", "yes", "no"
     Font size: 7
-    Text left:   "yes", "Tension Score"
+    Text left: "yes", "Tension score"
     Text bottom: "yes", "Grain # (sorted order)"
 
-    # Zone labels (right side of plot, if in range)
     Font size: 6
-    labelX = grainCount * 0.97
-    Colour: "{0.25, 0.65, 0.25}"
-    if 0.17 > yLo and 0.17 < yHi
-        Text: labelX, "right", 0.17, "half", "Consonant"
-    endif
-    Colour: "{0.75, 0.65, 0.10}"
-    if 0.55 > yLo and 0.55 < yHi
-        Text: labelX, "right", 0.55, "half", "Medium"
-    endif
-    Colour: "{0.80, 0.15, 0.15}"
-    if 0.87 > yLo and 0.87 < yHi
-        Text: labelX, "right", 0.87, "half", "High"
-    endif
+    labelX = grainCount + 0.70
+    Colour: "{0.35, 0.60, 0.40}"
+    Text: labelX, "right", 0.17, "half", "Consonant"
+    Colour: "{0.80, 0.60, 0.20}"
+    Text: labelX, "right", 0.55, "half", "Medium"
+    Colour: "{0.78, 0.28, 0.22}"
+    Text: labelX, "right", 0.88, "half", "High"
 
-    Font size: 7
-    Colour: "{0.3, 0.3, 0.7}"
-    if mean_score > yLo and mean_score < yHi
-        Text: 1.2, "left", mean_score + (yHi - yLo) * 0.03, "half",
+    Colour: "{0.35, 0.35, 0.50}"
+    if mean_score > 0 and mean_score < 1.05
+        Text: 1.2, "left", min(mean_score + 0.035, 1.02), "half",
             ..."mean=" + fixed$(mean_score, 3)
     endif
 
     # -------------------------------------------------------
-    # --- Tension Distribution Histogram --------------------
+    # --- Tension distribution ------------------------------
     # -------------------------------------------------------
-    Select outer viewport: 0, 4, 4.72, 5.85
-    Select inner viewport: 0.6, 3.8, 4.80, 5.78
+    Select outer viewport: 0, 4, 4.55, 5.75
+    Select inner viewport: 0.60, 3.85, 4.67, 5.62
 
     numBins  = 10
     binWidth = 1.0 / numBins
@@ -765,15 +761,17 @@ if draw_visualization and grainCount > 0
 
     Axes: 0, 1, 0, maxBinH * 1.15
     Paint rectangle: "{0.97, 0.97, 0.97}", 0, 1, 0, maxBinH * 1.15
-
     for bin from 1 to numBins
         hbLo = (bin - 1) * binWidth
         hbHi = bin * binWidth - binWidth * 0.06
         hbMid = (hbLo + hbHi) / 2
-        rh = min(1.0, hbMid * 2.0)
-        gh = max(0.0, 1.0 - abs(hbMid - 0.5) * 2.2)
-        bh = max(0.0, 1.0 - hbMid * 2.0)
-        hColor$ = "{" + fixed$(rh, 2) + ", " + fixed$(gh, 2) + ", " + fixed$(bh, 2) + "}"
+        if hbMid < 0.35
+            hColor$ = "{0.35, 0.60, 0.40}"
+        elsif hbMid < 0.75
+            hColor$ = "{0.80, 0.60, 0.20}"
+        else
+            hColor$ = "{0.78, 0.28, 0.22}"
+        endif
         Paint rectangle: hColor$, hbLo, hbHi, 0, histCount[bin]
     endfor
 
@@ -781,14 +779,15 @@ if draw_visualization and grainCount > 0
     Draw inner box
     Font size: 7
     Marks bottom every: 1, 0.2, "yes", "yes", "no"
-    Text left:   "yes", "Count"
-    Text bottom: "yes", "Tension Score"
+    Text left: "yes", "Count"
+    Text bottom: "yes", "Tension score"
+    Text top: "no", "Distribution"
 
     # -------------------------------------------------------
-    # --- Output Spectrogram --------------------------------
+    # --- Output spectrogram --------------------------------
     # -------------------------------------------------------
-    Select outer viewport: 4, 8, 4.72, 5.85
-    Select inner viewport: 4.4, 7.6, 4.80, 5.78
+    Select outer viewport: 4, 8, 4.55, 5.75
+    Select inner viewport: 4.45, 7.70, 4.67, 5.62
     selectObject: result
     To Spectrogram: 0.03, vizMaxHz, 0.01, 20, "Gaussian"
     spectrogram = selected("Spectrogram")
@@ -797,24 +796,31 @@ if draw_visualization and grainCount > 0
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left:   "yes", "Freq (Hz)"
-    Text bottom: "yes", "Sorted output"
+    Text left: "yes", "Freq (Hz)"
+    Text bottom: "yes", "Time (s)"
+    Text top: "no", "Sorted output spectrum"
 
     # -------------------------------------------------------
-    # --- Stats Footer --------------------------------------
+    # --- Library-standard summary strip --------------------
     # -------------------------------------------------------
-    Select outer viewport: 0, 8, 5.9, 6.3
+    Select outer viewport: 0, 8, 5.90, 6.40
+    Select inner viewport: 0.60, 7.70, 5.93, 6.37
     Axes: 0, 1, 0, 1
-    Font size: 7
-    Colour: "{0.35, 0.35, 0.35}"
-    Text: 0.5, "centre", 0.5, "half",
-        ..."Grains: " + string$(grainCount) +
-        ..."  |  Tension range: " + fixed$(minScore, 3) + " - " + fixed$(maxScore, 3) +
-        ..."  |  Mean: " + fixed$(mean_score, 3) +
-        ..."  |  High(>=0.75): " + string$(n_high) + " (" + fixed$(100*n_high/grainCount, 0) + "%)" +
-        ..."  Med: " + string$(n_med) + " (" + fixed$(100*n_med/grainCount, 0) + "%)" +
-        ..."  Cons: " + string$(n_low) + " (" + fixed$(100*n_low/grainCount, 0) + "%)"
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    Font size: 6
+    Colour: "{0.25, 0.25, 0.35}"
+    Text: 0.5, "centre", 0.68, "half",
+        ..."##Grains## " + string$(grainCount)
+        ...+ "  |  ##Range## " + fixed$(minScore, 3) + "-" + fixed$(maxScore, 3)
+        ...+ "  |  ##Mean## " + fixed$(mean_score, 3)
+        ...+ "  |  ##Analysis## " + fixed$(min_frequency_Hz, 0) + "-" + fixed$(vizMaxHz, 0) + " Hz"
+    Text: 0.5, "centre", 0.28, "half",
+        ..."High >=0.75: " + string$(n_high) + " (" + fixed$(100*n_high/grainCount, 0) + "%)"
+        ...+ "  |  Medium: " + string$(n_med) + " (" + fixed$(100*n_med/grainCount, 0) + "%)"
+        ...+ "  |  Consonant <0.35: " + string$(n_low) + " (" + fixed$(100*n_low/grainCount, 0) + "%)"
 
+    # Critical for reliable Picture export / clipboard copy.
+    Select outer viewport: 0, 8, 0, 6.45
     Font size: 10
     Colour: "Black"
 endif

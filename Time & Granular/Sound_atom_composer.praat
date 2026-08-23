@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.3.5 (2026) - parser compatibility fix
+# Version: 1.3.6 (2026) - visualization QA alignment
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -15,6 +15,18 @@
 #
 # Usage:
 #   Run this script and select a folder containing audio clips.
+#
+# Changelog v1.3.6:
+#   - VISUALIZATION ONLY: preserves the existing Source/Result, Atom Distribution,
+#     and Stereo Field concept while fixing rendered spacing and axis readability.
+#   - Source and Result use one shared amplitude scale; Source stays neutral grey and
+#     Result keeps the script's existing blue waveform colour.
+#   - Atom markers use adaptive physical-mm sizes so dense displays remain legible.
+#   - Atom Distribution now zooms to the actually selected atom-frequency range
+#     (with padding) instead of wasting most of the panel on an unused analysis range.
+#   - Adds numeric time/frequency/pan marks, dedicated title bands, explicit colour-key
+#     wording, and a larger Summary band so text cannot collide.
+#   - DSP, public form, preset logic, output object name, and synthesis are unchanged.
 #
 # Changelog v1.3.5:
 #   - PARSER FIX: renamed the temporary loop index `fi` to `fileScan`.
@@ -581,150 +593,195 @@ appendInfoLine: "  Synthesis complete!"
 
 if draw_visualization
     Erase all
-    
+
+    # Shared display amplitude: Source and Result are directly comparable.
+    selectObject: sourceBankID
+    sourceDisplayPeak = Get absolute extremum: 0, 0, "Sinc70"
+    selectObject: finalID
+    resultDisplayPeak = Get absolute extremum: 0, 0, "Sinc70"
+    displayPeak = max(sourceDisplayPeak, resultDisplayPeak)
+    if displayPeak <= 0
+        displayPeak = 1
+    endif
+    displayPeak = displayPeak * 1.05
+
     # Title
-    Select outer viewport: 0, 8, 0.1, 0.5
+    Select outer viewport: 0, 8, 0.10, 0.48
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "Sound Atom Composer: " + preset$
-    
+    Text: 0.5, "centre", 0.55, "half", "Sound Atom Composer: " + preset$
+
     # Source Bank Waveform
-    Select outer viewport: 0, 8, 0.6, 1.6
-    Select inner viewport: 0.6, 7.6, 0.7, 1.5
+    Select outer viewport: 0.15, 7.85, 0.62, 1.58
+    Select inner viewport: 0.70, 7.62, 0.72, 1.47
     selectObject: sourceBankID
-    Colour: "{0.6, 0.6, 0.6}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
-    Colour: "Black"
+    Colour: "{0.62, 0.62, 0.62}"
+    Draw: 0, 0, -displayPeak, displayPeak, "no", "Curve"
+    Axes: 0, sourceDuration, -displayPeak, displayPeak
+    Colour: "{0.28, 0.28, 0.28}"
     Draw inner box
+    Font size: 7
+    Marks bottom: 5, "yes", "yes", "no"
+    Select outer viewport: 0.15, 7.85, 0.62, 1.58
+    Axes: 0, 1, 0, 1
     Font size: 8
-    Select outer viewport: 0.1, 8, 0.5, 1.6
+    Colour: "{0.28, 0.28, 0.28}"
     Text left: "yes", "Source Bank"
-    
+
     # Result Waveform (Stereo)
-    Select outer viewport: 0, 8, 1.7, 2.7
-    Select inner viewport: 0.6, 7.6, 1.8, 2.6
+    Select outer viewport: 0.15, 7.85, 1.78, 2.78
+    Select inner viewport: 0.70, 7.62, 1.88, 2.61
     selectObject: finalID
-    Colour: "{0.3, 0.6, 0.8}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
-    Colour: "Black"
+    Colour: "{0.30, 0.60, 0.80}"
+    Draw: 0, 0, -displayPeak, displayPeak, "no", "Curve"
+    Axes: 0, output_duration, -displayPeak, displayPeak
+    Colour: "{0.28, 0.28, 0.28}"
     Draw inner box
-    Text left: "yes", "Result (Stereo)"
+    Font size: 7
+    Marks bottom: 5, "yes", "yes", "no"
     Text bottom: "yes", "Time (s)"
-    
-    # Atom Distribution (Frequency vs Time, colored by Amplitude)
-    Select outer viewport: 0, 4, 2.9, 4.5
-    Select inner viewport: 0.6, 3.6, 3.0, 4.4
-    
-    # Find min/max for scaling
-    minFreqViz = min_freq
-    maxFreqViz = max_freq
-    minAmp = 1000
-    maxAmp = 0
-    
+    Select outer viewport: 0.15, 7.85, 1.78, 2.78
+    Axes: 0, 1, 0, 1
+    Font size: 8
+    Colour: "{0.28, 0.28, 0.28}"
+    Text left: "yes", "Result (Stereo)"
+
+    # Shared marker-size rule in physical Picture units.
+    if numAtoms <= 120
+        atomMarkerMm = 1.15
+    elsif numAtoms <= 250
+        atomMarkerMm = 0.95
+    elsif numAtoms <= 500
+        atomMarkerMm = 0.78
+    else
+        atomMarkerMm = 0.64
+    endif
+
+    # Find actual display ranges and amplitudes.
+    minFreqActual = 1e30
+    maxFreqActual = -1e30
+    minAmp = 1e30
+    maxAmp = -1e30
     for i to numAtoms
-        if atomAmp [i] > maxAmp
-            maxAmp = atomAmp [i]
+        if atomFreq [i] < minFreqActual
+            minFreqActual = atomFreq [i]
+        endif
+        if atomFreq [i] > maxFreqActual
+            maxFreqActual = atomFreq [i]
         endif
         if atomAmp [i] < minAmp
             minAmp = atomAmp [i]
         endif
+        if atomAmp [i] > maxAmp
+            maxAmp = atomAmp [i]
+        endif
     endfor
-    
+
+    freqSpan = maxFreqActual - minFreqActual
+    if freqSpan <= 0
+        freqPad = max(10, 0.05 * max(1, minFreqActual))
+    else
+        freqPad = max(10, 0.10 * freqSpan)
+    endif
+    minFreqViz = max(min_freq, minFreqActual - freqPad)
+    maxFreqViz = min(max_freq, maxFreqActual + freqPad)
+    if maxFreqViz <= minFreqViz
+        minFreqViz = max(min_freq, minFreqActual - 10)
+        maxFreqViz = min(max_freq, maxFreqActual + 10)
+    endif
+    if maxFreqViz <= minFreqViz
+        maxFreqViz = minFreqViz + 1
+    endif
+
+    # Lower-panel title bands are separate from both data and x-axis labels.
+    Select outer viewport: 0.15, 3.90, 3.04, 3.28
+    Axes: 0, 1, 0, 1
+    Font size: 6.5
+    Colour: "{0.34, 0.34, 0.34}"
+    Text: 0.5, "centre", 0.5, "half", "Atom Distribution  -  colour = amplitude (quiet to loud)"
+
+    Select outer viewport: 4.10, 7.85, 3.04, 3.28
+    Axes: 0, 1, 0, 1
+    Font size: 6.5
+    Colour: "{0.34, 0.34, 0.34}"
+    Text: 0.5, "centre", 0.5, "half", "Stereo Field  -  colour = frequency (low to high)"
+
+    # Atom Distribution (Frequency vs Time, colored by Amplitude)
+    Select outer viewport: 0.15, 3.90, 3.30, 5.25
+    Select inner viewport: 0.72, 3.66, 3.43, 5.02
     Axes: 0, output_duration, minFreqViz, maxFreqViz
-    Paint rectangle: "{0.97, 0.97, 0.97}", 0, output_duration, minFreqViz, maxFreqViz
-    
-    # Draw atoms as dots colored by amplitude
+    Paint rectangle: "{0.975, 0.975, 0.975}", 0, output_duration, minFreqViz, maxFreqViz
+
     for i to numAtoms
-        # Normalize amplitude to color range
         if maxAmp > minAmp
             normAmp = (atomAmp [i] - minAmp) / (maxAmp - minAmp)
         else
             normAmp = 0.5
         endif
-        
-        # Color: blue (quiet) to red (loud)
         red = normAmp
         green = 0.3 + (1 - normAmp) * 0.4
         blue = 1 - normAmp
-        
         dotColor$ = "{" + fixed$(red, 2) + ", " + fixed$(green, 2) + ", " + fixed$(blue, 2) + "}"
-        
-        Paint circle (mm): dotColor$, atomOutputTime [i], atomFreq [i], 0.8
+        Paint circle (mm): dotColor$, atomOutputTime [i], atomFreq [i], atomMarkerMm
     endfor
-    
-    Colour: "Black"
+
+    Colour: "{0.28, 0.28, 0.28}"
     Draw inner box
     Font size: 7
+    Marks bottom: 5, "yes", "yes", "no"
+    Marks left: 5, "yes", "yes", "no"
     Text left: "yes", "Frequency (Hz)"
     Text bottom: "yes", "Time (s)"
-    
-    Select outer viewport: 0, 4, 2.7, 2.9
-    Axes: 0, 1, 0, 1
-    Font size: 6
-    Colour: "{0.4, 0.4, 0.4}"
-    Text: 0.5, "centre", 0.5, "half", "Atom Distribution (color = amplitude)"
-    
-    # Stereo Field (Pan vs Time)
-    Select outer viewport: 4, 8, 2.9, 4.5
-    Select inner viewport: 4.6, 7.6, 3.0, 4.4
-    
+
+    # Stereo Field (Pan vs Time, colored by Frequency)
+    Select outer viewport: 4.10, 7.85, 3.30, 5.25
+    Select inner viewport: 4.67, 7.61, 3.43, 5.02
     Axes: 0, output_duration, 0, 1
-    Paint rectangle: "{0.97, 0.97, 0.97}", 0, output_duration, 0, 1
-    
-    # Draw pan positions
+    Paint rectangle: "{0.975, 0.975, 0.975}", 0, output_duration, 0, 1
+
     for i to numAtoms
-        # Color by frequency
-        if maxFreqViz > minFreqViz
-            normFreq = (atomFreq [i] - minFreqViz) / (maxFreqViz - minFreqViz)
+        if maxFreqActual > minFreqActual
+            normFreq = (atomFreq [i] - minFreqActual) / (maxFreqActual - minFreqActual)
         else
             normFreq = 0.5
         endif
-        
-        # Color: low freq = red, high freq = blue
         red = 1 - normFreq
         green = 0.4
         blue = normFreq
-        
         dotColor$ = "{" + fixed$(red, 2) + ", " + fixed$(green, 2) + ", " + fixed$(blue, 2) + "}"
-        
-        Paint circle (mm): dotColor$, atomOutputTime [i], atomPan [i], 0.8
+        Paint circle (mm): dotColor$, atomOutputTime [i], atomPan [i], atomMarkerMm
     endfor
-    
-    # Center line (mono position)
-    Colour: "{0.7, 0.7, 0.7}"
+
+    Colour: "{0.72, 0.72, 0.72}"
     Dotted line
     Draw line: 0, 0.5, output_duration, 0.5
     Solid line
-    
-    Colour: "Black"
+
+    Colour: "{0.28, 0.28, 0.28}"
     Draw inner box
     Font size: 7
+    Marks bottom: 5, "yes", "yes", "no"
+    Marks left: 3, "yes", "yes", "no"
     Text left: "yes", "Pan (L-R)"
     Text bottom: "yes", "Time (s)"
-    
-    Select outer viewport: 4, 8, 2.7, 2.9
-    Axes: 0, 1, 0, 1
-    Font size: 6
-    Colour: "{0.4, 0.4, 0.4}"
-    Text: 0.5, "centre", 0.5, "half", "Stereo Field (color = frequency)"
-    
-    # Statistics and Legend
-    Select outer viewport: 0, 8, 4.6, 5.2
-    Axes: 0, 1, 0, 1
-    Font size: 7
-    Colour: "{0.4, 0.4, 0.4}"
-    
-    # Calculate statistics
+
+    # Summary: dedicated band with enough physical line spacing.
     avgFreq = 0
     for i to numAtoms
         avgFreq = avgFreq + atomFreq [i]
     endfor
     avgFreq = avgFreq / numAtoms
-    
-    Text: 0.02, "left", 0.68, "half", "Atoms: " + string$(numAtoms) + " | Avg Freq: " + fixed$(avgFreq, 0) + " Hz | Transpose: " + fixed$(transpose_semitones, 1) + " st | Duration: " + fixed$(output_duration, 1) + " s"
-    Text: 0.02, "left", 0.28, "half", "Source: " + string$(numFiles) + " files (" + fixed$(sourceDuration, 1) + "s) | Time step: " + fixed$(time_step * 1000, 0) + " ms | Randomized: " + string$(randomize_order)
-    
+
+    Select outer viewport: 0.30, 7.70, 5.48, 6.42
+    Axes: 0, 1, 0, 1
+    Colour: "{0.35, 0.35, 0.35}"
+    Font size: 7.5
+    Text: 0.02, "left", 0.80, "half", "Summary"
+    Font size: 6.8
+    Text: 0.02, "left", 0.50, "half", "Atoms: " + string$(numAtoms) + " | Avg Freq: " + fixed$(avgFreq, 0) + " Hz | Transpose: " + fixed$(transpose_semitones, 1) + " st | Duration: " + fixed$(output_duration, 1) + " s"
+    Text: 0.02, "left", 0.18, "half", "Source: " + string$(numFiles) + " files (" + fixed$(sourceDuration, 1) + " s) | Analysis: " + fixed$(min_freq, 0) + "-" + fixed$(max_freq, 0) + " Hz | Time step: " + fixed$(time_step * 1000, 0) + " ms | Randomized: " + string$(randomize_order)
+
     Font size: 10
     Colour: "Black"
 endif

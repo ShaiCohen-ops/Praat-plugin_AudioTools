@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4 (2026)
+# Version: 0.5 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -11,6 +11,23 @@
 #   Percussive Audio Groove Creator - detects bass drums, hi-hats,
 #   and snares from audio using spectral classification, then
 #   creates new groove patterns in various styles.
+#
+# Changelog v0.5:
+#   - VISUALIZATION ONLY: rebuilt to the AudioTools library standard.
+#   - Added an explicit process panel: onset detection -> spectral class ->
+#     sample pools -> groove rule -> clip placement/envelope.
+#   - Stereo groove grid now shows the actual independently generated L and R
+#     patterns; v0.4 showed only the left-channel pattern.
+#   - Grid dots now represent hits that were actually rendered, so a requested
+#     class with no available detected sample is not shown as an audible hit.
+#   - Detection colours normalized to the library palette and kept semantic:
+#     red = Bass, green = HH, blue = Snare. Source/output waveforms are neutral.
+#   - Source visualization now shows the same zero-based mono signal used by the
+#     detector, and source/output use a shared amplitude scale.
+#   - Title/subtitle, panel greys, fonts, summary strip and viewports aligned to
+#     the library standard; Sound names with underscores are escaped.
+#   - FIX: visualization ends by re-selecting the full page so PNG/EPS/clipboard
+#     export captures the whole figure instead of only the final caption strip.
 #
 # Changelog v0.4:
 #   - API COMPATIBILITY: the complete public form is unchanged from v0.3
@@ -328,6 +345,8 @@ appendInfoLine: ""
 # === Store Pattern for Visualization ===
 patternHits# = zero#(totalSixteenths)
 patternTypes# = zero#(totalSixteenths)
+patternHitsR# = zero#(totalSixteenths)
+patternTypesR# = zero#(totalSixteenths)
 
 # === Procedure: Get Hit Type for Position ===
 procedure getHitType: .beat, .sixteenth, .pattern, .density
@@ -561,6 +580,7 @@ endfor
 
 appendInfoLine: "Left channel: ", hitsPlacedL, " hits placed"
 
+hitsPlacedR = 0
 # === Generate Right Channel (if stereo) ===
 if create_stereo
     pattern_right = Create Sound from formula: "pattern_R", 1, 0, patternDuration, sampleRate, "0"
@@ -569,16 +589,19 @@ if create_stereo
     hhIdx = 1
     snareIdx = 1
     hitsPlacedR = 0
+    sixteenthIdxR = 0
     
     for beat from 1 to bars * 4
         beatStart = (beat - 1) * beatDuration
         
         for sixteenth from 1 to 4
+            sixteenthIdxR += 1
             position = beatStart + (sixteenth - 1) * sixteenthDur
             
             # Get new random hit type (independent from L)
             @getHitType: beat, sixteenth, beat_pattern, groove_density
             placeType = getHitType.result
+            patternTypesR#[sixteenthIdxR] = placeType
             
             if placeType > 0
                 soundToUse = 0
@@ -596,6 +619,7 @@ if create_stereo
                 
                 if soundToUse > 0
                     hitsPlacedR += 1
+                    patternHitsR#[sixteenthIdxR] = 1
                     @placeHit: pattern_right, position, soundToUse, sampleRate, clip_max_length_s, attack_time_s, release_time_s, shape_intensity, patternDuration
                 endif
             endif
@@ -636,133 +660,10 @@ endfor
 # === Visualization ===
 if draw_visualization
     Erase all
-    
-    # Title
-    Select outer viewport: 2, 8, 0.1, 0.5
-    Font size: 12
-    Colour: "Black"
-    Axes: 0, 1, 0, 1
-    Text: 0.5, "centre", 0.5, "half", "Percussive Groove: " + soundName$ + " (" + string$(bars) + " bar, " + string$(tempo_BPM) + " BPM)"
-    
-    # Original waveform with detected events
-    Select outer viewport: 0, 8, 0.6, 2.0
-    Select inner viewport: 0.6, 7.6, 0.7, 1.9
-    selectObject: original
-    Colour: "{0.6, 0.6, 0.6}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
-    
-    # Mark detected events
-    for i to numberOfEvents
-        t = sourceStart + eventTime#[i]
-        eType = eventType#[i]
-        
-        if eType = 1
-            Colour: "{0.8, 0.2, 0.2}"
-        elsif eType = 2
-            Colour: "{0.2, 0.7, 0.2}"
-        else
-            Colour: "{0.2, 0.2, 0.8}"
-        endif
-        
-        Draw line: t, -0.8, t, 0.8
-    endfor
-    
-    Colour: "Black"
-    Draw inner box
-    Font size: 8
-    Text left: "yes", "Original"
-    
-    # Legend for detection
-    Font size: 6
-    # Explicit axes: the waveform Draw above left the x-axis in SECONDS, which
-    # would bunch these fractional-position labels at the far left. Restore a
-    # 0..1 fractional x-axis (y spans the waveform amplitude + headroom).
-    Axes: 0, 1, -1, 1.2
-    Colour: "{0.8, 0.2, 0.2}"
-    Text: 0.15, "left", 1.1, "half", "Bass (" + string$(numBass) + ")"
-    Colour: "{0.2, 0.7, 0.2}"
-    Text: 0.4, "left", 1.1, "half", "HH (" + string$(numHH) + ")"
-    Colour: "{0.2, 0.2, 0.8}"
-    Text: 0.65, "left", 1.1, "half", "Snare (" + string$(numSnare) + ")"
-    
-    # Generated pattern waveform
-    Select outer viewport: 0, 8, 2.1, 3.5
-    Select inner viewport: 0.6, 7.6, 2.2, 3.4
-    selectObject: result
-    Colour: "{0.3, 0.5, 0.7}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
-    Colour: "Black"
-    Draw inner box
-    Font size: 8
-    Text left: "yes", "Pattern"
-    Text bottom: "yes", "Time (s)"
-    
-    # Pattern grid visualization
-    Select outer viewport: 0, 8, 3.6, 5.2
-    Select inner viewport: 0.6, 7.6, 3.8, 5.1
-    
-    Axes: 0, totalSixteenths, 0, 4
-    
-    # Background
-    Paint rectangle: "{0.95, 0.95, 0.95}", 0, totalSixteenths, 0, 4
-    
-    # Draw beat lines
-    Colour: "{0.8, 0.8, 0.8}"
-    for b to bars * 4
-        bPos = (b - 1) * 4
-        if (b - 1) mod 4 = 0
-            Colour: "{0.5, 0.5, 0.5}"
-            Line width: 2
-        else
-            Colour: "{0.8, 0.8, 0.8}"
-            Line width: 1
-        endif
-        Draw line: bPos, 0, bPos, 4
-    endfor
-    Line width: 1
-    
-    # Draw hits
-    for s to totalSixteenths
-        hitType = patternTypes#[s]
-        if hitType > 0
-            xPos = s - 0.5
-            
-            if hitType = 1
-                yPos = 3
-                dotColor$ = "{0.8, 0.2, 0.2}"
-            elsif hitType = 2
-                yPos = 2
-                dotColor$ = "{0.2, 0.7, 0.2}"
-            else
-                yPos = 1
-                dotColor$ = "{0.2, 0.2, 0.8}"
-            endif
-            
-            Paint circle (mm): dotColor$, xPos, yPos, 1.5
-        endif
-    endfor
-    
-    # Labels
-    Colour: "Black"
-    Draw inner box
-    Font size: 7
-    
-    Axes: 0, totalSixteenths, 0, 4
-    Colour: "{0.8, 0.2, 0.2}"
-    Text: -0.5, "right", 3, "half", "Bass"
-    Colour: "{0.2, 0.7, 0.2}"
-    Text: -0.5, "right", 2, "half", "HH"
-    Colour: "{0.2, 0.2, 0.8}"
-    Text: -0.5, "right", 1, "half", "Snare"
-    
-    Colour: "Black"
-    Text bottom: "yes", "16th notes"
-    
-    # Pattern name
-    Select outer viewport: 1, 8, 5.3, 5.6
-    Font size: 7
-    Colour: "{0.4, 0.4, 0.4}"
-    
+    Plain line
+    Black
+
+    # Pattern name is useful in title, process panel and summary.
     if beat_pattern = 1
         patternName$ = "Standard 4/4"
     elsif beat_pattern = 2
@@ -776,14 +677,337 @@ if draw_visualization
     else
         patternName$ = "Sparse Minimal"
     endif
-    
-    # Explicit axes: without this the caption inherits the grid axis
-    # (0..totalSixteenths) above, jamming x=1.5 against the left edge.
-    Axes: 0, 3, 0, 1
-    Text: 1.5, "centre", 0.5, "half", "Pattern: " + patternName$ + " | Density: " + fixed$(groove_density, 2) + " | Hits: " + string$(hitsPlacedL) + if create_stereo then "/" + string$(hitsPlacedR) else "" fi
-    
+
+    # Escape underscores so Praat does not typeset them as subscripts.
+    vizName$ = replace$(soundName$, "_", "\_ ", 0)
+
+    # Show exactly the mono, zero-based signal used by onset/class analysis.
+    selectObject: original
+    if numChannels > 1
+        vizSource = Convert to mono
+    else
+        vizSource = Copy: "groove_viz_source"
+    endif
+    selectObject: vizSource
+    Shift times to: "start time", 0
+    sourcePeak = Get absolute extremum: 0, 0, "None"
+
+    selectObject: result
+    outputPeak = Get absolute extremum: 0, 0, "None"
+    sharedPeak = max(sourcePeak, outputPeak)
+    if sharedPeak < 0.01
+        sharedPeak = 0.01
+    endif
+    sharedAmp = sharedPeak * 1.12
+
+    if create_stereo
+        hitSummary$ = string$(hitsPlacedL) + " L / " + string$(hitsPlacedR) + " R hits"
+        channelMode$ = "stereo; independent L/R patterns"
+    else
+        hitSummary$ = string$(hitsPlacedL) + " hits"
+        channelMode$ = "mono pattern"
+    endif
+
+    # ----------------------------------------------------------
+    # TITLE + SUBTITLE — library standard
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
+    Axes: 0, 1, 0, 1
+    Font size: 12
+    Colour: "Black"
+    Text: 0.5, "centre", 0.68, "half", "##Percussive Audio Groove Creator v0.5##"
+    Font size: 7
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half",
+        ... vizName$ + " | " + patternName$
+        ... + " | " + string$(bars) + " bar | " + fixed$(tempo_BPM, 0) + " BPM"
+        ... + " | density " + fixed$(groove_density, 2) + " | " + hitSummary$
+
+    # ----------------------------------------------------------
+    # DETECTED SAMPLE POOLS — colour is reserved for event class
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 0.55, 0.76
+    Select inner viewport: 0.60, 7.70, 0.56, 0.75
+    Axes: 0, 1, 0, 1
+    Font size: 6
+    Colour: "{0.25, 0.25, 0.35}"
+    Text: 0.00, "left", 0.5, "half", "Detected pools:"
+    Colour: "{0.78, 0.28, 0.22}"
+    Text: 0.18, "left", 0.5, "half", "Bass (" + string$(numBass) + ")"
+    Colour: "{0.35, 0.60, 0.40}"
+    Text: 0.42, "left", 0.5, "half", "HH (" + string$(numHH) + ")"
+    Colour: "{0.25, 0.45, 0.75}"
+    Text: 0.62, "left", 0.5, "half", "Snare (" + string$(numSnare) + ")"
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.82, "left", 0.5, "half", "markers = detected onsets"
+
+    # ----------------------------------------------------------
+    # SOURCE USED BY DETECTOR
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 0.80, 2.03
+    Select inner viewport: 0.60, 7.70, 0.91, 1.91
+    Axes: 0, duration, -sharedAmp, sharedAmp
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, duration, -sharedAmp, sharedAmp
+    Colour: "{0.82, 0.82, 0.82}"
+    Draw line: 0, 0, duration, 0
+    selectObject: vizSource
+    Colour: "{0.55, 0.55, 0.55}"
+    Line width: 1
+    Draw: 0, duration, -sharedAmp, sharedAmp, "no", "Curve"
+
+    # Event markers use zero-based eventTime#, matching the analysis signal.
+    for i to numberOfEvents
+        if eventType#[i] = 1
+            Colour: "{0.78, 0.28, 0.22}"
+        elsif eventType#[i] = 2
+            Colour: "{0.35, 0.60, 0.40}"
+        else
+            Colour: "{0.25, 0.45, 0.75}"
+        endif
+        Line width: 1.2
+        Draw line: eventTime#[i], -sharedAmp, eventTime#[i], sharedAmp
+    endfor
+    Line width: 1
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text left: "yes", "Analysis source"
+    Text bottom: "yes", "Time (s)"
+
+    # ----------------------------------------------------------
+    # PROCESS EXPLANATION — not a scientific block diagram; a user map
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 2.15, 3.24
+    Select inner viewport: 0.60, 7.70, 2.26, 3.12
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, 1, 0, 1
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text top: "no", "How the source becomes a groove"
+
+    # Five compact stages.
+    stageLeft[1] = 0.025
+    stageRight[1] = 0.185
+    stageLeft[2] = 0.220
+    stageRight[2] = 0.380
+    stageLeft[3] = 0.415
+    stageRight[3] = 0.575
+    stageLeft[4] = 0.610
+    stageRight[4] = 0.770
+    stageLeft[5] = 0.805
+    stageRight[5] = 0.975
+    for st to 5
+        Paint rectangle: "{0.94, 0.94, 0.94}", stageLeft[st], stageRight[st], 0.20, 0.82
+        Colour: "{0.70, 0.70, 0.74}"
+        Draw rectangle: stageLeft[st], stageRight[st], 0.20, 0.82
+    endfor
+    Colour: "{0.35, 0.35, 0.50}"
+    Line width: 1.2
+    for st to 4
+        x1 = stageRight[st]
+        x2 = stageLeft[st + 1]
+        Draw line: x1, 0.51, x2, 0.51
+        Font size: 7
+        Text: (x1 + x2) / 2, "centre", 0.51, "half", ">"
+    endfor
+    Line width: 1
+
+    Font size: 7
+    Colour: "{0.25, 0.25, 0.35}"
+    Text: 0.105, "centre", 0.64, "half", "##1  Detect##"
+    Font size: 6
+    Text: 0.105, "centre", 0.39, "half", "sharp intensity peaks"
+    Font size: 7
+    Text: 0.300, "centre", 0.64, "half", "##2  Classify##"
+    Font size: 6
+    Text: 0.300, "centre", 0.39, "half", "low / mid / high energy"
+    Font size: 7
+    Text: 0.495, "centre", 0.64, "half", "##3  Build pools##"
+    Font size: 6
+    Colour: "{0.78, 0.28, 0.22}"
+    Text: 0.455, "centre", 0.39, "half", "Bass"
+    Colour: "{0.35, 0.60, 0.40}"
+    Text: 0.495, "centre", 0.39, "half", "HH"
+    Colour: "{0.25, 0.45, 0.75}"
+    Text: 0.535, "centre", 0.39, "half", "Snare"
+    Font size: 7
+    Colour: "{0.25, 0.25, 0.35}"
+    Text: 0.690, "centre", 0.64, "half", "##4  Choose grid##"
+    Font size: 6
+    Text: 0.690, "centre", 0.39, "half", patternName$ + ", density " + fixed$(groove_density, 2)
+    Font size: 7
+    Text: 0.890, "centre", 0.64, "half", "##5  Place hits##"
+    Font size: 6
+    Text: 0.890, "centre", 0.39, "half", "clip + envelope + velocity"
+
+    # ----------------------------------------------------------
+    # GENERATED GROOVE WAVEFORM
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 3.36, 4.58
+    Select inner viewport: 0.60, 7.70, 3.47, 4.46
+    Axes: 0, patternDuration, -sharedAmp, sharedAmp
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, patternDuration, -sharedAmp, sharedAmp
+    Colour: "{0.82, 0.82, 0.82}"
+    Draw line: 0, 0, patternDuration, 0
+    selectObject: result
+    Colour: "{0.35, 0.35, 0.50}"
+    Line width: 1
+    Draw: 0, patternDuration, -sharedAmp, sharedAmp, "no", "Curve"
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text left: "yes", "Generated groove"
+    Text bottom: "yes", "Time (s)"
+
+    # ----------------------------------------------------------
+    # ACTUAL GROOVE GRID — stereo shows both independent patterns
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 4.72, 6.82
+    Select inner viewport: 0.60, 7.70, 4.86, 6.67
+
+    if create_stereo
+        gridTop = 6
+    else
+        gridTop = 4
+    endif
+    Axes: 0, totalSixteenths, 0, gridTop
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, totalSixteenths, 0, gridTop
+
+    # Beat and bar guides.
+    for b to bars * 4
+        bPos = (b - 1) * 4
+        if (b - 1) mod 4 = 0
+            Colour: "{0.65, 0.65, 0.68}"
+            Line width: 1.5
+        else
+            Colour: "{0.85, 0.85, 0.87}"
+            Line width: 1
+        endif
+        Draw line: bPos, 0, bPos, gridTop
+    endfor
+    Line width: 1
+
+    if create_stereo
+        Colour: "{0.82, 0.82, 0.84}"
+        Draw line: 0, 3, totalSixteenths, 3
+    endif
+
+    # Left/mono actual rendered hits.
+    for s to totalSixteenths
+        if patternHits#[s] = 1
+            hitType = patternTypes#[s]
+            xPos = s - 0.5
+            if create_stereo
+                if hitType = 1
+                    yPos = 5.5
+                elsif hitType = 2
+                    yPos = 4.5
+                else
+                    yPos = 3.5
+                endif
+            else
+                if hitType = 1
+                    yPos = 3
+                elsif hitType = 2
+                    yPos = 2
+                else
+                    yPos = 1
+                endif
+            endif
+            if hitType = 1
+                dotColor$ = "{0.78, 0.28, 0.22}"
+            elsif hitType = 2
+                dotColor$ = "{0.35, 0.60, 0.40}"
+            else
+                dotColor$ = "{0.25, 0.45, 0.75}"
+            endif
+            Paint circle (mm): dotColor$, xPos, yPos, 1.55
+        endif
+    endfor
+
+    # Right-channel actual rendered hits.
+    if create_stereo
+        for s to totalSixteenths
+            if patternHitsR#[s] = 1
+                hitType = patternTypesR#[s]
+                xPos = s - 0.5
+                if hitType = 1
+                    yPos = 2.5
+                    dotColor$ = "{0.78, 0.28, 0.22}"
+                elsif hitType = 2
+                    yPos = 1.5
+                    dotColor$ = "{0.35, 0.60, 0.40}"
+                else
+                    yPos = 0.5
+                    dotColor$ = "{0.25, 0.45, 0.75}"
+                endif
+                Paint circle (mm): dotColor$, xPos, yPos, 1.55
+            endif
+        endfor
+    endif
+
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    if create_stereo
+        Text top: "no", "Actual groove grid – colour = source class; upper group = L, lower group = R"
+        Font size: 6
+        Colour: "{0.78, 0.28, 0.22}"
+        Text: -0.35, "right", 5.5, "half", "L Bass"
+        Colour: "{0.35, 0.60, 0.40}"
+        Text: -0.35, "right", 4.5, "half", "L HH"
+        Colour: "{0.25, 0.45, 0.75}"
+        Text: -0.35, "right", 3.5, "half", "L Snare"
+        Colour: "{0.78, 0.28, 0.22}"
+        Text: -0.35, "right", 2.5, "half", "R Bass"
+        Colour: "{0.35, 0.60, 0.40}"
+        Text: -0.35, "right", 1.5, "half", "R HH"
+        Colour: "{0.25, 0.45, 0.75}"
+        Text: -0.35, "right", 0.5, "half", "R Snare"
+    else
+        Text top: "no", "Actual groove grid – colour = source class"
+        Font size: 6
+        Colour: "{0.78, 0.28, 0.22}"
+        Text: -0.35, "right", 3, "half", "Bass"
+        Colour: "{0.35, 0.60, 0.40}"
+        Text: -0.35, "right", 2, "half", "HH"
+        Colour: "{0.25, 0.45, 0.75}"
+        Text: -0.35, "right", 1, "half", "Snare"
+    endif
+    Colour: "Black"
+    Font size: 7
+    Text bottom: "yes", "16th-note position"
+
+    # ----------------------------------------------------------
+    # SUMMARY STRIP
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 6.95, 7.58
+    Select inner viewport: 0.60, 7.70, 7.01, 7.52
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    Font size: 6
+    Colour: "{0.25, 0.25, 0.35}"
+    Text: 0.02, "left", 0.72, "half",
+        ... "##Detected##  " + string$(numberOfEvents) + " events: "
+        ... + string$(numBass) + " Bass / " + string$(numHH) + " HH / " + string$(numSnare) + " Snare"
+        ... + "  |  ##Groove##  " + patternName$ + ", " + fixed$(tempo_BPM, 0) + " BPM, density " + fixed$(groove_density, 2)
+    Text: 0.02, "left", 0.28, "half",
+        ... "##Render##  " + channelMode$ + " | " + hitSummary$
+        ... + " | clip <= " + fixed$(clip_max_length_s * 1000, 0) + " ms"
+        ... + " | envelope " + fixed$(attack_time_s * 1000, 1) + "/" + fixed$(release_time_s * 1000, 1) + " ms"
+        ... + " | output " + fixed$(patternDuration, 2) + " s"
+    Colour: "Black"
+    Draw rectangle: 0, 1, 0, 1
+
+    # Cleanup visualization object and restore full-page viewport for export.
+    removeObject: vizSource
+    Select outer viewport: 0, 8, 0, 7.58
+    Select inner viewport: 0, 8, 0, 7.58
     Font size: 10
     Colour: "Black"
+    Line width: 1
 endif
 
 # === Final Info ===

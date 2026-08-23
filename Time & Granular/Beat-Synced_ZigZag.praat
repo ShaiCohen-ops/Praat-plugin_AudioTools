@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4 (2026)
+# Version: 0.4.1 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -16,6 +16,14 @@
 # Effect:
 #   Original: [A→][B→][C→][D→]
 #   ZigZag:   [←A][B→][←C][D→]
+#
+# Changelog v0.4.1:
+#   Visualization-only alignment with the Praat AudioTools library:
+#   - Unified title/subtitle, Source, transformation map, Output, Summary layout.
+#   - Replaced the old bottom colour strip/legend with a direct segment-direction map.
+#   - Full segments show playback direction with in-place arrows; untouched head/tail are explicit.
+#   - Escaped underscores in displayed source names.
+#   - No DSP or timing changes.
 #
 # Changelog v0.4:
 #   DSP / timing / correctness:
@@ -51,7 +59,7 @@
 #   - Improved info output
 # ============================================================
 
-form Beat-Synced ZigZag v0.4
+form Beat-Synced ZigZag v0.4.1
     comment Select a Sound object first
     
     comment === Preset ===
@@ -123,6 +131,23 @@ elsif preset = 7
     subdivision = 2
 endif
 
+# === Visualization labels ===
+if preset = 1
+    presetName$ = "Custom"
+elsif preset = 2
+    presetName$ = "Beat Stutter"
+elsif preset = 3
+    presetName$ = "Fast Glitch"
+elsif preset = 4
+    presetName$ = "Ultra Glitch"
+elsif preset = 5
+    presetName$ = "Bar Flip"
+elsif preset = 6
+    presetName$ = "Eighth Note Bounce"
+else
+    presetName$ = "Tail Only"
+endif
+
 # === Check Input ===
 if numberOfSelected("Sound") <> 1
     exitScript: "Please select exactly one Sound object"
@@ -130,6 +155,7 @@ endif
 
 sound = selected("Sound")
 sound_name$ = selected$("Sound")
+display_name$ = replace$(sound_name$, "_", "\\_", 0)
 
 selectObject: sound
 dur = Get total duration
@@ -308,70 +334,159 @@ resultDur = Get total duration
 # === Visualization ===
 if draw_visualization
     Erase all
-    
-    # Title
-    Select outer viewport: 0, 8, 0.2, 0.7
-    Font size: 14
     Colour: "Black"
+    Font size: 10
+    Line width: 1
+    Solid line
+
+    # Display labels
+    if mode = 1
+        modeName$ = "whole sound"
+    else
+        modeName$ = "tail only"
+    endif
+    if keep_trailing_audio
+        tailModeName$ = "kept"
+    else
+        tailModeName$ = "dropped"
+    endif
+
+    # Title / subtitle
+    Select outer viewport: 0, 8, 0, 0.50
     Axes: 0, 1, 0, 1
-    Text: 0.5, "centre", 0.5, "half", "ZigZag: " + sound_name$ + " (" + subdiv_name$ + ")"
-    
-    # Original waveform
-    Select outer viewport: 0, 8, 0.9, 2.5
-    Select inner viewport: 0.6, 7.6, 1.0, 2.4
+    Font size: 12
+    Colour: "Black"
+    Text: 0.5, "centre", 0.68, "half", "##Beat-Synced ZigZag##"
+    Font size: 7
+    Colour: "{0.35, 0.35, 0.52}"
+    Text: 0.5, "centre", -1.30, "half", "Beat-Synced ZigZag.praat  |  " + presetName$ + "  |  " + display_name$
+
+    # Source
+    Select outer viewport: 0, 8, 0.65, 2.00
+    Select inner viewport: 0.55, 7.55, 0.80, 1.86
+    Axes: 0, dur, -1.35, 1.15
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, dur, -1.35, 1.15
     selectObject: sound
-    Colour: "{0.6, 0.6, 0.6}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
-    
-    # Mark reversed/forward segment regions as a bottom strip
-    Axes: 0, dur, -1, 1
+    Colour: "{0.55, 0.55, 0.55}"
+    Draw: start, endTime, -1, 1, "no", "Curve"
+    Select outer viewport: 0, 8, 0.65, 2.00
+    Select inner viewport: 0.55, 7.55, 0.80, 1.86
+    Axes: 0, dur, -1.35, 1.15
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text left: "yes", "Amplitude"
+    Text bottom: "yes", "Source time (s)"
+    Text: 0.01 * dur, "left", 1.04, "half", "##Source##"
+    Font size: 6
+    Colour: "{0.28, 0.28, 0.28}"
+    Text: 0.99 * dur, "right", 1.04, "half", fixed$(dur, 2) + " s  |  grid anchored at source start"
+
+    # Segment direction map: in-place playback direction for every complete subdivision.
+    Select outer viewport: 0, 8, 2.15, 3.80
+    Select inner viewport: 0.55, 7.55, 2.30, 3.66
+    Axes: 0, dur, 0, 1
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, dur, 0, 1
+
+    # Untouched head in Tail mode.
+    if process_offset > 0
+        Paint rectangle: "{0.88, 0.88, 0.88}", 0, process_offset, 0.16, 0.78
+        Colour: "{0.42, 0.42, 0.42}"
+        Text: 0.5 * process_offset, "centre", 0.47, "half", "forward"
+    endif
+
+    # Full processed segments.
     for i to num_segs
-        rseg_start = process_start + (i - 1) * seg_dur - start
-        rseg_end = rseg_start + seg_dur
-        if rseg_end > dur
-            rseg_end = dur
+        x0 = process_offset + (i - 1) * seg_dur
+        x1 = x0 + seg_dur
+        if x1 > dur
+            x1 = dur
         endif
+        blockW = x1 - x0
+        arrowPad = 0.18 * blockW
+        headDx = 0.07 * blockW
+        yArrow = 0.47
         if i mod 2 = 1
-            Paint rectangle: {1, 0.55, 0.55}, rseg_start, rseg_end, -1.0, -0.80
+            Paint rectangle: "{1.00, 0.88, 0.88}", x0, x1, 0.16, 0.78
+            Colour: "{0.78, 0.22, 0.22}"
+            xa = x1 - arrowPad
+            xb = x0 + arrowPad
+            Draw line: xa, yArrow, xb, yArrow
+            Draw line: xb, yArrow, xb + headDx, yArrow + 0.09
+            Draw line: xb, yArrow, xb + headDx, yArrow - 0.09
         else
-            Paint rectangle: {0.55, 0.8, 0.55}, rseg_start, rseg_end, -1.0, -0.80
+            Paint rectangle: "{0.88, 0.96, 0.88}", x0, x1, 0.16, 0.78
+            Colour: "{0.20, 0.58, 0.28}"
+            xa = x0 + arrowPad
+            xb = x1 - arrowPad
+            Draw line: xa, yArrow, xb, yArrow
+            Draw line: xb, yArrow, xb - headDx, yArrow + 0.09
+            Draw line: xb, yArrow, xb - headDx, yArrow - 0.09
         endif
     endfor
 
+    # Trailing partial subdivision, if any.
+    coveredRel = process_offset + num_segs * seg_dur
+    if coveredRel < dur - 0.5 / sampleRate
+        Paint rectangle: "{0.90, 0.90, 0.90}", coveredRel, dur, 0.16, 0.78
+        Colour: "{0.42, 0.42, 0.42}"
+        if keep_trailing_audio
+            Text: 0.5 * (coveredRel + dur), "centre", 0.47, "half", "tail"
+        else
+            Text: 0.5 * (coveredRel + dur), "centre", 0.47, "half", "dropped"
+        endif
+    endif
+
     Colour: "Black"
     Draw inner box
-    Font size: 8
-    Text left: "yes", "Original"
-    
-    # Result waveform
-    Select outer viewport: 0, 8, 2.6, 4.2
-    Select inner viewport: 0.6, 7.6, 2.7, 4.1
+    Font size: 7
+    Text bottom: "yes", "Source / output grid time (s)"
+    Text: 0.01 * dur, "left", 0.93, "half", "##Segment direction map##"
+    Font size: 6
+    Colour: "{0.28, 0.28, 0.28}"
+    Text: 0.01 * dur, "left", 0.84, "half", "red / left = reversed  |  green / right = forward  |  gray = untouched"
+    Text: 0.99 * dur, "right", 0.84, "half", fixed$(seg_dur * 1000, 1) + " ms per " + subdiv_name$
+
+    # Output
+    Select outer viewport: 0, 8, 3.95, 5.30
+    Select inner viewport: 0.55, 7.55, 4.10, 5.16
+    Axes: 0, resultDur, -1.35, 1.15
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, resultDur, -1.35, 1.15
     selectObject: result
-    Colour: "{0.2, 0.5, 0.7}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
-    
+    Colour: "{0.22, 0.46, 0.82}"
+    Draw: 0, resultDur, -1, 1, "no", "Curve"
+    Select outer viewport: 0, 8, 3.95, 5.30
+    Select inner viewport: 0.55, 7.55, 4.10, 5.16
+    Axes: 0, resultDur, -1.35, 1.15
     Colour: "Black"
     Draw inner box
-    Text left: "yes", "ZigZag"
-    Text bottom: "yes", "Time (s)"
-    
-    # Legend
-    Select outer viewport: 0, 8, 4.4, 4.8
-    Font size: 8
-    Colour: "{0.4, 0.4, 0.4}"
+    Font size: 7
+    Text left: "yes", "Amplitude"
+    Text bottom: "yes", "Output time (s)"
+    Text: 0.01 * resultDur, "left", 1.04, "half", "##Output##"
+    Font size: 6
+    Colour: "{0.28, 0.28, 0.28}"
+    Text: 0.99 * resultDur, "right", 1.04, "half", "alternating in-place segment reversal"
+
+    # Summary
+    Select outer viewport: 0, 8, 5.48, 6.55
+    Select inner viewport: 0.25, 7.75, 5.56, 6.48
     Axes: 0, 1, 0, 1
-    Text: 0.5, "centre", 0.5, "half", "BPM: " + fixed$(bpm, 0) + " | " + subdiv_name$ + " | " + string$(num_segs) + " segments (" + string$(reversed_count) + " reversed)"
-    
-    # Direction key
-    Select outer viewport: 0, 8, 4.8, 5.1
-    Axes: 0, 1, 0, 1
-    Colour: "{1, 0.3, 0.3}"
-    Text: 0.3, "centre", 0.5, "half", "■ Reversed"
-    Colour: "{0.3, 0.7, 0.3}"
-    Text: 0.7, "centre", 0.5, "half", "■ Forward"
-    
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text: 0.02, "left", 0.82, "half", "##Summary##"
+    Font size: 6
+    Colour: "{0.28, 0.28, 0.28}"
+    Text: 0.02, "left", 0.56, "half", "BPM " + fixed$(bpm, 1) + " (" + bpmSource$ + ")  |  Meter " + timeSig$ + "  |  Subdivision " + subdiv_name$ + " = " + fixed$(seg_dur * 1000, 1) + " ms"
+    Text: 0.02, "left", 0.33, "half", "Mode " + modeName$ + "  |  Segments " + string$(num_segs) + "  |  Reversed " + string$(reversed_count) + "  |  Trailing remainder " + tailModeName$
+    Text: 0.02, "left", 0.12, "half", "Duration " + fixed$(dur, 2) + " -> " + fixed$(resultDur, 2) + " s  |  Pattern: reverse odd segments, preserve even segments"
+    Colour: "Black"
+    Draw rectangle: 0, 1, 0, 1
+
     Font size: 10
     Colour: "Black"
+    Line width: 1
 endif
 
 # === Final Info ===

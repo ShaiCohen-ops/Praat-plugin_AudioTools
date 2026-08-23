@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.5 (2026)
+# Version: 0.5.1 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -13,6 +13,16 @@
 #   Voiced frames produce harmonic or bell-inharmonic micro-spectra; unvoiced
 #   frames produce noise particles, preserving brightness and transients.
 #
+#
+# Changelog v0.5.1:
+#   Visualization alignment only; DSP is unchanged.
+#     - Reworked Picture output to the current Praat AudioTools visual system:
+#       title/subtitle, Source, one signature Particle field, Output, Summary.
+#     - Unified the two legacy particle plots into one direct process view:
+#       x = time, y = pitch anchor, colour = pan, marker size = intensity,
+#       grey = unvoiced/noise particle.
+#     - Moved panel headings inside the panels and added a labelled Summary.
+#     - Sanitized underscores in dynamic object names for Picture text.
 #
 # Changelog v0.5:
 #   Spectral particle redesign:
@@ -109,7 +119,7 @@
 #     - Added visualization
 # ============================================================
 
-form Additive Particle Field v0.5
+form Additive Particle Field v0.5.1
     optionmenu Preset: 1
         option Custom
         option Dense Cloud
@@ -268,6 +278,7 @@ endif
 # === Get Input ===
 original = selected("Sound")
 original_name$ = selected$("Sound")
+display_name$ = replace$(original_name$, "_", " ", 0)
 
 selectObject: original
 sourceStart = Get start time
@@ -532,17 +543,15 @@ Rename: original_name$ + "_particles_" + presetName$
 removeObject: mixL, mixR, intensityObj, pitchObj
 
 ###############################################################################
-# VISUALIZATION  (8 x 8 canvas, suite styling)
-# Title bar (suite light) + metadata subtitle
-# Panel A: Original waveform   (left half, headline)
-# Panel B: Result waveform     (right half, headline)
-# Panel C: Particle field time-vs-pitch (color = pan, signature)
-# Panel D: Particle field time-vs-pan (color = amplitude)
-# Panel E: Light-grey 3-line summary  (suite standard)
+# VISUALIZATION  (current Praat AudioTools suite styling)
+# Source -> signature particle field -> Output -> Summary.
+# The particle field directly encodes the process:
+#   x = time, y = pitch anchor, colour = pan, size = intensity,
+#   grey = unvoiced/noise particle.
 ###############################################################################
 if draw_visualization
     Erase all
-    Select outer viewport: 0, 8, 0, 8
+    Select outer viewport: 0, 8, 0, 7.10
     Black
     Plain line
 
@@ -576,92 +585,13 @@ if draw_visualization
         distName$ = "Random"
     endif
 
-    # ----------------------------------------------------------
-    # TITLE BAR
-    # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 0, 0.65
-    Axes: 0, 1, 0, 1
-    Font size: 12
-    Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##ADDITIVE PARTICLE FIELD##"
-    Font size: 7
-    Colour: "{0.35, 0.35, 0.52}"
-    Text: 0.5, "centre", -0.22, "half",
-        ... original_name$
-        ... + "  |  " + presetName$
-        ... + "  |  " + string$(number_of_particles) + " particles"
-        ... + "  |  " + fixed$(grain_duration_s * 1000, 0) + " ms grains"
-        ... + "  |  " + string$(number_of_partials) + " partials"
-        ... + "  |  " + envName$ + " env"
-        ... + "  |  " + distName$ + " dist"
+    if apply_LFO
+        lfoStr$ = "ON (" + fixed$(lFO_frequency, 2) + " Hz)"
+    else
+        lfoStr$ = "OFF"
+    endif
 
-    # ----------------------------------------------------------
-    # PANEL A (left): ORIGINAL WAVEFORM
-    # ----------------------------------------------------------
-    Select outer viewport: 0, 4.2, 0.75, 2.30
-    Select inner viewport: 0.55, 4.00, 0.95, 2.18
-    selectObject: original
-    Colour: "{0.55, 0.55, 0.60}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
-    Colour: "Black"
-    Line width: 1
-    Draw inner box
-    Font size: 7
-    Text top: "no", "Original  (" + fixed$(duration, 2) + " s)"
-    Font size: 6
-    Text left: "yes", "Amp"
-
-    # ----------------------------------------------------------
-    # PANEL B (right): RESULT WAVEFORM
-    # ----------------------------------------------------------
-    Select outer viewport: 4.2, 8, 0.75, 2.30
-    Select inner viewport: 4.55, 7.75, 0.95, 2.18
-    selectObject: result
-    Colour: "{0.55, 0.30, 0.70}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
-    Colour: "Black"
-    Line width: 1
-    Draw inner box
-    Font size: 7
-    Text top: "no", "Particle field output  (stereo)"
-    Font size: 6
-    Text left: "yes", "Amp"
-
-    # ----------------------------------------------------------
-    # PANEL C (left): PARTICLE FIELD  time vs pitch (color = pan)
-    # ----------------------------------------------------------
-    Select outer viewport: 0, 4.2, 2.40, 4.40
-    Select inner viewport: 0.55, 4.00, 2.60, 4.28
-    Axes: 0, duration, minPitch, maxPitch
-    Paint rectangle: "{0.97, 0.97, 0.97}", 0, duration, minPitch, maxPitch
-
-    for i to number_of_particles
-        pan = particlePan[i]
-        if particleVoiced[i]
-            dotColor$ = "{" + fixed$(0.30 + pan * 0.60, 2) + ", " + fixed$(0.30, 2) + ", " + fixed$(0.90 - pan * 0.60, 2) + "}"
-        else
-            dotColor$ = "{0.55, 0.55, 0.55}"
-        endif
-        Paint circle (mm): dotColor$, particleTime[i], particlePitch[i], 0.6
-    endfor
-
-    Colour: "Black"
-    Line width: 1
-    Draw inner box
-    Font size: 7
-    Text top: "no", "Particles: pitch anchors  (grey = unvoiced/noise carrier)"
-    Font size: 6
-    Text left: "yes", "Pitch (Hz)"
-    Text bottom: "yes", "Time (s)"
-
-    # ----------------------------------------------------------
-    # PANEL D (right): PARTICLE FIELD  time vs pan (color = amp)
-    # ----------------------------------------------------------
-    Select outer viewport: 4.2, 8, 2.40, 4.40
-    Select inner viewport: 4.55, 7.75, 2.60, 4.28
-    Axes: 0, duration, 0, 1
-    Paint rectangle: "{0.97, 0.97, 0.97}", 0, duration, 0, 1
-
+    # Maximum particle amplitude for marker-size normalization.
     maxAmp = 0.001
     for i to number_of_particles
         if particleAmp[i] > maxAmp
@@ -669,67 +599,114 @@ if draw_visualization
         endif
     endfor
 
-    # Center (pan = 0.5) reference
-    Colour: "{0.70, 0.70, 0.74}"
+    # ----------------------------------------------------------
+    # TITLE / SUBTITLE
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 0, 0.50
+    Axes: 0, 1, 0, 1
+    Font size: 12
+    Colour: "Black"
+    Text: 0.5, "centre", 0.68, "half", "##Additive Particle Field##"
+    Font size: 7
+    Colour: "{0.35, 0.35, 0.52}"
+    Text: 0.5, "centre", -1.30, "half", "Additive Particle Field.praat  |  " + presetName$ + "  |  " + display_name$
+
+    # ----------------------------------------------------------
+    # SOURCE
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 0.65, 1.90
+    Select inner viewport: 0.55, 7.75, 0.82, 1.78
+    selectObject: original
+    Colour: "{0.62, 0.62, 0.66}"
+    Draw: 0, 0, 0, 0, "no", "Curve"
+    Colour: "Black"
+    Line width: 1
+    Draw inner box
+    Font size: 7
+    Text top: "no", "##Source##"
+    Font size: 6
+    Text left: "yes", "Amplitude"
+    Text bottom: "yes", "Time (s)"
+    Axes: 0, duration, -1, 1
+    Colour: "{0.28, 0.28, 0.28}"
+    Text: 0.01 * duration, "left", 0.86, "half", fixed$(duration, 2) + " s  |  analysis pitch " + string$(minPitch) + "-" + string$(maxPitch) + " Hz"
+
+    # ----------------------------------------------------------
+    # PARTICLE FIELD - signature process view
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 2.05, 4.55
+    Select inner viewport: 0.55, 7.75, 2.25, 4.40
+    Axes: 0, duration, minPitch, maxPitch
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, duration, minPitch, maxPitch
+
+    # Reference lines divide the analysis pitch range into useful bands.
+    Colour: "{0.86, 0.86, 0.88}"
     Dotted line
-    Draw line: 0, 0.5, duration, 0.5
+    Draw line: 0, 200, duration, 200
+    Draw line: 0, 400, duration, 400
     Solid line
 
     for i to number_of_particles
         ampNorm = particleAmp[i] / maxAmp
-        dotColor$ = "{" + fixed$(0.30 + ampNorm * 0.50, 2) + ", " + fixed$(0.50 + ampNorm * 0.30, 2) + ", " + fixed$(0.30, 2) + "}"
-        Paint circle (mm): dotColor$, particleTime[i], particlePan[i], 0.6
+        radius = 0.35 + 0.65 * ampNorm
+        pan = particlePan[i]
+        if particleVoiced[i]
+            dotColor$ = "{" + fixed$(0.30 + pan * 0.60, 2) + ", 0.30, " + fixed$(0.90 - pan * 0.60, 2) + "}"
+        else
+            dotColor$ = "{0.52, 0.52, 0.52}"
+        endif
+        Paint circle (mm): dotColor$, particleTime[i], particlePitch[i], radius
     endfor
 
     Colour: "Black"
     Line width: 1
     Draw inner box
     Font size: 7
-    Text top: "no", "Particles: pan over time  (greener = louder)"
+    Text top: "no", "##Particle field##"
     Font size: 6
-    Text left: "yes", "Pan (L=0, R=1)"
+    Text left: "yes", "Pitch anchor (Hz)"
     Text bottom: "yes", "Time (s)"
+    Colour: "{0.28, 0.28, 0.28}"
+    Text: 0.01 * duration, "left", maxPitch - 0.07 * (maxPitch - minPitch), "half", "colour: blue L -> red R  |  size = intensity  |  grey = unvoiced/noise"
+    Text: 0.99 * duration, "right", maxPitch - 0.07 * (maxPitch - minPitch), "half", panName$ + " pan  |  " + distName$ + " timing"
 
     # ----------------------------------------------------------
-    # PANEL E: SUMMARY BAR  (suite standard light grey)
-    # v0.3 fix: explicit Axes 0,1,0,1 before any Text(). v0.2's
-    # legend inherited axes from the panel above, so text landed at
-    # unpredictable positions (off-panel for short inputs).
+    # OUTPUT
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 4.50, 5.20
-    Select inner viewport: 0.55, 7.75, 4.57, 5.14
+    Select outer viewport: 0, 8, 4.70, 5.95
+    Select inner viewport: 0.55, 7.75, 4.87, 5.83
+    selectObject: result
+    Colour: "{0.48, 0.33, 0.72}"
+    Draw: 0, 0, 0, 0, "no", "Curve"
+    Colour: "Black"
+    Line width: 1
+    Draw inner box
+    Font size: 7
+    Text top: "no", "##Output##"
+    Font size: 6
+    Text left: "yes", "Amplitude"
+    Text bottom: "yes", "Time (s)"
+    Axes: 0, duration, -1, 1
+    Colour: "{0.28, 0.28, 0.28}"
+    Text: 0.01 * duration, "left", 0.86, "half", "stereo particle render  |  " + spectrumName$ + "  |  " + string$(number_of_partials) + " partials"
+
+    # ----------------------------------------------------------
+    # SUMMARY
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 6.10, 7.05
+    Select inner viewport: 0.30, 7.80, 6.17, 6.98
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    Colour: "{0.48, 0.48, 0.48}"
+    Draw rectangle: 0, 1, 0, 1
 
-    if apply_LFO
-        lfoStr$ = "ON (" + fixed$(lFO_frequency, 2) + " Hz)"
-    else
-        lfoStr$ = "OFF"
-    endif
-
+    Font size: 7
+    Colour: "Black"
+    Text: 0.02, "left", 0.80, "half", "##Summary##"
     Font size: 6
     Colour: "{0.28, 0.28, 0.28}"
-    Text: 0.02, "left", 0.75, "half",
-        ... "##" + presetName$ + "##"
-        ... + "  " + original_name$
-        ... + "  |  " + string$(number_of_particles) + " particles"
-        ... + "  |  grain " + fixed$(grain_duration_s * 1000, 0) + " ms"
-        ... + "  |  env " + envName$
-        ... + "  |  " + spectrumName$
-        ... + "  |  pan " + panName$
-
-    Text: 0.02, "left", 0.28, "half",
-        ... "Time dist: " + distName$
-        ... + "  |  LFO: " + lfoStr$
-        ... + "  |  partials: " + string$(number_of_partials)
-        ... + "  |  bright: " + fixed$(spectral_brightness, 2)
-        ... + "  |  V/U: " + string$(voicedParticles) + "/" + string$(unvoicedParticles)
-        ... + "  |  Pitch: " + string$(minPitch) + "-" + string$(maxPitch) + " Hz"
-        ... + "  |  In: " + fixed$(duration, 2) + " s"
-        ... + "  |  Out: " + original_name$ + "_particles_" + presetName$
-
-    Colour: "Black"
-    Draw rectangle: 0, 1, 0, 1
+    Text: 0.02, "left", 0.49, "half", string$(number_of_particles) + " particles  |  grain " + fixed$(grain_duration_s * 1000, 0) + " ms  |  " + spectrumName$ + "  |  bright " + fixed$(spectral_brightness, 2) + "  |  env " + envName$ + "  |  V/U " + string$(voicedParticles) + "/" + string$(unvoicedParticles)
+    Text: 0.02, "left", 0.18, "half", "Time " + distName$ + "  |  pan " + panName$ + "  |  LFO " + lfoStr$ + "  |  duration " + fixed$(duration, 2) + " -> " + fixed$(duration, 2) + " s  |  output " + display_name$ + " particles " + presetName$
 
     Font size: 10
     Colour: "Black"

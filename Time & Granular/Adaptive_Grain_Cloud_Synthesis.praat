@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.5 (2026) - sample-accurate density-aware overlap-add
+# Version: 0.5.1 (2026) - library-aligned process visualization
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -11,6 +11,12 @@
 #   Adaptive granular resynthesis from input audio.
 #   Grains are scheduled on a sample-quantized event grid and
 #   interleaved over non-overlapping tracks, then summed.
+#
+# Changelog v0.5.1:
+#   - Library-aligned visualization: source, grain time map, output, summary
+#   - Grain map shows source interval -> output interval for every scheduled grain
+#   - Reverse grains are shown with downward mappings; DSP is unchanged
+#   - Dynamic object names are display-sanitized for Praat Picture text
 #
 # Changelog v0.5:
 #   - Density now controls the actual event rate: hop / density
@@ -187,6 +193,30 @@ endif
 
 original = selected("Sound")
 original_name$ = selected$("Sound")
+display_name$ = replace$(original_name$, "_", " ", 0)
+
+if preset = 1
+    presetName$ = "Custom"
+elsif preset = 2
+    presetName$ = "Dense Cloud"
+elsif preset = 3
+    presetName$ = "Sparse Cloud"
+elsif preset = 4
+    presetName$ = "Micro-Grains"
+elsif preset = 5
+    presetName$ = "Long Grains"
+elsif preset = 6
+    presetName$ = "Spectral Freeze"
+elsif preset = 7
+    presetName$ = "Rhythmic Scatter"
+elsif preset = 8
+    presetName$ = "Chaotic Swarm"
+elsif preset = 9
+    presetName$ = "Time Stretch 2x"
+else
+    presetName$ = "Time Compress 0.5x"
+endif
+
 uid$ = string$(randomInteger(10000, 99999))
 
 # === Convert to Mono ===
@@ -300,7 +330,7 @@ endif
 mixScale = 1 / sqrt(numTracks)
 
 # === Info ===
-writeInfoLine: "=== Adaptive Grain Cloud Synthesis v0.5 ==="
+writeInfoLine: "=== Adaptive Grain Cloud Synthesis v0.5.1 ==="
 appendInfoLine: "Source: ", original_name$, " (", fixed$(sourceDuration, 3), " s)"
 appendInfoLine: "Output duration: ", fixed$(outputDuration, 3), " s"
 appendInfoLine: "Grain size: ", grain_size_ms, " ms"
@@ -467,8 +497,10 @@ for track to numTracks
         Extract part: sourcePos, sourcePos + grainDur, "Hanning", 1, 0
         grain = selected("Sound")
 
+        grainWasReversed = 0
         if reverse_random and randomUniform(0, 1) > 0.5
             Reverse
+            grainWasReversed = 1
         endif
 
         if pitch_scatter_semitones > 0
@@ -492,6 +524,21 @@ for track to numTracks
 
         selectObject: grain
         grainSamples = Get number of samples
+
+        # Visualization-only mapping data: source interval -> output interval.
+        # These arrays do not participate in synthesis.
+        mapOut0[g] = outputTime
+        mapOut1[g] = outputTime + grainSamples / sampleRate
+        if mapOut1[g] > outputDuration
+            mapOut1[g] = outputDuration
+        endif
+        if grainWasReversed
+            mapSrc0[g] = sourcePos + grainDur
+            mapSrc1[g] = sourcePos
+        else
+            mapSrc0[g] = sourcePos
+            mapSrc1[g] = sourcePos + grainDur
+        endif
 
         # This should only trigger for a rounding edge case. Keeping the guard
         # prevents one oversized grain from shifting every later onset in a track.
@@ -605,68 +652,137 @@ Rename: original_name$ + "_grainCloud"
 # === Visualization ===
 if draw_visualization
     Erase all
-
-    Select outer viewport: 1, 8, 0.2, 0.7
-    Font size: 14
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "Grain Cloud: " + original_name$
+    Font size: 10
+    Line width: 1
+    Solid line
 
-    Select outer viewport: 0, 8, 0.9, 2.5
-    Select inner viewport: 0.6, 7.6, 1.0, 2.4
+    # Title / subtitle
+    Select outer viewport: 0, 8, 0, 0.50
+    Axes: 0, 1, 0, 1
+    Font size: 12
+    Colour: "Black"
+    Text: 0.5, "centre", 0.68, "half", "##Adaptive Grain Cloud Synthesis##"
+    Font size: 7
+    Colour: "{0.35, 0.35, 0.52}"
+    Text: 0.5, "centre", -1.30, "half", "Adaptive Grain Cloud Synthesis.praat  |  " + presetName$ + "  |  " + display_name$
+
+    # Source
+    Select outer viewport: 0, 8, 0.65, 2.00
+    Select inner viewport: 0.55, 7.55, 0.80, 1.86
+    Axes: sourceStart, sourceEnd, -1.35, 1.15
+    Paint rectangle: "{0.97, 0.97, 0.97}", sourceStart, sourceEnd, -1.35, 1.15
     selectObject: source
-    Colour: "{0.6, 0.6, 0.6}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
+    Colour: "{0.55, 0.55, 0.55}"
+    Draw: sourceStart, sourceEnd, -1, 1, "no", "Curve"
+    Select outer viewport: 0, 8, 0.65, 2.00
+    Select inner viewport: 0.55, 7.55, 0.80, 1.86
+    Axes: sourceStart, sourceEnd, -1.35, 1.15
     Colour: "Black"
     Draw inner box
-    Font size: 8
-    Select outer viewport: 0.1, 8, 1.5, 1.8
-    Text left: "yes", "Source"
+    Font size: 7
+    Text left: "yes", "Amplitude"
+    Text bottom: "yes", "Source time (s)"
+    Text: sourceStart + 0.01 * sourceDuration, "left", 1.04, "half", "##Source##"
+    Font size: 6
+    Colour: "{0.28, 0.28, 0.28}"
+    Text: sourceEnd - 0.01 * sourceDuration, "right", 1.04, "half", "" + fixed$(sourceDuration, 2) + " s  |  mono analysis/render source"
 
-    Select outer viewport: 0, 8, 2.6, 4.2
-    Select inner viewport: 0.6, 7.6, 2.7, 4.1
+    # Grain time map: every line is one source interval mapped to one output interval.
+    Select outer viewport: 0, 8, 2.15, 3.80
+    Select inner viewport: 0.55, 7.55, 2.30, 3.66
+    Axes: sourceStart, sourceEnd, 0, outputDuration
+    Paint rectangle: "{0.97, 0.97, 0.97}", sourceStart, sourceEnd, 0, outputDuration
+
+    # Reference traversal.
+    Colour: "{0.82, 0.82, 0.82}"
+    Line width: 1
+    if freezeMode
+        freezeX = sourceStart + 0.5 * ((sourceEnd - grainDurBase) - sourceStart)
+        if freezeX < sourceStart
+            freezeX = sourceStart
+        endif
+        Draw line: freezeX, 0, freezeX, outputDuration
+    else
+        referenceEnd = sourceEnd - grainDurBase
+        if referenceEnd < sourceStart
+            referenceEnd = sourceStart
+        endif
+        Draw line: sourceStart, 0, referenceEnd, outputDuration
+    endif
+
+    Line width: 1.15
+    for g to totalGrains
+        if mapSrc1[g] < mapSrc0[g]
+            Colour: "{0.48, 0.35, 0.74}"
+        else
+            Colour: "{0.22, 0.46, 0.82}"
+        endif
+        Draw line: mapSrc0[g], mapOut0[g], mapSrc1[g], mapOut1[g]
+    endfor
+    Line width: 1
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text left: "yes", "Output time (s)"
+    Text bottom: "yes", "Source time (s)"
+    Text: sourceStart + 0.01 * sourceDuration, "left", 0.95 * outputDuration, "half", "##Grain time map##"
+    Font size: 6
+    Colour: "{0.28, 0.28, 0.28}"
+    Text: sourceStart + 0.01 * sourceDuration, "left", 0.84 * outputDuration, "half", "source interval -> output interval  |  purple/downward = reversed"
+    Text: sourceEnd - 0.01 * sourceDuration, "right", 0.84 * outputDuration, "half", "event hop " + fixed$(eventHop * 1000, 2) + " ms"
+
+    # Output
+    Select outer viewport: 0, 8, 3.95, 5.30
+    Select inner viewport: 0.55, 7.55, 4.10, 5.16
+    Axes: 0, outputDuration, -1.35, 1.15
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, outputDuration, -1.35, 1.15
     selectObject: output
-    Colour: "{0.2, 0.5, 0.7}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
+    Colour: "{0.22, 0.46, 0.82}"
+    Draw: 0, outputDuration, -1, 1, "no", "Curve"
+    Select outer viewport: 0, 8, 3.95, 5.30
+    Select inner viewport: 0.55, 7.55, 4.10, 5.16
+    Axes: 0, outputDuration, -1.35, 1.15
     Colour: "Black"
     Draw inner box
-    Text left: "yes", "Output"
-    Text bottom: "yes", "Time (s)"
+    Font size: 7
+    Text left: "yes", "Amplitude"
+    Text bottom: "yes", "Output time (s)"
+    Text: 0.01 * outputDuration, "left", 1.04, "half", "##Output##"
+    Font size: 6
+    Colour: "{0.28, 0.28, 0.28}"
+    Text: 0.99 * outputDuration, "right", 1.04, "half", "peak-normalized to 0.9  |  10 ms edge fades"
 
-    Select outer viewport: 0, 8, 4.4, 6.2
-    Select inner viewport: 0.6, 7.6, 4.5, 6.1
-    selectObject: output
-
-    spectrogramMaxHz = 5000
-    nyquist = sampleRate / 2
-    if spectrogramMaxHz > 0.95 * nyquist
-        spectrogramMaxHz = 0.95 * nyquist
+    if adaptive_duration
+        adaptiveName$ = "on"
+    else
+        adaptiveName$ = "off"
+    endif
+    if reverse_random
+        reverseName$ = "on"
+    else
+        reverseName$ = "off"
     endif
 
-    spectroWindow = 0.03
-    if 2 * spectroWindow > outputDuration
-        spectroWindow = outputDuration / 2
-    endif
-
-    if spectroWindow > 0 and spectrogramMaxHz > 0
-        To Spectrogram: spectroWindow, spectrogramMaxHz, 0.01, 20, "Gaussian"
-        spectrogram = selected("Spectrogram")
-        Paint: 0, 0, 0, 0, 100, "yes", 50, 6, 0, "no"
-        removeObject: spectrogram
-    endif
-
+    # Summary
+    Select outer viewport: 0, 8, 5.48, 6.55
+    Select inner viewport: 0.25, 7.75, 5.56, 6.48
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    Font size: 7
     Colour: "Black"
-    Draw inner box
-    Font size: 8
-    Text left: "yes", "Freq (Hz)"
-    Text bottom: "yes", "Time (s)"
-
-    Select outer viewport: 0, 8, 6.3, 6.6
-    Font size: 8
-    Colour: "{0.4, 0.4, 0.4}"
-    Text: 1.5, "centre", 0.5, "half", "Grains: " + string$(totalGrains) + " | Event hop: " + fixed$(eventHop * 1000, 2) + " ms | Tracks: " + string$(numTracks)
+    Text: 0.02, "left", 0.82, "half", "##Summary##"
+    Font size: 6
+    Colour: "{0.28, 0.28, 0.28}"
+    Text: 0.02, "left", 0.56, "half", "Grains " + string$(totalGrains) + "  |  Grain " + fixed$(grain_size_ms, 1) + " ms  |  Overlap " + fixed$(grain_overlap, 2) + "  |  Tracks " + string$(numTracks)
+    Text: 0.02, "left", 0.33, "half", "Density " + fixed$(density, 2) + " -> " + fixed$(effectiveDensity, 2) + "  |  Position scatter " + fixed$(position_scatter, 2) + "  |  Pitch sigma " + fixed$(pitch_scatter_semitones, 2) + " st"
+    Text: 0.02, "left", 0.12, "half", "Duration " + fixed$(sourceDuration, 2) + " -> " + fixed$(outputDuration, 2) + " s  |  Adaptive duration " + adaptiveName$ + "  |  Random reverse " + reverseName$
+    Colour: "Black"
+    Draw rectangle: 0, 1, 0, 1
 
     Font size: 10
     Colour: "Black"
+    Line width: 1
 endif
 
 # === Cleanup ===

@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4 (2026)
+# Version: 0.4.1 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -29,6 +29,14 @@
 #   Cohen, S. (2025). Praat AudioTools: An Offline Analysis-Resynthesis
 #   Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v0.4.3:
+#   - Visualization-only alignment to the current Praat AudioTools suite.
+#   - Reframed as Source -> Brownian state map -> Output -> Summary.
+#   - v0.4.3 aligns the left edges and left-side axis labels of all display boxes.
+#   - Unified temporal and spatial Brownian paths on aligned Grain-number tracks.
+#   - Sanitized underscores in display names and clarified colour semantics.
+#   - No DSP or scheduling changes.
 #
 # Changelog v0.4:
 #   DSP / timing / correctness:
@@ -100,7 +108,7 @@
 #   - Added play option
 # ============================================================
 
-form Brownian Motion Texture v0.4
+form Brownian Motion Texture v0.4.3
     comment Select a Sound object first
     
     comment === Preset ===
@@ -323,7 +331,7 @@ maxOutTime = output_duration_s - grain_duration_s
 overlap_factor = density_grains_per_sec * grain_duration_s
 
 # === Info Header ===
-writeInfoLine: "=== Brownian Motion Texture Generator v0.4 ==="
+writeInfoLine: "=== Brownian Motion Texture Generator v0.4.3 ==="
 appendInfoLine: "Source: ", input_name$, " (", fixed$(input_duration, 2), " s)"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Output: ", output_duration_s, " s"
@@ -630,285 +638,225 @@ finalPeak = Get absolute extremum: 0, 0, "None"
 nResultCh = Get number of channels
 
 # ============================================================
-# VISUALIZATION  (8 x 8 canvas — suite standard)
+# VISUALIZATION  (current Praat AudioTools suite styling)
+# Source -> Brownian state map -> Output -> Summary.
+# The central map directly shows the two cumulative random walks:
+#   upper track = output-time state against the no-drift reference,
+#   lower track = stereo-pan state around the centre reference.
+# Colour is reserved for state identity; boundaries and guides are neutral.
 # ============================================================
-
 if draw_visualization
+    appendInfoLine: ""
+    appendInfoLine: "Drawing visualization..."
+
     vizGrainMax = max(2, totalGrains)
     Erase all
-    
-    # ----------------------------------------------------------
-    # TITLE BAR
-    # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 0, 0.65
-    Axes: 0, 1, 0, 1
-    Font size: 12
-    Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##BROWNIAN MOTION TEXTURE GENERATOR##"
-    Font size: 7
-    Colour: "{0.35, 0.35, 0.52}"
+    Select outer viewport: 0, 8, 0, 7.10
+    Black
+    Plain line
+
+    displayName$ = replace$(input_name$, "_", " ", 0)
+
     if allow_overlap
         modeStr$ = "Overlap"
     else
         modeStr$ = "Serial"
     endif
-    Text: 0.5, "centre", -0.22, "half",
-        ... input_name$
-        ... + "  |  " + presetName$
-        ... + "  |  " + string$(totalGrains) + " grains"
-        ... + "  |  T:" + temporalBoundaryName$ + "/S:" + spatialBoundaryName$
-        ... + "  |  " + modeStr$
-        ... + "  |  Density factor: " + fixed$(overlap_factor, 2)
-    
+
+    # Mono, zero-based source display copy.
+    selectObject: original
+    vizOrig = Convert to mono
+    selectObject: vizOrig
+    vizOrigStart = Get start time
+    Shift times by: -vizOrigStart
+
+    # Shared source/output amplitude scale.
+    selectObject: vizOrig
+    origPeak = Get absolute extremum: 0, 0, "None"
+    selectObject: output
+    outPeak = Get absolute extremum: 0, 0, "None"
+    sharedPeak = max(origPeak, outPeak)
+    if sharedPeak < 0.001
+        sharedPeak = 0.001
+    endif
+    sharedAmp = 1.15 * sharedPeak
+
     # ----------------------------------------------------------
-    # PANEL A: TEMPORAL BROWNIAN PATH  (left, headline)
+    # TITLE / SUBTITLE
     # ----------------------------------------------------------
-    Select outer viewport: 0, 4.2, 0.75, 4.60
-    Select inner viewport: 0.55, 4.00, 0.95, 4.40
-    
+    Select outer viewport: 0, 8, 0, 0.50
+    Axes: 0, 1, 0, 1
+    Font size: 12
+    Colour: "Black"
+    Text: 0.5, "centre", 0.68, "half", "##Brownian Motion Texture Generator##"
+    Font size: 7
+    Colour: "{0.35, 0.35, 0.52}"
+    Text: 0.5, "centre", -1.30, "half", "Brownian Motion Texture Generator.praat  |  " + displayName$ + "  |  cumulative temporal and spatial random walks"
+
+    # ----------------------------------------------------------
+    # SOURCE
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 0.65, 1.90
+    Select inner viewport: 0.55, 7.75, 0.82, 1.78
+    Axes: 0, input_duration, -sharedAmp, sharedAmp
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, input_duration, -sharedAmp, sharedAmp
+    selectObject: vizOrig
+    Colour: "{0.58, 0.58, 0.62}"
+    Draw: 0, input_duration, -sharedAmp, sharedAmp, "no", "Curve"
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text top: "no", "##Source##"
+    Font size: 6
+    Text left: "yes", "Amplitude"
+    Text bottom: "yes", "Time (s)"
+    Axes: 0, input_duration, -sharedAmp, sharedAmp
+    Colour: "{0.28, 0.28, 0.28}"
+    Text: 0.01 * input_duration, "left", 0.82 * sharedAmp, "half", sourceModeName$ + " source positions  |  grain " + fixed$(grain_duration_s * 1000, 1) + " ms  |  " + string$(totalGrains) + " grains"
+
+    # ----------------------------------------------------------
+    # BROWNIAN STATE MAP - unified process view
+    # ----------------------------------------------------------
+    # Outer panel provides one title/frame for both aligned state tracks.
+    Select outer viewport: 0, 8, 2.05, 4.55
+    Select inner viewport: 0.55, 7.75, 2.22, 4.40
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, 1, 0, 1
+    Colour: "{0.48, 0.48, 0.48}"
+    Draw rectangle: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text top: "no", "##Brownian state map##"
+
+    # Upper track: cumulative temporal state.
+    Select outer viewport: 0, 8, 2.28, 3.38
+    Select inner viewport: 0.55, 7.75, 2.39, 3.28
     Axes: 1, vizGrainMax, 0, output_duration_s
-    Paint rectangle: "{0.96, 0.96, 0.96}", 1, totalGrains, 0, output_duration_s
-    
-    # Reference: the "ideal" linear progression (no Brownian drift)
-    Colour: "{0.65, 0.65, 0.70}"
-    Dotted line
-    Line width: 1.2
+    Paint rectangle: "{0.985, 0.985, 0.985}", 1, vizGrainMax, 0, output_duration_s
+
     referenceEnd = min(maxOutTime, (totalGrains - 1) / density_grains_per_sec)
+    Colour: "{0.72, 0.72, 0.75}"
+    Dotted line
     Draw line: 1, 0, totalGrains, referenceEnd
     Solid line
-    Line width: 1
-    Font size: 5
-    Colour: "{0.45, 0.45, 0.45}"
-    Text: totalGrains * 0.99, "right", min(output_duration_s * 0.95, referenceEnd + output_duration_s * 0.03), "half", "no-drift reference"
-    
-    # Brownian path
-    Colour: "{0.85, 0.30, 0.30}"
+
+    Colour: "{0.82, 0.34, 0.24}"
     Line width: 1.3
     for i from 2 to totalGrains
         Draw line: i - 1, pathOutTime[i - 1], i, pathOutTime[i]
     endfor
-    Line width: 1
-    
-    # Per-grain dots, color by source position
     for i to totalGrains
-        srcRel = pathSrcTime[i] / max(input_duration, 0.001)
-        cR = 0.30 + srcRel * 0.55
-        cG = 0.40
-        cB = 0.78 - srcRel * 0.55
-        if cB < 0
-            cB = 0
-        endif
-        rgb$ = "{" + fixed$(cR, 2) + "," + fixed$(cG, 2) + "," + fixed$(cB, 2) + "}"
-        Paint circle (mm): rgb$, i, pathOutTime[i], 0.6
+        Paint circle (mm): "{0.82, 0.34, 0.24}", i, pathOutTime[i], 0.45
     endfor
-    
+    Line width: 1
+
     Colour: "Black"
     Draw inner box
     Font size: 6
     Text left: "yes", "Output time (s)"
-    Text bottom: "yes", "Grain #  (color = source position)"
-    
-    # ----------------------------------------------------------
-    # PANEL B: SPATIAL BROWNIAN PATH  (right, upper)
-    # ----------------------------------------------------------
-    Select outer viewport: 4.2, 8, 0.75, 3.00
-    Select inner viewport: 4.55, 7.75, 0.95, 2.85
-    
+    Axes: 1, vizGrainMax, 0, output_duration_s
+    Colour: "{0.34, 0.34, 0.34}"
+    Text: 1 + 0.01 * (vizGrainMax - 1), "left", 0.90 * output_duration_s, "half", "temporal walk"
+    Colour: "{0.58, 0.58, 0.58}"
+    Text: totalGrains - 0.5, "right", min(output_duration_s * 0.82, referenceEnd + output_duration_s * 0.06), "half", "no-drift reference"
+
+    # Lower track: cumulative spatial state.
+    Select outer viewport: 0, 8, 3.43, 4.43
+    Select inner viewport: 0.55, 7.75, 3.52, 4.31
     Axes: 1, vizGrainMax, 0, 1
-    Paint rectangle: "{0.96, 0.96, 0.96}", 1, totalGrains, 0, 1
-    
-    # Center reference
-    Colour: "{0.65, 0.65, 0.70}"
+    Paint rectangle: "{0.985, 0.985, 0.985}", 1, vizGrainMax, 0, 1
+
+    Colour: "{0.72, 0.72, 0.75}"
     Dotted line
     Draw line: 1, 0.5, totalGrains, 0.5
     Solid line
-    
-    # L/R reference lines
-    Colour: "{0.85, 0.85, 0.88}"
-    Line width: 1
-    Draw line: 1, 0, totalGrains, 0
-    Draw line: 1, 1, totalGrains, 1
-    
-    # Spatial path
+
     if enable_spatial_brownian
-        Colour: "{0.30, 0.65, 0.30}"
+        Colour: "{0.48, 0.33, 0.72}"
         Line width: 1.3
         for i from 2 to totalGrains
             Draw line: i - 1, pathPan[i - 1], i, pathPan[i]
         endfor
-        Line width: 1
-        
-        # Per-grain dots colored by pan
         for i to totalGrains
-            cR = 0.30 + pathPan[i] * 0.55
-            cG = 0.55
-            cB = 0.78 - pathPan[i] * 0.55
-            if cB < 0
-                cB = 0
-            endif
-            rgb$ = "{" + fixed$(cR, 2) + "," + fixed$(cG, 2) + "," + fixed$(cB, 2) + "}"
-            Paint circle (mm): rgb$, i, pathPan[i], 0.5
+            Paint circle (mm): "{0.48, 0.33, 0.72}", i, pathPan[i], 0.42
         endfor
+        Line width: 1
     else
         Colour: "{0.55, 0.55, 0.55}"
-        Font size: 8
-        Text: totalGrains / 2, "centre", 0.5, "half", "Spatial Brownian disabled"
+        Font size: 7
+        Text: totalGrains / 2, "centre", 0.5, "half", "spatial Brownian disabled"
     endif
-    
-    # L/R labels
-    Font size: 5
-    Colour: "{0.30, 0.30, 0.30}"
-    Text: 1.5, "left", 0.04, "half", "L"
-    Text: 1.5, "left", 0.96, "half", "R"
-    
+
     Colour: "Black"
     Draw inner box
     Font size: 6
-    Text left: "yes", "Pan (0=L, 1=R)"
+    Text left: "yes", "Pan"
     Text bottom: "yes", "Grain #"
-    
+    Axes: 1, vizGrainMax, 0, 1
+    Colour: "{0.34, 0.34, 0.34}"
+    Text: 1 + 0.01 * (vizGrainMax - 1), "left", 0.90, "half", "R"
+    Text: 1 + 0.01 * (vizGrainMax - 1), "left", 0.10, "half", "L"
+    Colour: "{0.58, 0.58, 0.58}"
+    Text: totalGrains - 0.5, "right", 0.57, "half", "centre reference"
+
     # ----------------------------------------------------------
-    # PANEL C: GRAIN DENSITY HISTOGRAM  (right, lower)
-    # Time on x, count of grains landing in each time bin on y
+    # OUTPUT
     # ----------------------------------------------------------
-    Select outer viewport: 4.2, 8, 3.05, 4.60
-    Select inner viewport: 4.55, 7.75, 3.20, 4.50
-    
-    nDensBins = 30
-    densBins# = zero# (nDensBins)
-    binDur = output_duration_s / nDensBins
-    
-    for i to totalGrains
-        b = floor(pathOutTime[i] / binDur) + 1
-        if b < 1
-            b = 1
-        endif
-        if b > nDensBins
-            b = nDensBins
-        endif
-        densBins#[b] = densBins#[b] + 1
-    endfor
-    
-    densMax = 1
-    for b to nDensBins
-        if densBins#[b] > densMax
-            densMax = densBins#[b]
-        endif
-    endfor
-    
-    Axes: 0, output_duration_s, 0, densMax * 1.15
-    Paint rectangle: "{0.96, 0.96, 0.96}", 0, output_duration_s, 0, densMax * 1.15
-    
-    # Expected uniform density reference line
-    expectedPerBin = totalGrains / nDensBins
-    Colour: "{0.78, 0.78, 0.85}"
-    Dotted line
-    Draw line: 0, expectedPerBin, output_duration_s, expectedPerBin
-    Solid line
-    Font size: 5
-    Colour: "{0.55, 0.55, 0.55}"
-    Text: output_duration_s * 0.99, "right", expectedPerBin * 1.1, "half",
-        ... "uniform = " + fixed$(expectedPerBin, 1)
-    
-    # Bars
-    for b to nDensBins
-        if densBins#[b] > 0
-            xL = (b - 1) * binDur
-            xR = xL + binDur * 0.92
-            Paint rectangle: "{0.55, 0.40, 0.78}", xL, xR, 0, densBins#[b]
-        endif
-    endfor
-    
-    Colour: "Black"
-    Draw inner box
-    Font size: 6
-    Text left: "yes", "Grain count"
-    Text bottom: "yes", "Time (s)"
-    
-    # ----------------------------------------------------------
-    # ALIGNED PANEL TITLES
-    # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 0, 8
-    Select inner viewport: 0, 8, 0, 8
-    Axes: 0, 8, 0, 8
-    
-    Font size: 7
-    Colour: "Black"
-    Text: 2.10, "centre", 7.30, "half", "Temporal Brownian path"
-    Text: 6.10, "centre", 7.30, "half", "Spatial Brownian (upper) & temporal density (lower)"
-    
-    # ----------------------------------------------------------
-    # PANEL D: OUTPUT WAVEFORM
-    # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 4.68, 5.75
-    Select inner viewport: 0.55, 7.72, 4.75, 5.68
-    
-    selectObject: output
-    outPeak = Get absolute extremum: 0, 0, "None"
-    if outPeak < 0.001
-        outPeak = 0.001
-    endif
-    ampViz = outPeak * 1.15
-    
-    Axes: 0, finalDur, -ampViz, ampViz
-    Paint rectangle: "{0.97, 0.97, 0.97}", 0, finalDur, -ampViz, ampViz
+    Select outer viewport: 0, 8, 4.70, 5.95
+    Select inner viewport: 0.55, 7.75, 4.87, 5.83
+    Axes: 0, finalDur, -sharedAmp, sharedAmp
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, finalDur, -sharedAmp, sharedAmp
     Colour: "{0.82, 0.82, 0.82}"
     Draw line: 0, 0, finalDur, 0
-    
+
     selectObject: output
     Extract one channel: 1
-    vCh1 = selected("Sound")
+    vizCh1 = selected("Sound")
     Colour: "{0.25, 0.50, 0.82}"
-    Line width: 1
-    Draw: 0, 0, -ampViz, ampViz, "no", "Curve"
-    removeObject: vCh1
-    
+    Draw: 0, finalDur, -sharedAmp, sharedAmp, "no", "Curve"
+    removeObject: vizCh1
+
     selectObject: output
     Extract one channel: 2
-    vCh2 = selected("Sound")
+    vizCh2 = selected("Sound")
     Colour: "{0.82, 0.45, 0.25}"
-    Draw: 0, 0, -ampViz, ampViz, "no", "Curve"
-    removeObject: vCh2
-    
+    Draw: 0, finalDur, -sharedAmp, sharedAmp, "no", "Curve"
+    removeObject: vizCh2
+
     Colour: "Black"
-    Line width: 1
     Draw inner box
     Font size: 7
-    Text top: "no", "Output  (blue=L  orange=R)"
-    Text left: "yes", "Amp"
+    Text top: "yes", "##Output##"
+    Font size: 6
+    Text left: "yes", "Amplitude"
     Text bottom: "yes", "Time (s)"
-    
+    Axes: 0, finalDur, -sharedAmp, sharedAmp
+    Colour: "{0.28, 0.28, 0.28}"
+    Text: 0.01 * finalDur, "left", 0.82 * sharedAmp, "half", "blue = L  |  orange = R  |  " + modeStr$ + "  |  density factor " + fixed$(overlap_factor, 2)
+
     # ----------------------------------------------------------
-    # PANEL E: SUMMARY BAR
+    # SUMMARY
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 5.82, 6.58
-    Select inner viewport: 0.55, 7.72, 5.88, 6.52
+    Select outer viewport: 0, 8, 6.10, 7.05
+    Select inner viewport: 0.30, 7.80, 6.17, 6.98
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
-    
+    Colour: "{0.48, 0.48, 0.48}"
+    Draw rectangle: 0, 1, 0, 1
+
+    Font size: 7
+    Colour: "Black"
+    Text: 0.02, "left", 0.80, "half", "##Summary##"
     Font size: 6
     Colour: "{0.28, 0.28, 0.28}"
-    Text: 0.02, "left", 0.75, "half",
-        ... "##" + presetName$ + "##"
-        ... + "  " + input_name$
-        ... + "  |  " + string$(totalGrains) + " grains @ " + fixed$(density_grains_per_sec, 1) + "/s"
-        ... + "  |  Grain dur: " + fixed$(grain_duration_s * 1000, 1) + " ms"
-        ... + "  |  Time step: " + fixed$(time_step_size_s, 3) + "s"
-        ... + "  |  Spatial step: " + fixed$(spatial_step_size, 3)
-        ... + "  |  Source: " + sourceModeName$
-    
-    Text: 0.02, "left", 0.28, "half",
-        ... "Boundaries T/S: " + temporalBoundaryName$ + "/" + spatialBoundaryName$
-        ... + "  |  Mode: " + modeStr$
-        ... + "  |  Fade in/out: " + fixed$(fade_duration_s * 1000, 1) + " ms / " + fixed$(fade_out_s, 2) + " s"
-        ... + "  |  Output: " + fixed$(finalDur, 2) + " s, peak " + fixed$(finalPeak, 3)
-    
-    Colour: "Black"
-    Draw rectangle: 0, 1, 0, 1
-    
+    Text: 0.02, "left", 0.49, "half", presetName$ + "  |  " + string$(totalGrains) + " grains @ " + fixed$(density_grains_per_sec, 1) + "/s  |  grain " + fixed$(grain_duration_s * 1000, 1) + " ms  |  temporal step " + fixed$(time_step_size_s, 3) + " s  |  spatial step " + fixed$(spatial_step_size, 3)
+    Text: 0.02, "left", 0.18, "half", "Boundaries T/S " + temporalBoundaryName$ + "/" + spatialBoundaryName$ + "  |  source " + sourceModeName$ + "  |  " + modeStr$ + "  |  fade out " + fixed$(fade_out_s, 2) + " s  |  output " + fixed$(finalDur, 2) + " s  |  peak " + fixed$(finalPeak, 3)
+
     Font size: 10
     Colour: "Black"
     Line width: 1
+
+    removeObject: vizOrig
 endif
 
 # === Final ===

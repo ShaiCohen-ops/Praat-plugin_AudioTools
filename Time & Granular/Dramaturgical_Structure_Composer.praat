@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 5.4 (2026)
+# Version: 5.4.1 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -33,6 +33,16 @@
 #   Cohen, S. (2026). Praat AudioTools: An Offline
 #   Analysis-Resynthesis Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v5.4.1:
+#   Visualization alignment pass only; DSP and structural logic unchanged.
+#   Reworked the Picture output to the current Praat AudioTools suite layout:
+#   Source -> Dramaturgical form map -> Output -> Summary. The central map
+#   aligns detected source sections with the actual output timeline, connects
+#   each output item to its source section, encodes texture by fill color,
+#   marks LOOP/SIL/STR/REC operations textually, and integrates the tension
+#   arc below the timeline. Also fixes underscore/subscript display names and
+#   removes the vertical text collisions present in the v5.4 Picture layout.
 #
 # Changelog v5.4:
 #   Correctness + dramaturgical-semantics pass.
@@ -202,7 +212,7 @@
 #   - Context-aware silence placement
 # ============================================================
 
-form Dramaturgical Structure Composer v5.4
+form Dramaturgical Structure Composer v5.4.1
     positive Min_section_duration_s 8
     positive Max_section_duration_s 90
     comment Novelty threshold is relative (0-1 of peak); Harmonicity is HNR in dB
@@ -465,7 +475,7 @@ else
 endif
 
 writeInfoLine: "=============================================="
-appendInfoLine: "  Dramaturgical Structure Composer v5.4"
+appendInfoLine: "  Dramaturgical Structure Composer v5.4.1"
 appendInfoLine: "=============================================="
 appendInfoLine: "Input: ", inputName$
 appendInfoLine: "Duration: ", fixed$(inputDuration, 2), " s"
@@ -1501,28 +1511,34 @@ appendInfoLine: "  Output: ", fixed$(outputDuration, 2), " s (input was ", fixed
 appendInfoLine: "  Peak: ", fixed$(finalPeak, 3)
 
 # ============================================================
-# VISUALIZATION  (8 x 8 canvas — suite standard)
-# Panel A: input sections (color = texture, height = RMS)
-# Panel B: OPERATION TIMELINE in output time (the actual
-#          dramaturgical transformation)
-# Panel C: output waveform
-# Panel D: tension arc curve
-# Panel E: light-grey summary
+# VISUALIZATION  (current Praat AudioTools suite styling)
+# Source -> Dramaturgical form map -> Output -> Summary.
+# Fill color in the structural map has one meaning: texture class.
+# Operation type is encoded textually (LOOP / SIL / STR / REC), not by color.
 # ============================================================
 
 if draw_visualization
     appendInfoLine: ""
     appendInfoLine: "Creating visualization..."
-    
+
     Erase all
+    Select outer viewport: 0, 8, 0, 7.10
     Black
     Plain line
-    
-    # Texture color palette
-    # 0=silence (mid gray), 1=tonal (blue), 2=quiet (pale gray),
-    # 3=bright (yellow), 4=dark (purple), 5=mid (sand)
-    
-    # Mono copy of output for waveform panel
+
+    displayName$ = replace$(inputName$, "_", " ", 0)
+
+    # Zero-based mono display copies.
+    selectObject: inputSound
+    if inputChannels > 1
+        vizInput = Convert to mono
+    else
+        vizInput = Copy: "viz_input"
+    endif
+    selectObject: vizInput
+    vizInputStart = Get start time
+    Shift times by: -vizInputStart
+
     selectObject: finalOutput
     outNumCh = Get number of channels
     if outNumCh > 1
@@ -1531,311 +1547,21 @@ if draw_visualization
         vizOutput = Copy: "viz_output"
     endif
     selectObject: vizOutput
-    outPeak = Get absolute extremum: 0, 0, "None"
-    if outPeak < 0.001
-        outPeak = 0.001
-    endif
-    outAmp = outPeak * 1.15
-    
-    # ----------------------------------------------------------
-    # TITLE BAR
-    # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 0, 0.65
-    Axes: 0, 1, 0, 1
-    Font size: 12
-    Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##DRAMATURGICAL STRUCTURE COMPOSER##"
-    Font size: 7
-    Colour: "{0.35, 0.35, 0.52}"
-    Text: 0.5, "centre", -0.22, "half",
-        ... inputName$
-        ... + "  |  " + strategyName$
-        ... + "  |  reorder " + reorderName$
-        ... + "  |  " + string$(numDetectedSections) + " sections"
-        ... + "  |  " + string$(numTimelineItems) + " timeline items"
-        ... + "  |  " + string$(numOperations) + " ops"
-        ... + "  |  in " + fixed$(inputDuration, 1) + " s -> out " + fixed$(outputDuration, 1) + " s"
-    
-    # ----------------------------------------------------------
-    # PANEL A: INPUT SECTIONS  (left, headline)
-    # Color = texture, vertical bar height = RMS
-    # ----------------------------------------------------------
-    Select outer viewport: 0, 4.2, 0.75, 4.60
-    Select inner viewport: 0.55, 4.00, 0.95, 4.40
-    
-    Axes: 0, inputDuration, 0, 1
-    Paint rectangle: "{0.97, 0.97, 0.99}", 0, inputDuration, 0, 1
-    
-    for s from 1 to numDetectedSections
-        # Panel A shows only real detected sections; form extensions
-        # (Rondo/Narrative) are shown in Panel B.
-        if 1
-            sStart = secStart#[s]
-            sEnd = secEnd#[s]
-            tex = secTexture#[s]
-            
-            if tex = 1
-                bgColor$ = "{0.70, 0.85, 1.00}"
-            elsif tex = 2
-                bgColor$ = "{0.90, 0.90, 0.90}"
-            elsif tex = 3
-                bgColor$ = "{1.00, 1.00, 0.78}"
-            elsif tex = 4
-                bgColor$ = "{0.80, 0.75, 0.95}"
-            else
-                bgColor$ = "{1.00, 0.88, 0.72}"
-            endif
-            
-            Paint rectangle: bgColor$, sStart, sEnd, 0, 1
-            
-            # RMS bar (dark blue at bottom)
-            if globalMaxRms > 0
-                rmsHeight = secRms#[s] / globalMaxRms
-            else
-                rmsHeight = 0.5
-            endif
-            if sEnd - sStart > 1
-                Paint rectangle: "{0.25, 0.30, 0.55}", sStart + 0.3, sEnd - 0.3, 0, rmsHeight * 0.35
-            endif
-            
-            # Boundary line
-            Colour: "Black"
-            Line width: 1
-            Draw line: sStart, 0, sStart, 1
-            
-            # Section number
-            Font size: 6
-            Colour: "{0.20, 0.20, 0.30}"
-            midT = (sStart + sEnd) / 2
-            Text: midT, "centre", 0.88, "half", string$(s)
-        endif
-    endfor
-    
-    # Final boundary
-    Colour: "Black"
-    Line width: 1
-    Draw line: inputDuration, 0, inputDuration, 1
-    
-    Draw inner box
-    Font size: 6
-    Text left: "yes", "Input sections"
-    Text bottom: "yes", "Time (s)"
-    
-    # ----------------------------------------------------------
-    # PANEL B: OPERATION TIMELINE  (right, headline)
-    # The structural transformation, in output time.
-    # ----------------------------------------------------------
-    Select outer viewport: 4.2, 8, 0.75, 4.60
-    Select inner viewport: 4.55, 7.75, 0.95, 4.40
-    
-    Axes: 0, outputDuration, 0, 1
-    Paint rectangle: "{0.97, 0.97, 0.99}", 0, outputDuration, 0, 1
-    
-    for t from 1 to numTimelineItems
-        oStart = timelineOutputStart#[t]
-        oEnd = timelineOutputEnd#[t]
-        tex = timelineTexture#[t]
-        itemType = timelineType#[t]
-        
-        # Color from texture (silences distinct)
-        if tex = 0
-            blockColor$ = "{0.78, 0.78, 0.82}"
-        elsif tex = 1
-            blockColor$ = "{0.70, 0.85, 1.00}"
-        elsif tex = 2
-            blockColor$ = "{0.90, 0.90, 0.90}"
-        elsif tex = 3
-            blockColor$ = "{1.00, 1.00, 0.78}"
-        elsif tex = 4
-            blockColor$ = "{0.80, 0.75, 0.95}"
-        else
-            blockColor$ = "{1.00, 0.88, 0.72}"
-        endif
-        
-        Paint rectangle: blockColor$, oStart, oEnd, 0.05, 0.95
-        
-        # Special outline for recalls (orange) and stretches (dark border)
-        if itemType = 5
-            Colour: "{0.95, 0.55, 0.20}"
-            Line width: 2
-            Draw rectangle: oStart, oEnd, 0.05, 0.95
-        elsif itemType = 4
-            Colour: "{0.50, 0.20, 0.70}"
-            Line width: 1.5
-            Draw rectangle: oStart, oEnd, 0.05, 0.95
-        elsif itemType = 3
-            Colour: "{0.55, 0.55, 0.55}"
-            Line width: 1.2
-            Dashed line
-            Draw rectangle: oStart, oEnd, 0.05, 0.95
-            Solid line
-        else
-            Colour: "{0.40, 0.40, 0.45}"
-            Line width: 1
-            Draw rectangle: oStart, oEnd, 0.05, 0.95
-        endif
-        
-        # Label (only if block is wide enough)
-        if oEnd - oStart > outputDuration * 0.025
-            secIdxV = timelineSectionIdx#[t]
-            if itemType = 3
-                blockLabel$ = "SIL " + fixed$(timelineParam#[t], 1) + "s"
-            elsif itemType = 4
-                blockLabel$ = string$(secIdxV) + " STR " + fixed$(timelineParam#[t], 1) + "x"
-            elsif itemType = 5
-                if timelineReverseFlag#[t] = 1
-                    blockLabel$ = string$(secIdxV) + " REC R"
-                else
-                    blockLabel$ = string$(secIdxV) + " REC"
-                endif
-            elsif timelineLoopFlag#[t] = 1
-                blockLabel$ = string$(secIdxV) + " LOOP"
-            else
-                blockLabel$ = string$(secIdxV)
-            endif
-            
-            Font size: 5
-            Colour: "{0.20, 0.20, 0.30}"
-            midOut = (oStart + oEnd) / 2
-            Text: midOut, "centre", 0.50, "half", blockLabel$
-        endif
-    endfor
-    
-    Colour: "Black"
-    Line width: 1
-    Draw inner box
-    Font size: 6
-    Text left: "yes", "Output timeline"
-    Text bottom: "yes", "Time (s)"
-    
-    # ----------------------------------------------------------
-    # ALIGNED PANEL TITLES
-    # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 0, 8
-    Select inner viewport: 0, 8, 0, 8
-    Axes: 0, 8, 0, 8
-    
-    Font size: 7
-    Colour: "Black"
-    Text: 2.10, "centre", 7.30, "half", "Detected sections (color = texture, bar = RMS)"
-    Text: 6.10, "centre", 7.30, "half", "Operation timeline (orange = RECALL, purple = STRETCH, gray dashed = SILENCE)"
-    
-    # ----------------------------------------------------------
-    # PANEL C: OUTPUT WAVEFORM
-    # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 4.68, 5.55
-    Select inner viewport: 0.55, 7.72, 4.75, 5.48
-    
-    Axes: 0, outputDuration, -outAmp, outAmp
-    Paint rectangle: "{0.97, 0.97, 0.97}", 0, outputDuration, -outAmp, outAmp
-    Colour: "{0.82, 0.82, 0.82}"
-    Draw line: 0, 0, outputDuration, 0
-    
-    # Mark timeline boundaries faintly
-    Colour: "{0.85, 0.85, 0.90}"
-    Line width: 1
-    Dotted line
-    for t from 2 to numTimelineItems
-        boundary = timelineOutputStart#[t]
-        Draw line: boundary, -outAmp, boundary, outAmp
-    endfor
-    Solid line
-    
+    vizOutputStart = Get start time
+    Shift times by: -vizOutputStart
+
+    # Shared source/output amplitude scale.
+    selectObject: vizInput
+    inputPeakViz = Get absolute extremum: 0, 0, "None"
     selectObject: vizOutput
-    Colour: "{0.25, 0.40, 0.65}"
-    Line width: 1
-    Draw: 0, outputDuration, -outAmp, outAmp, "no", "Curve"
-    
-    Colour: "Black"
-    Line width: 1
-    Draw inner box
-    Font size: 7
-    Text top: "no", "Output waveform  (dotted lines = timeline-item boundaries)"
-    Text left: "yes", "Amp"
-    Text bottom: "yes", "Time (s)"
-    
-    # ----------------------------------------------------------
-    # PANEL D: TENSION ARC CURVE
-    # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 5.62, 6.55
-    Select inner viewport: 0.55, 7.72, 5.69, 6.48
-    
-    Axes: 0, 1, 0, 1.1
-    Paint rectangle: "{0.97, 0.97, 0.97}", 0, 1, 0, 1.1
-    
-    # Reference grid
-    Colour: "{0.85, 0.85, 0.90}"
-    Line width: 1
-    Dotted line
-    Draw line: 0, 0.3, 1, 0.3
-    Draw line: 0, 0.65, 1, 0.65
-    Draw line: 0, 1.0, 1, 1.0
-    Solid line
-    
-    if apply_tension_arc
-        Colour: "{0.80, 0.30, 0.30}"
-        Line width: 2
-        numDrawPoints = 200
-        for dp from 1 to numDrawPoints - 1
-            x1 = (dp - 1) / numDrawPoints
-            x2 = dp / numDrawPoints
-            
-            if x1 <= arc_peak_position
-                shape1 = x1 / arc_peak_position
-            else
-                shape1 = 1.0 - (x1 - arc_peak_position) / (1.0 - arc_peak_position)
-            endif
-            y1 = 0.3 + 0.7 * shape1 ^ arc_exaggeration
-            
-            if x2 <= arc_peak_position
-                shape2 = x2 / arc_peak_position
-            else
-                shape2 = 1.0 - (x2 - arc_peak_position) / (1.0 - arc_peak_position)
-            endif
-            y2 = 0.3 + 0.7 * shape2 ^ arc_exaggeration
-            
-            Draw line: x1, y1, x2, y2
-        endfor
-        
-        # Mark peak position
-        Colour: "{0.50, 0.20, 0.20}"
-        Line width: 1.5
-        Dashed line
-        Draw line: arc_peak_position, 0, arc_peak_position, 1.1
-        Solid line
-        
-        Font size: 5
-        Colour: "{0.55, 0.20, 0.20}"
-        Text: arc_peak_position + 0.01, "left", 1.05, "half", "peak " + fixed$(arc_peak_position * 100, 0) + "%"
-    else
-        # Flat line at 1.0 with "disabled" note
-        Colour: "{0.65, 0.65, 0.65}"
-        Line width: 1
-        Dashed line
-        Draw line: 0, 1.0, 1, 1.0
-        Solid line
-        Font size: 7
-        Colour: "{0.55, 0.55, 0.55}"
-        Text: 0.5, "centre", 0.55, "half", "Tension arc disabled"
+    outputPeakViz = Get absolute extremum: 0, 0, "None"
+    sharedPeakViz = max(inputPeakViz, outputPeakViz)
+    if sharedPeakViz < 0.001
+        sharedPeakViz = 0.001
     endif
-    
-    Line width: 1
-    Colour: "Black"
-    Draw inner box
-    Font size: 7
-    Text top: "no", "Tension arc envelope (multiplicative gain: 0.3 at edges, 1.0 at peak)"
-    Text left: "yes", "Gain"
-    Text bottom: "yes", "Normalized output position"
-    
-    # ----------------------------------------------------------
-    # PANEL E: SUMMARY BAR  (suite standard light grey)
-    # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 6.62, 7.30
-    Select inner viewport: 0.55, 7.72, 6.68, 7.24
-    Axes: 0, 1, 0, 1
-    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
-    
-    # Count operations by type
+    sharedAmpViz = 1.15 * sharedPeakViz
+
+    # Count operation types for the summary.
     nLoop = 0
     nSil = 0
     nStr = 0
@@ -1851,52 +1577,348 @@ if draw_visualization
             nRec = nRec + 1
         endif
     endfor
-    
+
+    # ----------------------------------------------------------
+    # TITLE / SUBTITLE
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 0, 0.50
+    Axes: 0, 1, 0, 1
+    Font size: 12
+    Colour: "Black"
+    Text: 0.5, "centre", 0.68, "half", "##Dramaturgical Structure Composer##"
+    Font size: 7
+    Colour: "{0.35, 0.35, 0.52}"
+    Text: 0.5, "centre", -1.30, "half", "Dramaturgical Structure Composer.praat  |  " + displayName$ + "  |  " + strategyName$ + " / " + reorderName$ + "  |  " + string$(numDetectedSections) + " sections -> " + string$(numTimelineItems) + " timeline items"
+
+    # ----------------------------------------------------------
+    # SOURCE
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 0.65, 2.00
+    Select inner viewport: 0.55, 7.75, 0.82, 1.88
+    Axes: 0, inputDuration, -sharedAmpViz, sharedAmpViz
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, inputDuration, -sharedAmpViz, sharedAmpViz
+
+    # Section tint: color means texture class throughout the structural view.
+    for s from 1 to numDetectedSections
+        sStart = secStart#[s]
+        sEnd = secEnd#[s]
+        tex = secTexture#[s]
+        if tex = 1
+            tintColor$ = "{0.90, 0.95, 1.00}"
+        elsif tex = 2
+            tintColor$ = "{0.94, 0.94, 0.94}"
+        elsif tex = 3
+            tintColor$ = "{1.00, 0.98, 0.86}"
+        elsif tex = 4
+            tintColor$ = "{0.94, 0.91, 0.99}"
+        else
+            tintColor$ = "{1.00, 0.94, 0.87}"
+        endif
+        Paint rectangle: tintColor$, sStart, sEnd, -sharedAmpViz, sharedAmpViz
+    endfor
+
+    selectObject: vizInput
+    Colour: "{0.56, 0.56, 0.60}"
+    Draw: 0, inputDuration, -sharedAmpViz, sharedAmpViz, "no", "Curve"
+
+    Colour: "{0.58, 0.58, 0.60}"
+    Line width: 1
+    for s from 2 to numDetectedSections
+        boundary = secStart#[s]
+        Draw line: boundary, -sharedAmpViz, boundary, sharedAmpViz
+    endfor
+
+    Font size: 6
+    Colour: "{0.25, 0.25, 0.30}"
+    for s from 1 to numDetectedSections
+        midT = (secStart#[s] + secEnd#[s]) / 2
+        if secEnd#[s] - secStart#[s] > 0.025 * inputDuration
+            Text: midT, "centre", 0.82 * sharedAmpViz, "half", string$(s)
+        endif
+    endfor
+
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text top: "no", "##Source##"
+    Font size: 6
+    Text left: "yes", "Amplitude"
+    Text bottom: "yes", "Time (s)"
+    Axes: 0, inputDuration, -sharedAmpViz, sharedAmpViz
+    Colour: "{0.28, 0.28, 0.28}"
+    Text: 0.01 * inputDuration, "left", -0.82 * sharedAmpViz, "half", string$(numDetectedSections) + " detected sections  |  section tint = texture class"
+
+    # ----------------------------------------------------------
+    # DRAMATURGICAL FORM MAP
+    # Detected source sections and output timeline share normalized x.
+    # Thin neutral connectors expose the actual source-to-output mapping.
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 2.15, 4.80
+    Select inner viewport: 0.55, 7.75, 2.32, 4.66
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, 1, 0, 1
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text top: "no", "##Dramaturgical form map##"
+
+    # Compact legend. Fill color has exactly one semantic role: texture class.
+    legendY = 0.91
+    legendBoxW = 0.018
+    legendBoxH = 0.035
+    Font size: 5
+    Colour: "{0.28, 0.28, 0.28}"
+    Text: 0.02, "left", legendY, "half", "fill = texture:"
+
+    Paint rectangle: "{0.70, 0.85, 1.00}", 0.16, 0.16 + legendBoxW, legendY - legendBoxH/2, legendY + legendBoxH/2
+    Colour: "{0.28, 0.28, 0.28}"
+    Text: 0.183, "left", legendY, "half", "tonal"
+    Paint rectangle: "{0.88, 0.88, 0.88}", 0.255, 0.255 + legendBoxW, legendY - legendBoxH/2, legendY + legendBoxH/2
+    Colour: "{0.28, 0.28, 0.28}"
+    Text: 0.278, "left", legendY, "half", "quiet"
+    Paint rectangle: "{1.00, 0.94, 0.62}", 0.35, 0.35 + legendBoxW, legendY - legendBoxH/2, legendY + legendBoxH/2
+    Colour: "{0.28, 0.28, 0.28}"
+    Text: 0.373, "left", legendY, "half", "bright"
+    Paint rectangle: "{0.78, 0.70, 0.94}", 0.455, 0.455 + legendBoxW, legendY - legendBoxH/2, legendY + legendBoxH/2
+    Colour: "{0.28, 0.28, 0.28}"
+    Text: 0.478, "left", legendY, "half", "dark"
+    Paint rectangle: "{0.96, 0.82, 0.62}", 0.545, 0.545 + legendBoxW, legendY - legendBoxH/2, legendY + legendBoxH/2
+    Colour: "{0.28, 0.28, 0.28}"
+    Text: 0.568, "left", legendY, "half", "mid"
+    Text: 0.66, "left", legendY, "half", "labels = LOOP / SIL / STR / REC"
+
+    # Row labels use one aligned left anchor.
+    labelX = 0.02
+    Font size: 6
+    Colour: "{0.28, 0.28, 0.28}"
+    Text: labelX, "left", 0.77, "half", "Detected sections"
+    Text: labelX, "left", 0.49, "half", "Output timeline"
+    Text: labelX, "left", 0.17, "half", "Tension arc"
+
+    rowX1 = 0.16
+    rowX2 = 0.98
+    rowW = rowX2 - rowX1
+    sourceY1 = 0.67
+    sourceY2 = 0.83
+    outputY1 = 0.39
+    outputY2 = 0.57
+
+    # Source row.
+    for s from 1 to numDetectedSections
+        x1 = rowX1 + rowW * secStart#[s] / inputDuration
+        x2 = rowX1 + rowW * secEnd#[s] / inputDuration
+        tex = secTexture#[s]
+        if tex = 1
+            blockColor$ = "{0.70, 0.85, 1.00}"
+        elsif tex = 2
+            blockColor$ = "{0.88, 0.88, 0.88}"
+        elsif tex = 3
+            blockColor$ = "{1.00, 0.94, 0.62}"
+        elsif tex = 4
+            blockColor$ = "{0.78, 0.70, 0.94}"
+        else
+            blockColor$ = "{0.96, 0.82, 0.62}"
+        endif
+        Paint rectangle: blockColor$, x1, x2, sourceY1, sourceY2
+        Colour: "{0.48, 0.48, 0.50}"
+        Draw rectangle: x1, x2, sourceY1, sourceY2
+        if x2 - x1 > 0.028
+            Font size: 5
+            Colour: "{0.20, 0.20, 0.24}"
+            Text: (x1 + x2) / 2, "centre", (sourceY1 + sourceY2) / 2, "half", string$(s)
+        endif
+    endfor
+
+    # Neutral source-to-output connectors, drawn before output blocks.
+    Colour: "{0.82, 0.82, 0.84}"
+    Line width: 0.8
+    for t from 1 to numTimelineItems
+        secIdxV = timelineSectionIdx#[t]
+        itemType = timelineType#[t]
+        if secIdxV >= 1 and secIdxV <= numDetectedSections and itemType <> 3
+            srcMid = rowX1 + rowW * ((secStart#[secIdxV] + secEnd#[secIdxV]) / 2) / inputDuration
+            outMid = rowX1 + rowW * ((timelineOutputStart#[t] + timelineOutputEnd#[t]) / 2) / outputDuration
+            Draw line: srcMid, sourceY1, outMid, outputY2
+        endif
+    endfor
+    Line width: 1
+
+    # Output timeline row.
+    for t from 1 to numTimelineItems
+        x1 = rowX1 + rowW * timelineOutputStart#[t] / outputDuration
+        x2 = rowX1 + rowW * timelineOutputEnd#[t] / outputDuration
+        tex = timelineTexture#[t]
+        itemType = timelineType#[t]
+
+        if tex = 0
+            blockColor$ = "{0.82, 0.82, 0.84}"
+        elsif tex = 1
+            blockColor$ = "{0.70, 0.85, 1.00}"
+        elsif tex = 2
+            blockColor$ = "{0.88, 0.88, 0.88}"
+        elsif tex = 3
+            blockColor$ = "{1.00, 0.94, 0.62}"
+        elsif tex = 4
+            blockColor$ = "{0.78, 0.70, 0.94}"
+        else
+            blockColor$ = "{0.96, 0.82, 0.62}"
+        endif
+
+        Paint rectangle: blockColor$, x1, x2, outputY1, outputY2
+        Colour: "{0.42, 0.42, 0.45}"
+        if itemType = 3
+            Dashed line
+        else
+            Solid line
+        endif
+        Draw rectangle: x1, x2, outputY1, outputY2
+        Solid line
+
+        secIdxV = timelineSectionIdx#[t]
+        if itemType = 3
+            opLabel$ = "SIL"
+        elsif itemType = 4
+            opLabel$ = string$(secIdxV) + " STR"
+        elsif itemType = 5
+            if timelineReverseFlag#[t] = 1
+                opLabel$ = string$(secIdxV) + " REC-R"
+            else
+                opLabel$ = string$(secIdxV) + " REC"
+            endif
+        elsif timelineLoopFlag#[t] = 1
+            opLabel$ = string$(secIdxV) + " LOOP"
+        else
+            opLabel$ = string$(secIdxV)
+        endif
+
+        if x2 - x1 > 0.032
+            Font size: 5
+            Colour: "{0.20, 0.20, 0.24}"
+            Text: (x1 + x2) / 2, "centre", (outputY1 + outputY2) / 2, "half", opLabel$
+        endif
+    endfor
+
+    # Tension arc integrated into the structural map.
+    arcX1 = rowX1
+    arcX2 = rowX2
+    arcYBase = 0.08
+    arcYSpan = 0.18
+    Colour: "{0.83, 0.83, 0.85}"
+    Draw line: arcX1, arcYBase, arcX2, arcYBase
+
+    if apply_tension_arc
+        Colour: "{0.72, 0.30, 0.30}"
+        Line width: 1.6
+        numDrawPoints = 160
+        for dp from 1 to numDrawPoints - 1
+            p1 = (dp - 1) / numDrawPoints
+            p2 = dp / numDrawPoints
+            if p1 <= arc_peak_position
+                shape1 = p1 / arc_peak_position
+            else
+                shape1 = 1.0 - (p1 - arc_peak_position) / (1.0 - arc_peak_position)
+            endif
+            if p2 <= arc_peak_position
+                shape2 = p2 / arc_peak_position
+            else
+                shape2 = 1.0 - (p2 - arc_peak_position) / (1.0 - arc_peak_position)
+            endif
+            gain1 = 0.3 + 0.7 * shape1 ^ arc_exaggeration
+            gain2 = 0.3 + 0.7 * shape2 ^ arc_exaggeration
+            xx1 = arcX1 + (arcX2 - arcX1) * p1
+            xx2 = arcX1 + (arcX2 - arcX1) * p2
+            yy1 = arcYBase + arcYSpan * gain1
+            yy2 = arcYBase + arcYSpan * gain2
+            Draw line: xx1, yy1, xx2, yy2
+        endfor
+        Line width: 1
+        peakX = arcX1 + (arcX2 - arcX1) * arc_peak_position
+        Colour: "{0.55, 0.35, 0.35}"
+        Dotted line
+        Draw line: peakX, arcYBase, peakX, arcYBase + arcYSpan
+        Solid line
+        Font size: 5
+        Text: peakX + 0.008, "left", arcYBase + arcYSpan, "half", "peak " + fixed$(arc_peak_position * 100, 0) + "%"
+    else
+        Colour: "{0.58, 0.58, 0.60}"
+        Dashed line
+        Draw line: arcX1, arcYBase + arcYSpan, arcX2, arcYBase + arcYSpan
+        Solid line
+        Font size: 5
+        Text: (arcX1 + arcX2) / 2, "centre", arcYBase + 0.09, "half", "disabled"
+    endif
+
+    # ----------------------------------------------------------
+    # OUTPUT
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 4.95, 6.05
+    Select inner viewport: 0.55, 7.75, 5.12, 5.93
+    Axes: 0, outputDuration, -sharedAmpViz, sharedAmpViz
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, outputDuration, -sharedAmpViz, sharedAmpViz
+
+    Colour: "{0.85, 0.85, 0.88}"
+    Dotted line
+    for t from 2 to numTimelineItems
+        boundary = timelineOutputStart#[t]
+        Draw line: boundary, -sharedAmpViz, boundary, sharedAmpViz
+    endfor
+    Solid line
+
+    selectObject: vizOutput
+    Colour: "{0.25, 0.50, 0.82}"
+    Draw: 0, outputDuration, -sharedAmpViz, sharedAmpViz, "no", "Curve"
+
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text top: "yes", "##Output##"
+    Font size: 6
+    Text left: "yes", "Amplitude"
+    Text bottom: "yes", "Time (s)"
+    Axes: 0, outputDuration, -sharedAmpViz, sharedAmpViz
+    Colour: "{0.28, 0.28, 0.28}"
+    Text: 0.01 * outputDuration, "left", 0.82 * sharedAmpViz, "half", string$(numTimelineItems) + " timeline items  |  dotted lines = item boundaries"
+
+    # ----------------------------------------------------------
+    # SUMMARY
+    # ----------------------------------------------------------
     if apply_tension_arc
         arcStr$ = "ON (peak " + fixed$(arc_peak_position, 2) + ", exag " + fixed$(arc_exaggeration, 1) + ")"
     else
         arcStr$ = "OFF"
     endif
-    
     if crossfade_mode = 1
         xfStr$ = "fixed 30 ms"
     else
         xfStr$ = "texture-aware"
     endif
-    
     if silence_mode = 1
         silStr$ = "digital zero"
     else
         silStr$ = "noise tail"
     endif
-    
+
+    Select outer viewport: 0, 8, 6.20, 7.08
+    Select inner viewport: 0.30, 7.80, 6.27, 7.01
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    Colour: "{0.48, 0.48, 0.48}"
+    Draw rectangle: 0, 1, 0, 1
+
+    Font size: 7
+    Colour: "Black"
+    Text: 0.02, "left", 0.80, "half", "##Summary##"
     Font size: 6
     Colour: "{0.28, 0.28, 0.28}"
-    Text: 0.02, "left", 0.75, "half",
-        ... "##" + strategyName$ + " / " + reorderName$ + "##"
-        ... + "  " + inputName$
-        ... + "  |  " + string$(numDetectedSections) + " sections detected"
-        ... + "  |  Timeline: " + string$(numTimelineItems) + " items"
-        ... + "  |  Ops: LOOP " + string$(nLoop)
-        ... + " / SIL " + string$(nSil)
-        ... + " / STR " + string$(nStr)
-        ... + " / REC " + string$(nRec)
-    
-    Text: 0.02, "left", 0.28, "half",
-        ... "Crossfade: " + xfStr$
-        ... + "  |  Silence: " + silStr$
-        ... + "  |  Arc: " + arcStr$
-        ... + "  |  In: " + fixed$(inputDuration, 1) + " s -> Out: " + fixed$(outputDuration, 1) + " s"
-        ... + "  |  Peak: " + fixed$(finalPeak, 3)
-    
-    Colour: "Black"
-    Draw rectangle: 0, 1, 0, 1
-    
+    Text: 0.02, "left", 0.49, "half", strategyName$ + " / " + reorderName$ + "  |  " + string$(numDetectedSections) + " sections -> " + string$(numTimelineItems) + " items  |  Ops: LOOP " + string$(nLoop) + " / SIL " + string$(nSil) + " / STR " + string$(nStr) + " / REC " + string$(nRec)
+    Text: 0.02, "left", 0.18, "half", "Crossfade " + xfStr$ + "  |  Silence " + silStr$ + "  |  Arc " + arcStr$ + "  |  " + fixed$(inputDuration, 1) + " s -> " + fixed$(outputDuration, 1) + " s  |  peak " + fixed$(finalPeak, 3)
+
     Font size: 10
     Colour: "Black"
     Line width: 1
-    
-    removeObject: vizOutput
+
+    removeObject: vizInput, vizOutput
+    selectObject: finalOutput
 endif
 
 # ============================================================

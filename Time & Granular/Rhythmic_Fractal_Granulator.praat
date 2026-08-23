@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.5 (2026) - domain-safe grains + hardened fractal timing
+# Version: 0.5.1 (2026) - visualization QA alignment
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -11,6 +11,18 @@
 #   Extracts grains from a source sound at fractal time positions
 #   (recursive binary subdivision with mirror symmetry), then
 #   overlap-adds them onto a pre-allocated output buffer.
+#
+# Changelog v0.5.1:
+#   - VISUALIZATION ONLY: preserves the existing recursive tree, IOI histogram,
+#     and radial clock rather than replacing the script's distinctive visual identity.
+#   - Fixes title/axis/legend collisions and gives every panel explicit headroom.
+#   - Makes the radial clock physically circular by using an explicit square inner viewport.
+#   - Source and Output now share one amplitude scale and use aligned explicit left labels.
+#   - Source names are display-sanitized so underscores do not become Praat subscripts.
+#   - Generation colour remains the only semantic colour encoding; IOI histogram/theory
+#     and Output are neutral, avoiding reuse of generation colours for unrelated meanings.
+#   - Adds real time marks where useful, adapts event marker size to event density, and
+#     labels the clamped final generation colour as 7+ when generations exceed the palette.
 #
 # Changelog v0.5:
 #   - API COMPATIBILITY: public form fields, order, types and defaults are
@@ -410,13 +422,24 @@ endif
 # --- STEP 6: VISUALIZATION ---
 if draw_visualization
     appendInfoLine: "Drawing visualization..."
-    
+
     Erase all
-    
+
+    # Display-safe source name only. The real object name is unchanged.
+    display_name$ = replace$(source_name$, "_", " ", 0)
+
+    # Source and Output share the same amplitude scale for honest visual comparison.
+    selectObject: source_id
+    source_plot_peak = Get absolute extremum: 0, 0, "Sinc70"
+    selectObject: final_id
+    output_plot_peak = Get absolute extremum: 0, 0, "Sinc70"
+    shared_amp = max(source_plot_peak, output_plot_peak) * 1.08
+    if shared_amp <= 0
+        shared_amp = 1
+    endif
+
     # ---- Generation colour palette (warm -> cool perceptual ramp) ----
-    # Hot pink/red for the seed (gen 0), warm orange, gold, teal, cool blue
-    # for late generations. High contrast adjacent steps; the most musically
-    # weighted events (seeds) read as visually loudest.
+    # Colour has one semantic meaning in this visualization: generation.
     gen_colors$# = {
         ... "{0.85, 0.20, 0.35}",
         ... "{0.95, 0.50, 0.20}",
@@ -426,7 +449,7 @@ if draw_visualization
         ... "{0.30, 0.40, 0.75}",
         ... "{0.45, 0.40, 0.65}",
         ... "{0.55, 0.50, 0.65}"}
-    
+
     procedure setGenColour: .g
         if .g < 0
             .g = 0
@@ -436,66 +459,71 @@ if draw_visualization
         endif
         Colour: gen_colors$#[.g + 1]
     endproc
-    
+
+    # Physical marker size adapts to density while retaining a readable floor.
+    if num_events <= 128
+        event_marker_mm = 1.60
+    elsif num_events <= 300
+        event_marker_mm = 1.25
+    elsif num_events <= 700
+        event_marker_mm = 0.95
+    else
+        event_marker_mm = 0.70
+    endif
+    radial_marker_mm = max(0.70, event_marker_mm * 0.90)
+
     # === TITLE ===
-    Select outer viewport: 0, 8, 0.05, 0.55
+    Select outer viewport: 0, 8, 0.03, 0.38
+    Axes: 0, 1, 0, 1
     Font size: 13
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "##Rhythmic Fractal Granulator: " + source_name$ + "##"
-    
+    Text: 0.5, "centre", 0.5, "half", "##Rhythmic Fractal Granulator: " + display_name$ + "##"
+
     # === PANEL 1: SOURCE WAVEFORM ===
-    Select outer viewport: 0, 8, 0.6, 1.55
-    Select inner viewport: 0.6, 7.6, 0.7, 1.45
+    Select outer viewport: 0, 8, 0.45, 1.28
+    Select inner viewport: 0.62, 7.75, 0.53, 1.17
     selectObject: source_id
-    Colour: "{0.55, 0.55, 0.55}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
+    Colour: "{0.62, 0.62, 0.62}"
+    Draw: 0, 0, -shared_amp, shared_amp, "no", "Curve"
+    Select outer viewport: 0, 8, 0.45, 1.28
+    Select inner viewport: 0.62, 7.75, 0.53, 1.17
+    Axes: source_t0, source_t1, -shared_amp, shared_amp
     Colour: "Black"
     Draw inner box
-    Font size: 7
-    Text left: "yes", "Source"
-    
+    Font size: 10
+    Colour: "{0.45, 0.45, 0.45}"
+    source_label_x = source_t0 - 0.04920 * (source_t1 - source_t0)
+    Text special: source_label_x, "centre", 0, "half", "Times", 6, "90", "Source"
+
     # === PANEL 2: RECURSIVE SUBDIVISION DIAGRAM ===
-    # One horizontal lane per generation, top = gen 0 seed, descending.
-    # Each lane shows the events at that generation as filled markers.
-    # Vertical drop-lines connect each event to the nearest event one
-    # generation up (its conceptual parent in the binary tree). The
-    # mirror axis is drawn as a vertical line through pivot_time.
-    Select outer viewport: 0, 8, 1.65, 3.95
-    Select inner viewport: 0.6, 7.6, 1.75, 3.85
-    
+    Select outer viewport: 0, 8, 1.38, 3.88
+    Select inner viewport: 0.62, 7.75, 1.57, 3.57
+
     n_lanes = generations + 1
     Axes: 0, total_duration, n_lanes, 0
     Paint rectangle: "{0.97, 0.97, 0.97}", 0, total_duration, n_lanes, 0
-    
-    # Lane background bands (alternating tint for readability)
+
     for lane from 0 to n_lanes - 1
         if lane mod 2 = 0
-            Colour: "{0.93, 0.93, 0.95}"
             Paint rectangle: "{0.93, 0.93, 0.95}", 0, total_duration, lane, lane + 1
         endif
     endfor
-    
-    # Mirror axis
+
     Colour: "{0.45, 0.45, 0.45}"
     Dotted line
-    Line width: 1.5
+    Line width: 1.2
     Draw line: pivot_time, 0, pivot_time, n_lanes
     Solid line
     Line width: 1
-    Font size: 6
-    Text: pivot_time, "centre", -0.15, "half", "mirror axis"
-    
-    # Drop-lines connecting each event to its lane-above neighbour.
-    # Strategy: for each event at gen >= 1, find the nearest event at
-    # gen-1 and draw a thin grey line. This is what the binary subdivision
-    # actually computes (each new event lands halfway between two parents).
+    Font size: 5
+    Text: pivot_time, "centre", 0.18, "half", "mirror axis"
+
     Colour: "{0.75, 0.75, 0.78}"
-    Line width: 1
+    Line width: 0.8
     for i from 1 to num_events
         g = event_gens#[i]
         if g >= 1
             t = event_times#[i]
-            # Find nearest event at gen - 1 (linear scan; num_events is small)
             best_dt = total_duration + 1
             best_t = t
             for j from 1 to num_events
@@ -510,25 +538,26 @@ if draw_visualization
             Draw line: best_t, g - 1 + 0.5, t, g + 0.5
         endif
     endfor
-    
-    # Event markers
+    Line width: 1
+
     for i from 1 to num_events
         t = event_times#[i]
         g = event_gens#[i]
         @setGenColour: g
-        Paint circle (mm): gen_colors$#[min(g, 7) + 1], t, g + 0.5, 1.6
+        Paint circle (mm): gen_colors$#[min(g, 7) + 1], t, g + 0.5, event_marker_mm
     endfor
-    
+
     Colour: "Black"
     Draw inner box
     Font size: 6
     Text left: "yes", "Generation (0 = seed)"
+    Marks bottom: 5, "yes", "yes", "no"
     Text bottom: "yes", "Time (s)"
     Font size: 7
-    Text top: "no", "Recursive Subdivision (parents above, children below)"
-    
-    # Inline legend strip below this panel
-    Select outer viewport: 0, 8, 4.00, 4.20
+    Text top: "yes", "Recursive Subdivision (parents above, children below)"
+
+    # Dedicated legend band. It does not share space with the time-axis label.
+    Select outer viewport: 0, 8, 3.93, 4.18
     Axes: 0, 1, 0, 1
     Font size: 6
     Colour: "{0.35, 0.35, 0.35}"
@@ -537,29 +566,29 @@ if draw_visualization
     legend_step = 0.085
     for g from 0 to min(generations, 7)
         @setGenColour: g
-        Paint circle (mm): gen_colors$#[g + 1], legend_x + 0.005, 0.5, 1.4
+        Paint circle (mm): gen_colors$#[g + 1], legend_x + 0.005, 0.5, 1.25
         Colour: "{0.30, 0.30, 0.30}"
-        Text: legend_x + 0.018, "left", 0.5, "half", string$(g)
+        if generations > 7 and g = 7
+            gen_label$ = "7+"
+        else
+            gen_label$ = string$(g)
+        endif
+        Text: legend_x + 0.018, "left", 0.5, "half", gen_label$
         legend_x = legend_x + legend_step
     endfor
     Colour: "Black"
-    
+
     # === PANEL 3: IOI LOG-HISTOGRAM ===
-    # Inter-onset intervals tell you whether the fractal hierarchy is
-    # still readable as discrete levels (peaks at half_dur/2^k) or has
-    # collapsed into a continuum.
-    Select outer viewport: 0, 4, 4.30, 5.85
-    Select inner viewport: 0.55, 3.85, 4.45, 5.70
-    
-    # Compute IOIs (events are already sorted)
+    Select outer viewport: 0, 4, 4.28, 5.88
+    Select inner viewport: 0.62, 3.82, 4.47, 5.70
+
     n_iois = num_events - 1
     if n_iois > 0
         ioi# = zero#(n_iois)
         for i from 1 to n_iois
             ioi#[i] = event_times#[i + 1] - event_times#[i]
         endfor
-        
-        # Log10 range. Floor at 1 ms to avoid log(0).
+
         ioi_min = 0.001
         for i from 1 to n_iois
             if ioi#[i] > 0 and (ioi_min = 0.001 or ioi#[i] < ioi_min)
@@ -578,11 +607,10 @@ if draw_visualization
         if ioi_max < ioi_min * 2
             ioi_max = ioi_min * 2
         endif
-        
+
         log_lo = log10(ioi_min) - 0.15
         log_hi = log10(ioi_max) + 0.15
-        
-        # Bin into 24 log-spaced bins
+
         n_bins = 24
         bins# = zero#(n_bins)
         for i from 1 to n_iois
@@ -600,15 +628,12 @@ if draw_visualization
                 max_bin = bins#[i]
             endif
         endfor
-        
+
         Axes: log_lo, log_hi, 0, max_bin * 1.15
         Paint rectangle: "{0.97, 0.97, 0.97}", log_lo, log_hi, 0, max_bin * 1.15
-        
-        # Theoretical fractal peaks: half_dur / 2^k for k=1..generations.
-        # These are the IOIs you'd get with zero jitter at each generation
-        # boundary. Drawing them as vertical guides shows whether the
-        # histogram peaks line up with the theory.
-        Colour: "{0.55, 0.70, 0.55}"
+
+        # Theory is line style, not a second semantic colour.
+        Colour: "{0.66, 0.66, 0.68}"
         Dotted line
         Line width: 1
         for k from 1 to generations
@@ -618,22 +643,19 @@ if draw_visualization
             endif
         endfor
         Solid line
-        
-        # Histogram bars
-        Colour: "{0.30, 0.45, 0.70}"
-        bin_w = (log_hi - log_lo) / n_bins
+
+        # Neutral bars preserve generation colours for generation only.
         for i from 1 to n_bins
             if bins#[i] > 0
-                xL = log_lo + (i - 1) * bin_w
-                xR = xL + bin_w * 0.92
-                Paint rectangle: "{0.30, 0.45, 0.70}", xL, xR, 0, bins#[i]
+                xL = log_lo + (i - 1) * (log_hi - log_lo) / n_bins
+                xR = xL + ((log_hi - log_lo) / n_bins) * 0.92
+                Paint rectangle: "{0.42, 0.42, 0.45}", xL, xR, 0, bins#[i]
             endif
         endfor
-        
+
         Colour: "Black"
         Draw inner box
         Font size: 6
-        # Custom log-axis ticks at decade boundaries
         for lv from -3 to 1
             tx = lv
             if tx >= log_lo and tx <= log_hi
@@ -649,30 +671,27 @@ if draw_visualization
                 elsif lv = 1
                     lvLabel$ = "10 s"
                 endif
-                Text: tx, "centre", -max_bin * 0.06, "half", lvLabel$
+                Text: tx, "centre", -max_bin * 0.07, "half", lvLabel$
             endif
         endfor
+        Marks left: 3, "yes", "yes", "no"
         Text left: "yes", "Count"
         Font size: 7
-        Text top: "no", "IOI distribution (log time, green = theory)"
+        Text top: "yes", "IOI distribution (log time; dotted = theory)"
     endif
-    
+
     # === PANEL 4: RADIAL CLOCK ===
-    # Events placed on a circle; angle = time, radius = generation.
-    # Mirror symmetry shows up as bilateral reflection across the
-    # vertical (12 o'clock) axis.
-    Select outer viewport: 4, 8, 4.30, 5.85
-    Select inner viewport: 4.30, 7.80, 4.45, 5.70
-    
+    # Explicitly square inner viewport: circles stay circles in physical Picture space.
+    Select outer viewport: 4, 8, 4.28, 5.88
+    Select inner viewport: 5.31, 6.69, 4.43, 5.81
+
     Axes: -1.2, 1.2, -1.2, 1.2
     Paint rectangle: "{0.97, 0.97, 0.97}", -1.2, 1.2, -1.2, 1.2
-    
-    # Concentric guide rings (one per generation)
+
     Colour: "{0.85, 0.85, 0.88}"
-    Line width: 1
+    Line width: 0.8
     for g from 0 to generations
         r = 0.25 + 0.65 * (g / max(generations, 1))
-        # Draw a circle by sampling 64 points
         prev_x = r
         prev_y = 0
         for k from 1 to 64
@@ -684,55 +703,58 @@ if draw_visualization
             prev_y = cy
         endfor
     endfor
-    
-    # Mirror axis (vertical: 12 o'clock <-> 6 o'clock)
+
     Colour: "{0.45, 0.45, 0.45}"
     Dotted line
-    Draw line: 0, -1.1, 0, 1.1
+    Draw line: 0, -1.08, 0, 1.08
     Solid line
     Font size: 5
-    Colour: "{0.40, 0.40, 0.40}"
-    Text: 0, "centre", 1.13, "half", "t = 0 / mirror axis"
-    
-    # Plot events
+    Text: 0, "centre", 1.05, "half", "mirror axis"
+
     for i from 1 to num_events
         t = event_times#[i]
         g = event_gens#[i]
-        # Angle: t = 0 at 12 o'clock, going clockwise.
-        # Praat draws y-up, so: angle measured from +y axis going clockwise.
         ang = 2 * pi * (t / total_duration)
         r = 0.25 + 0.65 * (g / max(generations, 1))
         cx = r * sin(ang)
         cy = r * cos(ang)
         @setGenColour: g
-        Paint circle (mm): gen_colors$#[min(g, 7) + 1], cx, cy, 1.4
+        Paint circle (mm): gen_colors$#[min(g, 7) + 1], cx, cy, radial_marker_mm
     endfor
-    
+
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text top: "no", "Radial clock (angle = time, radius = generation)"
-    
+    Text top: "yes", "Radial clock (angle = time, radius = generation)"
+
     # === PANEL 5: OUTPUT WAVEFORM ===
-    Select outer viewport: 0, 8, 5.95, 6.85
-    Select inner viewport: 0.6, 7.6, 6.05, 6.75
+    Select outer viewport: 0, 8, 5.98, 6.88
+    Select inner viewport: 0.62, 7.75, 6.11, 6.72
     selectObject: final_id
-    Colour: "{0.30, 0.55, 0.45}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
+    Colour: "{0.34, 0.34, 0.36}"
+    Draw: 0, 0, -shared_amp, shared_amp, "no", "Curve"
+    Select outer viewport: 0, 8, 5.98, 6.88
+    Select inner viewport: 0.62, 7.75, 6.11, 6.72
+    Axes: 0, total_duration, -shared_amp, shared_amp
     Colour: "Black"
     Draw inner box
-    Font size: 7
-    Text left: "yes", "Output"
+    Font size: 10
+    Colour: "{0.45, 0.45, 0.45}"
+    output_label_x = -0.04920 * total_duration
+    Text special: output_label_x, "centre", 0, "half", "Times", 6, "90", "Output"
+    Font size: 6
+    Colour: "Black"
+    Marks bottom: 5, "yes", "yes", "no"
     Text bottom: "yes", "Time (s)"
-    
-    # === PANEL 6: STATS BAR (AudioTools standard: grey, framed) ===
-    Select outer viewport: 0, 8, 6.95, 7.30
-    Select inner viewport: 0.6, 7.6, 7.00, 7.25
+
+    # === PANEL 6: SUMMARY ===
+    Select outer viewport: 0, 8, 7.00, 7.42
+    Select inner viewport: 0.30, 7.80, 7.06, 7.36
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
-    
+
     if window_shape = 1
         window_name$ = "Bell (Hanning)"
     else
@@ -743,7 +765,7 @@ if draw_visualization
     else
         read_name$ = "Sequential"
     endif
-    
+
     Font size: 7
     Colour: "{0.30, 0.30, 0.30}"
     Text: 0.5, "centre", 0.5, "half",
@@ -754,7 +776,7 @@ if draw_visualization
         ... + "  |  Window: " + window_name$
         ... + "  |  Read: " + read_name$
         ... + "  |  Total: " + fixed$(total_duration, 2) + " s"
-    
+
     Font size: 10
     Colour: "Black"
 endif

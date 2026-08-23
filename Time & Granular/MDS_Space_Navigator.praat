@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2026)
+# Version: 0.4 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -19,6 +19,22 @@
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 # ============================================================
 #
+#
+# Changelog v0.4 (2026) - visualization only; no change to segmentation,
+#                         feature distances, MDS, ordering or audio render:
+#   - Restyled title/subtitle, panels, fonts and greys to the AudioTools
+#     visualization standard.
+#   - Replaced the parameter-report panel with a compact user-facing process
+#     explanation: segments -> feature cues -> distances -> 2-D MDS -> order/join.
+#   - The ordering path is now drawn for all three Ordering modes, not only
+#     nearest-neighbour, so the map always shows the route actually heard.
+#   - Scatter title now explains the perceptual meaning directly: closer points
+#     represent more similar segments; point colour encodes playback position.
+#   - Playback-order list supports up to 20 items in one/two columns without
+#     crowding the panel.
+#   - Escaped underscores in display names; normalized panel and summary colours.
+#   - FIX: drawing now ends by re-selecting the full page, so Picture export
+#     saves the complete figure instead of only the summary strip.
 # Changelog v0.3 (2026):
 #   - COMPATIBILITY: the complete form/API is unchanged byte-for-byte.
 #     Parameter names, order, types and defaults remain exactly v0.2.
@@ -302,10 +318,13 @@ endif
 # Ordering name for display
 if ordering = 1
     orderName$ = "Nearest Neighbor"
+    orderAction$ = "Walk to nearest unused point"
 elsif ordering = 2
     orderName$ = "MDS Dim 1"
+    orderAction$ = "Sort left-to-right on MDS dim 1"
 else
     orderName$ = "Original"
+    orderAction$ = "Keep original segment order"
 endif
 
 # ===== DETERMINE ORDERING =====
@@ -396,31 +415,56 @@ Rename: original_sound_name$ + "_reordered"
 
 # ===== VISUALIZATION =====
 Erase all
-Select outer viewport: 0, 8, 0, 8
+Select outer viewport: 0, 8, 0, 6.15
+
+# Display-safe names
+vizInputName$ = replace$(original_sound_name$, "_", "\\_ ", 0)
+vizOutputName$ = replace$(original_sound_name$ + "_reordered", "_", "\\_ ", 0)
+
+# Find min/max distance for display and summary
+if n_words > 1
+    dMin = 1e30
+    dMax = 0
+    for i from 1 to n_words
+        for j from 1 to n_words
+            if i <> j
+                if dist[i, j] < dMin
+                    dMin = dist[i, j]
+                endif
+                if dist[i, j] > dMax
+                    dMax = dist[i, j]
+                endif
+            endif
+        endfor
+    endfor
+else
+    dMin = 0
+    dMax = 0
+endif
 
 # ----------------------------------------------------------
-# Title
+# Title block - library standard
 # ----------------------------------------------------------
-Select outer viewport: 0, 8, 0, 0.65
+Select outer viewport: 0, 8, 0, 0.52
+Select inner viewport: 0.60, 7.70, 0.02, 0.50
 Axes: 0, 1, 0, 1
 Font size: 12
 Colour: "Black"
-Text: 0.5, "centre", 0.65, "half", "##MDS Space Navigator##"
+Text: 0.5, "centre", 0.68, "half", "##MDS Space Navigator v0.4##"
 Font size: 7
-Colour: "{0.35, 0.35, 0.52}"
-Text: 0.5, "centre", -0.25, "half",
-    ... original_sound_name$
-    ... + "  |  " + metricName$
-    ... + "  |  " + orderName$
-    ... + "  |  " + string$(n_words) + " segments"
+Colour: "{0.35, 0.35, 0.50}"
+Text: 0.5, "centre", 0.22, "half",
+    ... vizInputName$
+    ... + " | " + metricName$
+    ... + " | " + orderName$
+    ... + " | " + string$(n_words) + " segments"
+    ... + " | " + string$(n_channels) + " ch"
 
 # ----------------------------------------------------------
-# Panel A: MDS scatter plot (left)
+# Panel A: MDS similarity space (left, headline)
 # ----------------------------------------------------------
-Select outer viewport: 0, 4.5, 0.75, 4.35
-Select inner viewport: 0.55, 4.20, 0.90, 4.20
-Axes: 0, 1, 0, 1
-Paint rectangle: "{0.96, 0.96, 0.96}", 0, 1, 0, 1
+Select outer viewport: 0, 4.40, 0.68, 4.08
+Select inner viewport: 0.60, 4.15, 0.83, 3.94
 
 # Find MDS coordinate ranges for scaling
 mdsMinX = mds1[1]
@@ -442,7 +486,6 @@ for i from 2 to n_words
     endif
 endfor
 
-# Add 15% padding
 mdsRangeX = mdsMaxX - mdsMinX
 mdsRangeY = mdsMaxY - mdsMinY
 if mdsRangeX < 0.001
@@ -453,146 +496,174 @@ if mdsRangeY < 0.001
 endif
 padX = mdsRangeX * 0.15
 padY = mdsRangeY * 0.15
+xLo = mdsMinX - padX
+xHi = mdsMaxX + padX
+yLo = mdsMinY - padY
+yHi = mdsMaxY + padY
+Axes: xLo, xHi, yLo, yHi
+Paint rectangle: "{0.97, 0.97, 0.97}", xLo, xHi, yLo, yHi
 
-Axes: mdsMinX - padX, mdsMaxX + padX, mdsMinY - padY, mdsMaxY + padY
-
-# Draw crosshairs
-Colour: "{0.85, 0.85, 0.85}"
+# Quiet geometric guides
+Colour: "{0.88, 0.88, 0.88}"
 midX = (mdsMinX + mdsMaxX) / 2
 midY = (mdsMinY + mdsMaxY) / 2
-Draw line: mdsMinX - padX, midY, mdsMaxX + padX, midY
-Draw line: midX, mdsMinY - padY, midX, mdsMaxY + padY
+Draw line: xLo, midY, xHi, midY
+Draw line: midX, yLo, midX, yHi
 
-# Draw nearest-neighbor path (connecting lines in order)
-if ordering = 1
-    Line width: 1
-    Colour: "{0.75, 0.75, 0.85}"
-    for pos from 2 to n_words
-        w1 = order[pos - 1]
-        w2 = order[pos]
-        Draw line: mds1[w1], mds2[w1], mds1[w2], mds2[w2]
-    endfor
-endif
+# Playback/navigation path. This is drawn for EVERY ordering mode so the
+# geometry always explains the sequence that will actually be heard.
+Line width: 1.25
+Colour: "{0.55, 0.55, 0.65}"
+for pos from 2 to n_words
+    w1 = order[pos - 1]
+    w2 = order[pos]
+    Draw line: mds1[w1], mds2[w1], mds1[w2], mds2[w2]
+endfor
+Line width: 1
 
-# Draw dots — color gradient by ordering position (blue→red)
+# Points: blue -> red encodes PLAYBACK POSITION; size encodes duration.
 for pos from 1 to n_words
     w = order[pos]
     frac = (pos - 1) / max(1, n_words - 1)
+    rr = 0.15 + 0.70 * frac
+    gg = 0.28
+    bb = 0.85 - 0.65 * frac
 
-    # Blue→Red gradient
-    rr = frac
-    gg = 0.25
-    bb = 1 - frac
-
-    # Dot size scaled by segment duration
     segDur = word_end[w] - word_start[w]
-    dotSize = 2.5 + segDur * 8
-    if dotSize > 6
-        dotSize = 6
+    dotSize = 2.3 + segDur * 5
+    if dotSize > 4.8
+        dotSize = 4.8
     endif
 
     Paint circle (mm): "{" + fixed$(rr, 2) + ", " + fixed$(gg, 2) + ", " + fixed$(bb, 2) + "}", mds1[w], mds2[w], dotSize
 
-    # Label
-    Font size: 5
-    Colour: "{0.20, 0.20, 0.20}"
-    Text: mds1[w], "left", mds2[w] + mdsRangeY * 0.04, "half", string$(w)
+    Font size: 6
+    Colour: "{0.25, 0.25, 0.35}"
+    Text: mds1[w], "left", mds2[w] + mdsRangeY * 0.035, "half", "w" + string$(w)
 endfor
 
-Line width: 1
 Colour: "Black"
 Draw inner box
 Font size: 7
-Text top: "no", "MDS similarity map  (blue=first → red=last)"
+Text top: "no", "Similarity space (closer = more similar; path = playback order)"
+Text bottom: "yes", "MDS dimension 1"
+Text left: "yes", "MDS dimension 2"
+
+# Small semantic key inside the lower-left corner.
 Font size: 6
-Text bottom: "yes", "Dimension 1"
-Text left: "yes", "Dim 2"
+Paint circle (mm): "{0.15, 0.28, 0.85}", xLo + (xHi-xLo)*0.04, yLo + (yHi-yLo)*0.055, 1.7
+Colour: "{0.35, 0.35, 0.50}"
+Text: xLo + (xHi-xLo)*0.07, "left", yLo + (yHi-yLo)*0.055, "half", "first"
+Paint circle (mm): "{0.85, 0.28, 0.20}", xLo + (xHi-xLo)*0.20, yLo + (yHi-yLo)*0.055, 1.7
+Colour: "{0.35, 0.35, 0.50}"
+Text: xLo + (xHi-xLo)*0.23, "left", yLo + (yHi-yLo)*0.055, "half", "last"
 
 # ----------------------------------------------------------
-# Panel B: Parameters + distance matrix summary (right, upper)
+# Panel B: user-facing process explanation (right, upper)
 # ----------------------------------------------------------
-Select outer viewport: 4.5, 8, 0.75, 2.50
-Select inner viewport: 4.75, 7.65, 0.90, 2.38
+Select outer viewport: 4.40, 8, 0.68, 2.30
+Select inner viewport: 4.65, 7.70, 0.83, 2.17
 Axes: 0, 1, 0, 1
-Paint rectangle: "{0.96, 0.96, 0.96}", 0, 1, 0, 1
+Paint rectangle: "{0.97, 0.97, 0.97}", 0, 1, 0, 1
 
 Font size: 7
 Colour: "Black"
-Text: 0.05, "left", 0.90, "half", "##Parameters##"
+Text top: "no", "How the navigator works"
 
-Font size: 6
-Colour: "{0.30, 0.30, 0.30}"
-Text: 0.05, "left", 0.74, "half", "Metric:   " + metricName$
-Text: 0.05, "left", 0.60, "half", "Ordering: " + orderName$
-Text: 0.05, "left", 0.46, "half", "Segments: " + string$(n_words)
-Text: 0.05, "left", 0.32, "half", "Gap:      " + fixed$(silence_between_words_s * 1000, 0) + " ms"
-
-# Find min/max distance for display
-dMin = 999999
-dMax = 0
-for i from 1 to n_words
-    for j from 1 to n_words
-        if i <> j
-            if dist[i, j] < dMin
-                dMin = dist[i, j]
-            endif
-            if dist[i, j] > dMax
-                dMax = dist[i, j]
-            endif
-        endif
-    endfor
+# Five compact steps. Most are neutral; only MDS and final playback use
+# semantic colour so the panel does not become decorative.
+stepY[1] = 0.86
+stepY[2] = 0.68
+stepY[3] = 0.50
+stepY[4] = 0.32
+stepY[5] = 0.14
+for si to 5
+    if si = 4
+        stepColour$ = "{0.25, 0.45, 0.75}"
+    elsif si = 5
+        stepColour$ = "{0.35, 0.60, 0.40}"
+    else
+        stepColour$ = "{0.68, 0.68, 0.72}"
+    endif
+    Paint rectangle: stepColour$, 0.035, 0.095, stepY[si]-0.035, stepY[si]+0.035
 endfor
-Text: 0.05, "left", 0.18, "half", "Dist range: " + fixed$(dMin, 1) + " – " + fixed$(dMax, 1)
+
+Font size: 6
+Colour: "{0.25, 0.25, 0.35}"
+Text: 0.12, "left", stepY[1], "half", "1  Detect sounding segments"
+Text: 0.12, "left", stepY[2], "half", "2  Measure " + metricName$
+Text: 0.12, "left", stepY[3], "half", "3  Compare every pair -> distances"
+Text: 0.12, "left", stepY[4], "half", "4  Fold distances into a 2-D MDS map"
+Text: 0.12, "left", stepY[5], "half", "5  " + orderAction$ + " -> join audio"
 
 Colour: "Black"
-Draw rectangle: 0, 1, 0, 1
+Draw inner box
 
 # ----------------------------------------------------------
-# Panel C: Ordering sequence (right, lower)
+# Panel C: playback order (right, lower)
 # ----------------------------------------------------------
-Select outer viewport: 4.5, 8, 2.55, 4.35
-Select inner viewport: 4.75, 7.65, 2.68, 4.22
+Select outer viewport: 4.40, 8, 2.42, 4.08
+Select inner viewport: 4.65, 7.70, 2.57, 3.94
 Axes: 0, 1, 0, 1
-Paint rectangle: "{0.96, 0.96, 0.96}", 0, 1, 0, 1
+Paint rectangle: "{0.97, 0.97, 0.97}", 0, 1, 0, 1
 
 Font size: 7
 Colour: "Black"
-Text: 0.05, "left", 0.94, "half", "##Sequence##"
+Text top: "no", "Playback order"
 
-Font size: 5
-Colour: "{0.30, 0.30, 0.30}"
-
-# Show ordering as a compact list (up to 20 entries)
 nShow = min(n_words, 20)
+if nShow <= 10
+    nCols = 1
+    rowsPerCol = nShow
+else
+    nCols = 2
+    rowsPerCol = ceiling(nShow / 2)
+endif
+
+Font size: 6
 for pos from 1 to nShow
+    if nCols = 1
+        colIdx = 1
+        rowIdx = pos
+        xBase = 0.04
+    else
+        if pos <= rowsPerCol
+            colIdx = 1
+            rowIdx = pos
+            xBase = 0.03
+        else
+            colIdx = 2
+            rowIdx = pos - rowsPerCol
+            xBase = 0.52
+        endif
+    endif
+
+    yPos = 0.90 - (rowIdx - 1) * 0.082
     w = order[pos]
-    yPos = 0.86 - (pos - 1) * (0.78 / max(1, nShow))
     segDur = word_end[w] - word_start[w]
-
     frac = (pos - 1) / max(1, n_words - 1)
-    rr = frac
-    bb = 1 - frac
+    rr = 0.15 + 0.70 * frac
+    gg = 0.28
+    bb = 0.85 - 0.65 * frac
 
-    # Color swatch
-    Paint rectangle: "{" + fixed$(rr, 2) + ", 0.25, " + fixed$(bb, 2) + "}", 0.02, 0.06, yPos - 0.015, yPos + 0.015
-
-    Colour: "{0.25, 0.25, 0.25}"
-    Text: 0.08, "left", yPos, "half", string$(pos) + ". w" + string$(w) + "  (" + fixed$(segDur * 1000, 0) + " ms)"
+    Paint rectangle: "{" + fixed$(rr, 2) + ", " + fixed$(gg, 2) + ", " + fixed$(bb, 2) + "}", xBase, xBase + 0.045, yPos - 0.018, yPos + 0.018
+    Colour: "{0.25, 0.25, 0.35}"
+    Text: xBase + 0.06, "left", yPos, "half", string$(pos) + ". w" + string$(w) + "  " + fixed$(segDur * 1000, 0) + " ms"
 endfor
 
 if n_words > 20
-    Colour: "{0.50, 0.50, 0.50}"
-    Text: 0.08, "left", 0.04, "half", "... +" + string$(n_words - 20) + " more"
+    Colour: "{0.55, 0.55, 0.60}"
+    Text: 0.52, "left", 0.06, "half", "+" + string$(n_words - 20) + " more"
 endif
 
 Colour: "Black"
-Draw rectangle: 0, 1, 0, 1
+Draw inner box
 
 # ----------------------------------------------------------
-# Panel D: Reordered output waveform (full width)
+# Panel D: reordered output waveform (full width)
 # ----------------------------------------------------------
-Select outer viewport: 0, 8, 4.45, 5.75
-Select inner viewport: 0.55, 7.65, 4.55, 5.68
+Select outer viewport: 0, 8, 4.23, 5.35
+Select inner viewport: 0.60, 7.70, 4.37, 5.23
 selectObject: final_sound
 outDur = Get total duration
 outPeak = Get absolute extremum: 0, 0, "None"
@@ -600,11 +671,12 @@ if outPeak < 0.001
     outPeak = 0.001
 endif
 Axes: 0, outDur, -outPeak * 1.1, outPeak * 1.1
-Colour: "{0.15, 0.50, 0.35}"
+Paint rectangle: "{0.97, 0.97, 0.97}", 0, outDur, -outPeak * 1.1, outPeak * 1.1
+Colour: "{0.35, 0.60, 0.40}"
 Draw: 0, 0, -outPeak * 1.1, outPeak * 1.1, "no", "Curve"
 
-# Draw segment boundary lines
-Colour: "{0.80, 0.30, 0.30}"
+# Segment boundaries use muted red; silence gaps stay visibly empty.
+Colour: "{0.78, 0.28, 0.22}"
 Dotted line
 accumDur = 0
 for pos from 1 to n_words - 1
@@ -620,39 +692,38 @@ Solid line
 Colour: "Black"
 Draw inner box
 Font size: 7
+Text top: "no", "Reordered output (red = segment boundary; gaps = inserted silence)"
 Text left: "yes", "Amp"
 Text bottom: "yes", "Time (s)"
-Text top: "no", "Reordered output  (red lines = segment boundaries)"
 
 # ----------------------------------------------------------
-# Summary bar
+# Summary strip - library standard
 # ----------------------------------------------------------
-Select outer viewport: 0, 8, 5.85, 6.45
-Select inner viewport: 0.55, 7.65, 5.90, 6.38
+Select outer viewport: 0, 8, 5.50, 6.12
+Select inner viewport: 0.60, 7.70, 5.55, 6.05
 Axes: 0, 1, 0, 1
 Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
 
-Font size: 7
-Colour: "Black"
-Text: 0.02, "left", 0.72, "half", "##" + original_sound_name$ + "_reordered##"
-
 Font size: 6
-Colour: "{0.30, 0.30, 0.30}"
+Colour: "{0.25, 0.25, 0.35}"
+Text: 0.02, "left", 0.72, "half",
+    ... "##" + vizOutputName$ + "##"
+    ... + " | " + metricName$
+    ... + " | " + orderName$
+    ... + " | " + string$(n_words) + " segments"
 Text: 0.02, "left", 0.28, "half",
-    ... metricName$
-    ... + "  |  " + orderName$
-    ... + "  |  " + string$(n_words) + " segs"
-    ... + "  |  gap=" + fixed$(silence_between_words_s * 1000, 0) + "ms"
-    ... + "  |  out=" + fixed$(outDur, 2) + "s"
-    ... + "  |  dist=" + fixed$(dMin, 1) + "–" + fixed$(dMax, 1)
+    ... "Gap " + fixed$(silence_between_words_s * 1000, 0) + " ms"
+    ... + " | Output " + fixed$(outDur, 2) + " s"
+    ... + " | Distance range " + fixed$(dMin, 1) + "-" + fixed$(dMax, 1)
+    ... + " | Map: proximity carries similarity; axes are geometric coordinates"
 
 Colour: "Black"
 Draw rectangle: 0, 1, 0, 1
 
-# Reset
-Font size: 10
-Colour: "Black"
-Line width: 1
+# Restore full page as the LAST drawing selection so PNG/EPS/clipboard export
+# includes the whole visualization rather than only the summary strip.
+Select outer viewport: 0, 8, 0, 6.15
+Select inner viewport: 0, 8, 0, 6.15
 
 # ===== CLEANUP =====
 appendInfoLine: newline$, "Cleaning up..."

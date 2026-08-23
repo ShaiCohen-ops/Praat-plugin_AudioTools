@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.6 (2026)
+# Version: 0.6.1 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -14,6 +14,13 @@
 #   corruption artifact. Despite the "Spectral" name, no FFT/spectral
 #   processing is performed. Creates CD-skip, buffer-glitch, and broken
 #   playback effects.
+#
+# Changelog v0.6.1:
+#   - VISUAL QA ONLY: preserve the existing three-part Picture concept.
+#   - Display-safe source name (underscores no longer become subscripts).
+#   - Source/Glitched waveforms now share one amplitude scale.
+#   - Added numeric time/index marks and replaced markup-sensitive "Freeze #".
+#   - Added left/right Picture margin so side labels are not clipped.
 #
 # Changelog v0.6:
 #   - API COMPATIBILITY: public form is byte-for-byte unchanged.
@@ -338,28 +345,54 @@ endif
 # === Visualization ===
 if draw_visualization
     Erase all
+
+    # Display-only text sanitization: Praat treats underscores as subscript markup.
+    displayName$ = replace$(original_name$, "_", " ", 0)
+
+    # Shared waveform amplitude scale so Source and Glitched heights are comparable.
+    selectObject: original
+    sourceDisplayPeak = Get absolute extremum: 0, 0, "Sinc70"
+    selectObject: result
+    resultDisplayPeak = Get absolute extremum: 0, 0, "Sinc70"
+    displayPeak = sourceDisplayPeak
+    if resultDisplayPeak > displayPeak
+        displayPeak = resultDisplayPeak
+    endif
+    if displayPeak <= 0
+        displayPeak = 1
+    endif
+    displayPeak *= 1.05
     
     # Title
-    Select outer viewport: 1, 8, 0.1, 0.5
+    Select outer viewport: 0.35, 7.75, 0.1, 0.5
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "Spectral Freeze & Glitch: " + original_name$ + " (" + presetName$ + ")"
+    Text: 0.5, "centre", 0.5, "half", "Spectral Freeze & Glitch: " + displayName$ + " (" + presetName$ + ")"
     
     # Original waveform
-    Select outer viewport: 0, 8, 0.6, 2.0
-    Select inner viewport: 0.6, 7.6, 0.7, 1.9
+    Select outer viewport: 0.25, 7.85, 0.6, 2.0
+    Select inner viewport: 0.88, 7.62, 0.7, 1.9
     selectObject: original
-    Colour: "{0.6, 0.6, 0.6}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
+    Colour: "{0.68, 0.68, 0.68}"
+    Draw: 0, 0, -displayPeak, displayPeak, "no", "Curve"
+    # Stereo Sound: Draw can leave Praat in a per-channel subviewport.
+    # Re-select the declared inner viewport before axes/labels so side text
+    # is anchored to the panel itself, not to the last stereo channel.
+    Select outer viewport: 0.25, 7.85, 0.6, 2.0
+    Select inner viewport: 0.88, 7.62, 0.7, 1.9
+    Axes: 0, duration, -displayPeak, displayPeak
     Colour: "Black"
     Draw inner box
-    Font size: 8
-    Text left: "yes", "Original"
+    # Independent vertical side label: X is decoupled from the graph viewport.
+    Select outer viewport: 0.28, 0.78, 0.70, 1.90
+    Axes: 0, 1, 0, 1
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "half", "Times", 8, "90", "Original"
     
     # Result waveform with freeze markers
-    Select outer viewport: 0, 8, 2.1, 3.5
-    Select inner viewport: 0.6, 7.6, 2.2, 3.4
+    Select outer viewport: 0.25, 7.85, 2.1, 3.5
+    Select inner viewport: 0.88, 7.62, 2.2, 3.4
     
     # Freeze zones as background bands first (so the waveform shows on top)
     Axes: 0, duration, -1, 1
@@ -373,8 +406,8 @@ if draw_visualization
     
     # Glitched waveform on top of the zones
     selectObject: result
-    Colour: "{0.6, 0.4, 0.5}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
+    Colour: "{0.60, 0.40, 0.50}"
+    Draw: 0, 0, -displayPeak, displayPeak, "no", "Curve"
     
     # Freeze position lines on top
     Axes: 0, duration, -1, 1
@@ -386,21 +419,32 @@ if draw_visualization
         endif
     endfor
     
+    # Reset after stereo drawing/overlays for the same reason as Source above.
+    Select outer viewport: 0.25, 7.85, 2.1, 3.5
+    Select inner viewport: 0.88, 7.62, 2.2, 3.4
+    Axes: 0, duration, -displayPeak, displayPeak
     Colour: "Black"
     Draw inner box
+    Marks bottom: 5, "yes", "yes", "no"
     Font size: 8
-    Text left: "yes", "Glitched"
     Text bottom: "yes", "Time (s)"
-    
-    # Legend
+
+    # Independent vertical side label: same physical X strip as Original.
+    Select outer viewport: 0.28, 0.78, 2.20, 3.40
+    Axes: 0, 1, 0, 1
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "half", "Times", 8, "90", "Glitched"
+
+    # Legend stays independent above the data region.
+    Select outer viewport: 0.88, 7.62, 2.02, 2.18
     Axes: 0, 1, 0, 1
     Font size: 6
-    Colour: "{0.9, 0.3, 0.3}"
-    Text: 0.02, "left", 0.97, "half", "Freeze zones"
+    Colour: "{0.78, 0.28, 0.38}"
+    Text: 1, "right", 0.5, "half", "rose bands = freeze zones"
     
     # Freeze position scatter plot
-    Select outer viewport: 0, 8, 3.7, 5.1
-    Select inner viewport: 0.6, 7.6, 3.9, 5.0
+    Select outer viewport: 0.25, 7.85, 3.7, 5.1
+    Select inner viewport: 0.88, 7.62, 3.9, 5.0
     
     Axes: 0, duration, 0, freeze_points + 1
     Paint rectangle: "{0.95, 0.95, 0.95}", 0, duration, 0, freeze_points + 1
@@ -425,12 +469,25 @@ if draw_visualization
     
     Colour: "Black"
     Draw inner box
+    Marks bottom: 5, "yes", "yes", "no"
+    # Integer-only index references; automatic marks produced fractional freeze numbers.
+    midFreeze = round(freeze_points / 2)
+    if midFreeze < 1
+        midFreeze = 1
+    endif
+    One mark left: 1, "yes", "yes", "no", "1"
+    if midFreeze > 1 and midFreeze < freeze_points
+        One mark left: midFreeze, "yes", "yes", "no", string$(midFreeze)
+    endif
+    if freeze_points > 1
+        One mark left: freeze_points, "yes", "yes", "no", string$(freeze_points)
+    endif
     Font size: 7
-    Text left: "yes", "Freeze #"
+    Text left: "yes", "Freeze index"
     Text bottom: "yes", "Position in source (s)"
     
     # Stats
-    Select outer viewport: 0, 8, 5.3, 5.6
+    Select outer viewport: 0.35, 7.75, 5.3, 5.6
     Axes: 0, 1, 0, 1
     Font size: 7
     Colour: "{0.4, 0.4, 0.4}"

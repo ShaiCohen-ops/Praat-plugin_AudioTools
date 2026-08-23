@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.2 (2026)
+# Version: 1.2.3 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -28,6 +28,26 @@
 
 #
 # Changelog:
+#   1.2.3 (2026):
+#   - VIZ ONLY: moved the Output panel title away from the frame line.
+#   - DSP/rendering unchanged from v1.2.
+#   1.2.2 (2026):
+#   - VIZ ONLY: moved the BP remap-map title into a dedicated in-panel
+#     title band so it no longer collides with the panel frame.
+#   - VIZ: source blocks now receive very light categorical tints that
+#     match the central block colours; slice/block boundary lines are
+#     neutral so colour has one semantic role: source-block identity.
+#   - VIZ: increased title/legend/lane spacing in the central map.
+#   - DSP/rendering unchanged from v1.2.
+#   1.2.1 (2026):
+#   - VIZ ONLY: aligned to the current Praat AudioTools suite:
+#     Source -> BP remap map -> Output -> Summary.
+#   - VIZ: central map now directly shows chronological source slices
+#     and their L/R duration-sorted render orders; cell width encodes
+#     slice duration and colour identifies the source block.
+#   - VIZ: shared waveform scale, suite typography/panels, and safe
+#     display names without Praat underscore subscripting.
+#   - DSP/rendering unchanged from v1.2.
 #   1.2 (2026):
 #   - FIX: non-zero Sound time domains. BP grid/visualization remain
 #     zero-based, while extraction uses absolute sourceStart + offset.
@@ -493,170 +513,277 @@ outDur = Get total duration
 appendInfoLine: "  Output duration: ", fixed$(outDur, 3), " s"
 appendInfoLine: "  Output object:   BP_" + origName$ + "  (stereo L/R opposite BP directions)"
 
-# === Visualization ===
+# ============================================================
+# VISUALIZATION  (current Praat AudioTools suite styling)
+# Source -> signature BP remap map -> Output -> Summary.
+# The central map directly shows the temporal law:
+#   source row = chronological BP grid,
+#   L row      = source slices sorted by the chosen direction,
+#   R row      = the opposite ordering.
+# Cell width is proportional to slice duration; colour identifies
+# the source block. Thus long->short / short->long is visible directly.
+# ============================================================
 if draw_visualization = 1
     appendInfoLine: ""
     appendInfoLine: "Drawing visualization..."
 
     Erase all
-    Select outer viewport: 0, 8, 0, 7.5
+    Select outer viewport: 0, 8, 0, 7.10
+    Black
+    Plain line
 
-    # ---- Title ----
+    displayName$ = replace$(origName$, "_", " ", 0)
+
+    # Mono, zero-based display copies.
+    selectObject: origSound
+    if nChannels > 1
+        vizOrig = Convert to mono
+    else
+        vizOrig = Copy: "viz orig"
+    endif
+    selectObject: vizOrig
+    vizOrigStart = Get start time
+    Shift times by: -vizOrigStart
+
+    selectObject: resultSound
+    resultChannels = Get number of channels
+    if resultChannels > 1
+        vizResult = Convert to mono
+    else
+        vizResult = Copy: "viz result"
+    endif
+    selectObject: vizResult
+    vizResultStart = Get start time
+    Shift times by: -vizResultStart
+
+    # Shared waveform amplitude scale.
+    selectObject: vizOrig
+    origPeak = Get absolute extremum: 0, 0, "None"
+    selectObject: vizResult
+    outPeak = Get absolute extremum: 0, 0, "None"
+    sharedPeak = origPeak
+    if outPeak > sharedPeak
+        sharedPeak = outPeak
+    endif
+    if sharedPeak < 0.001
+        sharedPeak = 0.001
+    endif
+    sharedAmp = 1.15 * sharedPeak
+
+    if direction = 1
+        rightDirStr$ = "Decelerando"
+    else
+        rightDirStr$ = "Accelerando"
+    endif
+
+    # ----------------------------------------------------------
+    # TITLE / SUBTITLE
+    # ----------------------------------------------------------
     Select outer viewport: 0, 8, 0, 0.50
-    Select inner viewport: 0, 8, 0, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.72, "half", "##BP Slicing Protocol v1.2 -- Temporal Grids##"
-    Font size: 8
+    Text: 0.5, "centre", 0.68, "half", "##BP Slice Remapper##"
+    Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
-    Text: 0.5, "centre", 0.24, "half",
-        ... origName$ + "  |  " + string$(numBlocks) + " block(s)"
-        ... + "  |  " + string$(num_slices) + " slices/block"
-        ... + "  |  " + dirStr$
-        ... + "  |  ratio = 3^((n-1)/" + string$(num_slices) + ")"
+    Text: 0.5, "centre", -1.30, "half", "BP Slice Remapper.praat  |  " + displayName$ + "  |  Bohlen-Pierce temporal grid"
 
-    # ---- Timeline: colored rectangles per BP slice ----
-    Select outer viewport: 0, 8, 0.55, 1.90
-    Select inner viewport: 0.6, 7.7, 0.62, 1.83
-    Axes: 0, totalDur, 0, 1
-    Paint rectangle: "{0.96, 0.96, 0.98}", 0, totalDur, 0, 1
+    # ----------------------------------------------------------
+    # SOURCE
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 0.65, 1.90
+    Select inner viewport: 0.55, 7.75, 0.82, 1.78
+    Axes: 0, totalDur, -sharedAmp, sharedAmp
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, totalDur, -sharedAmp, sharedAmp
 
-    for g from 1 to totalSlices
-        blk = gBlock_'g'
-        if blk = 1
-            colStr$ = "{0.18, 0.62, 0.68}"
-        elsif blk = 2
-            colStr$ = "{0.78, 0.50, 0.10}"
-        elsif blk = 3
-            colStr$ = "{0.52, 0.20, 0.70}"
+    # Very light block tints connect source regions to the categorical
+    # colours used in the remap map. Colour therefore has one role only:
+    # source-block identity. Boundaries themselves stay neutral.
+    for b from 1 to numBlocks
+        if b = 1
+            tintCol$ = "{0.94, 0.97, 1.00}"
+        elsif b = 2
+            tintCol$ = "{1.00, 0.96, 0.91}"
+        elsif b = 3
+            tintCol$ = "{0.97, 0.94, 1.00}"
         else
-            colStr$ = "{0.70, 0.18, 0.26}"
+            tintCol$ = "{0.93, 0.98, 0.96}"
         endif
-        Paint rectangle: colStr$, gStart_'g', gEnd_'g', 0.06, 0.94
+        bx0 = (b - 1) * blockDur
+        bx1 = b * blockDur
+        Paint rectangle: tintCol$, bx0, bx1, -sharedAmp, sharedAmp
     endfor
 
-    # Block dividers
-    Colour: "{0.10, 0.10, 0.10}"
-    Line width: 2
+    selectObject: vizOrig
+    Colour: "{0.58, 0.58, 0.62}"
+    Draw: 0, totalDur, -sharedAmp, sharedAmp, "no", "Curve"
+
+    # BP boundaries over the source waveform: thin = slice, heavy = block.
+    Colour: "{0.74, 0.76, 0.80}"
+    Line width: 0.7
+    for g from 2 to totalSlices
+        Draw line: gStart_'g', -sharedAmp, gStart_'g', sharedAmp
+    endfor
+    Colour: "{0.34, 0.34, 0.38}"
+    Line width: 1.5
     for b from 1 to numBlocks - 1
-        divT = b * blockDur
-        Draw line: divT, 0, divT, 1
+        bt = b * blockDur
+        Draw line: bt, -sharedAmp, bt, sharedAmp
     endfor
     Line width: 1
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "Blocks"
+    Text top: "no", "##Source##"
+    Font size: 6
+    Text left: "yes", "Amplitude"
     Text bottom: "yes", "Time (s)"
-    Text top: "no", string$(totalSlices) + " slices -- BP geometric grid"
+    Axes: 0, totalDur, -sharedAmp, sharedAmp
+    Colour: "{0.28, 0.28, 0.28}"
+    Text: 0.01 * totalDur, "left", 0.82 * sharedAmp, "half", string$(numBlocks) + " block(s)  |  " + string$(num_slices) + " slices/block  |  thin = slice boundary  |  heavy = block boundary"
 
-    # ---- Slice duration bar chart ----
-    Select outer viewport: 0, 8, 2.00, 3.50
-    Select inner viewport: 0.6, 7.7, 2.08, 3.42
-
-    barTop = maxSliceDur * 1000
-    if barTop < 1
-        barTop = 1
-    endif
-    Axes: 0.5, totalSlices + 0.5, 0, barTop
-    Paint rectangle: "{0.97, 0.97, 0.97}", 0.5, totalSlices + 0.5, 0, barTop
-
-    for g from 1 to totalSlices
-        blk = gBlock_'g'
-        if blk = 1
-            bColStr$ = "{0.18, 0.62, 0.68}"
-        elsif blk = 2
-            bColStr$ = "{0.78, 0.50, 0.10}"
-        elsif blk = 3
-            bColStr$ = "{0.52, 0.20, 0.70}"
-        else
-            bColStr$ = "{0.70, 0.18, 0.26}"
-        endif
-        dms = gDur_'g' * 1000
-        Paint rectangle: bColStr$, g - 0.44, g + 0.44, 0, dms
-    endfor
-
-    # Waveform of original sound above bar chart (grey)
-    Colour: "{0.50, 0.50, 0.50}"
-    Line width: 1
-    Colour: "Black"
-    Draw inner box
-    Font size: 7
-    Text left: "yes", "Dur (ms)"
-    Text bottom: "yes", "Slice index"
-    Text top: "no", "Slice durations  (block colour-coded)"
-
-    # ---- Waveform of original ----
-    Select outer viewport: 0, 8, 3.60, 4.70
-    Select inner viewport: 0.6, 7.7, 3.68, 4.62
-    selectObject: origSound
-    if nChannels > 1
-        Extract one channel: 1
-        tmpOrigViz = selected("Sound")
-    else
-        Copy: "tmpOrigViz"
-        tmpOrigViz = selected("Sound")
-    endif
-    selectObject: tmpOrigViz
-    # Visualization uses a zero-based BP grid, so align the waveform copy.
-    Shift times to: "start time", 0
-    Colour: "{0.50, 0.50, 0.50}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
-
-    # Overlay slice boundaries as vertical lines
-    Colour: "{0.18, 0.62, 0.68}"
-    Line width: 1
-    selectObject: tmpOrigViz
-    mn = Get minimum: 0, 0, "Sinc70"
-    mx = Get maximum: 0, 0, "Sinc70"
-    if mx - mn < 0.001
-        mx =  0.5
-        mn = -0.5
-    endif
-    Axes: 0, totalDur, mn, mx
-    for g from 1 to totalSlices
-        Draw line: gStart_'g', mn, gStart_'g', mx
-    endfor
-    Line width: 1
-    removeObject: tmpOrigViz
-
-    Colour: "Black"
-    Draw inner box
-    Font size: 7
-    Text left: "yes", "Amp"
-    Text bottom: "yes", "Time (s)"
-    Text top: "no", "Waveform with BP slice boundaries"
-
-    # ---- Summary panel ----
-    Select outer viewport: 0, 8, 4.80, 5.90
-    Select inner viewport: 0.6, 7.7, 4.88, 5.82
+    # ----------------------------------------------------------
+    # BP REMAP MAP - signature process view
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 2.05, 4.55
+    Select inner viewport: 0.55, 7.75, 2.25, 4.40
     Axes: 0, 1, 0, 1
-    Paint rectangle: "{0.93, 0.93, 0.93}", 0, 1, 0, 1
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, 1, 0, 1
+
+    x0 = 0.12
+    xSpan = 0.84
+
+    # Dedicated in-panel title band: never sits on the frame.
     Font size: 7
     Colour: "Black"
-    Text: 0.02, "left", 0.87, "half", "##Summary##"
+    Text: 0.02, "left", 0.965, "half", "##BP remap map##"
+
+    # Lane labels.
     Font size: 6
     Colour: "{0.28, 0.28, 0.28}"
-    Text: 0.02, "left", 0.66, "half",
-        ... "Source: " + origName$
-        ... + "  |  Duration: " + fixed$(totalDur, 3) + " s"
-        ... + "  |  SR: " + string$(origSR) + " Hz"
-    Text: 0.02, "left", 0.45, "half",
-        ... "Blocks: " + string$(numBlocks)
-        ... + "  |  Slices/block: " + string$(num_slices)
-        ... + "  |  Total slices: " + string$(totalSlices)
-        ... + "  |  Direction: " + dirStr$
-        ... + "  |  Xfade: " + fixed$(xfadeDur * 1000, 2) + " ms"
-    Text: 0.02, "left", 0.24, "half",
-        ... "Shortest: " + fixed$(minSliceDur * 1000, 2) + " ms"
-        ... + "  |  Longest: " + fixed$(maxSliceDur * 1000, 2) + " ms"
-        ... + "  |  Max/min ratio: " + fixed$(maxSliceDur / minSliceDur, 3)
+    Text: 0.02, "left", 0.75, "half", "source grid"
+    Text: 0.02, "left", 0.47, "half", "L  " + dirStr$
+    Text: 0.02, "left", 0.19, "half", "R  " + rightDirStr$
+
+    # SOURCE GRID: chronological positions, width proportional to duration.
+    for g from 1 to totalSlices
+        blk = gBlock_'g'
+        if blk = 1
+            cellCol$ = "{0.30, 0.53, 0.82}"
+        elsif blk = 2
+            cellCol$ = "{0.95, 0.55, 0.20}"
+        elsif blk = 3
+            cellCol$ = "{0.48, 0.33, 0.72}"
+        else
+            cellCol$ = "{0.34, 0.66, 0.55}"
+        endif
+        sx0 = x0 + xSpan * gStart_'g' / totalDur
+        sx1 = x0 + xSpan * gEnd_'g' / totalDur
+        Paint rectangle: cellCol$, sx0 + 0.001, sx1 - 0.001, 0.66, 0.82
+    endfor
+
+    # LEFT RENDER ORDER: widths preserve each slice duration, order follows sortIdxL.
+    cursor = x0
+    for k from 1 to totalSlices
+        pk = sortIdxL_'k'
+        blk = gBlock_'pk'
+        if blk = 1
+            cellCol$ = "{0.30, 0.53, 0.82}"
+        elsif blk = 2
+            cellCol$ = "{0.95, 0.55, 0.20}"
+        elsif blk = 3
+            cellCol$ = "{0.48, 0.33, 0.72}"
+        else
+            cellCol$ = "{0.34, 0.66, 0.55}"
+        endif
+        w = xSpan * exDur_'pk' / sumExDur
+        Paint rectangle: cellCol$, cursor + 0.001, cursor + w - 0.001, 0.38, 0.54
+        cursor = cursor + w
+    endfor
+
+    # RIGHT RENDER ORDER: the exact opposite duration sort.
+    cursor = x0
+    for k from 1 to totalSlices
+        pk = sortIdxR_'k'
+        blk = gBlock_'pk'
+        if blk = 1
+            cellCol$ = "{0.30, 0.53, 0.82}"
+        elsif blk = 2
+            cellCol$ = "{0.95, 0.55, 0.20}"
+        elsif blk = 3
+            cellCol$ = "{0.48, 0.33, 0.72}"
+        else
+            cellCol$ = "{0.34, 0.66, 0.55}"
+        endif
+        w = xSpan * exDur_'pk' / sumExDur
+        Paint rectangle: cellCol$, cursor + 0.001, cursor + w - 0.001, 0.10, 0.26
+        cursor = cursor + w
+    endfor
+
+    # Block colour legend and process note.
+    Font size: 5
+    Colour: "{0.28, 0.28, 0.28}"
+    Text: x0, "left", 0.885, "half", "cell width = slice duration  |  colour = source block"
+    Text: 0.97, "right", 0.885, "half", "BP ratio 3^((n-1)/" + string$(num_slices) + ")"
+    if direction = 1
+        orderNote$ = "L long -> short  |  R short -> long"
+    else
+        orderNote$ = "L short -> long  |  R long -> short"
+    endif
+    Text: x0, "left", 0.035, "half", orderNote$ + "  |  " + blkDirStr$
+    if xfadeDur > 0
+        Text: 0.97, "right", 0.035, "half", "xfade " + fixed$(xfadeDur * 1000, 2) + " ms/join"
+    else
+        Text: 0.97, "right", 0.035, "half", "butt joins"
+    endif
+
     Colour: "Black"
+    Draw inner box
+
+    # ----------------------------------------------------------
+    # OUTPUT
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 4.70, 5.95
+    Select inner viewport: 0.55, 7.75, 4.87, 5.83
+    Axes: 0, outDur, -sharedAmp, sharedAmp
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, outDur, -sharedAmp, sharedAmp
+    selectObject: vizResult
+    Colour: "{0.48, 0.33, 0.72}"
+    Draw: 0, outDur, -sharedAmp, sharedAmp, "no", "Curve"
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text top: "yes", "##Output##"
+    Font size: 6
+    Text left: "yes", "Amplitude"
+    Text bottom: "yes", "Time (s)"
+    Axes: 0, outDur, -sharedAmp, sharedAmp
+    Colour: "{0.28, 0.28, 0.28}"
+    Text: 0.01 * outDur, "left", 0.82 * sharedAmp, "half", "stereo: L = " + dirStr$ + "  |  R = " + rightDirStr$ + "  |  opposite duration orderings"
+
+    # ----------------------------------------------------------
+    # SUMMARY
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 6.10, 7.05
+    Select inner viewport: 0.30, 7.80, 6.17, 6.98
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    Colour: "{0.48, 0.48, 0.48}"
     Draw rectangle: 0, 1, 0, 1
+
+    Font size: 7
+    Colour: "Black"
+    Text: 0.02, "left", 0.80, "half", "##Summary##"
+    Font size: 6
+    Colour: "{0.28, 0.28, 0.28}"
+    Text: 0.02, "left", 0.49, "half", string$(numBlocks) + " block(s)  |  " + string$(num_slices) + " slices/block  |  total " + string$(totalSlices) + "  |  L " + dirStr$ + "  |  R " + rightDirStr$ + "  |  " + blkDirStr$
+    Text: 0.02, "left", 0.18, "half", "Slice range " + fixed$(minSliceDur * 1000, 2) + "-" + fixed$(maxSliceDur * 1000, 2) + " ms  |  max/min " + fixed$(maxSliceDur / minSliceDur, 3) + "  |  xfade " + fixed$(xfadeDur * 1000, 2) + " ms  |  duration " + fixed$(totalDur, 3) + " -> " + fixed$(outDur, 3) + " s"
 
     Font size: 10
     Colour: "Black"
+    Line width: 1
+
+    removeObject: vizOrig, vizResult
 endif
 
 # === Final summary + playback ===

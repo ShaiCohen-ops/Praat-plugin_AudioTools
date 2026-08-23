@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 4.2 (2026)
+# Version: 4.3 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -37,6 +37,15 @@
 #         Lsets ∧ Ø(dur): with proportional silence durations
 #     - 5-panel visualization of timbral-textural layers
 #     - Category dominance analysis
+#
+# Changelog v4.3 (visualization only; DSP/classification unchanged):
+#   - Rebuilt title/subtitle geometry to the AudioTools library standard.
+#   - Fixed Picture export by re-selecting the full page at the end.
+#   - Kept the six Llogic category colours as semantic encoding, while
+#     moving analytical traces to a neutral slate so colour means category.
+#   - Replaced the large text-report panel with a symbolic recomposition map
+#     showing the actual atom/gap sequence on the rendered output timeline.
+#   - Regularized panel geometry, typography, spacing and the summary strip.
 #
 # Changelog v4.2 (from v4.1):
 #   - FIXED non-zero Sound time domains: analysis/rendering now work from a
@@ -104,7 +113,7 @@ originalSound = selected("Sound")
 soundName$ = selected$("Sound")
 
 # ── 1. FORM ─────────────────────────────────────────────────
-form Llogic Symbolic Granular Recomposition v4.2
+form Llogic Symbolic Granular Recomposition v4.3
     optionmenu Preset: 1
         option Custom
         option Breath to Tone
@@ -1147,7 +1156,9 @@ endif
 # ── 17. VISUALIZATION ──────────────────────────────────────
 if draw_visualization
 
-    # Get waveform amplitude range
+    # Display source follows the same mono decision as analysis, but remains
+    # un-normalized. Category colours carry the semantic meaning; waveforms
+    # and analysis traces stay neutral.
     selectObject: sourceZero
     nCh = Get number of channels
     if nCh > 1
@@ -1156,44 +1167,54 @@ if draw_visualization
         vizMono = Copy: "viz_mono"
     endif
     selectObject: vizMono
-    wMax = Get maximum: 0, 0, "Sinc70"
-    wMin = Get minimum: 0, 0, "Sinc70"
-    if wMax < 0
-        wMax = -wMax
-    endif
-    if wMin < 0
-        wMin = -wMin
-    endif
-    if wMin > wMax
-        wMax = wMin
-    endif
-    ampMax = wMax * 1.1
+    wMax = Get absolute extremum: 0, 0, "None"
+    ampMax = wMax * 1.10
     if ampMax < 0.001
         ampMax = 0.001
     endif
 
+    selectObject: resynthSound
+    outputDuration = Get total duration
+    outputChannels = Get number of channels
+
+    vizName$ = replace$(soundName$, "_", "\_ ", 0)
+
+    if arrangement = 1
+        arrName$ = "Linear"
+    elsif arrangement = 2
+        arrName$ = "Retrograde"
+    elsif arrangement = 3
+        arrName$ = "Palindrome"
+    elsif arrangement = 4
+        arrName$ = "Accumulation"
+    elsif arrangement = 5
+        arrName$ = "Stutter"
+    else
+        arrName$ = "Scatter"
+    endif
+
     Erase all
+    Select outer viewport: 0, 8, 0, 8
 
     # === TITLE ===
-    Select outer viewport: 0, 8, 0, 0.45
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
-    Font size: 11
+    Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.75, "half",
-        ... "##Llogic System v4.2##"
+    Text: 0.5, "centre", 0.68, "half", "##Llogic Symbolic Granular Recomposition v4.3##"
     Font size: 7
-    Colour: "{0.4, 0.4, 0.5}"
-    Text: 0.5, "centre", 0.05, "half",
-        ... soundName$ + " | " + fixed$(duration, 2) + " s | "
-        ... + string$(nMerged) + " segments | "
-        ... + string$(nCand) + " candidates"
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half",
+        ... vizName$ + " | " + fixed$(duration, 2) + " s | "
+        ... + string$(nMerged) + " regions | proposition: " + proposition$
 
-    # === PANEL 1: Waveform with color-coded Llogic regions ===
-    Select outer viewport: 0, 8, 0.5, 2.3
-    Select inner viewport: 0.7, 7.6, 0.6, 2.2
+    # === PANEL 1: CLASSIFIED SOURCE ===
+    Select outer viewport: 0, 8, 0.65, 2.12
+    Select inner viewport: 0.60, 7.70, 0.77, 2.02
     Axes: 0, duration, -ampMax, ampMax
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, duration, -ampMax, ampMax
 
-    # Paint colored regions for each merged segment
     for i from 1 to nMerged
         lab$ = mLabel$[i]
         if lab$ = "null"
@@ -1214,52 +1235,42 @@ if draw_visualization
         Paint rectangle: regColour$, mStart[i], mEnd[i], -ampMax, ampMax
     endfor
 
-    # Draw waveform on top
-    selectObject: vizMono
-    Colour: "{0.15, 0.15, 0.2}"
-    Line width: 1
-    Draw: 0, 0, -ampMax, ampMax, "no", "Curve"
-
-    # Zero line
-    Colour: "{0.6, 0.6, 0.6}"
+    Colour: "{0.70, 0.70, 0.74}"
     Dotted line
     Draw line: 0, 0, duration, 0
     Solid line
+
+    selectObject: vizMono
+    Colour: "{0.38, 0.38, 0.46}"
+    Line width: 1
+    Draw: 0, duration, -ampMax, ampMax, "no", "Curve"
 
     Colour: "Black"
     Draw inner box
     Font size: 7
     Text left: "yes", "Amp"
-    Text top: "no", "Waveform — Llogic timbral-textural regions"
+    Text top: "no", "Source classified into Llogic regions"
 
-    # === PANEL 2: HNR contour with thresholds ===
-    Select outer viewport: 0, 8, 2.35, 3.6
-    Select inner viewport: 0.7, 7.6, 2.45, 3.5
+    # === PANEL 2: HARMONICITY CUE ===
+    Select outer viewport: 0, 8, 2.28, 3.43
+    Select inner viewport: 0.60, 7.70, 2.40, 3.33
     hnrFloor = -10
     hnrCeil = 40
-
     Axes: 0, duration, hnrFloor, hnrCeil
     Paint rectangle: "{0.97, 0.97, 0.97}", 0, duration, hnrFloor, hnrCeil
 
-    # Threshold zones
-    Paint rectangle: "{0.88, 0.94, 1.0}",
-        ... 0, duration, hnrFloor, hnr_psi
-    Paint rectangle: "{0.93, 0.87, 1.0}",
-        ... 0, duration, hnr_psi, hnr_theta
-    Paint rectangle: "{0.88, 0.97, 0.88}",
-        ... 0, duration, hnr_theta, hnrCeil
+    Paint rectangle: "{0.88, 0.94, 1.00}", 0, duration, hnrFloor, hnr_psi
+    Paint rectangle: "{0.93, 0.87, 1.00}", 0, duration, hnr_psi, hnr_theta
+    Paint rectangle: "{0.88, 0.97, 0.88}", 0, duration, hnr_theta, hnrCeil
 
-    # Threshold lines
-    Colour: "{0.3, 0.6, 0.9}"
+    Colour: "{0.55, 0.55, 0.65}"
     Dotted line
     Draw line: 0, hnr_psi, duration, hnr_psi
-    Colour: "{0.2, 0.7, 0.3}"
     Draw line: 0, hnr_theta, duration, hnr_theta
     Solid line
 
-    # Draw HNR contour
     selectObject: hnrObj
-    Colour: "{0.4, 0.2, 0.5}"
+    Colour: "{0.35, 0.35, 0.50}"
     Line width: 1.5
     Draw: 0, 0, hnrFloor, hnrCeil
     Line width: 1
@@ -1268,42 +1279,33 @@ if draw_visualization
     Draw inner box
     Font size: 7
     Text left: "yes", "HNR"
-    Text top: "no", "Harmonicity — ψ(<" + fixed$(hnr_psi, 0)
-        ... + ") | ϕ/ω(" + fixed$(hnr_psi, 0) + "-"
-        ... + fixed$(hnr_theta, 0) + ") | θ(>"
-        ... + fixed$(hnr_theta, 0) + ")"
+    Text top: "no", "Harmonicity – one cue separating airy, vibrational/complex and tonal regions"
 
-    # Zone labels (right margin)
     Axes: 0, 1, hnrFloor, hnrCeil
-    Font size: 5
-    Colour: "{0.3, 0.6, 0.9}"
-    Text: 0.98, "right", (hnrFloor + hnr_psi) / 2, "half", "ψ"
-    Colour: "{0.6, 0.2, 0.8}"
-    Text: 0.98, "right", (hnr_psi + hnr_theta) / 2, "half", "ϕ/ω"
-    Colour: "{0.2, 0.7, 0.3}"
-    Text: 0.98, "right", (hnr_theta + hnrCeil) / 2, "half", "θ"
+    Font size: 6
+    Colour: "{0.25, 0.45, 0.75}"
+    Text: 0.985, "right", (hnrFloor + hnr_psi) / 2, "half", "ψ"
+    Colour: "{0.55, 0.35, 0.70}"
+    Text: 0.985, "right", (hnr_psi + hnr_theta) / 2, "half", "ϕ / ω"
+    Colour: "{0.35, 0.60, 0.40}"
+    Text: 0.985, "right", (hnr_theta + hnrCeil) / 2, "half", "θ"
 
-    # === PANEL 3: Intensity contour with null threshold ===
-    Select outer viewport: 0, 8, 3.65, 4.9
-    Select inner viewport: 0.7, 7.6, 3.75, 4.8
+    # === PANEL 3: INTENSITY / ONSET CUE ===
+    Select outer viewport: 0, 8, 3.59, 4.74
+    Select inner viewport: 0.60, 7.70, 3.71, 4.64
     intFloor = 0
     intCeil = 90
-
     Axes: 0, duration, intFloor, intCeil
     Paint rectangle: "{0.97, 0.97, 0.97}", 0, duration, intFloor, intCeil
+    Paint rectangle: "{0.93, 0.93, 0.93}", 0, duration, intFloor, int_null
 
-    # Null zone
-    Paint rectangle: "{0.93, 0.93, 0.93}",
-        ... 0, duration, intFloor, int_null
-
-    # Null threshold line
-    Colour: "{0.6, 0.6, 0.6}"
+    Colour: "{0.65, 0.65, 0.68}"
     Dotted line
     Draw line: 0, int_null, duration, int_null
     Solid line
 
     selectObject: intObj
-    Colour: "{0.8, 0.35, 0.2}"
+    Colour: "{0.35, 0.35, 0.50}"
     Line width: 1.5
     Draw: 0, 0, intFloor, intCeil, "no"
     Line width: 1
@@ -1312,186 +1314,200 @@ if draw_visualization
     Draw inner box
     Font size: 7
     Text left: "yes", "dB"
-    Text top: "no", "Intensity — Ø(<"
-        ... + fixed$(int_null, 0) + " dB) | χ(rise rate≥"
-        ... + fixed$(chi_rise_dB_per_s, 0) + " dB/s)"
+    Text top: "no", "Intensity – below " + fixed$(int_null, 0)
+        ... + " dB becomes Ø; fast rises can become χ"
     Text bottom: "yes", "Time (s)"
 
-    # === PANEL 4: Lsets distribution bar ===
-    Select outer viewport: 0, 8, 5.0, 5.55
-    Select inner viewport: 0.7, 7.6, 5.05, 5.5
+    # === PANEL 4: LSETS DISTRIBUTION ===
+    Select outer viewport: 0, 8, 4.98, 5.48
+    Select inner viewport: 0.60, 7.70, 5.04, 5.43
     Axes: 0, totalCatDur, 0, 1
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, totalCatDur, 0, 1
 
-    # Draw proportional bar
     barX = 0
-    # null
     if nullDur > 0
-        Paint rectangle: "{0.85, 0.85, 0.85}", barX, barX + nullDur, 0.1, 0.9
-        Font size: 5
-        Colour: "{0.4, 0.4, 0.4}"
+        Paint rectangle: "{0.85, 0.85, 0.85}", barX, barX + nullDur, 0.12, 0.88
+        Font size: 6
+        Colour: "{0.40, 0.40, 0.45}"
         if nullDur / totalCatDur > 0.05
-            Text: barX + nullDur / 2, "centre", 0.5, "half",
-                ... "Ø " + fixed$(nullDur / totalCatDur * 100, 0) + "%"
+            Text: barX + nullDur / 2, "centre", 0.5, "half", "Ø " + fixed$(nullDur / totalCatDur * 100, 0) + "%"
         endif
         barX += nullDur
     endif
-    # psi
     if psiDur > 0
-        Paint rectangle: "{0.72, 0.87, 0.98}", barX, barX + psiDur, 0.1, 0.9
-        Font size: 5
-        Colour: "{0.2, 0.5, 0.85}"
+        Paint rectangle: "{0.72, 0.87, 0.98}", barX, barX + psiDur, 0.12, 0.88
+        Font size: 6
+        Colour: "{0.25, 0.45, 0.75}"
         if psiDur / totalCatDur > 0.05
-            Text: barX + psiDur / 2, "centre", 0.5, "half",
-                ... "ψ " + fixed$(psiDur / totalCatDur * 100, 0) + "%"
+            Text: barX + psiDur / 2, "centre", 0.5, "half", "ψ " + fixed$(psiDur / totalCatDur * 100, 0) + "%"
         endif
         barX += psiDur
     endif
-    # phi
     if phiDur > 0
-        Paint rectangle: "{0.85, 0.75, 0.98}", barX, barX + phiDur, 0.1, 0.9
-        Font size: 5
-        Colour: "{0.55, 0.2, 0.8}"
+        Paint rectangle: "{0.85, 0.75, 0.98}", barX, barX + phiDur, 0.12, 0.88
+        Font size: 6
+        Colour: "{0.55, 0.35, 0.70}"
         if phiDur / totalCatDur > 0.05
-            Text: barX + phiDur / 2, "centre", 0.5, "half",
-                ... "ϕ " + fixed$(phiDur / totalCatDur * 100, 0) + "%"
+            Text: barX + phiDur / 2, "centre", 0.5, "half", "ϕ " + fixed$(phiDur / totalCatDur * 100, 0) + "%"
         endif
         barX += phiDur
     endif
-    # theta
     if thetaDur > 0
-        Paint rectangle: "{0.72, 0.95, 0.75}", barX, barX + thetaDur, 0.1, 0.9
-        Font size: 5
-        Colour: "{0.2, 0.6, 0.25}"
+        Paint rectangle: "{0.72, 0.95, 0.75}", barX, barX + thetaDur, 0.12, 0.88
+        Font size: 6
+        Colour: "{0.35, 0.60, 0.40}"
         if thetaDur / totalCatDur > 0.05
-            Text: barX + thetaDur / 2, "centre", 0.5, "half",
-                ... "θ " + fixed$(thetaDur / totalCatDur * 100, 0) + "%"
+            Text: barX + thetaDur / 2, "centre", 0.5, "half", "θ " + fixed$(thetaDur / totalCatDur * 100, 0) + "%"
         endif
         barX += thetaDur
     endif
-    # chi
     if chiDur > 0
-        Paint rectangle: "{0.98, 0.75, 0.72}", barX, barX + chiDur, 0.1, 0.9
-        Font size: 5
-        Colour: "{0.8, 0.2, 0.15}"
+        Paint rectangle: "{0.98, 0.75, 0.72}", barX, barX + chiDur, 0.12, 0.88
+        Font size: 6
+        Colour: "{0.78, 0.28, 0.22}"
         if chiDur / totalCatDur > 0.05
-            Text: barX + chiDur / 2, "centre", 0.5, "half",
-                ... "χ " + fixed$(chiDur / totalCatDur * 100, 0) + "%"
+            Text: barX + chiDur / 2, "centre", 0.5, "half", "χ " + fixed$(chiDur / totalCatDur * 100, 0) + "%"
         endif
         barX += chiDur
     endif
-    # omega
     if omegaDur > 0
-        Paint rectangle: "{0.98, 0.92, 0.68}", barX, barX + omegaDur, 0.1, 0.9
-        Font size: 5
-        Colour: "{0.7, 0.6, 0.1}"
+        Paint rectangle: "{0.98, 0.92, 0.68}", barX, barX + omegaDur, 0.12, 0.88
+        Font size: 6
+        Colour: "{0.80, 0.60, 0.20}"
         if omegaDur / totalCatDur > 0.05
-            Text: barX + omegaDur / 2, "centre", 0.5, "half",
-                ... "ω " + fixed$(omegaDur / totalCatDur * 100, 0) + "%"
+            Text: barX + omegaDur / 2, "centre", 0.5, "half", "ω " + fixed$(omegaDur / totalCatDur * 100, 0) + "%"
         endif
     endif
-
     Colour: "Black"
-    Draw rectangle: 0, totalCatDur, 0.1, 0.9
+    Draw rectangle: 0, totalCatDur, 0.12, 0.88
     Font size: 7
     Axes: 0, 1, 0, 1
-    Text: 0.5, "centre", 1.15, "half", "Lsets distribution (% of duration)"
+    Text: 0.5, "centre", 1.16, "half", "Lsets distribution – share of source duration"
 
-    # === PANEL 5: Stats ===
-    Select outer viewport: 0, 8, 5.6, 7.1
-    Select inner viewport: 0.4, 7.8, 5.65, 7.05
-    Axes: 0, 1, 0, 1
-    Paint rectangle: "{0.96, 0.96, 0.96}", 0, 1, 0, 1
+    # === PANEL 5: SYMBOLIC RECOMPOSITION MAP ===
+    Select outer viewport: 0, 8, 5.68, 6.72
+    Select inner viewport: 0.60, 7.70, 5.80, 6.62
+    Axes: 0, outputDuration, 0, 1
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, outputDuration, 0, 1
 
-    Font size: 7
+    mapPos = 0
+    for i from 1 to nAssemble
+        pStart = mapPos
+        pEnd = pStart + assembleDur[i]
+        if pEnd > outputDuration
+            pEnd = outputDuration
+        endif
+        lab$ = assembleLabel$[i]
+        if lab$ = "gap"
+            # Inserted compositional gaps are not the Ø category: leave them
+            # almost unfilled and use a dotted outline so semantic null stays grey.
+            fill$ = "{0.97, 0.97, 0.97}"
+            edge$ = "{0.60, 0.60, 0.65}"
+            gk$ = "gap"
+        elsif lab$ = "null"
+            fill$ = "{0.85, 0.85, 0.85}"
+            edge$ = "{0.45, 0.45, 0.48}"
+            gk$ = "Ø"
+        elsif lab$ = "psi"
+            fill$ = "{0.72, 0.87, 0.98}"
+            edge$ = "{0.25, 0.45, 0.75}"
+            gk$ = "ψ"
+        elsif lab$ = "phi"
+            fill$ = "{0.85, 0.75, 0.98}"
+            edge$ = "{0.55, 0.35, 0.70}"
+            gk$ = "ϕ"
+        elsif lab$ = "theta"
+            fill$ = "{0.72, 0.95, 0.75}"
+            edge$ = "{0.35, 0.60, 0.40}"
+            gk$ = "θ"
+        elsif lab$ = "chi"
+            fill$ = "{0.98, 0.75, 0.72}"
+            edge$ = "{0.78, 0.28, 0.22}"
+            gk$ = "χ"
+        elsif lab$ = "omega"
+            fill$ = "{0.98, 0.92, 0.68}"
+            edge$ = "{0.80, 0.60, 0.20}"
+            gk$ = "ω"
+        else
+            fill$ = "{0.92, 0.92, 0.92}"
+            edge$ = "{0.55, 0.55, 0.60}"
+            gk$ = lab$
+        endif
+        if pEnd > pStart
+            Paint rectangle: fill$, pStart, pEnd, 0.18, 0.82
+            Colour: edge$
+            if lab$ = "gap"
+                Dotted line
+            endif
+            Draw rectangle: pStart, pEnd, 0.18, 0.82
+            Solid line
+            if (pEnd - pStart) / outputDuration > 0.055
+                Font size: 7
+                Text: (pStart + pEnd) / 2, "centre", 0.50, "half", gk$
+            endif
+        endif
+        if i < nAssemble
+            mapPos = pEnd - safeCrossfade
+            if mapPos < 0
+                mapPos = 0
+            endif
+        endif
+    endfor
+
     Colour: "Black"
-    Text: 0.02, "left", 0.95, "half", "##Llogic Analysis##"
-    Font size: 5.5
-    Colour: "{0.25, 0.25, 0.3}"
+    Draw inner box
+    Font size: 7
+    Text top: "no", "Symbolic recomposition – selected atoms assembled as " + arrName$
+    Text bottom: "yes", "Output time (s)"
 
-    # Lsets string (truncate if too long for display)
-    lsNoPdisp$ = lsetsNoP$
-    if length(lsNoPdisp$) > 100
-        lsNoPdisp$ = left$(lsNoPdisp$, 97) + "..."
-    endif
-    Text: 0.02, "left", 0.84, "half",
-        ... "Lsets:  " + lsNoPdisp$
+    # === SUMMARY STRIP ===
+    Select outer viewport: 0, 8, 6.90, 7.48
+    Select inner viewport: 0.60, 7.70, 6.96, 7.42
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    Font size: 6
+    Colour: "{0.25, 0.25, 0.35}"
 
-    lsWPdisp$ = lsetsWithP$
-    if length(lsWPdisp$) > 100
-        lsWPdisp$ = left$(lsWPdisp$, 97) + "..."
+    lsDisp$ = lsetsNoP$
+    if length(lsDisp$) > 86
+        lsDisp$ = left$(lsDisp$, 83) + "..."
     endif
     Text: 0.02, "left", 0.72, "half",
-        ... "Lsets∧Ø:  " + lsWPdisp$
-
-    lsDdisp$ = lsetsDur$
-    if length(lsDdisp$) > 100
-        lsDdisp$ = left$(lsDdisp$, 97) + "..."
-    endif
-    Text: 0.02, "left", 0.60, "half",
-        ... "Lsets∧Ø(dur):  " + lsDdisp$
-
-    # Counts
-    Text: 0.02, "left", 0.46, "half",
-        ... "Segments:  Ø:" + string$(nullCount)
-        ... + "  ψ:" + string$(psiCount)
-        ... + "  ϕ:" + string$(phiCount)
-        ... + "  θ:" + string$(thetaCount)
-        ... + "  χ:" + string$(chiCount)
-        ... + "  ω:" + string$(omegaCount)
-        ... + "  (total: " + string$(nMerged) + ")"
-
-    # Dominance
-    Text: 0.02, "left", 0.34, "half",
-        ... "Dominance:  " + domStr$
-
-    # LPC
-    Text: 0.02, "left", 0.22, "half",
-        ... "LPC:  " + lpcStr$
-
-    # Proposition
-    Text: 0.02, "left", 0.10, "half",
-        ... "Proposition:  " + proposition$
-        ... + "  →  " + string$(nTotalAtoms)
-        ... + " atoms placed"
-
+        ... "##Detected##  " + lsDisp$ + "   |   Dominance: " + domStr$
+    Text: 0.02, "left", 0.28, "half",
+        ... "##Recomposition##  " + proposition$ + "  →  " + string$(nTotalAtoms)
+        ... + " atoms rendered   |   " + arrName$ + "   |   out " + fixed$(outputDuration, 2)
+        ... + " s / " + string$(outputChannels) + " ch"
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
 
-    # === LEGEND ===
-    Select outer viewport: 0, 8, 7.15, 7.45
-    Select inner viewport: 0.4, 7.8, 7.15, 7.45
+    # === CATEGORY LEGEND ===
+    Select outer viewport: 0, 8, 7.58, 7.92
+    Select inner viewport: 0.60, 7.70, 7.60, 7.90
     Axes: 0, 1, 0, 1
-    Font size: 5.5
-    # null
-    Paint rectangle: "{0.85, 0.85, 0.85}", 0.00, 0.03, 0.2, 0.8
+    Font size: 6
+
+    Paint rectangle: "{0.85, 0.85, 0.85}", 0.00, 0.035, 0.20, 0.80
     Colour: "Black"
-    Text: 0.04, "left", 0.5, "half", "Ø null"
-    # psi
-    Paint rectangle: "{0.72, 0.87, 0.98}", 0.14, 0.17, 0.2, 0.8
-    Colour: "Black"
-    Text: 0.18, "left", 0.5, "half", "ψ airy"
-    # phi
-    Paint rectangle: "{0.85, 0.75, 0.98}", 0.29, 0.32, 0.2, 0.8
-    Colour: "Black"
-    Text: 0.33, "left", 0.5, "half", "ϕ vibr"
-    # theta
-    Paint rectangle: "{0.72, 0.95, 0.75}", 0.44, 0.47, 0.2, 0.8
-    Colour: "Black"
-    Text: 0.48, "left", 0.5, "half", "θ tone"
-    # chi
-    Paint rectangle: "{0.98, 0.75, 0.72}", 0.59, 0.62, 0.2, 0.8
-    Colour: "Black"
-    Text: 0.63, "left", 0.5, "half", "χ perc"
-    # omega
-    Paint rectangle: "{0.98, 0.92, 0.68}", 0.74, 0.77, 0.2, 0.8
-    Colour: "Black"
-    Text: 0.78, "left", 0.5, "half", "ω multi"
+    Text: 0.045, "left", 0.5, "half", "Ø null"
+    Paint rectangle: "{0.72, 0.87, 0.98}", 0.16, 0.195, 0.20, 0.80
+    Text: 0.205, "left", 0.5, "half", "ψ airy"
+    Paint rectangle: "{0.85, 0.75, 0.98}", 0.32, 0.355, 0.20, 0.80
+    Text: 0.365, "left", 0.5, "half", "ϕ vibrational"
+    Paint rectangle: "{0.72, 0.95, 0.75}", 0.51, 0.545, 0.20, 0.80
+    Text: 0.555, "left", 0.5, "half", "θ tonal"
+    Paint rectangle: "{0.98, 0.75, 0.72}", 0.67, 0.705, 0.20, 0.80
+    Text: 0.715, "left", 0.5, "half", "χ percussive"
+    Paint rectangle: "{0.98, 0.92, 0.68}", 0.84, 0.875, 0.20, 0.80
+    Text: 0.885, "left", 0.5, "half", "ω complex"
 
     Font size: 10
     Colour: "Black"
     Line width: 1
-
     removeObject: vizMono
+
+    # Export/Copy must see the entire figure, not only the final legend band.
+    Select outer viewport: 0, 8, 0, 8
 endif
 
 # ── 18. CLEANUP ────────────────────────────────────────────
@@ -1502,7 +1518,7 @@ selectObject: resynthSound
 
 clearinfo
 writeInfoLine: "=================================================="
-writeInfoLine: "  LLOGIC SYSTEM v4.2"
+writeInfoLine: "  LLOGIC SYSTEM v4.3"
 writeInfoLine: "  Based on: Logic of Sound and Silence"
 writeInfoLine: "  (Rakhat-Bi Abdyssagin)"
 writeInfoLine: "=================================================="

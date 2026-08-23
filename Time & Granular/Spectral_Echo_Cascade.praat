@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4 (2026)
+# Version: 0.4.1 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -15,6 +15,12 @@
 #   despite the script name. Default delay timing is a fraction of the
 #   file (totalSamples/(delay_base+fib)); enable Use_fixed_ms for delays
 #   anchored to an absolute base time, with the same Fibonacci ratios.
+#
+# Changelog v0.4.1:
+#   - VISUALIZATION QA ONLY: preserved the existing waveform / Fibonacci-delay /
+#     decay-curve concept; fixed clipped left labels and Praat underscore markup,
+#     aligned Source/Output on a shared amplitude scale, added real output time
+#     marks, and moved the summary into its own band. No DSP changes.
 #
 # Changelog v0.4:
 #   - API COMPATIBILITY: public form is byte-for-byte unchanged.
@@ -271,112 +277,130 @@ endif
 # === Visualization ===
 if draw_visualization
     Erase all
-    
-    # Title
-    Select outer viewport: 1, 8, 0.1, 0.5
+
+    # Display-only text sanitization: Praat treats underscores as subscript markup.
+    displayName$ = replace$(original_name$, "_", " ", 0)
+
+    # Use one amplitude scale for Source and Echo so their waveform heights are comparable.
+    selectObject: original
+    sourceDisplayPeak = Get absolute extremum: 0, 0, "Sinc70"
+    selectObject: result
+    resultDisplayPeak = Get absolute extremum: 0, 0, "Sinc70"
+    displayPeak = sourceDisplayPeak
+    if resultDisplayPeak > displayPeak
+        displayPeak = resultDisplayPeak
+    endif
+    if displayPeak <= 0
+        displayPeak = 1
+    endif
+    displayPeak = displayPeak * 1.05
+
+    # Title band
+    Select outer viewport: 0.35, 7.75, 0.12, 0.58
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "Spectral Echo Cascade: " + original_name$ + " (" + presetName$ + ")"
-    
-    # Original waveform
-    Select outer viewport: 0, 8, 0.6, 2.0
-    Select inner viewport: 0.6, 7.6, 0.7, 1.9
+    Text: 0.5, "centre", 0.5, "half", "Spectral Echo Cascade: " + displayName$ + " (" + presetName$ + ")"
+
+    # Original waveform: preserve the existing grey source identity.
+    Select outer viewport: 0.25, 7.85, 0.70, 2.02
+    Select inner viewport: 0.88, 7.62, 0.84, 1.90
     selectObject: original
-    Colour: "{0.6, 0.6, 0.6}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
+    Colour: "{0.68, 0.68, 0.68}"
+    Draw: 0, 0, -displayPeak, displayPeak, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 8
     Text left: "yes", "Original"
-    
-    # Result waveform
-    Select outer viewport: 0, 8, 2.1, 3.5
-    Select inner viewport: 0.6, 7.6, 2.2, 3.4
+
+    # Result waveform: preserve the existing muted olive-green echo identity.
+    Select outer viewport: 0.25, 7.85, 2.10, 3.78
+    Select inner viewport: 0.88, 7.62, 2.24, 3.48
     selectObject: result
-    Colour: "{0.5, 0.6, 0.4}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
+    Colour: "{0.50, 0.60, 0.40}"
+    Draw: 0, 0, -displayPeak, displayPeak, "no", "Curve"
     Colour: "Black"
     Draw inner box
+    Font size: 8
     Text left: "yes", "Echo"
+    Marks bottom: 5, "yes", "yes", "no"
     Text bottom: "yes", "Time (s)"
-    
-    # Mark original end / tail start
+
+    # Mark original end / tail start.
     selectObject: result
     resDur = Get total duration
-    Axes: 0, resDur, -1, 1
-    Colour: "{0.8, 0.4, 0.4}"
+    Axes: 0, resDur, -displayPeak, displayPeak
+    Colour: "{0.78, 0.38, 0.38}"
     Dotted line
-    Draw line: duration, -1, duration, 1
+    Draw line: duration, -displayPeak, duration, displayPeak
     Solid line
     Font size: 6
-    Text: duration + 0.05, "left", 0.8, "half", "tail"
-    
-    # Fibonacci delay structure
-    Select outer viewport: 0, 4, 3.7, 5.3
-    Select inner viewport: 0.6, 3.8, 3.9, 5.2
-    
-    # Find max delay for scaling
+    tailLabelX = duration + 0.012 * resDur
+    if tailLabelX > 0.97 * resDur
+        tailLabelX = 0.97 * resDur
+    endif
+    Text: tailLabelX, "left", 0.80 * displayPeak, "half", "tail"
+
+    # Find max delay for scaling.
     maxDelay = delayMs#[1]
     for lv from 2 to cascade_levels
         if delayMs#[lv] > maxDelay
             maxDelay = delayMs#[lv]
         endif
     endfor
-    
-    Axes: 0, cascade_levels + 1, 0, maxDelay * 1.1
-    Paint rectangle: "{0.95, 0.95, 0.95}", 0, cascade_levels + 1, 0, maxDelay * 1.1
-    
-    # Draw delay bars
+
+    # Fibonacci delay structure: original concept and colours preserved.
+    Select outer viewport: 0.25, 4.05, 3.96, 5.92
+    Select inner viewport: 0.92, 3.76, 4.12, 5.56
+    Axes: 0, cascade_levels + 1, 0, maxDelay * 1.13
+    Paint rectangle: "{0.95, 0.95, 0.95}", 0, cascade_levels + 1, 0, maxDelay * 1.13
+
     for lv from 1 to cascade_levels
-        # Color by decay
         intensity = decayValues#[lv]
         barColor$ = "{" + fixed$(0.3 + 0.5 * intensity, 2) + ", " + fixed$(0.5 + 0.3 * intensity, 2) + ", " + fixed$(0.7, 2) + "}"
         Paint rectangle: barColor$, lv - 0.35, lv + 0.35, 0, delayMs#[lv]
-        
-        # Label with Fibonacci number
         Colour: "Black"
         Font size: 6
-        Text: lv, "centre", delayMs#[lv] + maxDelay * 0.05, "bottom", string$(fibValues#[lv])
+        Text: lv, "centre", delayMs#[lv] + maxDelay * 0.045, "bottom", string$(fibValues#[lv])
     endfor
-    
+
     Colour: "Black"
     Draw inner box
     Font size: 7
     Text left: "yes", "Delay (ms)"
     Text bottom: "yes", "Level (Fibonacci)"
-    
-    # Decay curve
-    Select outer viewport: 4, 8, 3.7, 5.3
-    Select inner viewport: 4.4, 7.6, 3.9, 5.2
-    
+
+    # Decay curve: preserve the existing red curve and physical-mm markers.
+    Select outer viewport: 3.95, 7.85, 3.96, 5.92
+    Select inner viewport: 4.55, 7.56, 4.12, 5.56
     Axes: 0, cascade_levels + 1, 0, 1.1
     Paint rectangle: "{0.95, 0.95, 0.95}", 0, cascade_levels + 1, 0, 1.1
-    
-    # Draw decay curve
-    Colour: "{0.7, 0.4, 0.4}"
+
+    Colour: "{0.70, 0.40, 0.40}"
     Line width: 2
     for lv from 1 to cascade_levels
-        Paint circle (mm): "{0.7, 0.4, 0.4}", lv, decayValues#[lv], 1.5
         if lv > 1
             Draw line: lv - 1, decayValues#[lv - 1], lv, decayValues#[lv]
         endif
     endfor
+    for lv from 1 to cascade_levels
+        Paint circle (mm): "{0.70, 0.40, 0.40}", lv, decayValues#[lv], 1.5
+    endfor
     Line width: 1
-    
+
     Colour: "Black"
     Draw inner box
     Font size: 7
     Text left: "yes", "Decay"
     Text bottom: "yes", "Level"
-    
-    # Legend
-    Select outer viewport: 1, 8, 5.3, 5.7
+
+    # Dedicated summary band: separated from both lower x-axis labels.
+    Select outer viewport: 0.55, 7.45, 6.18, 6.72
     Axes: 0, 1, 0, 1
     Font size: 7
-    Colour: "{0.4, 0.4, 0.4}"
-    Text: 0.5, "centre", 0.5, "half", "Levels: " + string$(cascade_levels) + " | Decay: " + fixed$(decay_rate, 2) + " | Fibonacci: 1→" + string$(fibValues#[cascade_levels]) + " | Tail: " + fixed$(tail_duration_s, 1) + "s"
-    
+    Colour: "{0.40, 0.40, 0.40}"
+    Text: 0.5, "centre", 0.50, "half", "Levels: " + string$(cascade_levels) + "  |  Decay: " + fixed$(decay_rate, 2) + "  |  Fibonacci: 1 to " + string$(fibValues#[cascade_levels]) + "  |  Tail: " + fixed$(tail_duration_s, 1) + " s"
+
     Font size: 10
     Colour: "Black"
 endif

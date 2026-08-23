@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4.2 (2026)
+# Version: 0.5.0 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -11,6 +11,103 @@
 #   Reich Generator (Auto-Phasing Tool) -- extracts a loop from a
 #   source recording and phases it against a pitch/tempo-drifting
 #   copy (and an optional static anchor voice), Steve Reich style.
+#
+# Changelog v0.5.0 (2026) - measured proportion pass (visualization only):
+#   ROOT CAUSE of the layout that v0.4.5 - v0.4.8 kept failing to fix: the
+#   phase wheel set only its OUTER viewport and let Praat supply the inner
+#   margins. Those defaults are NOT symmetric - 1.1667 in total horizontally
+#   against 0.7778 in total vertically. A 5.40 x 5.40 outer viewport therefore
+#   produced a 4.233 x 4.622 inner viewport, and the wheel was drawn as an
+#   ELLIPSE, 8.4% narrower than tall. Every earlier version resized the outer
+#   viewport, which cannot help, because the distortion is in the margins.
+#   (Measured from Praat EPS output, not estimated.)
+#
+#   - FIXED: the wheel now sets its inner viewport explicitly and squarely
+#     (1.85-6.15 x 0.48-4.78 = 4.30 x 4.30 in). Verified from the EPS: the
+#     drawn wheel spans 3.956 x 3.956 in, aspect exactly 1.0000, centred on
+#     the canvas centre line at x = 4.000.
+#   - Reading order is now title -> phase wheel -> source waveform ->
+#     relative phase trajectory -> summary: the wheel sits directly under the
+#     title, and the waveform is context read after it rather than before it.
+#   - Vertical budget now states the intended hierarchy instead of implying it:
+#     wheel 4.30 in, trajectory 0.92 in, source waveform 0.62 in, summary 0.44
+#     in, all inside the library's standard 8.00 x 7.58 in page. Wheel :
+#     trajectory = 4.7 : 1. Previously the trajectory got 0.41 in, in which a
+#     360-degree range left the 0/90/180/270/360 rows 0.09 in apart with their
+#     labels inside the plot, on top of the curve; and the source strip got
+#     0.22 in, which is not a waveform, it is a texture.
+#   - The trajectory legend moved into the panel's title band. In a 0.92 in
+#     panel an in-plot note line either overlaps the curve or forces the
+#     y-range wider than the data it shows.
+#   - The Source strip's rotated left label is placed explicitly rather than
+#     with "Text left: yes", so it lines up with the trajectory panel's left
+#     label below it. Praat's far-text distance depends on the panel height,
+#     which put the two labels 0.23 in apart. Both now sit at 0.2833 in from
+#     the canvas edge, verified from the EPS at two different source lengths.
+#   - Trajectory degree references moved to real axis marks outside the box,
+#     the time axis is numbered rather than merely labelled, and the wasted
+#     y-range (-45..455 for 360 degrees of data) is tightened.
+#   - Marker radii and font sizes rescaled to the new panel sizes: physical mm
+#     markers do not grow with a panel, so every one of them had become
+#     relatively smaller as the wheel grew across v0.4.5 - v0.4.8.
+#   - Interference zones are drawn as concentric circles instead of 360 radial
+#     hairlines. Their angular spacing scales with the wheel radius while their
+#     width does not, so at 5.40 in the band separated into a visible comb.
+#   - Removed the C1..C9 cycle-label ladder. Every wrap occurs at phase 0, so
+#     all wrap markers coincide at the top of the wheel; the ladder placed the
+#     C9 label about 30 wheel units away from the dot it named. The markers
+#     remain and the count is stated once, in the panel corner.
+#   - Cardinal labels no longer cross the panel border, and the wheel panel now
+#     gets a Draw inner box like every other panel in the suite.
+#   - Source strip gains a small rotated "Source" label; Summary gains the
+#     source name and house-standard font sizes.
+#   Canvas stays at the library standard, 8.00 x 7.58 in (was 8.00 x 7.50).
+#   DSP, timing, randomization and output naming are unchanged.
+#
+# Changelog v0.4.8 (2026) - final wheel-dominant spacing:
+#   - VISUALIZATION ONLY: removes the nonessential subtitle entirely.
+#   - Moves the Source strip upward and enlarges the central wheel panel again.
+#   - Guarantees a clean sequence: title -> waveform strip -> giant wheel -> trajectory.
+#
+# Changelog v0.4.7 (2026) - full-scale phase wheel:
+#   - VISUALIZATION ONLY: expands the wheel geometry itself, not just its panel.
+#     The main interference ring now uses almost the full square viewport.
+#   - Removes the in-wheel legend/cycle-count clutter; phase semantics remain
+#     explicit in the 0° Unison / 180° Anti cardinal labels and Summary.
+#   - Rebuilds the top title/subtitle band so no text can overlap the Source strip.
+#   - Source becomes a purely graphical context strip with no overlaid text.
+#
+# Changelog v0.4.6 (2026) - dominant phase-wheel layout:
+#   - VISUALIZATION ONLY: makes the Phase wheel the dominant central object.
+#   - Compresses Source into a narrow context strip and removes its in-panel
+#     explanatory text/axis labels so nothing competes with the wheel.
+#   - Gives the Phase wheel a 4.90 x 4.90 inch square viewport and increases
+#     its cardinal/legend text for presentation-scale readability.
+#   - Places Relative phase trajectory in a compact full-width strip below.
+#   - Uses separate title bands to prevent text from touching adjacent panels.
+#
+# Changelog v0.4.5 (2026) - phase-wheel-centered visualization:
+#   - Removed the separate blue Output waveform panel.
+#   - Enlarged and centered the original Phase wheel as the primary visual.
+#   - Placed the Relative phase trajectory directly below it at full width.
+#   - Kept Source / loop extraction and Summary as supporting panels only.
+#
+# Changelog v0.4.4 (2026) - hybrid visualization pass:
+#   - RESTORE + COMBINE: the original polar phase wheel is retained as the
+#     script's visual identity and paired with the newer relative-phase
+#     trajectory for a complementary time-domain reading.
+#
+# Changelog v0.4.3 (2026) - visualization alignment pass:
+#   - VISUALIZATION ONLY: replaces the legacy standalone polar monitor with
+#     the Praat AudioTools house layout: Source -> Phase wheel -> Relative phase
+#     trajectory -> Summary. DSP, timing, randomization, and output naming are
+#     unchanged.
+#   - Source panel highlights the randomly selected loop interval.
+#   - Relative-phase panel plots the actual V2-V1 phase difference over time,
+#     with separate neutral references for unison and anti-phase, physical-size
+#     cycle/end markers, and reserved headroom for explanatory text.
+#   - Source names are display-sanitized so underscores do not become Praat
+#     subscripts.
 #
 # Changelog v0.4.2 (2026) - compatibility/hardening pass:
 #   - API COMPATIBILITY: the complete public form is byte-for-byte
@@ -583,7 +680,7 @@ endif
 # 8. POLAR PHASE WHEEL (Visual)
 # ============================================
 
-if create_polar_phase_wheel
+if create_polar_phase_wheel and 0
 
     appendInfoLine: ""
     appendInfoLine: "=== GENERATING PROCESS MONITOR ==="
@@ -627,8 +724,8 @@ if create_polar_phase_wheel
         ang = i * pi / 180
         x1 = 50 + 2 * sin(ang)
         y1 = 50 + 2 * cos(ang)
-        x2 = 50 + 8 * sin(ang)
-        y2 = 50 + 8 * cos(ang)
+        x2 = 50 + 9.5 * sin(ang)
+        y2 = 50 + 9.5 * cos(ang)
         Draw line: x1, y1, x2, y2
     endfor
     
@@ -644,9 +741,9 @@ if create_polar_phase_wheel
     
     Solid line
     Text special: 50, "centre", 94, "bottom", "Helvetica", 11, "0", "0° Unison"
-    Text special: 94, "left", 50, "half", "Helvetica", 9, "0", "90°"
+    Text special: 94, "left", 50, "half", "Helvetica", 8, "0", "90°"
     Text special: 50, "centre", 6, "top", "Helvetica", 11, "0", "180° Anti"
-    Text special: 6, "right", 50, "half", "Helvetica", 9, "0", "270°"
+    Text special: 6, "right", 50, "half", "Helvetica", 8, "0", "270°"
     
     # 3. Draw Process Line
     prev_x = 0
@@ -825,6 +922,361 @@ Remove
 # plus however the three voices happened to sum.
 selectObject: final_id
 Scale peak: 0.99
+
+# ============================================
+# 8b. HOUSE-STYLE VISUALIZATION (v0.4.5 phase-wheel centered)
+# ============================================
+# Combines the original polar phase wheel with the newer time-domain
+# phase trajectory. The wheel remains the visual identity of the script;
+# the trajectory is a complementary temporal reading, not a replacement.
+if create_polar_phase_wheel
+    displayName$ = replace$(source_name$, "_", " ", 0)
+    actual_duration = total_sec
+
+    selectObject: source_id
+    srcPeakViz = Get absolute extremum: 0, 0, "None"
+    selectObject: final_id
+    outPeakViz = Get absolute extremum: 0, 0, "None"
+    wavePeak = max(srcPeakViz, outPeakViz)
+    if wavePeak < 0.10
+        wavePeak = 0.10
+    endif
+    waveY = wavePeak * 1.30
+
+    # Phase samples shared by the wheel, trajectory and summary.
+    phaseSamples = 601
+    phaseDt = actual_duration / (phaseSamples - 1)
+    cycle_count = 0
+    prevPhase = 0
+    for i from 1 to phaseSamples
+        t = (i - 1) * phaseDt
+        phaseRaw = t / dur_v2 - t / dur_base
+        phaseNorm = phaseRaw - floor(phaseRaw)
+        if offset_sec > 0
+            phaseNorm = phaseNorm + offset_sec / dur_v2
+            phaseNorm = phaseNorm - floor(phaseNorm)
+        endif
+        if i > 1 and prevPhase > 0.90 and phaseNorm < 0.10
+            cycle_count = cycle_count + 1
+        endif
+        prevPhase = phaseNorm
+    endfor
+
+    Erase all
+    Colour: "Black"
+    Font size: 10
+    Line width: 1
+    Solid line
+
+    # ------------------------------------------------------------
+    # LAYOUT, in inches on the 8-inch canvas. The vertical budget is
+    # the visual hierarchy, stated once here instead of being implied
+    # by scattered viewport calls:
+    #
+    # Reading order, top to bottom, with the height each band gets:
+    #
+    #   Title                      0.28
+    #   Phase wheel                4.30  (rank 1, square, dominant)
+    #   Source / loop waveform     0.62  (rank 3, but a real waveform now)
+    #   Relative phase trajectory  0.92  (rank 2)
+    #   Summary                    0.44
+    #
+    # Wheel : trajectory = 4.7 : 1, trajectory : source = 1.5 : 1.
+    # Total canvas 8.00 x 7.58 in, i.e. the library's standard page.
+    # ------------------------------------------------------------
+
+    # TITLE -- one clean title only; the wheel follows immediately.
+    Select outer viewport: 0, 8, 0, 0.28
+    Axes: 0, 1, 0, 1
+    Font size: 12
+    Colour: "Black"
+    Text: 0.5, "centre", 0.50, "half", "##Reich Generator##"
+
+    # ------------------------------------------------------------
+    # POLAR PHASE WHEEL -- the centre of the figure.
+    #
+    # The inner viewport is set EXPLICITLY and squarely. Earlier versions
+    # set only the outer viewport and let Praat apply its default margins,
+    # which are 1.1667 in horizontally but only 0.7778 in vertically. A
+    # 5.40 x 5.40 outer viewport therefore produced a 4.233 x 4.622 inner
+    # viewport, and the "circle" was an ellipse 8.4% narrower than tall.
+    # Resizing the outer viewport (v0.4.5 through v0.4.8) could never fix
+    # that, because the distortion lives in the margins, not the size.
+    # ------------------------------------------------------------
+    Select outer viewport: 0, 8, 0.30, 0.46
+    Axes: 0, 1, 0, 1
+    Font size: 9
+    Colour: "Black"
+    Text: 0.5, "centre", 0.5, "half", "##Phase wheel##"
+
+    Select outer viewport: 0.60, 7.40, 0.48, 4.80
+    Select inner viewport: 1.85, 6.15, 0.48, 4.78
+    Axes: 0, 100, 0, 100
+    Paint rectangle: "{0.985, 0.985, 0.985}", 0, 100, 0, 100
+
+    # Outer and inner interference zones from the original design, drawn as
+    # concentric circles rather than 360 radial hairlines. At the old wheel
+    # size the hairlines merged into a band; at 5.40 in they separate into a
+    # visible comb, because their angular spacing scales with the radius while
+    # their width does not. Concentric circles are resolution-independent.
+    Colour: "{0.88, 0.88, 0.88}"
+    Line width: 0.6
+    bandR = 41
+    while bandR <= 46.001
+        Draw circle: 50, 50, bandR
+        bandR = bandR + 0.12
+    endwhile
+
+    Colour: "{1.00, 0.48, 0.48}"
+    bandR = 2
+    while bandR <= 9.501
+        Draw circle: 50, 50, bandR
+        bandR = bandR + 0.12
+    endwhile
+
+    # Cardinal phase references.
+    Colour: "{0.55, 0.55, 0.55}"
+    Line width: 0.55
+    Dotted line
+    Draw line: 50, 50, 50, 96
+    Draw line: 50, 50, 96, 50
+    Draw line: 50, 50, 50, 4
+    Draw line: 50, 50, 4, 50
+    Solid line
+    Line width: 1
+
+    Colour: "{0.20, 0.20, 0.20}"
+    Text special: 50, "centre", 99, "top", "Helvetica", 9, "0", "0° Unison"
+    Text special: 98, "right", 50, "half", "Helvetica", 8, "0", "90°"
+    Text special: 50, "centre", 1, "bottom", "Helvetica", 9, "0", "180° Anti"
+    Text special: 2, "left", 50, "half", "Helvetica", 8, "0", "270°"
+
+    # Process path: radius and colour preserve the original interference law.
+    prev_x = 0
+    prev_y = 0
+    final_x = 0
+    final_y = 0
+    prev_phase_norm = 0
+    wheelSamples = 900
+    wheelDt = actual_duration / (wheelSamples - 1)
+    wheelCycles = 0
+    for i from 1 to wheelSamples
+        t = (i - 1) * wheelDt
+        v1_loops = t / dur_base
+        v2_loops = t / dur_v2
+        phase_raw = v2_loops - v1_loops
+        phase_norm = phase_raw - floor(phase_raw)
+        if offset_sec > 0
+            phase_norm = phase_norm + offset_sec / dur_v2
+            phase_norm = phase_norm - floor(phase_norm)
+        endif
+
+        wrapped = 0
+        if i > 1 and prev_phase_norm > 0.90 and phase_norm < 0.10
+            wheelCycles = wheelCycles + 1
+            wrapped = 1
+        endif
+
+        angle_rad = phase_norm * 2 * pi
+        beat_amp = 0.5 + 0.5 * cos(angle_rad)
+        r = 5 + beat_amp * 39
+        x = 50 + r * sin(angle_rad)
+        y = 50 + r * cos(angle_rad)
+
+        red_val = 1.0 - beat_amp
+        blue_val = beat_amp
+        Colour: {red_val, 0, blue_val}
+        Line width: 1.6
+        if i > 1
+            dist = sqrt((x-prev_x)^2 + (y-prev_y)^2)
+            if dist < 20
+                Draw line: prev_x, prev_y, x, y
+            endif
+        endif
+
+        # Every wrap happens at phase 0, i.e. at the top of the wheel, so all
+        # wrap markers coincide. Earlier versions fanned out C1..C9 labels on a
+        # fixed ladder, which by C9 sat 30 units away from the dot it named.
+        # The markers stay; the count is stated once, in the corner.
+        if wrapped
+            Colour: "Black"
+            Paint circle (mm): "White", x, y, 1.25
+            Draw circle (mm): x, y, 1.25
+        endif
+
+        prev_x = x
+        prev_y = y
+        prev_phase_norm = phase_norm
+        if i = wheelSamples
+            final_x = x
+            final_y = y
+        endif
+    endfor
+    Line width: 1
+
+    Paint circle (mm): "{0.82, 0.26, 0.24}", final_x, final_y, 1.85
+    Draw circle (mm): final_x, final_y, 1.85
+    final_degrees = prev_phase_norm * 360
+    if final_degrees < 0.5 and wheelCycles > 0
+        final_degrees = 360
+    endif
+    Colour: "{0.25, 0.25, 0.25}"
+    Text special: final_x - 4, "right", final_y - 4, "top", "Helvetica", 7, "0", "End " + fixed$(final_degrees,0) + "°"
+
+    Colour: "{0.35, 0.35, 0.35}"
+    Text special: 3, "left", 97, "top", "Helvetica", 6, "0", "unison returns: " + string$(wheelCycles)
+    Text special: 3, "left", 4, "bottom", "Helvetica", 6, "0", "radius = beating depth  |  blue = unison, red = anti"
+
+    Colour: "Black"
+    Draw inner box
+
+    # SOURCE / SELECTED LOOP -- graphical context strip only; no text overlays.
+    Select outer viewport: 0, 8, 4.86, 5.66
+    Select inner viewport: 0.55, 7.75, 4.90, 5.52
+    Axes: source_xmin, source_xmax, -waveY, waveY
+    Paint rectangle: "{0.97, 0.97, 0.97}", source_xmin, source_xmax, -waveY, waveY
+    loopVisStart = source_xmin + st
+    loopVisEnd = loopVisStart + ldur
+    Paint rectangle: "{1.00, 0.94, 0.84}", loopVisStart, loopVisEnd, -waveY, waveY
+    Colour: "{0.84, 0.84, 0.84}"
+    Draw line: source_xmin, 0, source_xmax, 0
+    selectObject: source_id
+    Colour: "{0.52, 0.52, 0.52}"
+    Draw: source_xmin, source_xmax, -waveY, waveY, "no", "Curve"
+    Select outer viewport: 0, 8, 4.86, 5.66
+    Select inner viewport: 0.55, 7.75, 4.90, 5.52
+    Axes: source_xmin, source_xmax, -waveY, waveY
+    Colour: "{0.88, 0.52, 0.18}"
+    Line width: 1.3
+    Draw line: loopVisStart, -waveY, loopVisStart, waveY
+    Draw line: loopVisEnd, -waveY, loopVisEnd, waveY
+    Line width: 1
+    Colour: "Black"
+    Draw inner box
+    # Left label. "Text left: yes" cannot be used here: Praat's far-text
+    # distance depends on the panel height, so in this 0.62 in strip it lands
+    # about 0.23 in further left than the identical call on the 0.92 in
+    # trajectory panel below, and the two left labels do not line up. The
+    # label is therefore placed explicitly, on the trajectory panel's line
+    # (0.2833 in from the canvas edge).
+    #
+    # NOTE, Praat gotcha: a rotated "Text special" also picks up the CURRENT
+    # "Font size" when it computes its alignment offset, not the size passed
+    # in the call. With "Font size: 6" active the same anchor lands 0.25 in
+    # to the left. The size is reset here before the call for that reason.
+    Font size: 10
+    Colour: "{0.45, 0.45, 0.45}"
+    srcLabelX = source_xmin - 0.04920 * (source_xmax - source_xmin)
+    Text special: srcLabelX, "centre", 0, "half", "Times", 6, "90", "Source"
+    Font size: 6
+
+    # ------------------------------------------------------------
+    # RELATIVE PHASE TRAJECTORY -- rank 2, given real vertical room.
+    # At 0.41 in tall the 0/90/180/270/360 rows were 0.09 in apart and
+    # their labels sat inside the plot, on top of the curve.
+    # ------------------------------------------------------------
+    phaseYmin = -25
+    phaseYmax = 385
+
+    Select outer viewport: 0, 8, 5.70, 5.86
+    Axes: 0, 1, 0, 1
+    Font size: 8
+    Colour: "Black"
+    Text: 0.5, "centre", 0.5, "half", "##Relative phase trajectory##"
+    # Legend lives in the title band. In a 0.92 in panel an in-plot note line
+    # either overlaps the curve or pushes the y-range wider than the data.
+    Font size: 6
+    Colour: "{0.45, 0.45, 0.45}"
+    Text: 0.97, "right", 0.5, "half", "blue dot = start  |  red dot = end  |  180° = anti-phase"
+
+    Select outer viewport: 0, 8, 5.88, 7.08
+    Select inner viewport: 0.55, 7.75, 5.90, 6.82
+    Axes: 0, actual_duration, phaseYmin, phaseYmax
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, actual_duration, phaseYmin, phaseYmax
+
+    Colour: "{0.86, 0.86, 0.86}"
+    Line width: 0.6
+    Draw line: 0, 90, actual_duration, 90
+    Draw line: 0, 270, actual_duration, 270
+    Colour: "{0.45, 0.45, 0.45}"
+    Line width: 1.0
+    Draw line: 0, 0, actual_duration, 0
+    Draw line: 0, 360, actual_duration, 360
+    Colour: "{0.82, 0.26, 0.24}"
+    Line width: 1.1
+    Draw line: 0, 180, actual_duration, 180
+
+    prevPhaseDeg = 0
+    prevT = 0
+    firstPoint = 1
+    Colour: "{0.36, 0.28, 0.72}"
+    Line width: 1.4
+    for i from 1 to phaseSamples
+        t = (i - 1) * phaseDt
+        phaseRaw = t / dur_v2 - t / dur_base
+        phaseNorm = phaseRaw - floor(phaseRaw)
+        if offset_sec > 0
+            phaseNorm = phaseNorm + offset_sec / dur_v2
+            phaseNorm = phaseNorm - floor(phaseNorm)
+        endif
+        phaseDeg = 360 * phaseNorm
+        if i = phaseSamples and phaseNorm < 0.002 and prevPhaseDeg > 300
+            phaseDeg = 360
+        endif
+        if firstPoint = 0
+            if abs(phaseDeg - prevPhaseDeg) < 180
+                Draw line: prevT, prevPhaseDeg, t, phaseDeg
+            else
+                Paint circle (mm): "{0.36, 0.28, 0.72}", t, phaseDeg, 1.15
+            endif
+        endif
+        firstPoint = 0
+        prevT = t
+        prevPhaseDeg = phaseDeg
+    endfor
+    Line width: 1
+
+    startPhaseRaw = offset_sec / dur_v2
+    startPhaseNorm = startPhaseRaw - floor(startPhaseRaw)
+    startPhaseDeg = 360 * startPhaseNorm
+    Paint circle (mm): "{0.25, 0.50, 0.82}", 0, startPhaseDeg, 1.35
+    Paint circle (mm): "{0.82, 0.26, 0.24}", actual_duration, prevPhaseDeg, 1.50
+
+    Colour: "Black"
+    Draw inner box
+    Font size: 6
+    Text left: "yes", "V2 - V1 phase (deg)"
+    Text bottom: "yes", "Output time (s)"
+    Marks bottom: 6, "yes", "yes", "no"
+
+    # Degree references belong on the axis, not inside the data area.
+    Font size: 6
+    One mark left: 0, "no", "yes", "no", "0°"
+    One mark left: 90, "no", "yes", "no", "90°"
+    One mark left: 180, "no", "yes", "no", "180°"
+    One mark left: 270, "no", "yes", "no", "270°"
+    One mark left: 360, "no", "yes", "no", "360°"
+
+
+    # SUMMARY
+    Select outer viewport: 0, 8, 7.14, 7.58
+    Select inner viewport: 0.30, 7.80, 7.18, 7.54
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    Colour: "{0.48, 0.48, 0.48}"
+    Draw rectangle: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text: 0.02, "left", 0.80, "half", "##Summary##"
+    Font size: 6
+    Colour: "{0.28, 0.28, 0.28}"
+    Text: 0.02, "left", 0.49, "half", displayName$ + "  |  loop " + fixed$(dur_base,3) + " s  |  cycle " + fixed$(p_cycle,2) + " min  |  wraps " + string$(cycle_count) + "  |  start " + p_off$
+    Text: 0.02, "left", 0.18, "half", "V2 " + p_v2$ + "  |  V3 " + p_v3$ + "  |  flutter " + fixed$(p_flut,2) + " st  |  duration " + fixed$(actual_duration/60,2) + " min  |  L static / R drifting"
+
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+endif
 
 selectObject: final_id
 if play_result

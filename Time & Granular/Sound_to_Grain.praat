@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 2.2 (2026)
+# Version: 2.3 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -89,7 +89,7 @@
 #   - Better visualization showing L vs R grains
 # ============================================================
 
-form Sound to Grain v2.1
+form Sound to Grain v2.3
     optionmenu Preset: 1
         option Custom
         option Quick Texture (few grains)
@@ -184,6 +184,7 @@ endif
 
 original = selected("Sound")
 soundName$ = selected$("Sound")
+displayName$ = replace$(soundName$, "_", " ", 0)
 
 selectObject: original
 totalDuration = Get total duration
@@ -267,7 +268,7 @@ endif
 
 # === Info ===
 clearinfo
-writeInfoLine: "=== Sound to Grain v2.2 ==="
+writeInfoLine: "=== Sound to Grain v2.3 ==="
 appendInfoLine: "Source: ", soundName$, " (", fixed$(totalDuration, 2), " s)"
 appendInfoLine: "Input:  ", numChannels, " channel(s)"
 appendInfoLine: "Preset: ", presetName$
@@ -596,7 +597,7 @@ if draw_visualization and grainCount > 0
     endif
     
     Text: 0.5, "centre", -0.22, "half",
-        ... soundName$
+        ... displayName$
         ... + "  |  " + presetName$
         ... + "  |  " + modeLabel$
         ... + "  |  " + string$(grainCount) + " grains x " + fixed$(grain_length_s * 1000, 0) + " ms"
@@ -674,6 +675,7 @@ if draw_visualization and grainCount > 0
         Colour: "Black"
         Line width: 1
         Draw inner box
+        Marks bottom: 5, "yes", "yes", "no"
         Font size: 6
         Text left: "yes", "L / R grains"
         Text bottom: "yes", "Source position (s)"
@@ -698,8 +700,9 @@ if draw_visualization and grainCount > 0
         Colour: "Black"
         Line width: 1
         Draw inner box
+        Marks bottom: 5, "yes", "yes", "no"
         Font size: 6
-        Text left: "yes", "Grain #"
+        Text left: "yes", "Grain index"
         Text bottom: "yes", "Source position (s)"
     endif
     
@@ -719,7 +722,7 @@ if draw_visualization and grainCount > 0
     Font size: 7
     Colour: "{0.30, 0.30, 0.30}"
     Text: 0.10, "left", 0.88, "half", "Extract random grains -> concatenate"
-    Text: 0.10, "left", 0.83, "half", "(stereo modes vary by output_mode)"
+    Text: 0.10, "left", 0.83, "half", "(stereo modes vary by output mode)"
     
     Font size: 9
     Colour: "{0.30, 0.30, 0.30}"
@@ -752,9 +755,9 @@ if draw_visualization and grainCount > 0
     Font size: 9
     if enable_reversal
         Colour: "{0.85, 0.45, 0.30}"
-        Text: 0.10, "left", 0.24, "half", "L: " + string$(leftRevCount) + "/" + string$(grainCount) + " (target " + string$(left_reversal_percent) + "%)"
+        Text: 0.10, "left", 0.24, "half", "L: " + string$(leftRevCount) + "/" + string$(grainCount) + " (target " + string$(left_reversal_percent) + " pct)"
         if output_mode >= 2
-            Text: 0.10, "left", 0.18, "half", "R: " + string$(rightRevCount) + "/" + string$(grainCount) + " (target " + string$(right_reversal_percent) + "%)"
+            Text: 0.10, "left", 0.18, "half", "R: " + string$(rightRevCount) + "/" + string$(grainCount) + " (target " + string$(right_reversal_percent) + " pct)"
         endif
     else
         Colour: "{0.30, 0.55, 0.30}"
@@ -792,8 +795,8 @@ if draw_visualization and grainCount > 0
     # PANEL C: ZOOM OVERLAY  (first 500 ms)
     # Gray = original, blue = result, SHARED y-axis.
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 4.68, 5.55
-    Select inner viewport: 0.55, 7.72, 4.75, 5.48
+    Select outer viewport: 0, 8, 4.72, 5.55
+    Select inner viewport: 0.55, 7.72, 4.82, 5.38
     
     zoomDur = 0.5
     if zoomDur > totalDuration
@@ -836,7 +839,8 @@ if draw_visualization and grainCount > 0
     Colour: "Black"
     Line width: 1
     Draw inner box
-    Font size: 7
+    Marks bottom: 5, "yes", "yes", "no"
+    Font size: 6
     Text top: "no", "Zoom: first " + fixed$(zoomDur * 1000, 0) + " ms  (gray = original, blue = result)"
     Text left: "yes", "Amp"
     Text bottom: "yes", "Time (s)"
@@ -844,8 +848,8 @@ if draw_visualization and grainCount > 0
     # ----------------------------------------------------------
     # PANEL D: FULL WAVEFORM COMPARISON  (SHARED y-axis)
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 5.62, 6.55
-    Select inner viewport: 0.55, 7.72, 5.69, 6.48
+    Select outer viewport: 0, 8, 5.62, 6.56
+    Select inner viewport: 0.55, 7.72, 5.75, 6.32
     
     # Display range: max of input and output durations
     if outputDuration > totalDuration
@@ -867,7 +871,7 @@ if draw_visualization and grainCount > 0
         Draw line: totalDuration, -sharedAmp, totalDuration, sharedAmp
         Solid line
         Font size: 5
-        Text: totalDuration, "left", sharedAmp * 0.85, "half", "  end of source"
+        Text: totalDuration, "left", sharedAmp * 0.68, "half", "  end of source"
     endif
     
     # Original behind (only over its own duration)
@@ -885,7 +889,8 @@ if draw_visualization and grainCount > 0
     Colour: "Black"
     Line width: 1
     Draw inner box
-    Font size: 7
+    Marks bottom: 6, "yes", "yes", "no"
+    Font size: 6
     Text top: "no", "Full waveform  (gray = original, blue = result, shared y-axis)"
     Text left: "yes", "Amp"
     Text bottom: "yes", "Time (s)"
@@ -893,8 +898,8 @@ if draw_visualization and grainCount > 0
     # ----------------------------------------------------------
     # PANEL E: SUMMARY BAR  (suite standard — light grey)
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 6.62, 7.30
-    Select inner viewport: 0.55, 7.72, 6.68, 7.24
+    Select outer viewport: 0, 8, 6.72, 7.46
+    Select inner viewport: 0.55, 7.72, 6.79, 7.39
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
     
@@ -902,7 +907,7 @@ if draw_visualization and grainCount > 0
     Colour: "{0.28, 0.28, 0.28}"
     Text: 0.02, "left", 0.75, "half",
         ... "##" + presetName$ + "##"
-        ... + "  " + soundName$
+        ... + "  " + displayName$
         ... + "  |  " + modeLabel$
         ... + "  |  Grains: " + string$(grainCount) + " x " + fixed$(grain_length_s * 1000, 0) + " ms"
         ... + "  |  Window: " + windowShape$

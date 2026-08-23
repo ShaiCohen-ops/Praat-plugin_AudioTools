@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.5 (2026) - Correct evolution scheduling + robust stereo
+# Version: 0.5.2 (2026) - Readable grain evolution map
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -13,6 +13,35 @@
 #   - Density Growth: grain density increases over time
 #   - Pitch Sweep: gradual pitch transposition
 #   - Statistical Shift: 3 regions with different characteristics
+#
+# Changelog v0.5.2:
+#   Visualization only. DSP, grain scheduling and audio output are unchanged.
+#   - FIXED unreadable grain markers. v0.5.1 painted every grain at a fixed
+#     0.52 mm radius (about 1 mm across), which is below the practical
+#     resolution of the Picture window, so the evolution was invisible.
+#     Marker radius is now derived from the number of drawn grains
+#     (1.75 mm for sparse textures down to 0.60 mm for very dense ones),
+#     so sparse and dense presets are both legible.
+#   - Added a density strip along the bottom of the map: measured grains/s
+#     per time bin, plus the requested initial -> final density trajectory
+#     for Density growth. Density was previously encoded only as horizontal
+#     dot spacing, which is not readable once grains overlap.
+#   - The map y-range now reserves headroom below the lowest grain so the
+#     density strip never collides with grain markers.
+#   - Stronger duration colour ramp and matching key, moved to the top right
+#     to keep the bottom of the map free.
+#   - The map remains legible when pitch shifting is off (all grains on the
+#     zero line): the density strip then carries the evolution.
+#
+# Changelog v0.5.1:
+#   Visualization only:
+#   - Aligned the Picture output with the current Praat AudioTools suite style.
+#   - Replaced four separate diagnostic plots with one Grain evolution map:
+#     x = output time, y = pitch shift, colour = grain duration, horizontal
+#     spacing = density. This directly exposes all three evolution modes.
+#   - Added shared Source / Output waveform scale, consistent title hierarchy,
+#     clean Summary panel, and underscore-safe display names.
+#   - DSP and evolution scheduling are unchanged from v0.5.
 #
 # Changelog v0.5:
 #   DSP / evolution correctness:
@@ -62,7 +91,7 @@
 #   - Added evolution visualization
 # ============================================================
 
-form Evolving Granular v0.5
+form Evolving Granular v0.5.2
     comment Select a Sound object first
     
     comment === Preset ===
@@ -473,279 +502,371 @@ endif
 Rename: sound_name$ + "_" + preset_name$
 
 # ===================================================================
-# VISUALIZATION WITH EVOLUTION PLOTS
+# VISUALIZATION  (current Praat AudioTools suite styling)
+# Source -> Grain evolution map -> Output -> Summary.
+# One grain = one event in the central map:
+#   x = output time, y = pitch shift,
+#   colour = grain duration, horizontal spacing = density.
+# Colour is reserved for duration only; guides and boundaries are neutral.
 # ===================================================================
 
 if draw_visualization
+    appendInfoLine: ""
+    appendInfoLine: "Drawing visualization..."
+
     Erase all
-    
-    # Title
-    Select outer viewport: 0, 8, 0.1, 0.5
-    Axes: 0, 1, 0, 1
-    Font size: 12
-    Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "Evolving Granular: " + sound_name$ + " (" + preset_name$ + " - " + evolution_name$ + ")"
-    
-    # Original waveform
-    Select outer viewport: 0, 8, 0.6, 1.8
-    Select inner viewport: 0.6, 7.6, 0.7, 1.7
+    Select outer viewport: 0, 8, 0, 7.10
+    Black
+    Plain line
+
+    displayName$ = replace$(sound_name$, "_", " ", 0)
+
+    # Zero-based mono source display copy.
     selectObject: originalSound
-    Colour: "{0.6, 0.6, 0.6}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
-    Colour: "Black"
-    Draw inner box
-    Font size: 7
-    Text left: "yes", "Original"
-    
-    # Result waveform
-    Select outer viewport: 0, 8, 1.9, 3.1
-    Select inner viewport: 0.6, 7.6, 2.0, 3.0
+    vizOrig = Convert to mono
+    selectObject: vizOrig
+    vizOrigStart = Get start time
+    Shift times by: -vizOrigStart
+
+    # Output duration and shared source/output amplitude scale.
     selectObject: outputSound
-    Colour: "{0.2, 0.5, 0.7}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
-    Colour: "Black"
-    Draw inner box
-    Font size: 7
-    Text left: "yes", "Granular"
-    Text bottom: "yes", "Time (s)"
-    
-    # === EVOLUTION PLOTS ===
-    
-    # Find min/max for pitch and duration
-    minPitch = 0
-    maxPitch = 0
-    minDur = duration
-    maxDur = 0
+    outputDuration = Get total duration
+    outputPeakViz = Get absolute extremum: 0, 0, "None"
+    selectObject: vizOrig
+    origPeakViz = Get absolute extremum: 0, 0, "None"
+    sharedPeak = max(origPeakViz, outputPeakViz)
+    if sharedPeak < 0.001
+        sharedPeak = 0.001
+    endif
+    sharedAmp = 1.15 * sharedPeak
+
+    # Pitch and duration ranges for the central map.
+    minPitchRaw = 0
+    maxPitchRaw = 0
+    minDurRaw = effective_grain_duration_max
+    maxDurRaw = 0
+    firstValid = 1
     for grain to total_grains
         if grainDur[grain] > 0
-            if grainPitchShift[grain] < minPitch
-                minPitch = grainPitchShift[grain]
-            endif
-            if grainPitchShift[grain] > maxPitch
-                maxPitch = grainPitchShift[grain]
-            endif
-            if grainDur[grain] < minDur
-                minDur = grainDur[grain]
-            endif
-            if grainDur[grain] > maxDur
-                maxDur = grainDur[grain]
+            if firstValid
+                minPitchRaw = grainPitchShift[grain]
+                maxPitchRaw = grainPitchShift[grain]
+                minDurRaw = grainDur[grain]
+                maxDurRaw = grainDur[grain]
+                firstValid = 0
+            else
+                if grainPitchShift[grain] < minPitchRaw
+                    minPitchRaw = grainPitchShift[grain]
+                endif
+                if grainPitchShift[grain] > maxPitchRaw
+                    maxPitchRaw = grainPitchShift[grain]
+                endif
+                if grainDur[grain] < minDurRaw
+                    minDurRaw = grainDur[grain]
+                endif
+                if grainDur[grain] > maxDurRaw
+                    maxDurRaw = grainDur[grain]
+                endif
             endif
         endif
     endfor
-    
-    # Add margins
-    pitchRange = maxPitch - minPitch
-    if pitchRange < 1
-        pitchRange = 1
+
+    if firstValid
+        minPitchRaw = -1
+        maxPitchRaw = 1
+        minDurRaw = grain_duration_min
+        maxDurRaw = effective_grain_duration_max
     endif
-    minPitch = minPitch - pitchRange * 0.1
-    maxPitch = maxPitch + pitchRange * 0.1
-    
-    durRange = maxDur - minDur
-    if durRange < 0.01
-        durRange = 0.01
+
+    pitchSpan = maxPitchRaw - minPitchRaw
+    if pitchSpan < 1
+        pitchSpan = 1
     endif
-    minDur = max(0, minDur - durRange * 0.1)
-    maxDur = maxDur + durRange * 0.1
-    
-    # --- Pitch Evolution Plot ---
-    Select outer viewport: 0, 4, 3.3, 4.8
-    Select inner viewport: 0.6, 3.8, 3.5, 4.7
-    
-    Axes: 0, duration, minPitch, maxPitch
-    
-    # Background
-    Paint rectangle: "{0.97, 0.97, 0.97}", 0, duration, minPitch, maxPitch
-    
-    # Zero line
-    Colour: "{0.8, 0.8, 0.8}"
+    # Extra headroom at the bottom: the density strip lives there and must not
+    # collide with the lowest grain markers.
+    mapPitchMin = min(minPitchRaw, 0) - 0.34 * pitchSpan
+    mapPitchMax = max(maxPitchRaw, 0) + 0.18 * pitchSpan
+    if mapPitchMax - mapPitchMin < 1.6
+        mapPitchPad = (1.6 - (mapPitchMax - mapPitchMin)) / 2
+        mapPitchMin = mapPitchMin - mapPitchPad
+        mapPitchMax = mapPitchMax + mapPitchPad
+    endif
+    mapPitchSpan = mapPitchMax - mapPitchMin
+
+    durSpan = maxDurRaw - minDurRaw
+    if durSpan < 0.000001
+        durSpan = 0.000001
+    endif
+
+    # ----------------------------------------------------------
+    # Marker size. A fixed radius is unreadable across the preset range
+    # (Sparse Texture draws tens of grains, Extreme Density thousands),
+    # so the radius follows the drawn grain count.
+    # ----------------------------------------------------------
+    drawnGrains = valid_grains
+    if drawnGrains < 1
+        drawnGrains = 1
+    endif
+    markerRadius = 2.35 - 0.52 * log10(max(10, drawnGrains))
+    if markerRadius > 1.75
+        markerRadius = 1.75
+    endif
+    if markerRadius < 0.60
+        markerRadius = 0.60
+    endif
+
+    # ----------------------------------------------------------
+    # Measured grain density per time bin, for the density strip.
+    # ----------------------------------------------------------
+    densBins = round(drawnGrains / 10)
+    if densBins < 10
+        densBins = 10
+    endif
+    if densBins > 48
+        densBins = 48
+    endif
+    densBinWidth = outputDuration / densBins
+    if densBinWidth < 0.000001
+        densBinWidth = 0.000001
+    endif
+
+    for b to densBins
+        densCount[b] = 0
+    endfor
+    for grain to total_grains
+        if grainDur[grain] > 0
+            b = floor(grainOutputPos[grain] / densBinWidth) + 1
+            if b < 1
+                b = 1
+            endif
+            if b > densBins
+                b = densBins
+            endif
+            densCount[b] = densCount[b] + 1
+        endif
+    endfor
+
+    densMax = 0
+    for b to densBins
+        densRate[b] = densCount[b] / densBinWidth
+        if densRate[b] > densMax
+            densMax = densRate[b]
+        endif
+    endfor
+    # The requested trajectory must stay inside the strip as well.
+    densScale = max(densMax, max(initial_density, final_density))
+    if densScale < 0.000001
+        densScale = 1
+    endif
+    densScale = 1.10 * densScale
+
+    stripBottom = mapPitchMin
+    stripTop = mapPitchMin + 0.20 * mapPitchSpan
+
+    appendInfoLine: "  map: ", drawnGrains, " grains, marker radius ", fixed$(markerRadius, 2), " mm, peak density ", fixed$(densMax, 1), " grains/s"
+
+    # ----------------------------------------------------------
+    # TITLE / SUBTITLE
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 0, 0.50
+    Axes: 0, 1, 0, 1
+    Font size: 12
+    Colour: "Black"
+    Text: 0.5, "centre", 0.68, "half", "##Evolving Granular##"
+    Font size: 7
+    Colour: "{0.35, 0.35, 0.52}"
+    Text: 0.5, "centre", -1.30, "half", "Evolving Granular.praat  |  " + displayName$ + "  |  " + preset_name$ + "  |  " + evolution_name$
+
+    # ----------------------------------------------------------
+    # SOURCE
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 0.65, 1.90
+    Select inner viewport: 0.55, 7.75, 0.82, 1.78
+    Axes: 0, duration, -sharedAmp, sharedAmp
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, duration, -sharedAmp, sharedAmp
+    selectObject: vizOrig
+    Colour: "{0.58, 0.58, 0.62}"
+    Draw: 0, duration, -sharedAmp, sharedAmp, "no", "Curve"
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text top: "no", "##Source##"
+    Font size: 6
+    Text left: "yes", "Amplitude"
+    Text bottom: "yes", "Time (s)"
+    Axes: 0, duration, -sharedAmp, sharedAmp
+    Colour: "{0.28, 0.28, 0.28}"
+    Text: 0.01 * duration, "left", 0.82 * sharedAmp, "half", "grain " + fixed$(grain_duration_min * 1000, 0) + "-" + fixed$(effective_grain_duration_max * 1000, 0) + " ms  |  source-position randomness " + fixed$(position_randomness, 2)
+
+    # ----------------------------------------------------------
+    # GRAIN EVOLUTION MAP
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 2.05, 4.55
+    Select inner viewport: 0.55, 7.75, 2.22, 4.40
+    Axes: 0, outputDuration, mapPitchMin, mapPitchMax
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, outputDuration, mapPitchMin, mapPitchMax
+
+    # Neutral zero-pitch reference.
+    Colour: "{0.72, 0.72, 0.75}"
     Dotted line
-    Draw line: 0, 0, duration, 0
+    Draw line: 0, 0, outputDuration, 0
     Solid line
-    
-    # Draw grains as dots (color by pitch)
+
+    # Statistical-shift region boundaries are structural, therefore neutral.
+    if evolution_type = 3
+        Colour: "{0.70, 0.70, 0.73}"
+        Dotted line
+        Draw line: outputDuration * 0.33, mapPitchMin, outputDuration * 0.33, mapPitchMax
+        Draw line: outputDuration * 0.66, mapPitchMin, outputDuration * 0.66, mapPitchMax
+        Solid line
+    endif
+
+    # Requested pitch-sweep trajectory.
+    if evolution_type = 2 and enable_pitch_shifting
+        Colour: "{0.55, 0.55, 0.58}"
+        Line width: 1.3
+        Draw line: 0, 0, outputDuration, pitch_shift_semitones
+        Line width: 1
+    endif
+
+    # ------------------------------------------------------
+    # Density strip (measured grains/s per time bin).
+    # Drawn before the grains so the markers stay on top.
+    # ------------------------------------------------------
+    Paint rectangle: "{0.93, 0.94, 0.96}", 0, outputDuration, stripBottom, stripTop
+    for b to densBins
+        binX1 = (b - 1) * densBinWidth
+        binX2 = b * densBinWidth
+        binH = densRate[b] / densScale
+        if binH > 1
+            binH = 1
+        endif
+        if binH > 0
+            Paint rectangle: "{0.72, 0.78, 0.87}", binX1, binX2, stripBottom, stripBottom + binH * (stripTop - stripBottom)
+        endif
+    endfor
+
+    # Requested density trajectory, for comparison with what was placed.
+    if evolution_type = 1
+        Colour: "{0.35, 0.42, 0.55}"
+        Line width: 1.3
+        Dashed line
+        Draw line: 0, stripBottom + (initial_density / densScale) * (stripTop - stripBottom), outputDuration, stripBottom + (final_density / densScale) * (stripTop - stripBottom)
+        Solid line
+        Line width: 1
+    endif
+
+    Colour: "{0.55, 0.58, 0.65}"
+    Draw line: 0, stripTop, outputDuration, stripTop
+
+    # ------------------------------------------------------
+    # Grain events. Colour has one meaning only: grain duration.
+    # Marker radius is adaptive - see markerRadius above.
+    # ------------------------------------------------------
     for grain to total_grains
         if grainDur[grain] > 0
             gTime = grainOutputPos[grain]
             gPitch = grainPitchShift[grain]
-            
-            # Color: blue for negative, red for positive pitch
-            if gPitch < 0
-                colorVal = min(1, abs(gPitch) / 12)
-                dotColor$ = "{" + fixed$(0.2, 2) + ", " + fixed$(0.3, 2) + ", " + fixed$(0.5 + colorVal * 0.5, 2) + "}"
-            else
-                colorVal = min(1, gPitch / 12)
-                dotColor$ = "{" + fixed$(0.5 + colorVal * 0.5, 2) + ", " + fixed$(0.3, 2) + ", " + fixed$(0.2, 2) + "}"
+            durNorm = (grainDur[grain] - minDurRaw) / durSpan
+            if durNorm < 0
+                durNorm = 0
             endif
-            
-            Paint circle (mm): dotColor$, gTime, gPitch, 0.4
-        endif
-    endfor
-    
-    # Trend line for pitch sweep
-    if evolution_type = 2 and enable_pitch_shifting
-        Colour: "{0.8, 0.2, 0.2}"
-        Line width: 2
-        Draw line: 0, 0, duration, pitch_shift_semitones
-        Line width: 1
-    endif
-    
-    Colour: "Black"
-    Draw inner box
-    Font size: 7
-    Text left: "yes", "Pitch (st)"
-    Text bottom: "yes", "Time (s)"
-    
-    # --- Duration Evolution Plot ---
-    Select outer viewport: 4, 8, 3.3, 4.8
-    Select inner viewport: 4.4, 7.6, 3.5, 4.7
-    
-    Axes: 0, duration, minDur * 1000, maxDur * 1000
-    
-    # Background
-    Paint rectangle: "{0.97, 0.97, 0.97}", 0, duration, minDur * 1000, maxDur * 1000
-    
-    # Draw grains as dots (color by duration)
-    for grain to total_grains
-        if grainDur[grain] > 0
-            gTime = grainOutputPos[grain]
-            gDurMs = grainDur[grain] * 1000
-            
-            # Color: short=yellow, long=purple
-            normalizedDur = (grainDur[grain] - minDur) / durRange
-            dotColor$ = "{" + fixed$(0.8 - normalizedDur * 0.3, 2) + ", " + fixed$(0.6 - normalizedDur * 0.3, 2) + ", " + fixed$(0.2 + normalizedDur * 0.6, 2) + "}"
-            
-            Paint circle (mm): dotColor$, gTime, gDurMs, 0.4
-        endif
-    endfor
-    
-    # Region markers for statistical shift
-    if evolution_type = 3
-        Colour: "{0.5, 0.5, 0.5}"
-        Dotted line
-        Draw line: duration * 0.33, minDur * 1000, duration * 0.33, maxDur * 1000
-        Draw line: duration * 0.66, minDur * 1000, duration * 0.66, maxDur * 1000
-        Solid line
-    endif
-    
-    Colour: "Black"
-    Draw inner box
-    Font size: 7
-    Text left: "yes", "Dur (ms)"
-    Text bottom: "yes", "Time (s)"
-    
-    # --- Density Plot (grains per time bin) ---
-    Select outer viewport: 0, 4, 5.0, 6.2
-    Select inner viewport: 0.6, 3.8, 5.2, 6.1
-    
-    # Calculate density in time bins
-    numBins = 20
-    binWidth = duration / numBins
-    maxBinCount = 0
-    
-    for bin to numBins
-        binCount[bin] = 0
-    endfor
-    
-    for grain to total_grains
-        if grainDur[grain] > 0
-            binIdx = floor(grainOutputPos[grain] / binWidth) + 1
-            if binIdx < 1
-                binIdx = 1
+            if durNorm > 1
+                durNorm = 1
             endif
-            if binIdx > numBins
-                binIdx = numBins
-            endif
-            binCount[binIdx] = binCount[binIdx] + 1
+            rVal = 0.22 + 0.46 * durNorm
+            gVal = 0.66 - 0.44 * durNorm
+            bVal = 0.38 + 0.36 * durNorm
+            dotColor$ = "{" + fixed$(rVal, 2) + ", " + fixed$(gVal, 2) + ", " + fixed$(bVal, 2) + "}"
+            Paint circle (mm): dotColor$, gTime, gPitch, markerRadius
         endif
     endfor
-    
-    for bin to numBins
-        if binCount[bin] > maxBinCount
-            maxBinCount = binCount[bin]
-        endif
-    endfor
-    
-    if maxBinCount < 1
-        maxBinCount = 1
-    endif
-    
-    Axes: 0, duration, 0, maxBinCount * 1.1
-    
-    # Background
-    Paint rectangle: "{0.97, 0.97, 0.97}", 0, duration, 0, maxBinCount * 1.1
-    
-    # Draw density bars
-    for bin to numBins
-        binStart = (bin - 1) * binWidth
-        binEnd = bin * binWidth - binWidth * 0.1
-        
-        # Color gradient based on density
-        normalizedCount = binCount[bin] / maxBinCount
-        barColor$ = "{" + fixed$(0.3 + normalizedCount * 0.5, 2) + ", " + fixed$(0.7 - normalizedCount * 0.2, 2) + ", " + fixed$(0.3, 2) + "}"
-        
-        Paint rectangle: barColor$, binStart, binEnd, 0, binCount[bin]
-    endfor
-    
-    # Trend line for density growth
-    if evolution_type = 1
-        Colour: "{0.2, 0.6, 0.2}"
-        Line width: 2
-        startDensity = initial_density * binWidth
-        endDensity = final_density * binWidth
-        Draw line: 0, startDensity, duration, endDensity
-        Line width: 1
-    endif
-    
+
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "Count"
-    Text bottom: "yes", "Time (s)"
-    
-    # --- Amplitude Plot ---
-    Select outer viewport: 4, 8, 5.0, 6.2
-    Select inner viewport: 4.4, 7.6, 5.2, 6.1
-    
-    Axes: 0, duration, 0, 1.6
-    
-    # Background
-    Paint rectangle: "{0.97, 0.97, 0.97}", 0, duration, 0, 1.6
-    
-    # Reference line at 1.0
-    Colour: "{0.8, 0.8, 0.8}"
-    Dotted line
-    Draw line: 0, 1.0, duration, 1.0
-    Solid line
-    
-    # Draw grains as dots
-    for grain to total_grains
-        if grainDur[grain] > 0
-            gTime = grainOutputPos[grain]
-            gAmp = grainAmp[grain]
-            
-            # Color: darker = louder
-            dotColor$ = "{" + fixed$(0.8 - gAmp * 0.3, 2) + ", " + fixed$(0.5 - gAmp * 0.2, 2) + ", " + fixed$(0.2, 2) + "}"
-            
-            Paint circle (mm): dotColor$, gTime, gAmp, 0.4
-        endif
-    endfor
-    
+    Text top: "no", "##Grain evolution map##"
+    Font size: 6
+    Text left: "yes", "Pitch shift (st)"
+    Text bottom: "yes", "Output time (s)"
+    Axes: 0, outputDuration, mapPitchMin, mapPitchMax
+    Colour: "{0.30, 0.30, 0.30}"
+    Text: 0.01 * outputDuration, "left", mapPitchMax - 0.06 * mapPitchSpan, "half", "colour = grain duration  |  bottom strip = density, 0-" + fixed$(densScale, 0) + "/s"
+
+    # Compact duration key, top right so the density strip stays clear.
+    keyY = mapPitchMax - 0.06 * mapPitchSpan
+    keyX1 = 0.66 * outputDuration
+    keyX2 = 0.80 * outputDuration
+    Paint circle (mm): "{0.22, 0.66, 0.38}", keyX1, keyY, 0.85
+    Paint circle (mm): "{0.68, 0.22, 0.74}", keyX2, keyY, 0.85
+    Colour: "{0.36, 0.36, 0.36}"
+    Text: keyX1 + 0.020 * outputDuration, "left", keyY, "half", fixed$(minDurRaw * 1000, 0) + " ms"
+    Text: keyX2 + 0.020 * outputDuration, "left", keyY, "half", fixed$(maxDurRaw * 1000, 0) + " ms"
+
+    # ----------------------------------------------------------
+    # OUTPUT
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 4.70, 5.95
+    Select inner viewport: 0.55, 7.75, 4.87, 5.83
+    Axes: 0, outputDuration, -sharedAmp, sharedAmp
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, outputDuration, -sharedAmp, sharedAmp
+    Colour: "{0.82, 0.82, 0.82}"
+    Draw line: 0, 0, outputDuration, 0
+
+    selectObject: outputSound
+    Extract one channel: 1
+    vizOutL = selected("Sound")
+    Colour: "{0.25, 0.50, 0.82}"
+    Draw: 0, outputDuration, -sharedAmp, sharedAmp, "no", "Curve"
+    removeObject: vizOutL
+
+    selectObject: outputSound
+    Extract one channel: 2
+    vizOutR = selected("Sound")
+    Colour: "{0.82, 0.45, 0.25}"
+    Draw: 0, outputDuration, -sharedAmp, sharedAmp, "no", "Curve"
+    removeObject: vizOutR
+
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "Amp"
+    Text top: "yes", "##Output##"
+    Font size: 6
+    Text left: "yes", "Amplitude"
     Text bottom: "yes", "Time (s)"
-    
-    # Legend
-    Select outer viewport: 0, 8, 6.3, 6.6
+    Axes: 0, outputDuration, -sharedAmp, sharedAmp
+    Colour: "{0.28, 0.28, 0.28}"
+    Text: 0.01 * outputDuration, "left", 0.82 * sharedAmp, "half", "blue = L  |  orange = R  |  stereo width " + fixed$(stereo_width, 2)
+
+    # ----------------------------------------------------------
+    # SUMMARY
+    # ----------------------------------------------------------
+    if enable_pitch_shifting
+        pitchState$ = "pitch on"
+    else
+        pitchState$ = "pitch off"
+    endif
+
+    Select outer viewport: 0, 8, 6.10, 7.05
+    Select inner viewport: 0.30, 7.80, 6.17, 6.98
     Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    Colour: "{0.48, 0.48, 0.48}"
+    Draw rectangle: 0, 1, 0, 1
+
     Font size: 7
-    Colour: "{0.4, 0.4, 0.4}"
-    Text: 0.5, "centre", 0.5, "half", "Grains: " + string$(valid_grains) + "/" + string$(total_grains) + " | Density: " + fixed$(initial_density, 0) + " -> " + fixed$(final_density, 0) + "/s | Pitch: " + fixed$(minPitch, 1) + " to " + fixed$(maxPitch, 1) + " st"
-    
+    Colour: "Black"
+    Text: 0.02, "left", 0.80, "half", "##Summary##"
+    Font size: 6
+    Colour: "{0.28, 0.28, 0.28}"
+    Text: 0.02, "left", 0.49, "half", preset_name$ + "  |  " + evolution_name$ + "  |  " + string$(valid_grains) + "/" + string$(total_grains) + " grains  |  density " + fixed$(initial_density, 1) + " -> " + fixed$(final_density, 1) + "/s  |  grain " + fixed$(grain_duration_min * 1000, 0) + "-" + fixed$(effective_grain_duration_max * 1000, 0) + " ms"
+    Text: 0.02, "left", 0.18, "half", pitchState$ + "  |  pitch randomness " + fixed$(pitch_randomness, 1) + " st  |  amp randomness " + fixed$(amplitude_randomness, 2) + "  |  position randomness " + fixed$(position_randomness, 2) + "  |  stereo " + fixed$(stereo_width, 2) + "  |  output " + fixed$(outputDuration, 2) + " s"
+
     Font size: 10
     Colour: "Black"
+    Line width: 1
+
+    removeObject: vizOrig
 endif
 
 # Clean up mono conversion if created

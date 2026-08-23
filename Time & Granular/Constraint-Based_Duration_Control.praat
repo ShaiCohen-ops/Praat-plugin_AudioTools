@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4 (2026)
+# Version: 0.4.1 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -18,6 +18,14 @@
 #   GEN: Generate candidate outputs
 #   EVAL: Evaluate against ranked/weighted constraints
 #   SELECT: Pick candidate with lowest violation score
+#
+# Changelog v0.4.1:
+#   - Visualization-only alignment to the current Praat AudioTools suite.
+#   - Reframed as Source -> Weighted duration solution -> Output -> Summary.
+#   - The central map now directly visualizes the Harmonic Grammar law:
+#       gray = original duration, red = target, blue = weighted solution.
+#   - Unified panel geometry, left edges, typography and display-name sanitization.
+#   - No DSP, segmentation, weighting or resynthesis changes.
 #
 # Changelog v0.4:
 #   - CRITICAL: DurationTier construction rewritten. A single point at the
@@ -53,7 +61,7 @@
 #   - Improved info output
 # ============================================================
 
-form OT Duration Control v0.4
+form OT Duration Control v0.4.1
     comment Select a Sound object first
     
     comment === Preset ===
@@ -153,7 +161,7 @@ else
 endif
 
 # === Info ===
-writeInfoLine: "=== Constraint-Based Duration Control v0.4 ==="
+writeInfoLine: "=== Constraint-Based Duration Control v0.4.1 ==="
 appendInfoLine: "Source: ", sound_name$, " (", fixed$(totalDuration, 2), " s; ", numChannels, " ch)"
 appendInfoLine: ""
 appendInfoLine: "Weighted constraints:"
@@ -363,46 +371,112 @@ endif
 selectObject: result
 resultDuration = Get total duration
 
-# === Visualization ===
+# ============================================================
+# VISUALIZATION  (current Praat AudioTools suite styling)
+# Source -> Weighted duration solution -> Output -> Summary.
+# The central map directly embodies the weighted solution law:
+#   d* = (Wt * target + Wf * original) / (Wt + Wf)
+# gray = original duration, red = target, blue = weighted solution.
+# ============================================================
 if draw_visualization and intervals_processed > 0
+    appendInfoLine: ""
+    appendInfoLine: "Drawing visualization..."
+
     Erase all
-    
-    # Title
-    Select outer viewport: 1, 8, 0.2, 0.7
-    Axes: 0, 1, 0, 1
-    Font size: 14
-    Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "OT Duration Control: " + sound_name$
-    
-    # Original waveform
-    Select outer viewport: 0, 8, 0.9, 2.3
-    Select inner viewport: 0.6, 7.6, 1.0, 2.2
+    Select outer viewport: 0, 8, 0, 7.10
+    Black
+    Plain line
+
+    displayName$ = replace$(sound_name$, "_", " ", 0)
+
+    if preset = 1
+        presetName$ = "Custom"
+    elsif preset = 2
+        presetName$ = "Staccato"
+    elsif preset = 3
+        presetName$ = "Legato"
+    elsif preset = 4
+        presetName$ = "Strict Timing"
+    elsif preset = 5
+        presetName$ = "Natural"
+    else
+        presetName$ = "Balanced"
+    endif
+
+    # Mono, zero-based display copies.
     selectObject: sound
-    Colour: "{0.6, 0.6, 0.6}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
-    Colour: "Black"
-    Draw inner box
-    Font size: 8
-    Select outer viewport: 0.1, 8, 0.5, 2.8
-    Text left: "yes", "Original"
-    
-    # Result waveform
-    Select outer viewport: 0, 8, 2.4, 3.8
-    Select inner viewport: 0.6, 7.6, 2.5, 3.7
+    vizOrig = Convert to mono
+    selectObject: vizOrig
+    vizOrigStart = Get start time
+    Shift times by: -vizOrigStart
+
     selectObject: result
-    Colour: "{0.2, 0.5, 0.7}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
+    vizResult = Convert to mono
+    selectObject: vizResult
+    vizResultStart = Get start time
+    Shift times by: -vizResultStart
+
+    # Shared source/output amplitude scale.
+    selectObject: vizOrig
+    origPeak = Get absolute extremum: 0, 0, "None"
+    selectObject: vizResult
+    outPeak = Get absolute extremum: 0, 0, "None"
+    sharedPeak = max(origPeak, outPeak)
+    if sharedPeak < 0.001
+        sharedPeak = 0.001
+    endif
+    sharedAmp = 1.15 * sharedPeak
+
+    # ----------------------------------------------------------
+    # TITLE / SUBTITLE
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 0, 0.50
+    Axes: 0, 1, 0, 1
+    Font size: 12
+    Colour: "Black"
+    Text: 0.5, "centre", 0.68, "half", "##Constraint-Based Duration Control##"
+    Font size: 7
+    Colour: "{0.35, 0.35, 0.52}"
+    Text: 0.5, "centre", -1.30, "half", "Constraint-Based Duration Control.praat  |  " + displayName$ + "  |  weighted TARGET + FAITHFULNESS"
+
+    # ----------------------------------------------------------
+    # SOURCE
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 0.65, 1.90
+    Select inner viewport: 0.55, 7.75, 0.82, 1.78
+    Axes: 0, totalDuration, -sharedAmp, sharedAmp
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, totalDuration, -sharedAmp, sharedAmp
+
+    # Neutral segmentation guides for the sounding intervals.
+    Colour: "{0.88, 0.88, 0.90}"
+    for k to intervals_processed
+        segStart = intStart[k] - sourceStart
+        segEnd = intEnd[k] - sourceStart
+        Dotted line
+        Draw line: segStart, -sharedAmp, segStart, sharedAmp
+        Draw line: segEnd, -sharedAmp, segEnd, sharedAmp
+        Solid line
+    endfor
+
+    selectObject: vizOrig
+    Colour: "{0.58, 0.58, 0.62}"
+    Draw: 0, totalDuration, -sharedAmp, sharedAmp, "no", "Curve"
     Colour: "Black"
     Draw inner box
-    Text left: "yes", "OT Result"
+    Font size: 7
+    Text top: "no", "##Source##"
+    Font size: 6
+    Text left: "yes", "Amplitude"
     Text bottom: "yes", "Time (s)"
-    
-    # Duration comparison bar chart
-    Select outer viewport: 0, 8, 4.0, 6.0
-    Select inner viewport: 0.6, 7.6, 4.2, 5.9
-    
-    # Find max duration for scaling
+    Axes: 0, totalDuration, -sharedAmp, sharedAmp
+    Colour: "{0.28, 0.28, 0.28}"
+    Text: 0.01 * totalDuration, "left", 0.82 * sharedAmp, "half", string$(intervals_processed) + " sounding intervals  |  silence threshold " + fixed$(silence_threshold_dB, 1) + " dB"
+
+    # ----------------------------------------------------------
+    # WEIGHTED DURATION SOLUTION
+    # ----------------------------------------------------------
     maxDur = target_duration_s
+    minDur = target_duration_s
     for k to intervals_processed
         if intOrigDur[k] > maxDur
             maxDur = intOrigDur[k]
@@ -410,68 +484,122 @@ if draw_visualization and intervals_processed > 0
         if intNewDur[k] > maxDur
             maxDur = intNewDur[k]
         endif
-    endfor
-    maxDur = maxDur * 1.1
-    
-    Axes: 0, intervals_processed + 1, 0, maxDur
-    
-    # Background
-    Colour: "{0.95, 0.95, 0.95}"
-    Paint rectangle: "{0.95, 0.95, 0.95}", 0, intervals_processed + 1, 0, maxDur
-    
-    # Target line
-    Colour: "{0.8, 0.3, 0.3}"
-    Dotted line
-    Draw line: 0, target_duration_s, intervals_processed + 1, target_duration_s
-    Solid line
-    
-    # Bars
-    barWidth = 0.35
-    for k to intervals_processed
-        # Original (gray)
-        Colour: "{0.6, 0.6, 0.6}"
-        Paint rectangle: "{0.6, 0.6, 0.6}", k - barWidth, k, 0, intOrigDur[k]
-        
-        # New (colored by winner type)
-        if intWinnerType[k] = 1
-            # Green for faithful
-            Colour: "{0.3, 0.7, 0.3}"
-            Paint rectangle: "{0.3, 0.7, 0.3}", k, k + barWidth, 0, intNewDur[k]
-        elsif intWinnerType[k] = 2
-            # Red for target
-            Colour: "{0.8, 0.3, 0.3}"
-            Paint rectangle: "{0.8, 0.3, 0.3}", k, k + barWidth, 0, intNewDur[k]
-        else
-            # Blue for compromise
-            Colour: "{0.3, 0.5, 0.8}"
-            Paint rectangle: "{0.3, 0.5, 0.8}", k, k + barWidth, 0, intNewDur[k]
+        if intOrigDur[k] < minDur
+            minDur = intOrigDur[k]
+        endif
+        if intNewDur[k] < minDur
+            minDur = intNewDur[k]
         endif
     endfor
-    
+    durTop = max(maxDur * 1.28, target_duration_s + 0.18)
+    if durTop <= 0
+        durTop = 1
+    endif
+
+    Select outer viewport: 0, 8, 2.05, 4.55
+    Select inner viewport: 0.55, 7.75, 2.22, 4.40
+    Axes: 0.5, intervals_processed + 0.5, 0, durTop
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0.5, intervals_processed + 0.5, 0, durTop
+
+    # Target duration is common to every interval.
+    Colour: "{0.82, 0.34, 0.24}"
+    Dotted line
+    Draw line: 0.5, target_duration_s, intervals_processed + 0.5, target_duration_s
+    Solid line
+
+    # Per-interval solution: original -> weighted optimum.
+    for k to intervals_processed
+        # neutral guide from original to target
+        Colour: "{0.78, 0.78, 0.80}"
+        Line width: 0.8
+        Draw line: k, intOrigDur[k], k, target_duration_s
+
+        # actual movement from original to solution
+        Colour: "{0.25, 0.50, 0.82}"
+        Line width: 1.8
+        Draw line: k, intOrigDur[k], k, intNewDur[k]
+        Line width: 1
+
+        Paint circle (mm): "{0.58, 0.58, 0.62}", k, intOrigDur[k], 1.05
+        Paint circle (mm): "{0.25, 0.50, 0.82}", k, intNewDur[k], 1.05
+    endfor
+
     Colour: "Black"
     Draw inner box
-    Marks left every: 1, 0.2, "yes", "yes", "no"
     Font size: 7
+    Text top: "no", "##Weighted duration solution##"
+    Font size: 6
     Text left: "yes", "Duration (s)"
-    Text bottom: "yes", "Interval"
-    
-    # Legend
-    Select outer viewport: 0, 8, 6.1, 6.5
+    Text bottom: "yes", "Sounding interval #"
+    Marks left every: 1, 0.2, "yes", "yes", "no"
+
+    # Same inset for all panel annotation text.
+    Axes: 0.5, intervals_processed + 0.5, 0, durTop
+    insetX = 0.5 + 0.01 * intervals_processed
+    Colour: "{0.28, 0.28, 0.28}"
+    Text: insetX, "left", 0.95 * durTop, "half", "gray = original  |  red = target  |  blue = weighted solution"
+    Colour: "{0.35, 0.35, 0.52}"
+    Text: insetX, "left", 0.87 * durTop, "half", "d* = (Wt target + Wf original) / (Wt + Wf)   |   Wt " + fixed$(weight_target_duration, 2) + "   Wf " + fixed$(weight_faithfulness, 2)
+
+    # ----------------------------------------------------------
+    # OUTPUT
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 4.70, 5.95
+    Select inner viewport: 0.55, 7.75, 4.87, 5.83
+    Axes: 0, resultDuration, -sharedAmp, sharedAmp
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, resultDuration, -sharedAmp, sharedAmp
+    selectObject: vizResult
+    Colour: "{0.25, 0.50, 0.82}"
+    Draw: 0, resultDuration, -sharedAmp, sharedAmp, "no", "Curve"
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text top: "yes", "##Output##"
+    Font size: 6
+    Text left: "yes", "Amplitude"
+    Text bottom: "yes", "Time (s)"
+    Axes: 0, resultDuration, -sharedAmp, sharedAmp
+    Colour: "{0.28, 0.28, 0.28}"
+    Text: 0.01 * resultDuration, "left", 0.82 * sharedAmp, "half", "duration " + fixed$(totalDuration, 3) + " -> " + fixed$(resultDuration, 3) + " s  |  silences preserved at ratio 1.0"
+
+    # ----------------------------------------------------------
+    # SUMMARY
+    # ----------------------------------------------------------
+    ratioMean = 0
+    minRatio = intRatio[1]
+    maxRatio = intRatio[1]
+    for k to intervals_processed
+        ratioMean += intRatio[k]
+        if intRatio[k] < minRatio
+            minRatio = intRatio[k]
+        endif
+        if intRatio[k] > maxRatio
+            maxRatio = intRatio[k]
+        endif
+    endfor
+    ratioMean = ratioMean / intervals_processed
+
+    Select outer viewport: 0, 8, 6.10, 7.05
+    Select inner viewport: 0.30, 7.80, 6.17, 6.98
     Axes: 0, 1, 0, 1
-    Font size: 8
-    Colour: "{0.6, 0.6, 0.6}"
-    Text: 0.15, "centre", 0.5, "half", "## Original"
-    Colour: "{0.3, 0.7, 0.3}"
-    Text: 0.35, "centre", 0.5, "half", "## Faithful"
-    Colour: "{0.8, 0.3, 0.3}"
-    Text: 0.55, "centre", 0.5, "half", "## Target"
-    Colour: "{0.3, 0.5, 0.8}"
-    Text: 0.75, "centre", 0.5, "half", "## Compromise"
-    Colour: "{0.8, 0.3, 0.3}"
-    Text: 0.92, "centre", 0.5, "half", "--- Target"
-    
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    Colour: "{0.48, 0.48, 0.48}"
+    Draw rectangle: 0, 1, 0, 1
+
+    Font size: 7
+    Colour: "Black"
+    Text: 0.02, "left", 0.80, "half", "##Summary##"
+    Font size: 6
+    Colour: "{0.28, 0.28, 0.28}"
+    Text: 0.02, "left", 0.49, "half", presetName$ + "  |  target " + fixed$(target_duration_s, 3) + " s  |  Wt " + fixed$(weight_target_duration, 2) + "  |  Wf " + fixed$(weight_faithfulness, 2) + "  |  " + string$(intervals_processed) + " sounding intervals"
+    Text: 0.02, "left", 0.18, "half", "Ratio mean " + fixed$(ratioMean, 3) + "  |  range " + fixed$(minRatio, 3) + "-" + fixed$(maxRatio, 3) + "  |  duration " + fixed$(totalDuration, 3) + " -> " + fixed$(resultDuration, 3) + " s  |  prediction error " + fixed$((resultDuration - predictedDuration) * 1000, 2) + " ms"
+
     Font size: 10
     Colour: "Black"
+    Line width: 1
+
+    removeObject: vizOrig, vizResult
+    selectObject: result
 endif
 
 # === Final Info ===

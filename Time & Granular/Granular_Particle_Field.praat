@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4 (2026)
+# Version: 0.5 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -12,6 +12,15 @@
 #   and temporal control. Creates stereo particle clouds from
 #   source audio with envelope shaping, pitch variation,
 #   panning, and LFO modulation.
+#
+# Changelog v0.5:
+#   - Visualization uniformity pass only; synthesis is unchanged.
+#   - Title/subtitle, viewport geometry, fonts, panel/summary greys and
+#     full-page export selection aligned with the AudioTools library standard.
+#   - Semantic palette: muted red = source, muted green = rendered output,
+#     library blue = particle field/LFO encoding. Saturated decorative
+#     orange/teal pairing removed.
+#   - Summary moved to the standard grey strip with font-6 secondary text.
 #
 # Changelog v0.4:
 #   - FIXED output scheduling: Linear/Exponential no longer place the final
@@ -30,6 +39,10 @@
 #     fixed-pan mode, and minimum renderable durations.
 #   - Safe normalization skips all-zero output.
 #   - Added preset names to result object names and visualization metadata.
+#   - Visualization QA: source display now follows the mono processing path,
+#     source/output use one amplitude scale, output waveform colour is neutral,
+#     particle markers no longer collide with the field edges, and the field
+#     has explicit L/C/R plus time references.
 #
 # Changelog v0.3:
 #   - Fixed pitch shift: was Resample (preserves pitch -> no-op); now
@@ -48,7 +61,7 @@
 #   - Added visualization
 # ============================================================
 
-form Particle Field Renderer v0.4
+form Particle Field Renderer v0.5
     comment Select a Sound object first
     
     comment === Preset ===
@@ -420,82 +433,125 @@ if resultPeak > 0
 endif
 Rename: original_name$ + "_particles_" + presetName$
 
-removeObject: mixL, mixR, sourceSound
+removeObject: mixL, mixR
 
 # === Visualization ===
 if draw_visualization
+    # Display the exact un-normalized signal used by the granular engine.
+    # Source and result share one vertical amplitude scale.
+    selectObject: sourceSound
+    sourceDisplayPeak = Get absolute extremum: 0, 0, "Sinc70"
+    selectObject: result
+    resultDisplayPeak = Get absolute extremum: 0, 0, "Sinc70"
+    displayPeak = max(sourceDisplayPeak, resultDisplayPeak)
+    if displayPeak <= 0
+        displayPeak = 1
+    endif
+
+    if numChannels > 1
+        sourcePanelLabel$ = "Source (mono)"
+    else
+        sourcePanelLabel$ = "Source"
+    endif
     Erase all
-    
-    # Title
-    Select outer viewport: 1, 8, 0.1, 0.5
+
+    # Title block - AudioTools library standard.
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
+    Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Axes: 0, 1, 0, 1
-    Text: 0.5, "centre", 0.5, "half", "Particle Field: " + original_name$ + " [" + presetName$ + "]"
-    
-    # Original waveform
-    Select outer viewport: 0, 8, 0.6, 1.8
-    Select inner viewport: 0.6, 7.6, 0.7, 1.7
-    selectObject: original
-    Colour: "{0.6, 0.6, 0.6}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
+    Text: 0.5, "centre", 0.68, "half", "##Granular Particle Field v0.5##"
+    Font size: 7
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half", original_name$ + " | " + presetName$ + " | " + string$(number_of_grains) + " grains | " + fixed$(baseGrainDur * 1000, 0) + " ms | " + fixed$(outDur, 2) + " s"
+
+    # Source waveform - warm semantic colour, deliberately muted.
+    Select outer viewport: 0, 8, 0.65, 1.75
+    Select inner viewport: 0.60, 7.70, 0.77, 1.62
+    selectObject: sourceSound
+    Colour: "{0.78, 0.28, 0.22}"
+    Draw: 0, 0, -displayPeak, displayPeak, "no", "Curve"
     Colour: "Black"
     Draw inner box
-    Font size: 8
-    Select outer viewport: 0.1, 8, 0.5, 1.8
-    Text left: "yes", "Original"
-    
-    # Result waveform
-    Select outer viewport: 0, 8, 1.9, 3.1
-    Select inner viewport: 0.6, 7.6, 2.0, 3.0
+    Font size: 7
+    Text left: "yes", sourcePanelLabel$
+
+    # Rendered granular output - cool complementary library colour.
+    Select outer viewport: 0, 8, 1.82, 2.92
+    Select inner viewport: 0.60, 7.70, 1.94, 2.79
     selectObject: result
-    Colour: "{0.3, 0.6, 0.8}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
+    Colour: "{0.35, 0.60, 0.40}"
+    Draw: 0, 0, -displayPeak, displayPeak, "no", "Curve"
     Colour: "Black"
     Draw inner box
-    Text left: "yes", "Particles"
+    Font size: 7
+    Text left: "yes", "Output (particles)"
     Text bottom: "yes", "Time (s)"
-    
-    # Particle field (time vs pan)
-    Select outer viewport: 0, 8, 3.3, 5.0
-    Select inner viewport: 0.6, 7.6, 3.5, 4.9
-    
-    Axes: 0, outDur, 0, 1
-    Paint rectangle: "{0.97, 0.97, 0.97}", 0, outDur, 0, 1
-    
-    # Draw grains as dots
-    for i to number_of_grains
-        # Color by amplitude
-        ampColor = grainAmp[i]
-        dotColor$ = "{" + fixed$(0.2 + ampColor * 0.5, 2) + ", " + fixed$(0.4 + ampColor * 0.3, 2) + ", " + fixed$(0.8 - ampColor * 0.3, 2) + "}"
-        
-        # Diameter (mm): visible floor + scale with amplitude
-        dotDia = 2.0 + 2.0 * grainAmp[i]
-        Paint circle (mm): dotColor$, grainTime[i], grainPan[i], dotDia
-    endfor
-    
-    # Center line
-    Colour: "{0.7, 0.7, 0.7}"
+
+    # Particle field (time vs pan). The light panel ground and library blue
+    # match the visual grammar used by the other AudioTools diagnostics.
+    Select outer viewport: 0, 8, 3.08, 4.78
+    Select inner viewport: 0.60, 7.70, 3.20, 4.65
+    fieldXMargin = 0.02 * outDur
+    fieldYMargin = 0.07
+    Axes: -fieldXMargin, outDur + fieldXMargin, -fieldYMargin, 1 + fieldYMargin
+    Paint rectangle: "{0.97, 0.97, 0.97}", -fieldXMargin, outDur + fieldXMargin, -fieldYMargin, 1 + fieldYMargin
+
+    # Pan-centre reference remains neutral and subordinate.
+    Colour: "{0.72, 0.72, 0.72}"
     Dotted line
     Draw line: 0, 0.5, outDur, 0.5
     Solid line
-    
+
+    # Particle blue has one meaning only. With LFO, intensity and size encode
+    # amplitude inside the same blue family; without LFO all markers match.
+    for i to number_of_grains
+        if apply_LFO
+            ampColor = grainAmp[i]
+            dotColor$ = "{" + fixed$(0.72 - ampColor * 0.47, 2) + ", " + fixed$(0.80 - ampColor * 0.35, 2) + ", " + fixed$(0.90 - ampColor * 0.15, 2) + "}"
+            dotDia = 2.0 + 2.0 * grainAmp[i]
+        else
+            dotColor$ = "{0.25, 0.45, 0.75}"
+            dotDia = 2.4
+        endif
+        Paint circle (mm): dotColor$, grainTime[i], grainPan[i], dotDia
+    endfor
+
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "Pan (L-R)"
+    One mark left: 0, "no", "yes", "no", "L"
+    One mark left: 0.5, "no", "yes", "no", "C"
+    One mark left: 1, "no", "yes", "no", "R"
+    One mark bottom: 0, "no", "yes", "no", "0"
+    One mark bottom: 0.5 * outDur, "no", "yes", "no", fixed$(0.5 * outDur, 2)
+    One mark bottom: outDur, "no", "yes", "no", fixed$(outDur, 2)
+    Text left: "yes", "Pan"
     Text bottom: "yes", "Time (s)"
-    
-    # Legend
-    Select outer viewport: 0, 8, 5.1, 5.4
+
+    # Standard AudioTools summary strip.
+    Select outer viewport: 0, 8, 4.95, 5.65
+    Select inner viewport: 0.60, 7.70, 5.00, 5.60
     Axes: 0, 1, 0, 1
-    Font size: 7
-    Colour: "{0.4, 0.4, 0.4}"
-    Text: 0.5, "centre", 0.5, "half", "Grains: " + string$(number_of_grains) + " | Base grain: " + fixed$(baseGrainDur * 1000, 0) + " ms | Preset: " + presetName$
-    
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    Font size: 6
+    Colour: "{0.25, 0.25, 0.35}"
+    if apply_LFO
+        legendEncoding$ = " | blue/size = LFO amplitude"
+    else
+        legendEncoding$ = " | blue = grains"
+    endif
+    Text: 0.02, "left", 0.68, "half", "##Render##  " + string$(number_of_grains) + " grains | base " + fixed$(baseGrainDur * 1000, 0) + " ms | " + presetName$
+    Text: 0.02, "left", 0.28, "half", "##Timing##  source " + fixed$(inputDuration, 2) + " s | output " + fixed$(outDur, 2) + " s" + legendEncoding$
+
+    # Praat exports the last selected viewport; restore the full figure.
+    Select outer viewport: 0, 8, 0, 5.75
     Font size: 10
     Colour: "Black"
 endif
+
+removeObject: sourceSound
 
 # === Final Info ===
 selectObject: result

@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4 (2026)
+# Version: 0.4.1 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -32,6 +32,20 @@
 #   Cohen, S. (2026). Praat AudioTools: An Offline
 #   Analysis-Resynthesis Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v0.4.1:
+#   Visualization only - DSP is unchanged from v0.4.
+#   - Aligned to the current Praat AudioTools visual language:
+#     Source -> Brightness sort map -> Output -> Summary.
+#   - Replaced the generic parameter-report / overlay layout with a
+#     signature process map. For every grain, a neutral stem links the
+#     pre-exaggeration centroid to the measured post-processing centroid;
+#     the lower ribbon shows final concatenation order, with colour =
+#     brightness and cell width = grain duration.
+#   - Sanitized underscores in display names to avoid Praat subscripts.
+#   - Colour has one semantic role in the process map: spectral brightness.
+#   - Kept Show_spectrograms as a visual option: when enabled, the Output
+#     panel shows the result spectrogram; otherwise it shows the waveform.
 #
 # Changelog v0.4:
 #   DSP / semantics / performance:
@@ -339,7 +353,7 @@ else
 endif
 
 # === Info ===
-writeInfoLine: "=== Brightness Sorted Grains v0.4 ==="
+writeInfoLine: "=== Brightness Sorted Grains v0.4.1 ==="
 appendInfoLine: "Source: ", sound_name$, " (", fixed$(duration, 2), " s)"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Target grains: ", num_grains
@@ -586,375 +600,289 @@ endif
 removeObject: sound
 
 # ============================================================
-# VISUALIZATION  (8 x 8 canvas — suite standard)
+# VISUALIZATION  (current Praat AudioTools suite styling)
+# Source -> signature Brightness sort map -> Output -> Summary.
+# The central map directly shows the transformation law:
+#   stem = centroid before -> after spectral exaggeration,
+#   colour = measured brightness,
+#   lower ribbon = final concatenation order,
+#   cell width = grain duration.
 # ============================================================
 if draw_visualization and grainCount > 0
     appendInfoLine: ""
     appendInfoLine: "Drawing visualization..."
-    
+
     Erase all
+    Select outer viewport: 0, 8, 0, 7.10
     Black
     Plain line
-    
-    # Mono copy of original (result is already mono)
+
+    displayName$ = replace$(sound_name$, "_", " ", 0)
+
+    # Mono, zero-based source display copy.
     selectObject: original
     if num_channels > 1
         vizOrig = Convert to mono
     else
-        vizOrig = Copy: "viz_orig"
+        vizOrig = Copy: "viz orig"
     endif
     selectObject: vizOrig
-    Shift times to: "start time", 0
+    vizOrigStart = Get start time
+    Shift times by: -vizOrigStart
 
+    # Zero-based result display copy.
     selectObject: result
-    finalPeak = Get absolute extremum: 0, 0, "None"
-    
-    # Compute SHARED y-axis from BOTH original and result
+    vizResult = Copy: "viz result"
+    selectObject: vizResult
+    vizResultStart = Get start time
+    Shift times by: -vizResultStart
+
+    # Shared waveform amplitude scale.
     selectObject: vizOrig
-    oPeak = Get absolute extremum: 0, 0, "None"
-    selectObject: result
-    pPeak = Get absolute extremum: 0, 0, "None"
-    sharedPeak = oPeak
-    if pPeak > sharedPeak
-        sharedPeak = pPeak
+    origPeak = Get absolute extremum: 0, 0, "None"
+    selectObject: vizResult
+    outPeak = Get absolute extremum: 0, 0, "None"
+    sharedPeak = origPeak
+    if outPeak > sharedPeak
+        sharedPeak = outPeak
     endif
     if sharedPeak < 0.001
         sharedPeak = 0.001
     endif
-    sharedAmp = sharedPeak * 1.15
-    
-    # Find brightness range for Panel A
-    minB = grainBrightness#[1]
-    maxB = grainBrightness#[1]
-    for i from 2 to grainCount
-        if grainBrightness#[i] < minB
-            minB = grainBrightness#[i]
+    sharedAmp = 1.15 * sharedPeak
+
+    # Brightness bounds include BOTH pre- and post-exaggeration centroids.
+    minMapB = grainBrightness#[1]
+    maxMapB = grainBrightness#[1]
+    for i from 1 to grainCount
+        if grainBrightness#[i] < minMapB
+            minMapB = grainBrightness#[i]
         endif
-        if grainBrightness#[i] > maxB
-            maxB = grainBrightness#[i]
+        if grainBrightness#[i] > maxMapB
+            maxMapB = grainBrightness#[i]
+        endif
+        if grainOriginalBrightness#[i] > 0
+            if grainOriginalBrightness#[i] < minMapB
+                minMapB = grainOriginalBrightness#[i]
+            endif
+            if grainOriginalBrightness#[i] > maxMapB
+                maxMapB = grainOriginalBrightness#[i]
+            endif
         endif
     endfor
-    
-    if maxB = minB
-        maxB = minB + 1
+    if maxMapB <= minMapB
+        maxMapB = minMapB + 1
     endif
-    
-    # Compute spectrograms only if user opted in
+    bSpan = maxMapB - minMapB
+    mapY0 = max(0, minMapB - 0.08 * bSpan)
+    mapY1 = maxMapB + 0.12 * bSpan
+
+    # Total grain duration, excluding gaps, for proportional ribbon widths.
+    totalGrainDur = 0
+    for i from 1 to grainCount
+        totalGrainDur += grainDurations#[i]
+    endfor
+    if totalGrainDur <= 0
+        totalGrainDur = 1
+    endif
+
+    # Optional result spectrogram for the Output panel only.
     specMaxHz = min(5000, 0.95 * sample_rate / 2)
     if show_spectrograms
-        selectObject: vizOrig
-        origSpec = To Spectrogram: 0.03, specMaxHz, 0.01, 20, "Gaussian"
-        selectObject: result
+        selectObject: vizResult
         resSpec = To Spectrogram: 0.03, specMaxHz, 0.01, 20, "Gaussian"
     endif
-    
+
     # ----------------------------------------------------------
-    # TITLE BAR
+    # TITLE / SUBTITLE
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 0, 0.65
+    Select outer viewport: 0, 8, 0, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##BRIGHTNESS SORTED GRAINS##"
+    Text: 0.5, "centre", 0.68, "half", "##Brightness Sorted Grains##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
-    Text: 0.5, "centre", -0.22, "half",
-        ... sound_name$
-        ... + "  |  " + presetName$
-        ... + "  |  " + string$(grainCount) + " grains"
-        ... + "  |  " + fixed$(minB, 0) + "-" + fixed$(maxB, 0) + " Hz"
-        ... + "  |  " + sortLabel$
-        ... + "  |  gap " + fixed$(gap_between_grains_ms, 0) + " ms"
-    
+    Text: 0.5, "centre", -1.30, "half", "Brightness Sorted Grains.praat  |  " + displayName$ + "  |  spectral-centroid grain ordering"
+
     # ----------------------------------------------------------
-    # PANEL A: BRIGHTNESS DISTRIBUTION  (left, headline)
-    # PRESERVED v0.2 design: bars (dark blue -> bright yellow
-    # gradient) + red trend line.
+    # SOURCE
     # ----------------------------------------------------------
-    Select outer viewport: 0, 4.2, 0.75, 4.60
-    Select inner viewport: 0.55, 4.00, 0.95, 4.40
-    
-    Axes: 0, grainCount + 0.5, 0, maxB * 1.1
-    Paint rectangle: "{0.97, 0.97, 0.99}", 0, grainCount + 0.5, 0, maxB * 1.1
-    
-    # Reference grid
-    Colour: "{0.88, 0.88, 0.92}"
-    Line width: 1
-    Dotted line
-    Draw line: 0, maxB * 0.25, grainCount + 0.5, maxB * 0.25
-    Draw line: 0, maxB * 0.50, grainCount + 0.5, maxB * 0.50
-    Draw line: 0, maxB * 0.75, grainCount + 0.5, maxB * 0.75
-    Solid line
-    
-    # Draw brightness bars
-    for i from 1 to grainCount
-        brightness = grainBrightness#[i]
-        
-        # Color gradient: dark (blue) to bright (yellow)
-        normalizedB = (brightness - minB) / (maxB - minB)
-        r = normalizedB
-        g = normalizedB * 0.8
-        b = 1 - normalizedB
-        barColor$ = "{" + fixed$(r, 2) + ", " + fixed$(g, 2) + ", " + fixed$(b, 2) + "}"
-        
-        Paint rectangle: barColor$, i - 0.4, i + 0.4, 0, brightness
-    endfor
-    
-    # Draw trend line (red, on top of bars)
-    Colour: "{0.85, 0.25, 0.25}"
-    Line width: 2
-    for i from 2 to grainCount
-        Draw line: i - 1, grainBrightness#[i - 1], i, grainBrightness#[i]
-    endfor
-    Line width: 1
-    
+    Select outer viewport: 0, 8, 0.65, 1.90
+    Select inner viewport: 0.55, 7.75, 0.82, 1.78
+    Axes: 0, duration, -sharedAmp, sharedAmp
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, duration, -sharedAmp, sharedAmp
+    selectObject: vizOrig
+    Colour: "{0.58, 0.58, 0.62}"
+    Draw: 0, duration, -sharedAmp, sharedAmp, "no", "Curve"
     Colour: "Black"
-    Line width: 1
     Draw inner box
+    Font size: 7
+    Text top: "no", "##Source##"
     Font size: 6
-    Text left: "yes", "Brightness (Hz)"
-    Text bottom: "yes", "Grain # (sorted order)"
-    
-    # ----------------------------------------------------------
-    # PANEL B: PARAMETER REPORT  (right, headline)
-    # ----------------------------------------------------------
-    Select outer viewport: 4.2, 8, 0.75, 4.60
-    Select inner viewport: 4.55, 7.75, 0.95, 4.40
-    
-    Axes: 0, 1, 0, 1
-    Paint rectangle: "{0.96, 0.96, 0.96}", 0, 1, 0, 1
-    
-    Font size: 9
-    Colour: "{0.30, 0.30, 0.30}"
-    Text: 0.05, "left", 0.94, "half", "Algorithm:"
-    
-    Font size: 7
-    Colour: "{0.30, 0.30, 0.30}"
-    Text: 0.10, "left", 0.88, "half", "Extract grains -> spectral centroid ->"
-    Text: 0.10, "left", 0.83, "half", "exaggerate -> sort -> concatenate."
-    
-    Font size: 9
-    Colour: "{0.30, 0.30, 0.30}"
-    Text: 0.05, "left", 0.75, "half", "Grains:"
-    
-    Font size: 9
-    Colour: "{0.55, 0.35, 0.78}"
-    Text: 0.10, "left", 0.69, "half", "Size: " + fixed$(grain_size_ms, 0) + " ms"
-    if grain_size_mode = 2
-        Text: 0.10, "left", 0.63, "half", "Variation: +/- " + fixed$(grain_size_variation_ms, 0) + " ms (random)"
-    else
-        Text: 0.10, "left", 0.63, "half", "Variation: fixed"
-    endif
-    Text: 0.10, "left", 0.57, "half", "Analysis overlap: " + fixed$(analysis_overlap, 2) + " | Density: " + fixed$(density_factor, 2)
-    Text: 0.10, "left", 0.51, "half", "Window: " + window_shape$
-    
-    Font size: 9
-    Colour: "{0.30, 0.30, 0.30}"
-    Text: 0.05, "left", 0.43, "half", "Sort + Exaggerate:"
-    
-    Font size: 9
-    Colour: "{0.30, 0.55, 0.30}"
-    if sort_grains
-        Text: 0.10, "left", 0.37, "half", "Direction: " + sortLabel$
-    else
-        Text: 0.10, "left", 0.37, "half", "Sort: OFF (random draw order)"
-    endif
-    if exaggerate_spectral
-        Text: 0.10, "left", 0.31, "half", "Exaggeration: " + exaggerationLabel$ + " (x" + fixed$(spectral_boost, 2) + ")"
-    else
-        Text: 0.10, "left", 0.31, "half", "Exaggeration: OFF"
-    endif
-    Text: 0.10, "left", 0.25, "half", "Gap: " + fixed$(gap_between_grains_ms, 0) + " ms"
-    if reverse_grains
-        Text: 0.10, "left", 0.19, "half", "Random reverse: 30% of grains"
-    else
-        Text: 0.10, "left", 0.19, "half", "Random reverse: OFF"
-    endif
-    
-    Font size: 7
-    Colour: "{0.55, 0.30, 0.20}"
-    Text: 0.05, "left", 0.10, "half", "Gain scatter: " + fixed$(gain_scatter_dB, 2) + " dB SD"
-    Text: 0.05, "left", 0.05, "half", "Applied after equal-peak grain normalization"
-    
-    Colour: "Black"
-    Draw inner box
-    
-    # ----------------------------------------------------------
-    # ALIGNED PANEL TITLES
-    # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 0, 8
-    Select inner viewport: 0, 8, 0, 8
-    Axes: 0, 8, 0, 8
-    
-    Font size: 7
-    Colour: "Black"
-    Text: 2.10, "centre", 7.30, "half", "Brightness per grain (sorted order; bars + trend line)"
-    Text: 6.10, "centre", 7.30, "half", "Parameter report"
-    
-    # ----------------------------------------------------------
-    # PANEL C: ZOOM OVERLAY  (first 500 ms)
-    # Gray = original, blue = sorted.
-    # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 4.68, 5.55
-    Select inner viewport: 0.55, 7.72, 4.75, 5.48
-    
-    zoomDur = 0.5
-    if zoomDur > duration
-        zoomDur = duration
-    endif
-    if zoomDur > output_duration
-        zoomDur = output_duration
-    endif
-    
-    selectObject: vizOrig
-    z_peak1 = Get absolute extremum: 0, zoomDur, "None"
-    selectObject: result
-    z_peak2 = Get absolute extremum: 0, zoomDur, "None"
-    z_max = z_peak1
-    if z_peak2 > z_max
-        z_max = z_peak2
-    endif
-    if z_max < 0.001
-        z_max = 0.001
-    endif
-    z_amp = z_max * 1.15
-    
-    Axes: 0, zoomDur, -z_amp, z_amp
-    Paint rectangle: "{0.97, 0.97, 0.97}", 0, zoomDur, -z_amp, z_amp
-    Colour: "{0.82, 0.82, 0.82}"
-    Draw line: 0, 0, zoomDur, 0
-    
-    # Original behind
-    selectObject: vizOrig
-    Colour: "{0.65, 0.65, 0.65}"
-    Line width: 1
-    Draw: 0, zoomDur, -z_amp, z_amp, "no", "Curve"
-    
-    # Sorted on top
-    selectObject: result
-    Colour: "{0.25, 0.50, 0.82}"
-    Line width: 1
-    Draw: 0, zoomDur, -z_amp, z_amp, "no", "Curve"
-    
-    Colour: "Black"
-    Line width: 1
-    Draw inner box
-    Font size: 7
-    Text top: "no", "Zoom: first " + fixed$(zoomDur * 1000, 0) + " ms  (gray = original, blue = sorted)"
-    Text left: "yes", "Amp"
+    Text left: "yes", "Amplitude"
     Text bottom: "yes", "Time (s)"
-    
+    Axes: 0, duration, -sharedAmp, sharedAmp
+    Colour: "{0.28, 0.28, 0.28}"
+    Text: 0.01 * duration, "left", 0.82 * sharedAmp, "half", string$(grainCount) + " grains sampled  |  grain size " + fixed$(grain_size_ms, 0) + " ms  |  density " + fixed$(density_factor, 2)
+
     # ----------------------------------------------------------
-    # PANEL D: WAVEFORM COMPARISON or SPECTROGRAMS
+    # BRIGHTNESS SORT MAP - signature process view
     # ----------------------------------------------------------
-    
+    Select outer viewport: 0, 8, 2.05, 4.55
+    Select inner viewport: 0.55, 7.75, 2.25, 4.40
+    Axes: 0, grainCount + 1, mapY0, mapY1
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, grainCount + 1, mapY0, mapY1
+
+    # Light horizontal guides.
+    Colour: "{0.86, 0.86, 0.89}"
+    Dotted line
+    for q from 1 to 3
+        gy = mapY0 + q * (mapY1 - mapY0) / 4
+        Draw line: 0, gy, grainCount + 1, gy
+    endfor
+    Solid line
+
+    # Each stem shows the spectral exaggeration displacement for one grain.
+    # Grey endpoint = pre-exaggeration centroid; coloured endpoint = measured
+    # post-processing centroid. Colour is used ONLY for brightness here.
+    for i from 1 to grainCount
+        bNow = grainBrightness#[i]
+        bBefore = grainOriginalBrightness#[i]
+        if bBefore <= 0
+            bBefore = bNow
+        endif
+        normalizedB = (bNow - minBrightness) / max(1, maxBrightness - minBrightness)
+        if normalizedB < 0
+            normalizedB = 0
+        elsif normalizedB > 1
+            normalizedB = 1
+        endif
+        rr = 0.18 + 0.77 * normalizedB
+        gg = 0.32 + 0.36 * normalizedB
+        bb = 0.78 - 0.60 * normalizedB
+        brightCol$ = "{" + fixed$(rr, 2) + ", " + fixed$(gg, 2) + ", " + fixed$(bb, 2) + "}"
+
+        Colour: "{0.68, 0.68, 0.71}"
+        Line width: 0.8
+        Draw line: i, bBefore, i, bNow
+        Paint circle: "{0.68, 0.68, 0.71}", i, bBefore, 0.035
+        Paint circle: brightCol$, i, bNow, 0.050
+    endfor
+    Line width: 1
+
+    # The lower ribbon is final output order. Cell width is proportional to
+    # grain duration while hue follows the same brightness scale as above.
+    ribbonY0 = mapY0 + 0.025 * (mapY1 - mapY0)
+    ribbonY1 = mapY0 + 0.105 * (mapY1 - mapY0)
+    cursorX = 0.5
+    ribbonSpan = grainCount
+    for i from 1 to grainCount
+        normalizedB = (grainBrightness#[i] - minBrightness) / max(1, maxBrightness - minBrightness)
+        if normalizedB < 0
+            normalizedB = 0
+        elsif normalizedB > 1
+            normalizedB = 1
+        endif
+        rr = 0.18 + 0.77 * normalizedB
+        gg = 0.32 + 0.36 * normalizedB
+        bb = 0.78 - 0.60 * normalizedB
+        brightCol$ = "{" + fixed$(rr, 2) + ", " + fixed$(gg, 2) + ", " + fixed$(bb, 2) + "}"
+        cellW = ribbonSpan * grainDurations#[i] / totalGrainDur
+        Paint rectangle: brightCol$, cursorX, cursorX + cellW, ribbonY0, ribbonY1
+        cursorX += cellW
+    endfor
+
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text top: "no", "##Brightness sort map##"
+    Font size: 6
+    Text left: "yes", "Centroid (Hz)"
+    Text bottom: "yes", "Grain (final order)"
+    Axes: 0, grainCount + 1, mapY0, mapY1
+    Colour: "{0.28, 0.28, 0.28}"
+    Text: 0.7, "left", mapY1 - 0.055 * (mapY1 - mapY0), "half", "grey dot = before exaggeration  |  coloured dot = measured brightness  |  ribbon: colour = brightness, width = duration"
+    if sort_grains
+        Text: grainCount + 0.3, "right", mapY0 + 0.15 * (mapY1 - mapY0), "half", sortLabel$
+    else
+        Text: grainCount + 0.3, "right", mapY0 + 0.15 * (mapY1 - mapY0), "half", "sorting OFF"
+    endif
+
+    # ----------------------------------------------------------
+    # OUTPUT
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 4.70, 5.95
+    Select inner viewport: 0.55, 7.75, 4.87, 5.83
+
     if show_spectrograms
-        # Side-by-side spectrograms (original | sorted)
-        
-        # Original spectrogram (left half)
-        Select outer viewport: 0, 4, 5.62, 6.55
-        Select inner viewport: 0.55, 3.85, 5.69, 6.48
-        
-        selectObject: origSpec
-        Paint: 0, 0, 0, specMaxHz, 100, "yes", 50, 6, 0, "no"
-        Colour: "Black"
-        Draw inner box
-        Font size: 7
-        Text top: "no", "Original spectrogram"
-        Text left: "yes", "Freq (Hz)"
-        Text bottom: "yes", "Time (s)"
-        
-        # Sorted spectrogram (right half)
-        Select outer viewport: 4, 8, 5.62, 6.55
-        Select inner viewport: 4.10, 7.72, 5.69, 6.48
-        
         selectObject: resSpec
         Paint: 0, 0, 0, specMaxHz, 100, "yes", 50, 6, 0, "no"
         Colour: "Black"
         Draw inner box
         Font size: 7
-        Text top: "no", "Sorted spectrogram (spectral sweep)"
+        Text top: "yes", "##Output##"
+        Font size: 6
+        Text left: "yes", "Frequency (Hz)"
         Text bottom: "yes", "Time (s)"
     else
-        # Full waveform comparison (overlaid, SHARED y-axis)
-        Select outer viewport: 0, 8, 5.62, 6.55
-        Select inner viewport: 0.55, 7.72, 5.69, 6.48
-        
         Axes: 0, output_duration, -sharedAmp, sharedAmp
         Paint rectangle: "{0.97, 0.97, 0.97}", 0, output_duration, -sharedAmp, sharedAmp
-        Colour: "{0.82, 0.82, 0.82}"
-        Draw line: 0, 0, output_duration, 0
-        
-        # Original behind (only as far as it goes)
-        selectObject: vizOrig
-        Colour: "{0.65, 0.65, 0.65}"
-        Line width: 1
+        selectObject: vizResult
+        Colour: "{0.48, 0.33, 0.72}"
         Draw: 0, output_duration, -sharedAmp, sharedAmp, "no", "Curve"
-        
-        # Sorted on top
-        selectObject: result
-        Colour: "{0.25, 0.50, 0.82}"
-        Line width: 1
-        Draw: 0, output_duration, -sharedAmp, sharedAmp, "no", "Curve"
-        
         Colour: "Black"
-        Line width: 1
         Draw inner box
         Font size: 7
-        Text top: "no", "Full waveform  (gray = original, blue = sorted, shared y-axis)"
-        Text left: "yes", "Amp"
+        Text top: "yes", "##Output##"
+        Font size: 6
+        Text left: "yes", "Amplitude"
         Text bottom: "yes", "Time (s)"
     endif
-    
+
+    # Output note inside the panel, away from the frame/title.
+    if not show_spectrograms
+        Axes: 0, output_duration, -sharedAmp, sharedAmp
+        Colour: "{0.28, 0.28, 0.28}"
+        Text: 0.01 * output_duration, "left", 0.82 * sharedAmp, "half", sortLabel$ + "  |  gaps " + fixed$(gap_between_grains_ms, 0) + " ms  |  duration " + fixed$(duration, 2) + " -> " + fixed$(output_duration, 2) + " s"
+    endif
+
     # ----------------------------------------------------------
-    # PANEL E: SUMMARY BAR  (suite standard — light grey)
+    # SUMMARY
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 6.62, 7.30
-    Select inner viewport: 0.55, 7.72, 6.68, 7.24
+    Select outer viewport: 0, 8, 6.10, 7.05
+    Select inner viewport: 0.30, 7.80, 6.17, 6.98
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
-    
-    if show_spectrograms
-        specStr$ = "shown"
-    else
-        specStr$ = "off"
-    endif
+    Colour: "{0.48, 0.48, 0.48}"
+    Draw rectangle: 0, 1, 0, 1
+
     if exaggerate_spectral
-        exaggerationSummary$ = exaggerationLabel$
+        exaggerationSummary$ = exaggerationLabel$ + " x" + fixed$(spectral_boost, 2)
     else
         exaggerationSummary$ = "OFF"
     endif
-    
+    if reverse_grains
+        reverseSummary$ = "30% random"
+    else
+        reverseSummary$ = "OFF"
+    endif
+
+    Font size: 7
+    Colour: "Black"
+    Text: 0.02, "left", 0.80, "half", "##Summary##"
     Font size: 6
     Colour: "{0.28, 0.28, 0.28}"
-    Text: 0.02, "left", 0.75, "half",
-        ... "##" + presetName$ + "##"
-        ... + "  " + sound_name$
-        ... + "  |  Grains: " + string$(grainCount)
-        ... + "  |  Brightness: " + fixed$(minBrightness, 0) + "-" + fixed$(maxBrightness, 0) + " Hz"
-        ... + "  |  " + sortLabel$
-        ... + "  |  Exaggerate: " + exaggerationSummary$
-    
-    Text: 0.02, "left", 0.28, "half",
-        ... "Size: " + fixed$(grain_size_ms, 0) + " ms"
-        ... + "  |  Analysis ovl: " + fixed$(analysis_overlap, 2)
-        ... + "  |  Gap: " + fixed$(gap_between_grains_ms, 0) + " ms"
-        ... + "  |  Window: " + window_shape$
-        ... + "  |  In: " + fixed$(duration, 2) + " s"
-        ... + "  |  Out: " + fixed$(output_duration, 2) + " s, peak " + fixed$(finalPeak, 3)
-        ... + "  |  Spec: " + specStr$
-    
-    Colour: "Black"
-    Draw rectangle: 0, 1, 0, 1
-    
+    Text: 0.02, "left", 0.49, "half", presetName$ + "  |  " + string$(grainCount) + " grains  |  brightness " + fixed$(minBrightness, 0) + "-" + fixed$(maxBrightness, 0) + " Hz  |  " + sortLabel$ + "  |  exaggeration " + exaggerationSummary$
+    Text: 0.02, "left", 0.18, "half", "Grain " + fixed$(grain_size_ms, 0) + " ms  |  variation +/-" + fixed$(grain_size_variation_ms, 0) + " ms  |  gap " + fixed$(gap_between_grains_ms, 0) + " ms  |  gain scatter " + fixed$(gain_scatter_dB, 2) + " dB  |  reverse " + reverseSummary$ + "  |  duration " + fixed$(duration, 2) + " -> " + fixed$(output_duration, 2) + " s"
+
     Font size: 10
     Colour: "Black"
     Line width: 1
-    
-    # Cleanup viz objects
-    removeObject: vizOrig
+
+    removeObject: vizOrig, vizResult
     if show_spectrograms
-        removeObject: origSpec, resSpec
+        removeObject: resSpec
     endif
 endif
 

@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4 (2026)
+# Version: 0.4.4 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -16,6 +16,27 @@
 # Citation:
 #   Cohen, S. (2026). Praat AudioTools.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v0.4.4:
+#   - VISUAL QA: retained explicit mono L/R waveform drawing, but changed the
+#     Output colour from an unrelated light blue to a muted indigo-violet derived
+#     from the script's existing subtitle/purple palette. This keeps Output
+#     visually integrated without confusing it with a file-identity colour.
+#
+# Changelog v0.4.3:
+#   - VISUAL QA: the stereo Output waveform is now rendered as two explicit mono
+#     channel plots (L/R), each in a deterministic colour. This avoids stereo-Draw
+#     colour reset in Praat.
+#
+# Changelog v0.4.2:
+#   - VISUAL QA: attempted Output waveform recolouring. Superseded by v0.4.3.
+#
+# Changelog v0.4.1:
+#   - VISUAL QA: preserved the existing dual segment-map concept; fixed
+#     spacing/collisions, display-sanitized names, neutralized the output
+#     waveform colour, and added per-segment source-position ticks so the
+#     L/R maps actually reveal Start/End/Offset/Random extraction strategy.
+#   - Axis/title spacing was tightened for the 8.00 x 7.58 in Picture canvas.
 #
 # Changelog v0.4:
 #   - API COMPATIBILITY: public form, parameter order/types/defaults and
@@ -199,7 +220,7 @@ else
 endif
 
 # === Info ===
-writeInfoLine: "=== Segment Mixer v0.4 ==="
+writeInfoLine: "=== Segment Mixer v0.4.4 ==="
 appendInfoLine: "Files:     ", numberOfSelectedSounds
 appendInfoLine: "Preset:    ", presetName$
 appendInfoLine: "Segment:   ", fixed$(segment_duration_s, 3), " s"
@@ -278,6 +299,8 @@ leftStarts# = zero#(maxSegments)
 leftEnds# = zero#(maxSegments)
 rightStarts# = zero#(maxSegments)
 rightEnds# = zero#(maxSegments)
+leftPosNorm# = zero#(maxSegments)
+rightPosNorm# = zero#(maxSegments)
 segmentFile# = zero#(maxSegments)
 segmentIdx = 0
 
@@ -406,6 +429,13 @@ for cycle to repeat_cycles
         leftEnds#[segmentIdx] = leftEnd
         rightStarts#[segmentIdx] = rightStart
         rightEnds#[segmentIdx] = rightEnd
+        if total_duration > 0
+            leftPosNorm#[segmentIdx] = ((leftStart + leftEnd) / 2) / total_duration
+            rightPosNorm#[segmentIdx] = ((rightStart + rightEnd) / 2) / total_duration
+        else
+            leftPosNorm#[segmentIdx] = 0
+            rightPosNorm#[segmentIdx] = 0
+        endif
         segmentFile#[segmentIdx] = i
     endfor
 
@@ -481,8 +511,8 @@ if draw_visualization
     # ----------------------------------------------------------
     # PANEL A: LEFT SEGMENT MAP  (left, headline)
     # ----------------------------------------------------------
-    Select outer viewport: 0, 4.2, 0.75, 4.60
-    Select inner viewport: 0.55, 4.00, 0.95, 4.40
+    Select outer viewport: 0, 4.2, 0.75, 4.45
+    Select inner viewport: 0.55, 4.00, 0.95, 4.25
 
     Axes: 0, totalSegments, 0, 1
     Paint rectangle: "{0.97, 0.97, 0.97}", 0, totalSegments, 0, 1
@@ -498,6 +528,16 @@ if draw_visualization
             b = 0.5 + 0.4 * sin(hue * 2 * pi + 4)
             barColor$ = "{" + fixed$(r, 2) + ", " + fixed$(g, 2) + ", " + fixed$(b, 2) + "}"
             Paint rectangle: barColor$, s - 0.9, s - 0.1, 0.1, 0.9
+
+            # Neutral source-position tick: 0 = file start, 1 = file end.
+            # White underlay + black hairline stays visible on every file colour.
+            yPos = 0.12 + 0.76 * leftPosNorm#[s]
+            Colour: "White"
+            Line width: 2.4
+            Draw line: s - 0.82, yPos, s - 0.18, yPos
+            Colour: "Black"
+            Line width: 0.8
+            Draw line: s - 0.82, yPos, s - 0.18, yPos
         endif
     endfor
 
@@ -515,13 +555,13 @@ if draw_visualization
     Line width: 1
     Draw inner box
     Font size: 6
-    Text bottom: "yes", "Segment #"
+    Text bottom: "yes", "Segment index"
 
     # ----------------------------------------------------------
     # PANEL B: RIGHT SEGMENT MAP  (right, headline)
     # ----------------------------------------------------------
-    Select outer viewport: 4.2, 8, 0.75, 4.60
-    Select inner viewport: 4.55, 7.75, 0.95, 4.40
+    Select outer viewport: 4.2, 8, 0.75, 4.45
+    Select inner viewport: 4.55, 7.75, 0.95, 4.25
 
     Axes: 0, totalSegments, 0, 1
     Paint rectangle: "{0.97, 0.97, 0.97}", 0, totalSegments, 0, 1
@@ -535,6 +575,14 @@ if draw_visualization
             b = 0.5 + 0.4 * sin(hue * 2 * pi + 4)
             barColor$ = "{" + fixed$(r, 2) + ", " + fixed$(g, 2) + ", " + fixed$(b, 2) + "}"
             Paint rectangle: barColor$, s - 0.9, s - 0.1, 0.1, 0.9
+
+            yPos = 0.12 + 0.76 * rightPosNorm#[s]
+            Colour: "White"
+            Line width: 2.4
+            Draw line: s - 0.82, yPos, s - 0.18, yPos
+            Colour: "Black"
+            Line width: 0.8
+            Draw line: s - 0.82, yPos, s - 0.18, yPos
         endif
     endfor
 
@@ -551,7 +599,7 @@ if draw_visualization
     Line width: 1
     Draw inner box
     Font size: 6
-    Text bottom: "yes", "Segment #"
+    Text bottom: "yes", "Segment index"
 
     # ----------------------------------------------------------
     # ALIGNED PANEL TITLES  (above A and B)
@@ -567,26 +615,81 @@ if draw_visualization
 
     # ----------------------------------------------------------
     # PANEL C: OUTPUT STEREO WAVEFORM  (full width)
+    # v0.4.3: draw L and R explicitly as mono Sounds. This makes the
+    # waveform colour deterministic instead of relying on stereo Draw.
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 4.68, 5.55
-    Select inner viewport: 0.55, 7.72, 4.75, 5.48
+    selectObject: result
+    vizLeft = Extract one channel: 1
+    Rename: "segment_mixer_viz_L"
+    peakLeftViz = Get absolute extremum: 0, 0, "None"
 
     selectObject: result
-    Colour: "{0.30, 0.50, 0.70}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
-    Colour: "Black"
-    Line width: 1
-    Draw inner box
+    vizRight = Extract one channel: 2
+    Rename: "segment_mixer_viz_R"
+    peakRightViz = Get absolute extremum: 0, 0, "None"
+
+    waveformAmp = 1.08 * max(peakLeftViz, peakRightViz)
+    if waveformAmp < 0.05
+        waveformAmp = 0.05
+    endif
+
+    # Shared panel title.
+    Select outer viewport: 0, 8, 4.46, 4.64
+    Axes: 0, 1, 0, 1
     Font size: 7
-    Text top: "no", "Output stereo waveform  (" + fixed$(finalDuration, 2) + " s)"
-    Text left: "yes", "Amp"
+    Colour: "Black"
+    Text: 0.5, "centre", 0.45, "half", "Output stereo waveform  (" + fixed$(finalDuration, 2) + " s)"
+
+    # Left channel.
+    Select outer viewport: 0, 8, 4.62, 4.98
+    Select inner viewport: 0.55, 7.72, 4.66, 4.94
+    Axes: 0, finalDuration, -waveformAmp, waveformAmp
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, finalDuration, -waveformAmp, waveformAmp
+    Colour: "{0.82, 0.86, 0.90}"
+    Draw line: 0, 0, finalDuration, 0
+    selectObject: vizLeft
+    Colour: "{0.46, 0.43, 0.62}"
+    Line width: 0.75
+    Draw: 0, finalDuration, -waveformAmp, waveformAmp, "no", "Curve"
+    Select outer viewport: 0, 8, 4.62, 4.98
+    Select inner viewport: 0.55, 7.72, 4.66, 4.94
+    Axes: 0, finalDuration, -waveformAmp, waveformAmp
+    Colour: "Black"
+    Line width: 0.8
+    Draw inner box
+    Font size: 5.5
+    Text: 0.01 * finalDuration, "left", 0.72 * waveformAmp, "half", "L"
+
+    # Right channel.
+    Select outer viewport: 0, 8, 4.98, 5.38
+    Select inner viewport: 0.55, 7.72, 5.01, 5.30
+    Axes: 0, finalDuration, -waveformAmp, waveformAmp
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, finalDuration, -waveformAmp, waveformAmp
+    Colour: "{0.82, 0.86, 0.90}"
+    Draw line: 0, 0, finalDuration, 0
+    selectObject: vizRight
+    Colour: "{0.46, 0.43, 0.62}"
+    Line width: 0.75
+    Draw: 0, finalDuration, -waveformAmp, waveformAmp, "no", "Curve"
+    Select outer viewport: 0, 8, 4.98, 5.38
+    Select inner viewport: 0.55, 7.72, 5.01, 5.30
+    Axes: 0, finalDuration, -waveformAmp, waveformAmp
+    Colour: "Black"
+    Line width: 0.8
+    Draw inner box
+    Font size: 5.5
+    Text: 0.01 * finalDuration, "left", 0.72 * waveformAmp, "half", "R"
+    Marks bottom: 6, "yes", "yes", "no"
+    Font size: 6
     Text bottom: "yes", "Time (s)"
+
+    removeObject: vizLeft, vizRight
 
     # ----------------------------------------------------------
     # PANEL D: FILE COLOR LEGEND  (full width)
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 5.62, 6.55
-    Select inner viewport: 0.55, 7.72, 5.69, 6.48
+    Select outer viewport: 0, 8, 5.62, 6.52
+    Select inner viewport: 0.55, 7.72, 5.72, 6.42
 
     Axes: 0, numberOfSelectedSounds, 0, 1
     Paint rectangle: "{0.97, 0.97, 0.97}", 0, numberOfSelectedSounds, 0, 1
@@ -605,11 +708,12 @@ if draw_visualization
         # preserved across the monoSounds cleanup, so we can show real
         # names instead of v0.2's "File 1", "File 2", ... fallback.
         rawName$ = soundNames$#[i]
+        cleanName$ = replace$(rawName$, "_", " ", 0)
         # Truncate long names to fit panel width
-        if length(rawName$) > 14
-            displayName$ = left$(rawName$, 12) + ".."
+        if length(cleanName$) > 14
+            displayName$ = left$(cleanName$, 12) + ".."
         else
-            displayName$ = rawName$
+            displayName$ = cleanName$
         endif
 
         Colour: "Black"
@@ -621,15 +725,17 @@ if draw_visualization
     Line width: 1
     Draw inner box
     Font size: 7
-    Text top: "no", "File color legend"
+    Text top: "no", "File colors  |  tick = source position"
 
     # ----------------------------------------------------------
     # PANEL E: SUMMARY BAR  (suite standard light grey)
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 6.62, 7.30
-    Select inner viewport: 0.55, 7.72, 6.68, 7.24
+    Select outer viewport: 0, 8, 6.68, 7.42
+    Select inner viewport: 0.55, 7.72, 6.74, 7.36
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+
+    summaryOutputName$ = replace$(compositeName$, "_", " ", 0)
 
     Font size: 6
     Colour: "{0.28, 0.28, 0.28}"
@@ -646,7 +752,7 @@ if draw_visualization
         ... + "  |  SR: " + fixed$(targetSR / 1000, 1) + " kHz"
 
     Text: 0.02, "left", 0.18, "half",
-        ... "Output: " + compositeName$
+        ... "Output: " + summaryOutputName$
         ... + "  |  Duration: " + fixed$(finalDuration, 2) + " s"
         ... + "  |  Out RMS: " + fixed$(rms_out, 4)
 

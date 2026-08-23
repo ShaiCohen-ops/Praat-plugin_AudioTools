@@ -2,7 +2,7 @@
 # Praat AudioTools - Bigram_Stutter_Effect.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
-# Version: 1.4 (2026)
+# Version: 1.4.1 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -11,6 +11,16 @@
 #   using n-gram (bigram) logic. Segments audio into windows
 #   and makes Markov chain decisions: repeat current segment
 #   (stutter) or advance to next segment.
+#
+# Changelog v1.4.1:
+#   Visualization-only suite alignment:
+#   - Replaced the legacy decision bars + spectrogram report with the
+#     standardized Source -> Bigram transition map -> Output -> Summary view.
+#   - The transition map now directly shows first-order Markov behavior:
+#     diagonal motion = advance, horizontal motion = self-loop/stutter,
+#     with separate L/R lanes so stereo modes remain legible.
+#   - Added shared waveform scaling, suite panel styling, safe display names,
+#     and compact summary reporting. DSP and timing are unchanged.
 #
 # Changelog v1.4:
 #   DSP / timing / correctness:
@@ -45,7 +55,7 @@
 #   - Ensured stereoResult is properly selected after trimming
 # ============================================================
 
-form Bigram Stutter Effect v1.4
+form Bigram Stutter Effect v1.4.1
     comment Select a Sound object first
     
     comment === Preset ===
@@ -174,7 +184,7 @@ endif
 plannedDuration = windowSize + (targetOutputSegments - 1) * hopSize
 
 # === Initialize Report ===
-writeInfoLine: "=== Bigram Stutter Effect v1.4 ==="
+writeInfoLine: "=== Bigram Stutter Effect v1.4.1 ==="
 appendInfoLine: "Source: ", sound$, " (", fixed$(duration, 2), " s)"
 appendInfoLine: "Target duration: ", target_duration_s, " s"
 appendInfoLine: ""
@@ -489,188 +499,235 @@ endif
 removeObject: leftChannel, rightChannel, result_L, result_R
 
 # ==================================================================
-# VISUALIZATION
+# VISUALIZATION  (current Praat AudioTools suite styling)
+# Source -> signature Bigram transition map -> Output -> Summary.
+# The central map directly embodies the first-order Markov law:
+#   diagonal path = advance to the next source segment,
+#   horizontal path = self-loop / stutter,
+#   downward reset = cyclic source wrap.
+# L and R use separate lanes so stereo behavior remains legible.
 # ==================================================================
 
 if draw_visualization
     appendInfoLine: ""
     appendInfoLine: "Drawing visualization..."
-    
+
     Erase all
-    
-    # Title (its own band)
-    Select outer viewport: 0, 8, 0, 0.33
+    Select outer viewport: 0, 8, 0, 7.10
+    Black
+    Plain line
+
+    display_name$ = replace$(sound$, "_", " ", 0)
+    presetLabel$ = preset$
+
+    # Mono, zero-based display copies.
+    selectObject: soundID
+    if originalChannels > 1
+        vizOrig = Convert to mono
+    else
+        vizOrig = Copy: "viz orig"
+    endif
+    selectObject: vizOrig
+    vizOrigStart = Get start time
+    Shift times by: -vizOrigStart
+
+    selectObject: stereoResult
+    vizResult = Convert to mono
+    selectObject: vizResult
+    vizResultStart = Get start time
+    Shift times by: -vizResultStart
+
+    # Shared waveform amplitude scale.
+    selectObject: vizOrig
+    oPeak = Get absolute extremum: 0, 0, "None"
+    selectObject: vizResult
+    rPeak = Get absolute extremum: 0, 0, "None"
+    sharedPeak = oPeak
+    if rPeak > sharedPeak
+        sharedPeak = rPeak
+    endif
+    if sharedPeak < 0.001
+        sharedPeak = 0.001
+    endif
+    sharedAmp = sharedPeak * 1.15
+
+    selectObject: stereoResult
+    resultDur = Get total duration
+
+    # ----------------------------------------------------------
+    # TITLE / SUBTITLE
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 0, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "##Bigram Stutter Effect v1.4##"
-    
-    # Subtitle (separate band so it can't collide with the title)
-    Select outer viewport: 0, 8, 0.33, 0.5
-    Axes: 0, 1, 0, 1
-    Font size: 9
-    Colour: "{0.4, 0.4, 0.5}"
-    Text: 0.5, "centre", 0.5, "half", sound$ + " | " + stereo_mode$ + " | P=" + fixed$(stutter_probability, 2)
-    
-    # Original waveform
-    Select outer viewport: 0, 8, 0.6, 1.4
-    Select inner viewport: 0.6, 7.7, 0.7, 1.35
-    selectObject: soundID
-    Colour: "{0.6, 0.6, 0.6}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
+    Text: 0.5, "centre", 0.68, "half", "##Bigram Stutter Effect##"
+    Font size: 7
+    Colour: "{0.35, 0.35, 0.52}"
+    Text: 0.5, "centre", -1.30, "half", "Bigram Stutter Effect.praat  |  " + presetLabel$ + "  |  " + display_name$
+
+    # ----------------------------------------------------------
+    # SOURCE
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 0.65, 1.90
+    Select inner viewport: 0.55, 7.75, 0.82, 1.78
+    Axes: 0, duration, -sharedAmp, sharedAmp
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, duration, -sharedAmp, sharedAmp
+    selectObject: vizOrig
+    Colour: "{0.62, 0.62, 0.66}"
+    Draw: 0, duration, -sharedAmp, sharedAmp, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "Original"
-    Text top: "no", fixed$(duration, 2) + " s"
-    
-    # Result waveform
-    Select outer viewport: 0, 8, 1.4, 2.2
-    Select inner viewport: 0.6, 7.7, 1.5, 2.15
-    selectObject: stereoResult
-    Colour: "{0.3, 0.6, 0.5}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
-    Colour: "Black"
-    Draw inner box
-    Font size: 7
-    Text left: "yes", "Stuttered"
-    Text bottom: "yes", "Time (s)"
-    
-    selectObject: stereoResult
-    resultDur = Get total duration
-    Text top: "no", fixed$(resultDur, 2) + " s (target: " + fixed$(target_duration_s, 1) + "s)"
-    
-    # Decision chain visualization (first 100 segments)
-    Select outer viewport: 0, 8, 2.3, 4.8
-    Select inner viewport: 0.6, 7.7, 2.4, 4.75
-    
-    maxVizSegments = min(100, totalOutputSegments_L)
-    Axes: 0, maxVizSegments + 1, -0.5, 1.5
-    Paint rectangle: "{0.97, 0.98, 0.97}", 0, maxVizSegments + 1, -0.5, 1.5
-    
-    # Draw decision chain for L channel
-    for i to maxVizSegments
-        if decisionType_L[i] = 0
-            # Stutter (self-loop)
-            Colour: "{0.9, 0.3, 0.3}"
-            Paint rectangle: "{0.9, 0.3, 0.3}", i - 0.4, i + 0.4, 0.6, 1.4
-        else
-            # Advance
-            Colour: "{0.3, 0.7, 0.5}"
-            Paint rectangle: "{0.3, 0.7, 0.5}", i - 0.4, i + 0.4, 0.6, 1.4
-        endif
-    endfor
-    
-    # Draw decision chain for R channel
-    for i to min(maxVizSegments, totalOutputSegments_R)
-        if decisionType_R[i] = 0
-            # Stutter
-            Colour: "{0.9, 0.5, 0.5}"
-            Paint rectangle: "{0.9, 0.5, 0.5}", i - 0.4, i + 0.4, -0.4, 0.4
-        else
-            # Advance
-            Colour: "{0.5, 0.8, 0.6}"
-            Paint rectangle: "{0.5, 0.8, 0.6}", i - 0.4, i + 0.4, -0.4, 0.4
-        endif
-    endfor
-    
-    # Labels
-    Colour: "Black"
-    Draw inner box
-    Font size: 7
-    Text left: "yes", "L / R"
-    Text bottom: "yes", "Segment Index (first " + string$(maxVizSegments) + ")"
-    Text top: "no", "Decision Chain (Red=Stutter, Green=Advance)"
-    
-    # Legend
+    Text top: "no", "##Source##"
     Font size: 6
-    Colour: "{0.9, 0.3, 0.3}"
-    Text: maxVizSegments * 0.98, "right", 1.0, "half", "L Stutter"
-    Colour: "{0.3, 0.7, 0.5}"
-    Text: maxVizSegments * 0.98, "right", 1.3, "half", "L Advance"
-    Colour: "{0.9, 0.5, 0.5}"
-    Text: maxVizSegments * 0.98, "right", 0.0, "half", "R Stutter"
-    Colour: "{0.5, 0.8, 0.6}"
-    Text: maxVizSegments * 0.98, "right", 0.3, "half", "R Advance"
-    
-    # Spectrograms
-    vizMaxFreq = min(5000, 0.95 * samplingFrequency / 2)
-    Select outer viewport: 0, 4, 4.9, 6.4
-    Select inner viewport: 0.6, 3.7, 5.0, 6.35
-    
-    selectObject: soundID
-    if originalChannels > 1
-        Extract one channel: 1
-        tmpOrig = selected("Sound")
-    else
-        Copy: "tmpOrig"
-        tmpOrig = selected("Sound")
+    Text left: "yes", "Amplitude"
+    Text bottom: "yes", "Time (s)"
+    Axes: 0, duration, -sharedAmp, sharedAmp
+    Colour: "{0.28, 0.28, 0.28}"
+    Text: 0.01 * duration, "left", 0.82 * sharedAmp, "half", string$(numberOfSegments) + " source windows  |  window " + fixed$(window_size_ms, 1) + " ms"
+    Text: 0.99 * duration, "right", 0.82 * sharedAmp, "half", "overlap " + fixed$(overlap_ms, 1) + " ms  |  hop " + fixed$(hopSize * 1000, 1) + " ms"
+
+    # ----------------------------------------------------------
+    # BIGRAM TRANSITION MAP - signature process view
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 2.05, 4.55
+    Select inner viewport: 0.55, 7.75, 2.25, 4.40
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, 1, 0, 1
+
+    # Separate channel lanes. Vertical position within each lane = source segment index.
+    laneX0 = 0.10
+    laneX1 = 0.96
+    laneSpan = laneX1 - laneX0
+    laneLowL = 0.57
+    laneHighL = 0.88
+    laneLowR = 0.12
+    laneHighR = 0.43
+    laneHL = laneHighL - laneLowL
+    laneHR = laneHighR - laneLowR
+
+    Paint rectangle: "{0.955, 0.965, 0.985}", laneX0, laneX1, laneLowL, laneHighL
+    Paint rectangle: "{0.970, 0.955, 0.985}", laneX0, laneX1, laneLowR, laneHighR
+
+    maxVizSteps = min(80, totalOutputSegments_L)
+    stepDen = maxVizSteps - 1
+    if stepDen < 1
+        stepDen = 1
     endif
-    
-    To Spectrogram: 0.005, vizMaxFreq, 0.002, 20, "Gaussian"
-    origSpec = selected("Spectrogram")
-    Paint: 0, 0, 0, vizMaxFreq, 100, "yes", 50, 6, 0, "no"
-    
+    segDen = numberOfSegments - 1
+    if segDen < 1
+        segDen = 1
+    endif
+
+    # Light reference lines at source-segment endpoints.
+    Colour: "{0.84, 0.84, 0.86}"
+    Draw line: laneX0, laneLowL, laneX1, laneLowL
+    Draw line: laneX0, laneHighL, laneX1, laneHighL
+    Draw line: laneX0, laneLowR, laneX1, laneLowR
+    Draw line: laneX0, laneHighR, laneX1, laneHighR
+
+    if maxVizSteps > 1
+        for i to maxVizSteps - 1
+            x1 = laneX0 + laneSpan * (i - 1) / stepDen
+            x2 = laneX0 + laneSpan * i / stepDen
+
+            yL1 = laneLowL + laneHL * (segmentChain_L[i] - 1) / segDen
+            yL2 = laneLowL + laneHL * (segmentChain_L[i + 1] - 1) / segDen
+            yR1 = laneLowR + laneHR * (segmentChain_R[i] - 1) / segDen
+            yR2 = laneLowR + laneHR * (segmentChain_R[i + 1] - 1) / segDen
+
+            # L transition: red horizontal = self-loop, blue = advance/wrap.
+            if decisionType_L[i] = 0
+                Colour: "{0.88, 0.28, 0.28}"
+                Line width: 2.4
+            else
+                Colour: "{0.30, 0.53, 0.82}"
+                Line width: 1.3
+            endif
+            Draw line: x1, yL1, x2, yL2
+
+            # R transition: orange horizontal = self-loop, purple = advance/wrap.
+            if decisionType_R[i] = 0
+                Colour: "{0.95, 0.55, 0.20}"
+                Line width: 2.4
+            else
+                Colour: "{0.48, 0.33, 0.72}"
+                Line width: 1.3
+            endif
+            Draw line: x1, yR1, x2, yR2
+        endfor
+    endif
+    Line width: 1
+
+    # Lane labels and direct law legend.
+    Font size: 6
+    Colour: "{0.28, 0.28, 0.28}"
+    Text: 0.02, "left", 0.73, "half", "L"
+    Text: 0.02, "left", 0.28, "half", "R"
+    Text: laneX0 - 0.01, "right", laneLowL, "half", "1"
+    Text: laneX0 - 0.01, "right", laneHighL, "half", string$(numberOfSegments)
+    Text: laneX0 - 0.01, "right", laneLowR, "half", "1"
+    Text: laneX0 - 0.01, "right", laneHighR, "half", string$(numberOfSegments)
+
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "Freq (Hz)"
-    Text top: "no", "Original"
-    
-    removeObject: origSpec, tmpOrig
-    
-    Select outer viewport: 4, 8, 4.9, 6.4
-    Select inner viewport: 4.4, 7.7, 5.0, 6.35
-    
-    selectObject: stereoResult
-    Extract one channel: 1
-    tmpResult = selected("Sound")
-    
-    To Spectrogram: 0.005, vizMaxFreq, 0.002, 20, "Gaussian"
-    resultSpec = selected("Spectrogram")
-    Paint: 0, 0, 0, vizMaxFreq, 100, "yes", 50, 6, 0, "no"
-    
+    Text top: "no", "##Bigram transition map##"
+    Font size: 6
+    Colour: "{0.28, 0.28, 0.28}"
+    Text: laneX0, "left", 0.96, "half", "diagonal = advance  |  horizontal = self-loop / stutter  |  reset = source wrap"
+    Text: laneX1, "right", 0.96, "half", "first " + string$(maxVizSteps) + " output steps"
+    Text: laneX0, "left", 0.49, "half", "blue = L advance  |  red = L stutter"
+    Text: laneX1, "right", 0.49, "half", "purple = R advance  |  orange = R stutter"
+    Text: laneX0, "left", 0.04, "half", "source segment index ->"
+    Text: laneX1, "right", 0.04, "half", stereo_mode$ + "  |  P=" + fixed$(stutter_probability, 2)
+
+    # ----------------------------------------------------------
+    # OUTPUT
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 4.70, 5.95
+    Select inner viewport: 0.55, 7.75, 4.87, 5.83
+    Axes: 0, resultDur, -sharedAmp, sharedAmp
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, resultDur, -sharedAmp, sharedAmp
+    selectObject: vizResult
+    Colour: "{0.48, 0.33, 0.72}"
+    Draw: 0, resultDur, -sharedAmp, sharedAmp, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "Freq (Hz)"
+    Text top: "no", "##Output##"
+    Font size: 6
+    Text left: "yes", "Amplitude"
     Text bottom: "yes", "Time (s)"
-    Text top: "no", "Stuttered (L)"
-    
-    removeObject: resultSpec, tmpResult
-    
-    # Info panel
-    Select outer viewport: 0, 8, 6.5, 7.5
-    Select inner viewport: 0.6, 7.7, 6.6, 7.45
-    
+    Axes: 0, resultDur, -sharedAmp, sharedAmp
+    Colour: "{0.28, 0.28, 0.28}"
+    Text: 0.01 * resultDur, "left", 0.82 * sharedAmp, "half", string$(totalOutputSegments_L) + " output windows  |  target " + fixed$(target_duration_s, 2) + " s"
+    Text: 0.99 * resultDur, "right", 0.82 * sharedAmp, "half", "L stutters " + string$(stutterCount_L) + "  |  R stutters " + string$(stutterCount_R)
+
+    # ----------------------------------------------------------
+    # SUMMARY
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 6.10, 7.05
+    Select inner viewport: 0.30, 7.80, 6.17, 6.98
     Axes: 0, 1, 0, 1
-    Paint rectangle: "{0.95, 0.95, 0.95}", 0, 1, 0, 1
-    
-    Font size: 7
-    Colour: "Black"
-    
-    Text: 0.05, "left", 0.75, "half", "Processing Details:"
-    Font size: 6
-    Text: 0.05, "left", 0.55, "half", "Window: " + string$(window_size_ms) + " ms | Overlap: " + string$(overlap_ms) + " ms"
-    Text: 0.05, "left", 0.35, "half", "Stutter Probability: " + fixed$(stutter_probability, 2)
-    Text: 0.05, "left", 0.15, "half", "L: " + string$(totalOutputSegments_L) + " segs (" + string$(stutterCount_L) + " stutters)"
-    
-    Font size: 7
-    
-    # Get the actual final duration before using it
-    selectObject: stereoResult
-    resultDur = Get total duration
-    
-    Text: 0.55, "left", 0.75, "half", "Output:"
-    Font size: 6
-    Text: 0.55, "left", 0.55, "half", "Target: " + fixed$(target_duration_s, 1) + " s | Actual: " + fixed$(resultDur, 2) + " s"
-    Text: 0.55, "left", 0.35, "half", "Stereo Mode: " + stereo_mode$
-    Text: 0.55, "left", 0.15, "half", "R: " + string$(totalOutputSegments_R) + " segs (" + string$(stutterCount_R) + " stutters)"
-    
-    Colour: "Black"
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    Colour: "{0.48, 0.48, 0.48}"
     Draw rectangle: 0, 1, 0, 1
-    
+
+    Font size: 7
+    Colour: "Black"
+    Text: 0.02, "left", 0.80, "half", "##Summary##"
+    Font size: 6
+    Colour: "{0.28, 0.28, 0.28}"
+    Text: 0.02, "left", 0.49, "half", presetLabel$ + "  |  window " + fixed$(window_size_ms, 1) + " ms  |  overlap " + fixed$(overlap_ms, 1) + " ms  |  hop " + fixed$(hopSize * 1000, 1) + " ms  |  P=" + fixed$(stutter_probability, 2) + "  |  " + stereo_mode$
+    Text: 0.02, "left", 0.18, "half", "Source " + fixed$(duration, 2) + " s / " + string$(numberOfSegments) + " windows  |  Output " + fixed$(resultDur, 2) + " s / " + string$(totalOutputSegments_L) + " steps  |  stutters L=" + string$(stutterCount_L) + ", R=" + string$(stutterCount_R)
+
     Font size: 10
+    Colour: "Black"
+    Line width: 1
+
+    removeObject: vizOrig, vizResult
 endif
 
 # ==================================================================

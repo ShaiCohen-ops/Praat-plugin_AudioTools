@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4 (2026)
+# Version: 0.4.1 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -17,6 +17,14 @@
 #   comb filtering. Finite-signal boundaries use zero-padding.
 #
 # Multiple iterations create complex spectral interference patterns.
+#
+# Changelog v0.4.1:
+#   - Visualization-only alignment to the current Praat AudioTools suite.
+#   - Reframed as Source -> Delay cascade map -> Output -> Summary.
+#   - Central diagram now directly embodies each FIR difference stage,
+#     x[n+D] - x[n], with the active delay and comb spacing per iteration.
+#   - Unified panel geometry, typography, neutral backgrounds and filename
+#     display; DSP, presets, delay calculations and processing are unchanged.
 #
 # Changelog v0.4:
 #   - FIR boundary handling corrected. Out-of-range delayed samples now use
@@ -54,7 +62,7 @@
 #   - Bounds checking
 # ============================================================
 
-form Delay Array v0.4
+form Delay Array v0.4.1
     comment Select a Sound object first
     
     comment === Preset ===
@@ -270,107 +278,224 @@ if resultPeak > 0
     Scale peak: scale_peak
 endif
 
-# === Visualization ===
+# ============================================================
+# VISUALIZATION  (current Praat AudioTools suite styling)
+# Source -> Delay cascade map -> Output -> Summary.
+# The central diagram directly embodies the repeated FIR law:
+#   stage_k[n] = stage_(k-1)[n + D_k] - stage_(k-1)[n]
+# Orange boxes = the repeated delay-difference operation.
+# ============================================================
 if draw_visualization
     Erase all
-    
-    # Title
-    Select outer viewport: 1, 8, 0.2, 0.7
-    Axes: 0, 1, 0, 1
-    Font size: 14
-    Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "Delay Array: " + original_name$
-    
-    # Original waveform
-    Select outer viewport: 0, 8, 0.9, 2.3
-    Select inner viewport: 0.6, 7.6, 1.0, 2.2
-    selectObject: original
-    Colour: "{0.6, 0.6, 0.6}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
-    Colour: "Black"
-    Draw inner box
-    Font size: 8
-    Select outer viewport: 0.1, 8, 0.5, 2.8
-    Text left: "yes", "Original"
-    
-    # Result waveform
-    Select outer viewport: 0, 8, 2.4, 3.8
-    Select inner viewport: 0.6, 7.6, 2.5, 3.7
-    selectObject: result
-    Colour: "{0.2, 0.5, 0.7}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
-    Colour: "Black"
-    Draw inner box
-    Text left: "yes", "Result"
-    Text bottom: "yes", "Time (s)"
-    
-    # Spectrum display ceiling
-    maxSpecHz = min(5000, sampleRate / 2)
+    Select outer viewport: 0, 8, 0, 7.10
+    Black
+    Plain line
 
-    # Original spectrum
-    Select outer viewport: 0, 4, 4.0, 5.6
-    Select inner viewport: 0.6, 3.8, 4.2, 5.5
+    displayName$ = replace$(original_name$, "_", " ", 0)
+
+    # Mono, zero-based display copies.
     selectObject: original
-    nch = Get number of channels
-    if nch > 1
-        specMono = Convert to mono
-    else
-        specMono = Copy: "specMono"
-    endif
-    To Spectrum: "yes"
-    origSpectrum = selected("Spectrum")
-    Colour: "{0.6, 0.6, 0.6}"
-    Draw: 0, maxSpecHz, 0, 0, "no"
-    Colour: "Black"
-    Draw inner box
-    Font size: 7
-    Text left: "yes", "dB"
-    Text bottom: "yes", "Original spectrum (Hz)"
-    removeObject: origSpectrum, specMono
-    
-    # Result spectrum
-    Select outer viewport: 4, 8, 4.0, 5.6
-    Select inner viewport: 4.4, 7.6, 4.2, 5.5
+    vizOrig = Convert to mono
+    selectObject: vizOrig
+    vizOrigStart = Get start time
+    Shift times by: -vizOrigStart
+
     selectObject: result
-    nch = Get number of channels
-    if nch > 1
-        resMono = Convert to mono
-    else
-        resMono = Copy: "resMono"
+    vizResult = Convert to mono
+    selectObject: vizResult
+    vizResultStart = Get start time
+    Shift times by: -vizResultStart
+
+    # Shared source/output amplitude scale.
+    selectObject: vizOrig
+    origPeak = Get absolute extremum: 0, 0, "None"
+    selectObject: vizResult
+    outPeak = Get absolute extremum: 0, 0, "None"
+    sharedPeak = max(origPeak, outPeak)
+    if sharedPeak < 0.001
+        sharedPeak = 0.001
     endif
-    To Spectrum: "yes"
-    resSpectrum = selected("Spectrum")
-    Colour: "{0.3, 0.6, 0.8}"
-    Draw: 0, maxSpecHz, 0, 0, "no"
+    sharedAmp = 1.15 * sharedPeak
+
+    # ----------------------------------------------------------
+    # TITLE / SUBTITLE
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 0, 0.50
+    Axes: 0, 1, 0, 1
+    Font size: 12
+    Colour: "Black"
+    Text: 0.5, "centre", 0.68, "half", "##Delay Array##"
+    Font size: 7
+    Colour: "{0.35, 0.35, 0.52}"
+    Text: 0.5, "centre", -1.30, "half", "Delay Array.praat  |  " + displayName$ + "  |  repeated FIR delay differences"
+
+    # ----------------------------------------------------------
+    # SOURCE
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 0.65, 1.90
+    Select inner viewport: 0.55, 7.75, 0.82, 1.78
+    Axes: 0, duration, -sharedAmp, sharedAmp
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, duration, -sharedAmp, sharedAmp
+    selectObject: vizOrig
+    Colour: "{0.58, 0.58, 0.62}"
+    Draw: 0, duration, -sharedAmp, sharedAmp, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "dB"
-    Text bottom: "yes", "Result spectrum (Hz)"
-    removeObject: resSpectrum, resMono
-    
-    # Legend
-    Select outer viewport: 0.5, 8, 5.7, 6.1
+    Text top: "no", "##Source##"
+    Font size: 6
+    Text left: "yes", "Amplitude"
+    Text bottom: "yes", "Time (s)"
+    Axes: 0, duration, -sharedAmp, sharedAmp
+    Colour: "{0.28, 0.28, 0.28}"
+    Text: 0.01 * duration, "left", 0.82 * sharedAmp, "half", "duration " + fixed$(duration, 3) + " s  |  " + string$(sampleRate) + " Hz"
+
+    # ----------------------------------------------------------
+    # DELAY CASCADE MAP
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 2.05, 4.55
+    Select inner viewport: 0.55, 7.75, 2.22, 4.40
     Axes: 0, 1, 0, 1
-    Font size: 8
-    Colour: "{0.4, 0.4, 0.4}"
-    if use_ms_delay
-        delayList$ = fixed$(msVal[1], 2)
-        for k from 2 to number_of_iterations
-            delayList$ = delayList$ + ", " + fixed$(msVal[k], 2)
-        endfor
-        legendMode$ = "ms delays: " + delayList$
-    else
-        delayList$ = fixed$(divisor[1], 2)
-        for k from 2 to number_of_iterations
-            delayList$ = delayList$ + ", " + fixed$(divisor[k], 2)
-        endfor
-        legendMode$ = "Divisors: " + delayList$
-    endif
-    Text: 0.5, "centre", 0.5, "half", presetName$ + " | " + legendMode$ + " | Iterations: " + string$(number_of_iterations)
-    
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, 1, 0, 1
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text top: "no", "##Delay cascade map##"
+
+    # One stage box per active iteration.  The box itself is the repeated
+    # x[n+D] - x[n] operator; its label reports the actual D and 1/D spacing.
+    stageW = 0.20
+    stageGap = 0.025
+    totalStageW = number_of_iterations * stageW + (number_of_iterations - 1) * stageGap
+    stageStart = (1 - totalStageW) / 2
+    stageY1 = 0.30
+    stageY2 = 0.76
+
+    # Input/output flow line behind the blocks.
+    Colour: "{0.68, 0.68, 0.70}"
+    Line width: 1.2
+    Draw line: 0.025, 0.53, 0.975, 0.53
+    Line width: 1
+
+    Font size: 6
+    Colour: "{0.28, 0.28, 0.28}"
+    Text: 0.02, "left", 0.83, "half", "Each stage:  y[n] = x[n+D] - x[n]   |   zero-padded finite-signal boundary"
+
+    for k to number_of_iterations
+        x1 = stageStart + (k - 1) * (stageW + stageGap)
+        x2 = x1 + stageW
+        xc = (x1 + x2) / 2
+
+        # light operation block; orange has one meaning here: FIR difference stage
+        Paint rectangle: "{0.98, 0.94, 0.88}", x1, x2, stageY1, stageY2
+        Colour: "{0.80, 0.47, 0.20}"
+        Line width: 1.2
+        Draw rectangle: x1, x2, stageY1, stageY2
+        Line width: 1
+
+        delaySamples = delayArr[k]
+        delayMs = delaySamples / sampleRate * 1000
+        combSpacing = sampleRate / delaySamples
+
+        Font size: 6
+        Colour: "Black"
+        Text: xc, "centre", 0.70, "half", "##Stage " + string$(k) + "##"
+        Font size: 5
+        Colour: "{0.38, 0.28, 0.20}"
+        Text: xc, "centre", 0.57, "half", "x[n+D] - x[n]"
+
+        if use_ms_delay
+            delayText$ = "D " + fixed$(delayMs, 3) + " ms"
+        else
+            delayText$ = "D " + fixed$(delayMs, 2) + " ms  (1/" + fixed$(divisor[k], 2) + " file)"
+        endif
+        Text: xc, "centre", 0.45, "half", delayText$
+        Text: xc, "centre", 0.35, "half", "zero spacing " + fixed$(combSpacing, 2) + " Hz"
+
+        # two-tap glyph: direct sample (-) and delayed/future sample (+)
+        tapY = 0.23
+        tapL = xc - 0.035
+        tapR = xc + 0.035
+        Colour: "{0.72, 0.72, 0.74}"
+        Draw line: tapL, tapY, tapR, tapY
+        Paint circle (mm): "{0.58, 0.58, 0.62}", tapL, tapY, 0.9
+        Paint circle (mm): "{0.80, 0.47, 0.20}", tapR, tapY, 0.9
+        Font size: 5
+        Colour: "{0.28, 0.28, 0.28}"
+        Text: tapL, "centre", 0.16, "half", "-x[n]"
+        Text: tapR, "centre", 0.16, "half", "+x[n+D]"
+    endfor
+
+    Font size: 6
+    Colour: "{0.35, 0.35, 0.52}"
+    Text: 0.02, "left", 0.06, "half", presetName$ + "  |  " + delayMode$ + "  |  " + string$(number_of_iterations) + " iterations"
+
+    # ----------------------------------------------------------
+    # OUTPUT
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 4.70, 5.95
+    Select inner viewport: 0.55, 7.75, 4.87, 5.83
+    Axes: 0, duration, -sharedAmp, sharedAmp
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, duration, -sharedAmp, sharedAmp
+    selectObject: vizResult
+    Colour: "{0.25, 0.50, 0.82}"
+    Draw: 0, duration, -sharedAmp, sharedAmp, "no", "Curve"
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text top: "yes", "##Output##"
+    Font size: 6
+    Text left: "yes", "Amplitude"
+    Text bottom: "yes", "Time (s)"
+    Axes: 0, duration, -sharedAmp, sharedAmp
+    Colour: "{0.28, 0.28, 0.28}"
+    Text: 0.01 * duration, "left", 0.82 * sharedAmp, "half", "peak-scaled to " + fixed$(scale_peak, 2) + "  |  " + string$(number_of_iterations) + " cascaded FIR differences"
+
+    # ----------------------------------------------------------
+    # SUMMARY
+    # ----------------------------------------------------------
+    minDelayMs = delayArr[1] / sampleRate * 1000
+    maxDelayMs = minDelayMs
+    minSpacing = sampleRate / delayArr[1]
+    maxSpacing = minSpacing
+    for k to number_of_iterations
+        thisDelayMs = delayArr[k] / sampleRate * 1000
+        thisSpacing = sampleRate / delayArr[k]
+        if thisDelayMs < minDelayMs
+            minDelayMs = thisDelayMs
+        endif
+        if thisDelayMs > maxDelayMs
+            maxDelayMs = thisDelayMs
+        endif
+        if thisSpacing < minSpacing
+            minSpacing = thisSpacing
+        endif
+        if thisSpacing > maxSpacing
+            maxSpacing = thisSpacing
+        endif
+    endfor
+
+    Select outer viewport: 0, 8, 6.10, 7.05
+    Select inner viewport: 0.30, 7.80, 6.17, 6.98
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    Colour: "{0.48, 0.48, 0.48}"
+    Draw rectangle: 0, 1, 0, 1
+
+    Font size: 7
+    Colour: "Black"
+    Text: 0.02, "left", 0.80, "half", "##Summary##"
+    Font size: 6
+    Colour: "{0.28, 0.28, 0.28}"
+    Text: 0.02, "left", 0.49, "half", presetName$ + "  |  mode " + delayMode$ + "  |  " + string$(number_of_iterations) + " iterations  |  delay range " + fixed$(minDelayMs, 3) + "-" + fixed$(maxDelayMs, 3) + " ms"
+    Text: 0.02, "left", 0.18, "half", "Comb-zero spacing " + fixed$(minSpacing, 2) + "-" + fixed$(maxSpacing, 2) + " Hz  |  source/output duration " + fixed$(duration, 3) + " s  |  scale peak " + fixed$(scale_peak, 2)
+
     Font size: 10
     Colour: "Black"
+    Line width: 1
+
+    removeObject: vizOrig, vizResult
+    selectObject: result
 endif
 
 # === Reselect result after visualization ===

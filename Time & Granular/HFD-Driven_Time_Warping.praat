@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 2.3 (2026)
+# Version: 2.4 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -13,6 +13,22 @@
 #   factor (with curve shaping, voicing gating and slew limiting), and
 #   resynthesizes via a DurationTier on a Manipulation object. Complex
 #   passages stretch; simple ones contract (or vice-versa via curves).
+#
+# Changelog v2.4:
+#   - VISUALIZATION-ONLY AudioTools uniformity pass; DSP and HFD mapping are unchanged.
+#   - Input/output waveforms now share one amplitude scale. Input stays neutral grey;
+#     warped output uses the library blue.
+#   - One semantic colour per process layer: amber = HFD complexity, red = stretch
+#     command, green = voicing gate, blue = rendered output. Raw/final variants use
+#     lighter/darker values within the same semantic hue.
+#   - User-facing panel titles now explain the process rather than reading like an
+#     analysis figure: complexity, time-warp command, and voicing gate.
+#   - Title/subtitle, panel grounds, two-column geometry, fonts and summary colours
+#     aligned to the current AudioTools visual standard. Underscores in source names
+#     are escaped for Picture text.
+#   - The page height now follows the actual content instead of exporting a large
+#     blank lower area. The full-page viewport is explicitly reselected at the end,
+#     fixing PNG/EPS/clipboard export of only the summary strip.
 #
 # Changelog v2.3:
 #   - PRESERVES MULTICHANNEL OUTPUT. v2.2 analyzed a mono fold and then also
@@ -55,7 +71,7 @@
 # ============================================================
 
 # --- 1. COMPACT STARTUP FORM ---
-form HFD Time Warping v2.3
+form HFD Time Warping v2.4
     optionmenu Preset: 1
         option Custom
         option Subtle
@@ -234,7 +250,7 @@ endif
 # 1. SETUP
 # ==============================================================================
 
-writeInfoLine: "=== HFD Time Warping v2.3 ==="
+writeInfoLine: "=== HFD Time Warping v2.4 ==="
 
 if numberOfSelected("Sound") <> 1
     exitScript: "Please select exactly one Sound object."
@@ -697,10 +713,9 @@ duration_error_ms = (warped_duration - predicted_duration) * 1000
 
 # ==============================================================================
 # 6. VISUALIZATION
-# ==============================================================================
+# ============================================================================== 
 
 if draw_visualization
-    # Find HFD range for display
     minHFD = smoothed_hfd#[1]
     maxHFD = smoothed_hfd#[1]
     for i from 2 to num_frames
@@ -711,11 +726,6 @@ if draw_visualization
             maxHFD = smoothed_hfd#[i]
         endif
     endfor
-    hfdMargin = (maxHFD - minHFD) * 0.1
-    if hfdMargin < 0.05
-        hfdMargin = 0.05
-    endif
-
     if material_type = 1
         matName$ = "Speech"
     else
@@ -731,63 +741,85 @@ if draw_visualization
         curveName$ = "Quantized"
     endif
 
+    vizName$ = replace$(original_name$, "_", "\_ ", 0)
+
+    selectObject: original_sound
+    sourceVizPeak = Get absolute extremum: 0, 0, "Sinc70"
+    selectObject: warped
+    warpedVizPeak = Get absolute extremum: 0, 0, "Sinc70"
+    waveAmp = max(sourceVizPeak, warpedVizPeak) * 1.05
+    if waveAmp < 1e-12
+        waveAmp = 1
+    endif
+
+    if use_voicing_gate
+        pageHeight = 6.42
+        sumY1 = 5.84
+        sumY2 = 6.40
+    else
+        pageHeight = 5.40
+        sumY1 = 4.82
+        sumY2 = 5.38
+    endif
+
     Erase all
-    Select outer viewport: 0, 8, 0, 8
+    Select outer viewport: 0, 8, 0, pageHeight
     Black
     Plain line
 
     # ---- TITLE BAR ----
-    Select outer viewport: 0, 8, 0, 0.65
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##HFD-DRIVEN TIME WARPING##"
+    Text: 0.5, "centre", 0.68, "half", "##HFD-Driven Time Warping v2.4##"
     Font size: 7
-    Colour: "{0.35, 0.35, 0.52}"
-    Text: 0.5, "centre", -0.22, "half",
-        ... original_name$
-        ... + "  |  " + presetName$
-        ... + "  |  stretch " + fixed$(min_stretch_factor, 2) + "-" + fixed$(max_stretch_factor, 2) + "x"
-        ... + "  |  " + fixed$(total_duration, 2) + " s -> " + fixed$(warped_duration, 2) + " s"
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half",
+        ... vizName$
+        ... + " | " + presetName$
+        ... + " | " + matName$
+        ... + " | " + string$(n_channels) + " ch"
+        ... + " | stretch " + fixed$(min_stretch_factor, 2) + "-" + fixed$(max_stretch_factor, 2) + "x"
+        ... + " | " + fixed$(total_duration, 2) + " s -> " + fixed$(warped_duration, 2) + " s"
 
     # ---- ORIGINAL WAVEFORM (left) ----
-    Select outer viewport: 0, 4.2, 0.75, 2.10
-    Select inner viewport: 0.55, 4.00, 0.95, 1.98
+    Select outer viewport: 0, 4, 0.65, 2.05
+    Select inner viewport: 0.60, 3.85, 0.78, 1.92
     selectObject: original_sound
-    Colour: "{0.55, 0.55, 0.60}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
+    Colour: "{0.55, 0.55, 0.55}"
+    Draw: 0, 0, -waveAmp, waveAmp, "no", "Curve"
     Colour: "Black"
     Line width: 1
     Draw inner box
     Font size: 7
     Text top: "no", "Original"
-    Font size: 6
-    Text left: "yes", "Amp"
+    Text left: "yes", "Amplitude"
 
     # ---- WARPED WAVEFORM (right) ----
-    Select outer viewport: 4.2, 8, 0.75, 2.10
-    Select inner viewport: 4.55, 7.75, 0.95, 1.98
+    Select outer viewport: 4, 8, 0.65, 2.05
+    Select inner viewport: 4.45, 7.70, 0.78, 1.92
     selectObject: warped
-    Colour: "{0.55, 0.45, 0.70}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
+    Colour: "{0.25, 0.45, 0.75}"
+    Draw: 0, 0, -waveAmp, waveAmp, "no", "Curve"
     Colour: "Black"
     Line width: 1
     Draw inner box
     Font size: 7
-    Text top: "no", "Warped"
-    Font size: 6
-    Text left: "yes", "Amp"
+    Text top: "no", "Warped output"
+    Text left: "yes", "Amplitude"
 
-    # ---- HFD CURVE (full width) ----
-    Select outer viewport: 0, 8, 2.20, 3.30
-    Select inner viewport: 0.55, 7.75, 2.38, 3.18
-    Axes: 0, total_duration, minHFD - hfdMargin, maxHFD + hfdMargin
-    Paint rectangle: "{0.96, 0.96, 0.97}", 0, total_duration, minHFD - hfdMargin, maxHFD + hfdMargin
-    Colour: "{0.80, 0.80, 0.90}"
+    # ---- HFD COMPLEXITY ----
+    Select outer viewport: 0, 8, 2.20, 3.32
+    Select inner viewport: 0.60, 7.70, 2.33, 3.19
+    Axes: 0, total_duration, 1.0, 2.0
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, total_duration, 1.0, 2.0
+    Colour: "{0.92, 0.82, 0.60}"
     for i from 2 to num_frames
         Draw line: t_points#[i-1], hfd_values#[i-1], t_points#[i], hfd_values#[i]
     endfor
-    Colour: "{0.50, 0.50, 0.70}"
+    Colour: "{0.80, 0.60, 0.20}"
     Line width: 1.5
     for i from 2 to num_frames
         Draw line: t_points#[i-1], smoothed_hfd#[i-1], t_points#[i], smoothed_hfd#[i]
@@ -796,25 +828,29 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text top: "no", "Higuchi Fractal Dimension  (light = raw, dark = smoothed)"
-    Font size: 6
+    Text top: "no", "Signal complexity (HFD)  -  higher = more irregular  |  light = raw, dark = smoothed"
     Text left: "yes", "HFD"
 
-    # ---- STRETCH FACTORS (full width) ----
-    Select outer viewport: 0, 8, 3.40, 4.50
-    Select inner viewport: 0.55, 7.75, 3.58, 4.38
+    # ---- TIME-WARP COMMAND ----
+    Select outer viewport: 0, 8, 3.48, 4.60
+    Select inner viewport: 0.60, 7.70, 3.61, 4.47
     stretchMargin = (max_stretch_factor - min_stretch_factor) * 0.1
-    Axes: 0, total_duration, min_stretch_factor - stretchMargin, max_stretch_factor + stretchMargin
-    Paint rectangle: "{0.96, 0.96, 0.97}", 0, total_duration, min_stretch_factor - stretchMargin, max_stretch_factor + stretchMargin
-    Colour: "{0.80, 0.80, 0.80}"
+    if stretchMargin < 0.05
+        stretchMargin = 0.05
+    endif
+    stretchLo = min_stretch_factor - stretchMargin
+    stretchHi = max_stretch_factor + stretchMargin
+    Axes: 0, total_duration, stretchLo, stretchHi
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, total_duration, stretchLo, stretchHi
+    Colour: "{0.75, 0.75, 0.75}"
     Dotted line
     Draw line: 0, 1.0, total_duration, 1.0
     Solid line
-    Colour: "{0.90, 0.80, 0.80}"
+    Colour: "{0.92, 0.72, 0.70}"
     for i from 2 to num_frames
         Draw line: t_points#[i-1], raw_stretch#[i-1], t_points#[i], raw_stretch#[i]
     endfor
-    Colour: "{0.70, 0.50, 0.50}"
+    Colour: "{0.78, 0.28, 0.22}"
     Line width: 1.5
     for i from 2 to num_frames
         Draw line: t_points#[i-1], stretch_factors#[i-1], t_points#[i], stretch_factors#[i]
@@ -823,18 +859,22 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text top: "no", "Stretch factor  (dotted = unity; light = raw, dark = final/slewed)"
-    Font size: 6
-    Text left: "yes", "x"
-    Text bottom: "yes", "Time (s)"
+    Text top: "no", "Time-warp command  -  above 1x stretches, below 1x contracts  |  light = raw, dark = final"
+    One mark left: 1.0, "no", "yes", "no", "1x"
+    if not use_voicing_gate
+        Text bottom: "yes", "Time (s)"
+        One mark bottom: 0, "no", "yes", "no", "0"
+        One mark bottom: total_duration * 0.5, "no", "yes", "no", fixed$(total_duration * 0.5, 1)
+        One mark bottom: total_duration, "no", "yes", "no", fixed$(total_duration, 1)
+    endif
 
-    # ---- VOICING TRACK (full width, if used) ----
+    # ---- VOICING GATE ----
     if use_voicing_gate
-        Select outer viewport: 0, 8, 4.60, 5.40
-        Select inner viewport: 0.55, 7.75, 4.74, 5.28
+        Select outer viewport: 0, 8, 4.76, 5.68
+        Select inner viewport: 0.60, 7.70, 4.89, 5.55
         Axes: 0, total_duration, 0, 1.1
-        Paint rectangle: "{0.96, 0.96, 0.97}", 0, total_duration, 0, 1.1
-        Colour: "{0.50, 0.70, 0.50}"
+        Paint rectangle: "{0.97, 0.97, 0.97}", 0, total_duration, 0, 1.1
+        Colour: "{0.35, 0.60, 0.40}"
         Line width: 1.5
         for i from 2 to num_frames
             Draw line: t_points#[i-1], smoothed_voicing#[i-1], t_points#[i], smoothed_voicing#[i]
@@ -843,44 +883,41 @@ if draw_visualization
         Colour: "Black"
         Draw inner box
         Font size: 7
-        Text top: "no", "Voicing (HNR)  -  gates the warp toward unity where unvoiced"
-        Font size: 6
-        Text left: "yes", "0-1"
+        Text top: "no", "Voicing gate  -  unvoiced regions pull the warp back toward 1x"
+        Text left: "yes", "Voicing"
         Text bottom: "yes", "Time (s)"
-        sumY1 = 5.50
-        sumY2 = 6.20
-    else
-        sumY1 = 4.60
-        sumY2 = 5.30
+        One mark bottom: 0, "no", "yes", "no", "0"
+        One mark bottom: total_duration * 0.5, "no", "yes", "no", fixed$(total_duration * 0.5, 1)
+        One mark bottom: total_duration, "no", "yes", "no", fixed$(total_duration, 1)
     endif
 
     # ---- SUMMARY BAR ----
     Select outer viewport: 0, 8, sumY1, sumY2
-    Select inner viewport: 0.55, 7.75, sumY1 + 0.07, sumY2 - 0.06
+    Select inner viewport: 0.60, 7.70, sumY1 + 0.04, sumY2 - 0.03
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
     Font size: 6
-    Colour: "{0.28, 0.28, 0.28}"
-    Text: 0.02, "left", 0.75, "half",
-        ... "##" + presetName$ + "##"
-        ... + "  " + original_name$
-        ... + "  |  material: " + matName$
-        ... + "  |  stretch " + fixed$(min_stretch_factor, 2) + "-" + fixed$(max_stretch_factor, 2) + "x"
-        ... + "  |  HFD " + fixed$(minHFD, 2) + "-" + fixed$(maxHFD, 2)
-        ... + "  |  active " + string$(active_count) + "/" + string$(num_frames)
-        ... + "  |  " + fixed$(total_duration, 2) + " s -> " + fixed$(warped_duration, 2) + " s"
+    Colour: "{0.25, 0.25, 0.35}"
+    if use_voicing_gate
+        processText$ = "##Process:## audio -> HFD complexity -> curve mapping -> voicing gate -> DurationTier warp"
+    else
+        processText$ = "##Process:## audio -> HFD complexity -> curve mapping -> DurationTier warp"
+    endif
+    Text: 0.02, "left", 0.72, "half", processText$
     Text: 0.02, "left", 0.28, "half",
-        ... "K=" + string$(k_max)
-        ... + "  |  smooth=" + string$(smoothing_window_size)
-        ... + "  |  curve: " + curveName$
-        ... + "  |  slew=" + fixed$(max_stretch_change_per_sec, 1) + "/s"
-        ... + "  |  voicing=" + fixed$(voicing_influence * 100, 0) + "%"
+        ... "##Result:## " + fixed$(total_duration, 2) + " s -> " + fixed$(warped_duration, 2) + " s"
+        ... + " | HFD " + fixed$(minHFD, 2) + "-" + fixed$(maxHFD, 2)
+        ... + " | active " + string$(active_count) + "/" + string$(num_frames)
+        ... + " | curve " + curveName$
+        ... + " | slew " + fixed$(max_stretch_change_per_sec, 1) + "/s"
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
 
     Font size: 10
     Colour: "Black"
     Line width: 1
+
+    Select outer viewport: 0, 8, 0, pageHeight
 endif
 
 # ==============================================================================

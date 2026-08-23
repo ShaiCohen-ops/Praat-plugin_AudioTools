@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.6 (2026)
+# Version: 0.6.2 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -167,6 +167,7 @@ endif
 
 original = selected("Sound")
 original_name$ = selected$("Sound")
+display_name$ = replace$(original_name$, "_", " ", 0)
 
 selectObject: original
 sampleRate = Get sampling frequency
@@ -357,42 +358,195 @@ removeObject: leftChannel, rightChannel, leftDry, rightDry, sourceSound
 # === Visualization ===
 if draw_visualization
     Erase all
-    
+
+    # Shared waveform amplitude scale for truthful Source/Result comparison
+    selectObject: original
+    originalPeakViz = Get absolute extremum: 0, 0, "Sinc70"
+    selectObject: result
+    resultPeakViz = Get absolute extremum: 0, 0, "Sinc70"
+    vizAmp = max(originalPeakViz, resultPeakViz)
+    if vizAmp <= 0
+        vizAmp = 1
+    endif
+    vizAmp = 1.05 * vizAmp
+
+    # Values used by the stereo delay geometry graph
+    delayL1msViz = 1000 * delayL1 / sampleRate
+    delayL2msViz = 1000 * delayL2 / sampleRate
+    delayR1msViz = 1000 * delayR1 / sampleRate
+    delayR2msViz = 1000 * delayR2 / sampleRate
+    sumLmsViz = delayL1msViz + delayL2msViz
+    sumRmsViz = delayR1msViz + delayR2msViz
+    maxTapMsViz = max(sumLmsViz, sumRmsViz)
+    if maxTapMsViz <= 0
+        maxTapMsViz = 1
+    endif
+    dryViz = 1 - wet_dry
+
     # Title
-    Select outer viewport: 1, 8, 0.1, 0.5
+    Select outer viewport: 1, 8, 0.08, 0.42
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "Stereo Delay Splitter: " + original_name$ + " (" + presetName$ + ")"
-    
-    # Original waveform
-    Select outer viewport: 0, 8, 0.6, 2.0
-    Select inner viewport: 0.6, 7.6, 0.7, 1.9
+    Text: 0.5, "centre", 0.5, "half", "Stereo Delay Splitter: " + display_name$ + " (" + presetName$ + ")"
+
+    # Source waveform: context only
+    Select outer viewport: 0, 8, 0.50, 1.45
+    Select inner viewport: 0.6, 7.6, 0.60, 1.36
     selectObject: original
-    Colour: "{0.6, 0.6, 0.6}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
+    Colour: "{0.62, 0.62, 0.62}"
+    Draw: 0, 0, -vizAmp, vizAmp, "no", "Curve"
     Colour: "Black"
     Draw inner box
-    Font size: 8
-    Text left: "yes", "Original"
-    
-    # Result waveform (stereo)
-    Select outer viewport: 0, 8, 2.1, 3.5
-    Select inner viewport: 0.6, 7.6, 2.2, 3.4
+
+    Select outer viewport: 0.08, 0.50, 0.60, 1.36
+    Axes: 0, 1, 0, 1
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "half", "Times", 8, "90", "Source"
+
+    # ========================================================
+    # Stereo delay geometry - a visual graph of the process
+    # ========================================================
+    Select outer viewport: 0.30, 7.80, 1.20, 3.70
+    Axes: 0, 1, 0, 1
+
+    # Panel background and frame
+    Paint rectangle: "{0.975, 0.975, 0.980}", 0, 1, 0, 1
+    Colour: "{0.72, 0.72, 0.74}"
+    Draw rectangle: 0, 1, 0, 1
+
+    # Panel title
+    Colour: "Black"
+    Font size: 9.5
+    Text: 0.5, "centre", 0.980, "half", "Stereo delay geometry"
+    Font size: 6.3
+    Colour: "{0.38, 0.38, 0.42}"
+    Text: 0.5, "centre", 0.845, "half", "same source -> different L/R tap spacing   |   wet " + fixed$(100 * wet_dry, 0) + "% / dry " + fixed$(100 * dryViz, 0) + "%"
+
+    # Normalized geometry
+    sourceX = 0.085
+    splitX = 0.165
+    laneStart = 0.255
+    laneEnd = 0.930
+    laneWidth = laneEnd - laneStart
+    yL = 0.650
+    yR = 0.345
+
+    # Map the actual delays to one shared horizontal time axis
+    xL1 = laneStart + laneWidth * delayL1msViz / maxTapMsViz
+    xL2 = laneStart + laneWidth * delayL2msViz / maxTapMsViz
+    xLsum = laneStart + laneWidth * sumLmsViz / maxTapMsViz
+    xR1 = laneStart + laneWidth * delayR1msViz / maxTapMsViz
+    xR2 = laneStart + laneWidth * delayR2msViz / maxTapMsViz
+    xRsum = laneStart + laneWidth * sumRmsViz / maxTapMsViz
+
+    # Source node and stereo split
+    Paint circle (mm): "{0.58, 0.58, 0.62}", sourceX, 0.5, 2.5
+    Colour: "{0.42, 0.42, 0.46}"
+    Line width: 1.2
+    Draw line: sourceX + 0.012, 0.5, splitX, 0.5
+    Draw line: splitX, 0.5, laneStart, yL
+    Draw line: splitX, 0.5, laneStart, yR
+    Paint circle (mm): "{0.42, 0.42, 0.46}", splitX, 0.5, 1.15
+    Line width: 1
+
+    Font size: 6.5
+    Colour: "{0.32, 0.32, 0.35}"
+    Text: sourceX, "centre", 0.585, "half", "SOURCE"
+
+    # Shared delay axis and lane baselines
+    Colour: "{0.76, 0.76, 0.79}"
+    Draw line: laneStart, 0.235, laneEnd, 0.235
+    Draw line: laneStart, yL, laneEnd, yL
+    Draw line: laneStart, yR, laneEnd, yR
+
+    # Axis ticks: 0, 25, 50, 75, 100 percent of the largest tap delay
+    Font size: 5.8
+    for tick from 0 to 4
+        frac = tick / 4
+        xt = laneStart + laneWidth * frac
+        Colour: "{0.78, 0.78, 0.80}"
+        Draw line: xt, 0.220, xt, 0.250
+        Colour: "{0.40, 0.40, 0.43}"
+        Text: xt, "centre", 0.185, "half", fixed$(maxTapMsViz * frac, 1) + " ms"
+    endfor
+    Font size: 6.0
+    Text: 0.592, "centre", 0.125, "half", "relative delay"
+
+    # Lane labels
+    Font size: 8.5
+    Colour: "{0.22, 0.43, 0.68}"
+    Text: 0.220, "centre", yL, "half", "L"
+    Colour: "{0.72, 0.38, 0.28}"
+    Text: 0.220, "centre", yR, "half", "R"
+
+    # Marker size: the delayed taps visually shrink with wet amount,
+    # while the zero-delay tap remains the stable source anchor.
+    delayedRadius = 1.45 + 1.10 * wet_dry
+    zeroRadius = 2.55
+
+    # L: + at 0, - at D1, - at D2, + at D1+D2
+    Paint circle (mm): "{0.22, 0.43, 0.68}", laneStart, yL, zeroRadius
+    Paint circle (mm): "White", xL1, yL, delayedRadius
+    Colour: "{0.22, 0.43, 0.68}"
+    Draw circle (mm): xL1, yL, delayedRadius
+    Paint circle (mm): "White", xL2, yL, delayedRadius
+    Draw circle (mm): xL2, yL, delayedRadius
+    Paint circle (mm): "{0.22, 0.43, 0.68}", xLsum, yL, delayedRadius
+
+    # R: same tap signs, different spacing
+    Paint circle (mm): "{0.72, 0.38, 0.28}", laneStart, yR, zeroRadius
+    Paint circle (mm): "White", xR1, yR, delayedRadius
+    Colour: "{0.72, 0.38, 0.28}"
+    Draw circle (mm): xR1, yR, delayedRadius
+    Paint circle (mm): "White", xR2, yR, delayedRadius
+    Draw circle (mm): xR2, yR, delayedRadius
+    Paint circle (mm): "{0.72, 0.38, 0.28}", xRsum, yR, delayedRadius
+
+    # Delay labels sit close to the taps rather than in explanatory boxes
+    Font size: 5.7
+    Colour: "{0.22, 0.43, 0.68}"
+    Text: xL1, "centre", yL + 0.075, "half", "D1 " + fixed$(delayL1msViz, 1)
+    Text: xL2, "centre", yL - 0.075, "half", "D2 " + fixed$(delayL2msViz, 1)
+    Text: xLsum, "centre", yL + 0.075, "half", "sum " + fixed$(sumLmsViz, 1)
+    Colour: "{0.72, 0.38, 0.28}"
+    Text: xR1, "centre", yR + 0.075, "half", "D1 " + fixed$(delayR1msViz, 1)
+    Text: xR2, "centre", yR - 0.075, "half", "D2 " + fixed$(delayR2msViz, 1)
+    Text: xRsum, "centre", yR + 0.075, "half", "sum " + fixed$(sumRmsViz, 1)
+
+    # Compact visual legend: no equations
+    Font size: 6.0
+    Paint circle (mm): "{0.50, 0.50, 0.54}", 0.315, 0.075, 1.25
+    Colour: "{0.38, 0.38, 0.42}"
+    Text: 0.335, "left", 0.075, "half", "filled = positive tap"
+    Paint circle (mm): "White", 0.590, 0.075, 1.25
+    Colour: "{0.50, 0.50, 0.54}"
+    Draw circle (mm): 0.590, 0.075, 1.25
+    Colour: "{0.38, 0.38, 0.42}"
+    Text: 0.610, "left", 0.075, "half", "ring = negative tap"
+
+    # Result waveform: consequence of the process
+    Select outer viewport: 0, 8, 3.82, 4.68
+    Select inner viewport: 0.6, 7.6, 3.90, 4.59
     selectObject: result
-    Colour: "{0.5, 0.6, 0.7}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
+    Colour: "{0.50, 0.60, 0.70}"
+    Draw: 0, 0, -vizAmp, vizAmp, "no", "Curve"
     Colour: "Black"
     Draw inner box
-    Text left: "yes", "Stereo Split"
+    Font size: 7
     Text bottom: "yes", "Time (s)"
-    
+
+    Select outer viewport: 0.08, 0.50, 3.90, 4.59
+    Axes: 0, 1, 0, 1
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.5, "half", "Times", 8, "90", "Stereo result"
+
     # Spectrum display range: never request frequencies above Nyquist.
     vizMaxHz = min(5000, sampleRate / 2)
 
     # Original spectrum
-    Select outer viewport: 0, 4, 3.7, 5.3
-    Select inner viewport: 0.6, 3.8, 3.9, 5.2
+    Select outer viewport: 0, 4, 4.88, 6.18
+    Select inner viewport: 0.6, 3.8, 5.00, 6.07
     selectObject: original
     nch = Get number of channels
     if nch > 1
@@ -402,36 +556,41 @@ if draw_visualization
     endif
     To Spectrum: "yes"
     origSpec = selected("Spectrum")
+    Colour: "{0.62, 0.62, 0.62}"
     Draw: 0, vizMaxHz, 0, 80, "no"
     removeObject: origSpec, specMono
-    Colour: "{0.8, 0.5, 0.6}"
+    Colour: "Black"
     Draw inner box
-    Font size: 7
+    Font size: 6.5
     Text left: "yes", "dB"
     Text bottom: "yes", "Original spectrum (Hz)"
-    
+
     # Result spectrum (shows comb filtering)
-    Select outer viewport: 4, 8, 3.7, 5.3
-    Select inner viewport: 4.4, 7.6, 3.9, 5.2
+    Select outer viewport: 4, 8, 4.88, 6.18
+    Select inner viewport: 4.4, 7.6, 5.00, 6.07
     selectObject: result
     resMono = Convert to mono
     To Spectrum: "yes"
     resSpec = selected("Spectrum")
+    Colour: "{0.50, 0.60, 0.70}"
     Draw: 0, vizMaxHz, 0, 80, "no"
     removeObject: resSpec, resMono
     Colour: "Black"
     Draw inner box
-    Font size: 7
+    Font size: 6.5
     Text left: "yes", "dB"
     Text bottom: "yes", "Split spectrum (Hz)"
-    
-    # Delay info
-    Select outer viewport: 0, 8, 5.4, 5.7
+
+    # Summary strip
+    Select outer viewport: 0.45, 7.55, 6.42, 6.86
     Axes: 0, 1, 0, 1
-    Font size: 7
-    Colour: "{0.4, 0.4, 0.4}"
-    Text: 0.5, "centre", 0.5, "half", delayLabel$
-    
+    Paint rectangle: "{0.965, 0.965, 0.972}", 0, 1, 0, 1
+    Colour: "{0.78, 0.78, 0.80}"
+    Draw rectangle: 0, 1, 0, 1
+    Colour: "{0.30, 0.30, 0.34}"
+    Font size: 6.4
+    Text: 0.5, "centre", 0.5, "half", "Summary  |  L " + fixed$(delayL1msViz, 1) + " / " + fixed$(delayL2msViz, 1) + " ms  |  R " + fixed$(delayR1msViz, 1) + " / " + fixed$(delayR2msViz, 1) + " ms  |  wet " + fixed$(100 * wet_dry, 0) + "% / dry " + fixed$(100 * dryViz, 0) + "%"
+
     Font size: 10
     Colour: "Black"
 endif

@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4 (2026)
+# Version: 0.4.3 (2026) - Readable fractal delay matrix
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -13,6 +13,33 @@
 #   multiple time scales. Each depth level adds echoes at
 #   geometrically decreasing intervals (2^depth), creating
 #   fractal-like temporal patterns.
+#
+#
+# Changelog v0.4.3:
+#   Visualization only.
+#   - Reserved a dedicated annotation band above depth 1 so legend/base-delay
+#     text cannot collide with the widest tap row in Extreme presets.
+#
+# Changelog v0.4.2:
+#   Visualization only.
+#   - Fractal delay matrix now uses log10(1 + delay_ms) on the horizontal axis.
+#     The delays halve at every depth, so a linear axis collapsed the deep taps
+#     near zero in Extreme presets. The log view gives each 2:1 scale change
+#     comparable visual space and makes the self-similar structure legible.
+#   - Added neutral guide lines and explicit 1/10/100/1000 ms scale labels.
+#     Marker radii remain physical millimetres and gain-coded.
+#
+# Changelog v0.4.1:
+#   Visualization only. DSP, convolution kernels and audio output are unchanged.
+#   - Rebuilt Picture output to the current AudioTools suite structure:
+#     Source -> Fractal delay matrix -> Output -> Summary.
+#   - Replaced generic before/after spectrograms with a direct map of the
+#     causal FIR kernel at every fractal depth. X = physical tap delay (ms),
+#     row = depth, orange circles = delayed taps, gray = dry path, and circle
+#     radius = tap gain. Marker sizes are specified in physical millimetres so
+#     they remain legible in the Praat Picture window.
+#   - Added shared Source/Output waveform scale, underscore-safe display names,
+#     aligned panel geometry and a compact summary.
 #
 # Changelog v0.4:
 #   DSP / correctness pass:
@@ -60,7 +87,7 @@
 #   - Fixed Formula interpolation
 # ============================================================
 
-form Fractal Convolution v0.4
+form Fractal Convolution v0.4.3
     comment Select a Sound object first
     optionmenu Preset: 1
         option Custom
@@ -301,125 +328,293 @@ if draw_visualization
     vizDur = Get total duration
 
     Erase all
-    Select outer viewport: 0, 8, 0, 8
+    Select outer viewport: 0, 8, 0, 7.10
     Black
     Plain line
 
-    # ---- TITLE BAR ----
-    Select outer viewport: 0, 8, 0, 0.65
+    displayName$ = replace$(original_name$, "_", " ", 0)
+
+    # Zero-based mono display copies. Visualization only.
+    selectObject: original
+    if channels > 1
+        vizOrig = Convert to mono
+    else
+        vizOrig = Copy: "fcm_viz_source"
+    endif
+    selectObject: vizOrig
+    vizOrigStart = Get start time
+    Shift times by: -vizOrigStart
+
+    selectObject: result
+    if channels > 1
+        vizOut = Convert to mono
+    else
+        vizOut = Copy: "fcm_viz_output"
+    endif
+    selectObject: vizOut
+    vizOutStart = Get start time
+    Shift times by: -vizOutStart
+
+    # Shared source/output amplitude scale.
+    selectObject: vizOrig
+    origPeakViz = Get absolute extremum: 0, 0, "None"
+    selectObject: vizOut
+    outPeakViz = Get absolute extremum: 0, 0, "None"
+    sharedPeak = max(origPeakViz, outPeakViz)
+    if sharedPeak < 0.001
+        sharedPeak = 0.001
+    endif
+    sharedAmp = 1.15 * sharedPeak
+
+    # Reconstruct the exact active causal tap geometry used by the DSP.
+    # Delays are sample-rounded exactly as in the processing loop.
+    maxTapDelayMsViz = 0
+    maxTapGainViz = 0
+    lastBaseDelayMsViz = 0
+    activeViz = 0
+    for depth from 1 to fractal_depth
+        scaleFactorViz = 2 ^ depth
+        kernelSizeViz = round(originalSamples / (kernel_divisor * scaleFactorViz))
+        if kernelSizeViz >= 1
+            activeViz = activeViz + 1
+            depthGainViz = (1 - amplitude_reduction) ^ depth
+            baseDelayMsViz = kernelSizeViz / sampling_rate * 1000
+            lastBaseDelayMsViz = baseDelayMsViz
+            maxDelayThisViz = convolution_width * baseDelayMsViz
+            if maxDelayThisViz > maxTapDelayMsViz
+                maxTapDelayMsViz = maxDelayThisViz
+            endif
+            for kernel from 1 to convolution_width
+                kernelWeightViz = 1 / (1 + kernel)
+                tapGainViz = depthGainViz * kernelWeightViz / kernelWeightSum
+                if tapGainViz > maxTapGainViz
+                    maxTapGainViz = tapGainViz
+                endif
+            endfor
+        endif
+    endfor
+    if maxTapDelayMsViz < 0.001
+        maxTapDelayMsViz = 1
+    endif
+    if maxTapGainViz < 0.000001
+        maxTapGainViz = 1
+    endif
+
+    mapXmax = log10(1 + 1.08 * maxTapDelayMsViz)
+    mapYmin = 0.25
+    mapYmax = activeViz + 1.65
+    mapYspan = mapYmax - mapYmin
+
+    # ----------------------------------------------------------
+    # TITLE / SUBTITLE
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 0, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##FRACTAL CONVOLUTION MATRIX##"
+    Text: 0.5, "centre", 0.68, "half", "##Fractal Convolution Matrix##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
-    Text: 0.5, "centre", -0.22, "half",
-        ... original_name$
-        ... + "  |  " + presetName$
-        ... + "  |  depth " + string$(fractal_depth)
-        ... + "  |  width " + string$(convolution_width)
-        ... + "  |  " + fixed$(originalDuration, 2) + " s -> " + fixed$(vizDur, 2) + " s"
+    Text: 0.5, "centre", -1.30, "half", displayName$ + "  |  " + presetName$ + "  |  depth " + string$(activeDepths) + "/" + string$(fractal_depth) + "  |  width " + string$(convolution_width)
 
-    # ---- ORIGINAL WAVEFORM (left) ----
-    Select outer viewport: 0, 4.2, 0.75, 2.10
-    Select inner viewport: 0.55, 4.00, 0.95, 1.98
-    selectObject: original
-    Colour: "{0.55, 0.55, 0.60}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
+    # ----------------------------------------------------------
+    # SOURCE
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 0.65, 1.90
+    Select inner viewport: 0.55, 7.75, 0.82, 1.78
+    Axes: 0, originalDuration, -sharedAmp, sharedAmp
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, originalDuration, -sharedAmp, sharedAmp
+    selectObject: vizOrig
+    Colour: "{0.58, 0.58, 0.62}"
+    Draw: 0, originalDuration, -sharedAmp, sharedAmp, "no", "Curve"
     Colour: "Black"
-    Line width: 1
     Draw inner box
     Font size: 7
-    Text top: "no", "Original"
+    Text top: "no", "##Source##"
     Font size: 6
-    Text left: "yes", "Amp"
-
-    # ---- RESULT WAVEFORM (right) ----
-    Select outer viewport: 4.2, 8, 0.75, 2.10
-    Select inner viewport: 4.55, 7.75, 0.95, 1.98
-    selectObject: result
-    Colour: "{0.20, 0.50, 0.70}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
-    Colour: "Black"
-    Line width: 1
-    Draw inner box
-    Font size: 7
-    Text top: "no", "Fractal"
-    Font size: 6
-    Text left: "yes", "Amp"
-
-    # ---- ORIGINAL SPECTROGRAM (left) ----
-    Select outer viewport: 0, 4.2, 2.20, 4.40
-    Select inner viewport: 0.55, 4.00, 2.40, 4.28
-    selectObject: original
-    if channels > 1
-        origMono = Convert to mono
-    else
-        origMono = Copy: "fcm_orig_mono"
-    endif
-    selectObject: origMono
-    To Spectrogram: 0.03, vizMaxHz, 0.01, 20, "Gaussian"
-    origSpec = selected("Spectrogram")
-    Paint: 0, 0, 0, 0, 100, "yes", 50, 6, 0, "no"
-    removeObject: origSpec, origMono
-    Colour: "Black"
-    Line width: 1
-    Draw inner box
-    Font size: 7
-    Text top: "no", "Original spectrogram"
-    Font size: 6
-    Text left: "yes", "Hz"
+    Text left: "yes", "Amplitude"
     Text bottom: "yes", "Time (s)"
+    Axes: 0, originalDuration, -sharedAmp, sharedAmp
+    Colour: "{0.28, 0.28, 0.28}"
+    Text: 0.01 * originalDuration, "left", 0.82 * sharedAmp, "half", "delay scales derived from source length  |  divisor " + string$(kernel_divisor)
 
-    # ---- RESULT SPECTROGRAM (right, signature: fractal echo buildup) ----
-    Select outer viewport: 4.2, 8, 2.20, 4.40
-    Select inner viewport: 4.55, 7.75, 2.40, 4.28
-    selectObject: result
-    if channels > 1
-        resMono = Convert to mono
-    else
-        resMono = Copy: "fcm_res_mono"
-    endif
-    selectObject: resMono
-    To Spectrogram: 0.03, vizMaxHz, 0.01, 20, "Gaussian"
-    resSpec = selected("Spectrogram")
-    Paint: 0, 0, 0, 0, 100, "yes", 50, 6, 0, "no"
-    removeObject: resSpec, resMono
+    # ----------------------------------------------------------
+    # FRACTAL DELAY MATRIX
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 2.05, 4.55
+    Select inner viewport: 0.55, 7.75, 2.22, 4.40
+    Axes: 0, mapXmax, mapYmin, mapYmax
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, mapXmax, mapYmin, mapYmax
+
+    # Structural row guides, neutral by design.
+    Colour: "{0.86, 0.86, 0.88}"
+    for depth from 1 to fractal_depth
+        scaleFactorViz = 2 ^ depth
+        kernelSizeViz = round(originalSamples / (kernel_divisor * scaleFactorViz))
+        if kernelSizeViz >= 1
+            rowIndexViz = 0
+            for d2 from 1 to depth
+                kernelSizeD2 = round(originalSamples / (kernel_divisor * (2 ^ d2)))
+                if kernelSizeD2 >= 1
+                    rowIndexViz = rowIndexViz + 1
+                endif
+            endfor
+            rowY = activeViz - rowIndexViz + 1
+            Draw line: 0, rowY, mapXmax, rowY
+        endif
+    endfor
+
+    # Causal FIR taps. Colour has one meaning only: orange = delayed echo tap.
+    # Radius is physical (mm) and gain-coded, but never allowed to become tiny.
+    activeRow = 0
+    for depth from 1 to fractal_depth
+        scaleFactorViz = 2 ^ depth
+        kernelSizeViz = round(originalSamples / (kernel_divisor * scaleFactorViz))
+        if kernelSizeViz >= 1
+            activeRow = activeRow + 1
+            rowY = activeViz - activeRow + 1
+            depthGainViz = (1 - amplitude_reduction) ^ depth
+            baseDelayMsViz = kernelSizeViz / sampling_rate * 1000
+            maxDelayThisViz = convolution_width * baseDelayMsViz
+
+            # Dry path, present once at every stage.
+            Paint circle (mm): "{0.58, 0.58, 0.62}", 0, rowY, 1.00
+
+            # Stage line makes the causal direction readable at a glance.
+            Colour: "{0.70, 0.70, 0.73}"
+            Line width: 1.1
+            Draw line: 0, rowY, log10(1 + maxDelayThisViz), rowY
+            Line width: 1
+
+            for kernel from 1 to convolution_width
+                kernelWeightViz = 1 / (1 + kernel)
+                tapGainViz = depthGainViz * kernelWeightViz / kernelWeightSum
+                gainNormViz = tapGainViz / maxTapGainViz
+                markerRadiusViz = 0.95 + 0.85 * sqrt(max(0, gainNormViz))
+                if markerRadiusViz < 0.95
+                    markerRadiusViz = 0.95
+                endif
+                if markerRadiusViz > 1.80
+                    markerRadiusViz = 1.80
+                endif
+                tapDelayMsViz = kernel * baseDelayMsViz
+                tapX = log10(1 + tapDelayMsViz)
+                Paint circle (mm): "{0.88, 0.48, 0.20}", tapX, rowY, markerRadiusViz
+            endfor
+        endif
+    endfor
+
+    # Log-delay scale guides. The transform is log10(1 + delay_ms);
+    # labels report physical milliseconds.
+    Colour: "{0.80, 0.80, 0.82}"
+    Dotted line
+    for tickIndex from 1 to 4
+        if tickIndex = 1
+            tickMs = 1
+        elsif tickIndex = 2
+            tickMs = 10
+        elsif tickIndex = 3
+            tickMs = 100
+        else
+            tickMs = 1000
+        endif
+        tickX = log10(1 + tickMs)
+        if tickX < mapXmax
+            Draw line: tickX, mapYmin, tickX, activeViz + 0.20
+        endif
+    endfor
+    Solid line
+
     Colour: "Black"
-    Line width: 1
     Draw inner box
     Font size: 7
-    Text top: "no", "Fractal spectrogram"
+    Text top: "no", "##Fractal delay matrix##"
     Font size: 6
-    Text left: "yes", "Hz"
-    Text bottom: "yes", "Time (s)"
+    Text left: "yes", "Depth  (1 at top)"
+    Text bottom: "yes", "Causal tap delay (ms, logarithmic spacing)"
+    Axes: 0, mapXmax, mapYmin, mapYmax
+    Colour: "{0.30, 0.30, 0.30}"
+    annotationY = activeViz + 1.18
+    Text: 0.01 * mapXmax, "left", annotationY, "half", "orange = delayed tap  |  gray = dry path  |  radius = tap gain  |  log delay exposes the 2:1 fractal scale"
 
-    # ---- SUMMARY BAR ----
-    Select outer viewport: 0, 8, 4.50, 5.20
-    Select inner viewport: 0.55, 7.75, 4.57, 5.14
+    # A compact scale cue at top right: first and deepest active base delay.
+    if activeViz > 0
+        firstKernelViz = round(originalSamples / (kernel_divisor * 2))
+        firstBaseDelayMsViz = firstKernelViz / sampling_rate * 1000
+        Text: 0.99 * mapXmax, "right", annotationY, "half", "base delay " + fixed$(firstBaseDelayMsViz, 2) + " -> " + fixed$(lastBaseDelayMsViz, 2) + " ms"
+    endif
+
+    Colour: "{0.42, 0.42, 0.44}"
+    Font size: 5
+    for tickIndex from 1 to 4
+        if tickIndex = 1
+            tickMs = 1
+        elsif tickIndex = 2
+            tickMs = 10
+        elsif tickIndex = 3
+            tickMs = 100
+        else
+            tickMs = 1000
+        endif
+        tickX = log10(1 + tickMs)
+        if tickX < mapXmax
+            Text: tickX, "centre", mapYmin + 0.035 * mapYspan, "half", string$(tickMs)
+        endif
+    endfor
+    Font size: 6
+
+    # ----------------------------------------------------------
+    # OUTPUT
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 4.70, 5.95
+    Select inner viewport: 0.55, 7.75, 4.87, 5.83
+    Axes: 0, vizDur, -sharedAmp, sharedAmp
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, vizDur, -sharedAmp, sharedAmp
+    Colour: "{0.82, 0.82, 0.82}"
+    Draw line: 0, 0, vizDur, 0
+    selectObject: vizOut
+    Colour: "{0.25, 0.50, 0.82}"
+    Draw: 0, vizDur, -sharedAmp, sharedAmp, "no", "Curve"
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text top: "yes", "##Output##"
+    Font size: 6
+    Text left: "yes", "Amplitude"
+    Text bottom: "yes", "Time (s)"
+    Axes: 0, vizDur, -sharedAmp, sharedAmp
+    Colour: "{0.28, 0.28, 0.28}"
+    Text: 0.01 * vizDur, "left", 0.82 * sharedAmp, "half", "causal self-convolution cascade  |  tail " + fixed$(tail_duration_s, 1) + " s  |  fadeout " + fixed$(effectiveFadeout, 1) + " s"
+
+    # ----------------------------------------------------------
+    # SUMMARY
+    # ----------------------------------------------------------
+    if tail_duration_s + 1 / sampling_rate < fractalSpan
+        tailState$ = "tail truncates theoretical span"
+    else
+        tailState$ = "tail contains theoretical span"
+    endif
+
+    Select outer viewport: 0, 8, 6.10, 7.05
+    Select inner viewport: 0.30, 7.80, 6.17, 6.98
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    Colour: "{0.48, 0.48, 0.48}"
+    Draw rectangle: 0, 1, 0, 1
+
+    Font size: 7
+    Colour: "Black"
+    Text: 0.02, "left", 0.80, "half", "##Summary##"
     Font size: 6
     Colour: "{0.28, 0.28, 0.28}"
-    Text: 0.02, "left", 0.75, "half",
-        ... "##" + presetName$ + "##"
-        ... + "  " + original_name$
-        ... + "  |  depth " + string$(activeDepths) + "/" + string$(fractal_depth)
-        ... + "  |  width " + string$(convolution_width)
-        ... + "  |  divisor " + string$(kernel_divisor)
-        ... + "  |  layer reduction " + fixed$(amplitude_reduction, 2)
-    Text: 0.02, "left", 0.28, "half",
-        ... "Tail " + fixed$(tail_duration_s, 1) + " s"
-        ... + "  |  fractal span " + fixed$(fractalSpan, 2) + " s"
-        ... + "  |  scale peak " + fixed$(scale_peak, 2)
-        ... + "  |  fadeout " + fixed$(fadeout_duration_s, 1) + " s"
-        ... + "  |  " + fixed$(originalDuration, 2) + " s -> " + fixed$(vizDur, 2) + " s"
-    Colour: "Black"
-    Draw rectangle: 0, 1, 0, 1
+    Text: 0.02, "left", 0.49, "half", presetName$ + "  |  depth " + string$(activeDepths) + "/" + string$(fractal_depth) + "  |  width " + string$(convolution_width) + "  |  divisor " + string$(kernel_divisor) + "  |  layer reduction " + fixed$(amplitude_reduction, 2) + "  |  scale peak " + fixed$(scale_peak, 2)
+    Text: 0.02, "left", 0.18, "half", "fractal span " + fixed$(fractalSpan, 3) + " s  |  " + tailState$ + "  |  source " + fixed$(originalDuration, 2) + " s  ->  output " + fixed$(vizDur, 2) + " s"
 
     Font size: 10
     Colour: "Black"
     Line width: 1
+
+    removeObject: vizOrig, vizOut
 endif
 
 # === Final Info ===

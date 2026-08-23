@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 2.3 (2026) 
+# Version: 2.4 (2026) 
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -32,6 +32,23 @@
 #   BPM quantize active when Bpm_value > 0
 #   Pitch transposition active when Pitch_levels > 1
 #   Stereo panning active when Stereo_width > 0
+#
+# v2.4 changelog (visualization precision pass):
+#   * VISUALIZATION ONLY: preserves the existing waveform + original/shuffled
+#     segment-order concept; no redesign of the musical visualization.
+#   * FIX: source names are display-sanitized so underscores do not become
+#     Praat subscripts.
+#   * FIX: title/subtitle/footer bands explicitly reset their 0..1 world
+#     coordinates, so text placement cannot inherit stale Sound/time axes.
+#   * FIX: orig/shuf row labels now live in a dedicated physical left gutter
+#     instead of being drawn outside the data axes where Praat clipped them.
+#   * ALIGNMENT: Source and Result side labels use the same explicit rotated
+#     label gutter rather than panel-height-dependent far-text placement.
+#   * READABILITY: split-marker line width and segment-number labels adapt to
+#     segmentation density; narrow cells are no longer forced to contain text.
+#   * AXIS: Result now has numbered time marks, matching its Time (s) label.
+#   * COLOUR: retains blue=original and orange=shuffled semantics, with a
+#     slightly lighter dark-orange zebra shade for better balance.
 #
 # v2.3 changelog:
 #   * API COMPATIBILITY: the entire public form is byte-for-byte unchanged.
@@ -69,7 +86,7 @@
 #   when pitch/stereo processing is requested.
 # ============================================================
 
-form Rhythmatist v2.2
+form Rhythmatist v2.4
     optionmenu Preset 1
         option Custom
         option Simple Pulse   (Su n=8)
@@ -186,6 +203,7 @@ endif
 
 sound      = selected("Sound")
 soundName$ = selected$("Sound")
+displayName$ = replace$(soundName$, "_", " ", 0)
 
 selectObject: sound
 nCh        = Get number of channels
@@ -294,12 +312,13 @@ elsif series_type = 4
 else
     seriesLabel$ = "SRC"
 endif
+seriesDisplay$ = replace$(seriesLabel$, "_", " ", 0)
 
 # ============================================================
 # INFO HEADER
 # ============================================================
 
-writeInfoLine:  "=== RHYTHMATIST v2.3 ==="
+writeInfoLine:  "=== RHYTHMATIST v2.4 ==="
 appendInfoLine: "Source:  ", soundName$, "  (", fixed$(t_total, 3), " s)"
 appendInfoLine: "Series:  ", seriesLabel$
 if bpm_quantize
@@ -787,12 +806,14 @@ if draw_visualization
 
     # Title
     Select outer viewport: 1, 8, 0.2, 0.7
+    Axes: 0, 1, 0, 1
     Font size: 14
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "RHYTHMATIST v2.3: " + soundName$
+    Text: 0.5, "centre", 0.5, "half", "RHYTHMATIST v2.4: " + displayName$
 
     # Subtitle
     Select outer viewport: 1, 8, 0.6, 1.0
+    Axes: 0, 1, 0, 1
     Font size: 8
     Colour: "{0.4, 0.4, 0.4}"
     pitchSub$ = ""
@@ -808,7 +829,7 @@ if draw_visualization
         bpmSub$ = "   " + fixed$(bpm_value, 0) + " BPM " + grid_label$
     endif
     Text: 0.5, "centre", 0.5, "half",
-    ... "Series: " + seriesLabel$
+    ... "Series: " + seriesDisplay$
     ... + "   |   " + string$(nSegments) + " segs"
     ... + "   |   T=" + fixed$(t_total, 3) + " s"
     ... + bpmSub$ + pitchSub$ + stereoSub$
@@ -842,7 +863,11 @@ if draw_visualization
     endif
 
     Colour: "{1, 0.3, 0.3}"
-    Line width: 2
+    if nPts > 40
+        Line width: 1
+    else
+        Line width: 2
+    endif
     for i from 1 to nPts
         Draw line: boundary[i], -1, boundary[i], 1
     endfor
@@ -850,12 +875,13 @@ if draw_visualization
 
     Colour: "Black"
     Draw inner box
-    Font size: 8
-    if bpm_quantize
-        Text left: "yes", "Original (grid snapped)"
-    else
-        Text left: "yes", "Original"
-    endif
+
+    # Explicit left label gutter: same physical x anchor as Result below.
+    Select outer viewport: 0.05, 0.55, 1.1, 2.4
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text special: 0.50, "centre", 0.50, "half", "Times", 7, "90", "Source"
 
     # Segment-order diagram
     Select outer viewport: 0, 8, 2.6, 3.8
@@ -875,9 +901,11 @@ if draw_visualization
         else
             Paint rectangle: "{0.25, 0.55, 0.75}", prevT + 0.001, segEndV - 0.001, 1.05, 1.95
         endif
-        Font size: 6
-        Colour: "White"
-        Text: (prevT + segEndV) / 2, "centre", 1.5, "half", string$(seg)
+        if (segEndV - prevT) >= 0.035 * t_total
+            Font size: 6
+            Colour: "White"
+            Text: (prevT + segEndV) / 2, "centre", 1.5, "half", string$(seg)
+        endif
         prevT = segEndV
     endfor
 
@@ -899,23 +927,30 @@ if draw_visualization
         if origSeg mod 2 = 1
             Paint rectangle: "{0.85, 0.6, 0.25}", drawPos + 0.001, drawPos + segDurI - 0.001, 0.05, 0.95
         else
-            Paint rectangle: "{0.6, 0.35, 0.1}",  drawPos + 0.001, drawPos + segDurI - 0.001, 0.05, 0.95
+            Paint rectangle: "{0.78, 0.45, 0.16}",  drawPos + 0.001, drawPos + segDurI - 0.001, 0.05, 0.95
         endif
-        Font size: 6
-        Colour: "White"
-        Text: drawPos + segDurI / 2, "centre", 0.5, "half", string$(origSeg)
+        if segDurI >= 0.035 * t_total
+            Font size: 6
+            Colour: "White"
+            Text: drawPos + segDurI / 2, "centre", 0.5, "half", string$(origSeg)
+        endif
 
         drawPos += segDurI
     endfor
 
     Colour: "{0.7, 0.7, 0.7}"
     Draw line: 0, 1, t_total, 1
-    Colour: "{0.25, 0.55, 0.75}"
-    Text: 0 - t_total * 0.08, "right", 1.5, "half", "orig"
-    Colour: "{0.6, 0.35, 0.1}"
-    Text: 0 - t_total * 0.08, "right", 0.5, "half", "shuf"
     Colour: "Black"
     Draw inner box
+
+    # Dedicated row-label gutter (never clipped by the data axes).
+    Select outer viewport: 0.05, 0.55, 2.65, 3.75
+    Axes: 0, 1, 0, 2
+    Font size: 7
+    Colour: "{0.25, 0.55, 0.75}"
+    Text: 0.95, "right", 1.5, "half", "orig"
+    Colour: "{0.78, 0.45, 0.16}"
+    Text: 0.95, "right", 0.5, "half", "shuf"
 
     # Result waveform
     Select outer viewport: 0, 8, 3.9, 5.4
@@ -933,24 +968,36 @@ if draw_visualization
         Colour: "{0.75, 0.25, 0.15}"
         Draw: 0, 0, 0, 0, "no", "Curve"
         removeObject: vizL, vizR
-        Text left: "yes", "Result L/R"
     else
         selectObject: result
         Colour: "{0.2, 0.5, 0.7}"
         Draw: 0, 0, 0, 0, "no", "Curve"
-        Text left: "yes", "Result"
     endif
+    Axes: 0, t_total, -1, 1
     Colour: "Black"
     Draw inner box
     Font size: 8
+    Marks bottom: 7, "yes", "yes", "no"
     Text bottom: "yes", "Time (s)"
+
+    # Explicit result label gutter, aligned with Source above.
+    Select outer viewport: 0.05, 0.55, 4.0, 5.3
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    if resultNch > 1
+        Text special: 0.50, "centre", 0.50, "half", "Times", 7, "90", "Result L/R"
+    else
+        Text special: 0.50, "centre", 0.50, "half", "Times", 7, "90", "Result"
+    endif
 
     # Legend
     Select outer viewport: 1, 8, 5.5, 5.9
+    Axes: 0, 1, 0, 1
     Font size: 8
     Colour: "{0.4, 0.4, 0.4}"
     Text: 0.5, "centre", 0.5, "half",
-    ... seriesLabel$
+    ... seriesDisplay$
     ... + "   |   " + string$(nCreated) + " segments shuffled"
     ... + bpmSub$ + pitchSub$ + stereoSub$
 

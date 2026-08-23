@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4 (2026)
+# Version: 0.4.1 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -38,6 +38,17 @@
 #   Cohen, S. (2026). Praat AudioTools: An Offline
 #   Analysis-Resynthesis Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v0.4.1:
+#   - Visualization aligned to the current Praat AudioTools suite:
+#     Source -> Beat-repeat map -> Output -> Summary.
+#   - Signature beat-repeat map now directly shows candidate slice
+#     status (active/silent), selected source beat, optional range,
+#     and the repeat-amplitude chain produced by decay^k.
+#   - Source/output waveforms use a shared amplitude scale and
+#     highlight the selected source slice / rendered repeat region.
+#   - Visualization display names no longer expose Praat underscore
+#     subscript markup. DSP is unchanged from v0.4.
 #
 # Changelog v0.4:
 #   - DSP: source slice extraction changed from full-duration
@@ -107,7 +118,7 @@
 #   - Added presets
 # ============================================================
 
-form Beat Repeat v0.4
+form Beat Repeat v0.4.1
     optionmenu Preset: 1
         option Custom
         option Stutter 1/16
@@ -276,7 +287,7 @@ if totalBeats < 1
 endif
 
 # === Info ===
-writeInfoLine: "=== Beat Repeat v0.4 ==="
+writeInfoLine: "=== Beat Repeat v0.4.1 ==="
 appendInfoLine: "Source: ", sound_name$, " (", fixed$(duration, 2), " s)"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "BPM: ", bpm, " | Valid beat starts: ", totalBeats
@@ -645,33 +656,47 @@ resultDuration = Get total duration
 finalPeak = Get absolute extremum: 0, 0, "None"
 
 # ============================================================
-# VISUALIZATION  (8 x 8 canvas — suite standard)
+# VISUALIZATION  (current Praat AudioTools suite styling)
+# Source -> signature beat-repeat map -> Output -> Summary.
+# The central map directly encodes the process:
+#   top row = candidate beat starts (blue active / grey silent),
+#   orange outline = selected source, orange bracket = range mode,
+#   bottom row = repeat chain, bar height = decay^(repeat-1).
 # ============================================================
 if draw_visualization
     appendInfoLine: ""
     appendInfoLine: "Drawing visualization..."
-    
+
     Erase all
+    Select outer viewport: 0, 8, 0, 7.10
     Black
     Plain line
-    
-    # Mono copies of original and result for waveform panels
+
+    display_name$ = replace$(sound_name$, "_", " ", 0)
+
+    # Mono, zero-based display copies.
     selectObject: sound
     if numChannels > 1
         vizOrig = Convert to mono
     else
-        vizOrig = Copy: "viz_orig"
+        vizOrig = Copy: "viz orig"
     endif
-    
+    selectObject: vizOrig
+    vizOrigStart = Get start time
+    Shift times by: -vizOrigStart
+
     selectObject: result
     resNumCh = Get number of channels
     if resNumCh > 1
         vizResult = Convert to mono
     else
-        vizResult = Copy: "viz_result"
+        vizResult = Copy: "viz result"
     endif
-    
-    # SHARED y-axis from BOTH original and result
+    selectObject: vizResult
+    vizResultStart = Get start time
+    Shift times by: -vizResultStart
+
+    # Shared waveform amplitude scale.
     selectObject: vizOrig
     oPeak = Get absolute extremum: 0, 0, "None"
     selectObject: vizResult
@@ -684,370 +709,208 @@ if draw_visualization
         sharedPeak = 0.001
     endif
     sharedAmp = sharedPeak * 1.15
-    
-    # ----------------------------------------------------------
-    # TITLE BAR
-    # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 0, 0.65
-    Axes: 0, 1, 0, 1
-    Font size: 12
-    Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##BEAT REPEAT##"
-    Font size: 7
-    Colour: "{0.35, 0.35, 0.52}"
-    
-    if skip_silence
-        silStr$ = "skip silence (" + fixed$(silence_threshold_dB, 0) + " dB)"
-    else
-        silStr$ = "no silence skip"
-    endif
-    
-    Text: 0.5, "centre", -0.22, "half",
-        ... sound_name$
-        ... + "  |  " + presetName$
-        ... + "  |  " + fixed$(bpm, 0) + " BPM"
-        ... + "  |  " + note_name$
-        ... + "  |  beat #" + string$(selectedBeat) + " of " + string$(totalBeats)
-        ... + "  |  " + string$(num_repeats) + "x decay " + fixed$(amplitude_decay, 2)
-        ... + "  |  " + silStr$
-    
-    # ----------------------------------------------------------
-    # PANEL A: CANDIDATE-SLICE ENERGY BAR CHART  (left, headline)
-    # The silence diagnostic: one bar per valid beat start at height
-    # = RMS-dB. Blue = non-silent, gray = silent. Selected
-    # beat highlighted with orange. Range bounds (mode 3)
-    # also shown as orange vertical lines.
-    # ----------------------------------------------------------
-    Select outer viewport: 0, 4.2, 0.75, 4.60
-    Select inner viewport: 0.55, 4.00, 0.95, 4.40
-    
-    # Y range: -60 dB to 0 dB (or threshold-5 to 0 if threshold < -55)
-    yMinDB = -60
-    if silence_threshold_dB < yMinDB + 5
-        yMinDB = silence_threshold_dB - 5
-    endif
-    yMaxDB = 0
-    
-    xMin = 0.5
-    xMax = totalBeats + 0.5
-    
-    Axes: xMin, xMax, yMinDB, yMaxDB
-    Paint rectangle: "{0.97, 0.97, 0.99}", xMin, xMax, yMinDB, yMaxDB
-    
-    # Reference horizontal grid
-    Colour: "{0.88, 0.88, 0.92}"
-    Dotted line
-    Draw line: xMin, -20, xMax, -20
-    Draw line: xMin, -40, xMax, -40
-    Solid line
-    
-    # Draw bars
-    for b from 1 to totalBeats
-        barDB = beatRMSdB#[b]
-        if barDB < yMinDB
-            barDB = yMinDB
-        endif
-        if barDB > yMaxDB
-            barDB = yMaxDB
-        endif
-        
-        if beatSilent#[b] = 1
-            barColor$ = "{0.75, 0.75, 0.78}"
-        else
-            barColor$ = "{0.25, 0.50, 0.82}"
-        endif
-        
-        Paint rectangle: barColor$, b - 0.4, b + 0.4, yMinDB, barDB
-    endfor
-    
-    # Range mode: orange vertical bands for [rangeStart, rangeEnd]
-    if beat_selection_mode = 3
-        Colour: "{0.95, 0.55, 0.20}"
-        Line width: 1
-        Dashed line
-        Draw line: rangeStart - 0.5, yMinDB, rangeStart - 0.5, yMaxDB
-        Draw line: rangeEnd + 0.5, yMinDB, rangeEnd + 0.5, yMaxDB
-        Solid line
-    endif
-    
-    # Selected beat: orange outline + dot at top
-    Colour: "{0.95, 0.55, 0.20}"
-    Line width: 2
-    selBarDB = beatRMSdB#[selectedBeat]
-    if selBarDB < yMinDB
-        selBarDB = yMinDB
-    endif
-    if selBarDB > yMaxDB
-        selBarDB = yMaxDB
-    endif
-    Draw line: selectedBeat - 0.4, yMinDB, selectedBeat - 0.4, selBarDB
-    Draw line: selectedBeat + 0.4, yMinDB, selectedBeat + 0.4, selBarDB
-    Draw line: selectedBeat - 0.4, selBarDB, selectedBeat + 0.4, selBarDB
-    Paint circle (mm): "{0.95, 0.55, 0.20}", selectedBeat, yMaxDB - 2, 1.0
-    Line width: 1
-    
-    # Threshold line (red dashed)
-    Colour: "{0.85, 0.30, 0.30}"
-    Line width: 1.5
-    Dashed line
-    Draw line: xMin, silence_threshold_dB, xMax, silence_threshold_dB
-    Solid line
-    Line width: 1
-    
-    # Threshold label
-    Font size: 5
-    Colour: "{0.55, 0.20, 0.20}"
-    Text: xMax - (xMax - xMin) * 0.02, "right", silence_threshold_dB + 2, "half", "thresh " + fixed$(silence_threshold_dB, 0) + " dB"
-    
-    # Selected beat label
-    Colour: "{0.55, 0.30, 0.15}"
-    Text: selectedBeat, "centre", yMaxDB - 5, "half", "#" + string$(selectedBeat)
-    
-    Colour: "Black"
-    Line width: 1
-    Draw inner box
-    Font size: 6
-    Text left: "yes", "RMS (dB re 1.0)"
-    Text bottom: "yes", "Beat number"
-    
-    # ----------------------------------------------------------
-    # PANEL B: PARAMETER REPORT  (right, headline)
-    # ----------------------------------------------------------
-    Select outer viewport: 4.2, 8, 0.75, 4.60
-    Select inner viewport: 4.55, 7.75, 0.95, 4.40
-    
-    Axes: 0, 1, 0, 1
-    Paint rectangle: "{0.96, 0.96, 0.96}", 0, 1, 0, 1
-    
-    Font size: 9
-    Colour: "{0.30, 0.30, 0.30}"
-    Text: 0.05, "left", 0.94, "half", "Algorithm:"
-    
-    Font size: 7
-    Colour: "{0.30, 0.30, 0.30}"
-    Text: 0.10, "left", 0.88, "half", "Extract beat -> repeat N times w/decay -> assemble"
-    
-    Font size: 9
-    Colour: "{0.30, 0.30, 0.30}"
-    Text: 0.05, "left", 0.80, "half", "Tempo:"
-    
-    Font size: 9
-    Colour: "{0.20, 0.50, 0.82}"
-    Text: 0.10, "left", 0.74, "half", fixed$(bpm, 1) + " BPM | note " + note_name$
-    Text: 0.10, "left", 0.68, "half", fixed$(noteDuration * 1000, 1) + " ms / " + string$(totalBeats) + " beats total"
-    
-    Font size: 9
-    Colour: "{0.30, 0.30, 0.30}"
-    Text: 0.05, "left", 0.60, "half", "Beat selection:"
-    
-    Font size: 9
-    Colour: "{0.55, 0.30, 0.78}"
-    if beat_selection_mode = 1
-        Text: 0.10, "left", 0.54, "half", "Specific beat"
-    elsif beat_selection_mode = 2
-        Text: 0.10, "left", 0.54, "half", "Random beat"
-    elsif beat_selection_mode = 3
-        Text: 0.10, "left", 0.54, "half", "Beat range [" + string$(rangeStart) + "-" + string$(rangeEnd) + "]"
-    else
-        Text: 0.10, "left", 0.54, "half", "Auto (1 s in)"
-    endif
-    
-    Font size: 7
-    Colour: "{0.30, 0.30, 0.30}"
-    Text: 0.10, "left", 0.48, "half", shiftReport$
-    
-    Font size: 9
-    Colour: "{0.30, 0.30, 0.30}"
-    Text: 0.05, "left", 0.40, "half", "Silence detection:"
-    
-    Font size: 9
-    if skip_silence
-        if silentCount > 0
-            Colour: "{0.85, 0.45, 0.30}"
-            Text: 0.10, "left", 0.34, "half", string$(silentCount) + "/" + string$(totalBeats) + " slices silent (< " + fixed$(silence_threshold_dB, 0) + " dB)"
-        else
-            Colour: "{0.30, 0.55, 0.30}"
-            Text: 0.10, "left", 0.34, "half", "0 silent slices found"
-        endif
-    else
-        Colour: "{0.55, 0.55, 0.55}"
-        Text: 0.10, "left", 0.34, "half", "OFF (using v0.2 behavior)"
-    endif
-    
-    Font size: 9
-    Colour: "{0.30, 0.30, 0.30}"
-    Text: 0.05, "left", 0.26, "half", "Repeat parameters:"
-    
-    Font size: 9
-    Colour: "{0.70, 0.45, 0.20}"
-    Text: 0.10, "left", 0.20, "half", string$(num_repeats) + " repeats | decay " + fixed$(amplitude_decay, 2)
-    if fade_repeats
-        Text: 0.10, "left", 0.14, "half", "Edge fades: " + fixed$(fade_duration_s * 1000, 1) + " ms"
-    else
-        Text: 0.10, "left", 0.14, "half", "Edge fades: OFF"
-    endif
-    
-    Font size: 9
-    Colour: "{0.30, 0.55, 0.30}"
-    Text: 0.05, "left", 0.05, "half", "Out: " + fixed$(resultDuration, 2) + " s, peak " + fixed$(finalPeak, 3)
-    
-    Colour: "Black"
-    Draw inner box
-    
-    # ----------------------------------------------------------
-    # ALIGNED PANEL TITLES
-    # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 0, 8
-    Select inner viewport: 0, 8, 0, 8
-    Axes: 0, 8, 0, 8
-    
-    Font size: 7
-    Colour: "Black"
-    Text: 2.10, "centre", 7.30, "half", "Candidate-slice energy (blue = active, gray = silent, orange = selected)"
-    Text: 6.10, "centre", 7.30, "half", "Parameter report"
-    
-    # ----------------------------------------------------------
-    # PANEL C: ZOOM AROUND REPEAT SECTION
-    # Gray = original, blue = result.
-    # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 4.68, 5.55
-    Select inner viewport: 0.55, 7.72, 4.75, 5.48
-    
-    # Center the zoom on the repeat section, with padding
-    padding = 0.3
-    zoomStart = beforeEnd - padding
-    if zoomStart < 0
-        zoomStart = 0
-    endif
-    zoomEnd = beforeEnd + repeatedDuration + padding
-    if zoomEnd > resultDuration
-        zoomEnd = resultDuration
-    endif
-    
-    Axes: zoomStart, zoomEnd, -sharedAmp, sharedAmp
-    Paint rectangle: "{0.97, 0.97, 0.97}", zoomStart, zoomEnd, -sharedAmp, sharedAmp
-    Colour: "{0.82, 0.82, 0.82}"
-    Draw line: zoomStart, 0, zoomEnd, 0
-    
-    # Mark repeat region (orange dotted)
-    Colour: "{0.95, 0.65, 0.30}"
-    Line width: 1
-    Dotted line
-    Draw line: beforeEnd, -sharedAmp, beforeEnd, sharedAmp
-    Draw line: beforeEnd + repeatedDuration, -sharedAmp, beforeEnd + repeatedDuration, sharedAmp
-    Solid line
-    Line width: 1
-    
-    # Original behind (gray) — only over its own time range
-    origEnd = zoomEnd
-    if origEnd > duration
-        origEnd = duration
-    endif
-    if zoomStart < duration
-        selectObject: vizOrig
-        Colour: "{0.65, 0.65, 0.65}"
-        Line width: 1
-        Draw: zoomStart, origEnd, -sharedAmp, sharedAmp, "no", "Curve"
-    endif
-    
-    # Result on top (blue)
-    selectObject: vizResult
-    Colour: "{0.25, 0.50, 0.82}"
-    Line width: 1
-    Draw: zoomStart, zoomEnd, -sharedAmp, sharedAmp, "no", "Curve"
-    
-    Colour: "Black"
-    Line width: 1
-    Draw inner box
-    Font size: 7
-    Text top: "no", "Zoom on repeat section  (gray = original, blue = result, orange = cut points)"
-    Text left: "yes", "Amp"
-    Text bottom: "yes", "Time (s)"
-    
-    # ----------------------------------------------------------
-    # PANEL D: FULL WAVEFORM COMPARISON  (SHARED y-axis)
-    # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 5.62, 6.55
-    Select inner viewport: 0.55, 7.72, 5.69, 6.48
-    
-    if resultDuration > duration
-        dispDur = resultDuration
-    else
-        dispDur = duration
-    endif
-    
-    Axes: 0, dispDur, -sharedAmp, sharedAmp
-    Paint rectangle: "{0.97, 0.97, 0.97}", 0, dispDur, -sharedAmp, sharedAmp
-    Colour: "{0.82, 0.82, 0.82}"
-    Draw line: 0, 0, dispDur, 0
-    
-    # Original behind (only its duration)
-    selectObject: vizOrig
-    Colour: "{0.65, 0.65, 0.65}"
-    Line width: 1
-    Draw: 0, duration, -sharedAmp, sharedAmp, "no", "Curve"
-    
-    # Result on top (full)
-    selectObject: vizResult
-    Colour: "{0.25, 0.50, 0.82}"
-    Line width: 1
-    Draw: 0, resultDuration, -sharedAmp, sharedAmp, "no", "Curve"
-    
-    # Mark repeat region
-    Colour: "{0.95, 0.65, 0.30}"
-    Line width: 1
-    Dotted line
-    Draw line: beforeEnd, -sharedAmp, beforeEnd, sharedAmp
-    Draw line: beforeEnd + repeatedDuration, -sharedAmp, beforeEnd + repeatedDuration, sharedAmp
-    Solid line
-    Line width: 1
-    
-    Colour: "Black"
-    Line width: 1
-    Draw inner box
-    Font size: 7
-    Text top: "no", "Full waveform  (gray = original, blue = result, orange = repeat region)"
-    Text left: "yes", "Amp"
-    Text bottom: "yes", "Time (s)"
-    
-    # ----------------------------------------------------------
-    # PANEL E: SUMMARY BAR  (suite standard — light grey)
-    # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 6.62, 7.30
-    Select inner viewport: 0.55, 7.72, 6.68, 7.24
-    Axes: 0, 1, 0, 1
-    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
-    
+
     if skip_silence
         skipStr$ = "ON (" + fixed$(silence_threshold_dB, 0) + " dB)"
     else
         skipStr$ = "OFF"
     endif
-    
+
+    if fade_repeats
+        fadeStr$ = fixed$(fade_duration_s * 1000, 1) + " ms"
+    else
+        fadeStr$ = "OFF"
+    endif
+
+    if beat_selection_mode = 1
+        modeStr$ = "Specific beat"
+    elsif beat_selection_mode = 2
+        modeStr$ = "Random beat"
+    elsif beat_selection_mode = 3
+        modeStr$ = "Beat range"
+    else
+        modeStr$ = "Auto (1 s in)"
+    endif
+
+    # ----------------------------------------------------------
+    # TITLE / SUBTITLE
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 0, 0.50
+    Axes: 0, 1, 0, 1
+    Font size: 12
+    Colour: "Black"
+    Text: 0.5, "centre", 0.68, "half", "##Beat Repeat##"
+    Font size: 7
+    Colour: "{0.35, 0.35, 0.52}"
+    Text: 0.5, "centre", -1.30, "half", "Beat Repeat.praat  |  " + presetName$ + "  |  " + display_name$
+
+    # ----------------------------------------------------------
+    # SOURCE
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 0.65, 1.90
+    Select inner viewport: 0.55, 7.75, 0.82, 1.78
+    Axes: 0, duration, -sharedAmp, sharedAmp
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, duration, -sharedAmp, sharedAmp
+    Paint rectangle: "{1.00, 0.94, 0.86}", sourceStartTime, sourceStartTime + noteDuration, -sharedAmp, sharedAmp
+
+    # In range mode, the replacement target can differ from source slice.
+    if beat_selection_mode = 3
+        Colour: "{0.48, 0.33, 0.72}"
+        Dashed line
+        Draw line: beforeEnd, -sharedAmp, beforeEnd, sharedAmp
+        Draw line: afterStart, -sharedAmp, afterStart, sharedAmp
+        Solid line
+    endif
+
+    selectObject: vizOrig
+    Colour: "{0.62, 0.62, 0.66}"
+    Draw: 0, duration, -sharedAmp, sharedAmp, "no", "Curve"
+    Colour: "{0.95, 0.55, 0.20}"
+    Line width: 1.5
+    Draw line: sourceStartTime, -sharedAmp, sourceStartTime, sharedAmp
+    Draw line: sourceStartTime + noteDuration, -sharedAmp, sourceStartTime + noteDuration, sharedAmp
+    Line width: 1
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text top: "no", "##Source##"
+    Font size: 6
+    Text left: "yes", "Amplitude"
+    Text bottom: "yes", "Time (s)"
+    Axes: 0, duration, -sharedAmp, sharedAmp
+    Colour: "{0.28, 0.28, 0.28}"
+    Text: 0.01 * duration, "left", 0.82 * sharedAmp, "half", "orange = source slice #" + string$(selectedBeat) + "  |  " + fixed$(noteDuration * 1000, 1) + " ms"
+    if beat_selection_mode = 3
+        Text: 0.99 * duration, "right", 0.82 * sharedAmp, "half", "purple dashed = replacement range"
+    endif
+
+    # ----------------------------------------------------------
+    # BEAT-REPEAT MAP - signature process view
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 2.05, 4.55
+    Select inner viewport: 0.55, 7.75, 2.25, 4.40
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, 1, 0, 1
+
+    xBase = 0.12
+    xSpan = 0.82
+
+    # Candidate beat-start lane.
     Font size: 6
     Colour: "{0.28, 0.28, 0.28}"
-    Text: 0.02, "left", 0.75, "half",
-        ... "##" + presetName$ + "##"
-        ... + "  " + sound_name$
-        ... + "  |  " + fixed$(bpm, 0) + " BPM"
-        ... + "  |  " + note_name$ + " (" + fixed$(noteDuration * 1000, 1) + " ms)"
-        ... + "  |  Beat #" + string$(selectedBeat) + " of " + string$(totalBeats)
-        ... + "  |  Repeats: " + string$(num_repeats) + " (decay " + fixed$(amplitude_decay, 2) + ")"
-    
-    Text: 0.02, "left", 0.28, "half",
-        ... "Silence skip: " + skipStr$
-        ... + "  |  Silent: " + string$(silentCount) + "/" + string$(totalBeats)
-        ... + "  |  " + shiftReport$
-        ... + "  |  Out: " + fixed$(resultDuration, 2) + " s, peak " + fixed$(finalPeak, 3)
-    
+    Text: 0.02, "left", 0.74, "half", "candidate slices"
+    Text: 0.02, "left", 0.25, "half", "repeat chain"
+
+    cellW = xSpan / totalBeats
+    for b from 1 to totalBeats
+        bx0 = xBase + (b - 1) * cellW + 0.05 * cellW
+        bx1 = xBase + b * cellW - 0.05 * cellW
+        if beatSilent#[b] = 1
+            beatColor$ = "{0.76, 0.76, 0.79}"
+        else
+            beatColor$ = "{0.30, 0.53, 0.82}"
+        endif
+        Paint rectangle: beatColor$, bx0, bx1, 0.64, 0.83
+    endfor
+
+    # Optional requested range outline.
+    if beat_selection_mode = 3
+        rx0 = xBase + (rangeStart - 1) * cellW
+        rx1 = xBase + rangeEnd * cellW
+        Colour: "{0.95, 0.55, 0.20}"
+        Line width: 1.5
+        Draw rectangle: rx0, rx1, 0.60, 0.87
+        Line width: 1
+    endif
+
+    # Selected source beat outline.
+    sx0 = xBase + (selectedBeat - 1) * cellW + 0.02 * cellW
+    sx1 = xBase + selectedBeat * cellW - 0.02 * cellW
+    Colour: "{0.95, 0.55, 0.20}"
+    Line width: 2
+    Draw rectangle: sx0, sx1, 0.62, 0.85
+    Line width: 1
+    Font size: 5
+    Text: 0.5 * (sx0 + sx1), "centre", 0.90, "half", "#" + string$(selectedBeat)
+
+    # Repeat chain; height directly shows decay^k.
+    repW = xSpan / num_repeats
+    maxRepH = 0.28
+    repBase = 0.12
+    for r from 1 to num_repeats
+        gain = amplitude_decay ^ (r - 1)
+        px0 = xBase + (r - 1) * repW + 0.07 * repW
+        px1 = xBase + r * repW - 0.07 * repW
+        py1 = repBase + maxRepH * gain
+        Paint rectangle: "{0.48, 0.33, 0.72}", px0, px1, repBase, py1
+    endfor
+
+    # Visual connection: selected source -> repeated copies.
+    Colour: "{0.95, 0.55, 0.20}"
+    Line width: 1.3
+    Draw line: 0.5 * (sx0 + sx1), 0.60, xBase + 0.5 * repW, 0.45
+    Line width: 1
+
+    # Baselines and legend.
+    Colour: "{0.82, 0.82, 0.84}"
+    Draw line: xBase, 0.61, xBase + xSpan, 0.61
+    Draw line: xBase, repBase, xBase + xSpan, repBase
     Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text top: "no", "##Beat-repeat map##"
+    Font size: 6
+    Colour: "{0.28, 0.28, 0.28}"
+    Text: 0.12, "left", 0.97, "half", "blue = active  |  grey = silent  |  orange = selected/range"
+    Text: 0.96, "right", 0.48, "half", "bar height = decay^(repeat-1)"
+    Text: 0.12, "left", 0.04, "half", modeStr$ + "  |  " + shiftReport$
+    Text: 0.96, "right", 0.04, "half", string$(num_repeats) + " repeats  |  decay " + fixed$(amplitude_decay, 2)
+
+    # ----------------------------------------------------------
+    # OUTPUT
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 4.70, 5.95
+    Select inner viewport: 0.55, 7.75, 4.87, 5.83
+    Axes: 0, resultDuration, -sharedAmp, sharedAmp
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, resultDuration, -sharedAmp, sharedAmp
+    Paint rectangle: "{0.94, 0.90, 0.98}", beforeEnd, beforeEnd + repeatedDuration, -sharedAmp, sharedAmp
+    selectObject: vizResult
+    Colour: "{0.48, 0.33, 0.72}"
+    Draw: 0, resultDuration, -sharedAmp, sharedAmp, "no", "Curve"
+    Colour: "Black"
+    Line width: 1
+    Draw inner box
+    Font size: 7
+    Text top: "no", "##Output##"
+    Font size: 6
+    Text left: "yes", "Amplitude"
+    Text bottom: "yes", "Time (s)"
+    Axes: 0, resultDuration, -sharedAmp, sharedAmp
+    Colour: "{0.28, 0.28, 0.28}"
+    Text: 0.01 * resultDuration, "left", 0.82 * sharedAmp, "half", "purple field = rendered repeat region  |  " + string$(num_repeats) + " x " + fixed$(noteDuration * 1000, 1) + " ms"
+
+    # ----------------------------------------------------------
+    # SUMMARY
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 6.10, 7.05
+    Select inner viewport: 0.30, 7.80, 6.17, 6.98
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    Colour: "{0.48, 0.48, 0.48}"
     Draw rectangle: 0, 1, 0, 1
-    
+
+    Font size: 7
+    Colour: "Black"
+    Text: 0.02, "left", 0.80, "half", "##Summary##"
+    Font size: 6
+    Colour: "{0.28, 0.28, 0.28}"
+    Text: 0.02, "left", 0.49, "half", presetName$ + "  |  " + fixed$(bpm, 0) + " BPM  |  " + note_name$ + " (" + fixed$(noteDuration * 1000, 1) + " ms)  |  source #" + string$(selectedBeat) + "/" + string$(totalBeats) + "  |  repeats " + string$(num_repeats) + "  |  decay " + fixed$(amplitude_decay, 2)
+    Text: 0.02, "left", 0.18, "half", "Silence skip " + skipStr$ + "  |  silent " + string$(silentCount) + "/" + string$(totalBeats) + "  |  fades " + fadeStr$ + "  |  duration " + fixed$(duration, 2) + " -> " + fixed$(resultDuration, 2) + " s  |  peak " + fixed$(finalPeak, 3)
+
     Font size: 10
     Colour: "Black"
     Line width: 1
-    
-    # Cleanup viz objects
+
     removeObject: vizOrig, vizResult
 endif
 

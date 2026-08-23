@@ -2,7 +2,7 @@
 # Praat AudioTools - Temporal_Turing_Morph.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
-# Version: 1.1 (2026)
+# Version: 1.3 (2026)
 # License: MIT License
 #
 # Description:
@@ -71,6 +71,19 @@
 #   9. Visualization: activator pattern, permutation map,
 #      waveforms, energy evolution, parameter summary
 #
+# v1.3 visualization spacing pass (DSP unchanged):
+#   - increases vertical breathing room between title, panel captions, and frames
+#   - gives the bottom R-D summary more line spacing
+#   - reselects the full page after drawing so Picture export captures everything
+#
+# v1.2 correctness pass (public form and output naming unchanged):
+#   - preserves original channel count in reordered audio (analysis no longer
+#     destroys stereo/multichannel input by converting the source to mono)
+#   - zero-bases only the private working copy, fixing sources with xmin != 0
+#   - segment energy seeding uses multichannel RMS directly
+#   - restores predictable RNG state immediately after stochastic simulation
+#   - skips Scale peak on digital silence
+#
 # Category: Temporal / Experimental / Composition
 # ============================================================
 
@@ -81,9 +94,10 @@ endif
 srcID    = selected("Sound")
 srcName$ = selected$("Sound")
 selectObject: srcID
-srcDur = Get total duration
-srcFs  = Get sampling frequency
-srcCh  = Get number of channels
+srcDur   = Get total duration
+srcFs    = Get sampling frequency
+srcCh    = Get number of channels
+srcStart = Get start time
 
 if srcDur < 0.05
     exitScript: "Sound must be at least 50 ms."
@@ -93,7 +107,7 @@ endif
 # FORM  (no comment lines — keeps form height minimal)
 # ============================================================
 
-form Temporal Turing Morph v1.1
+form Temporal Turing Morph v1.3
     optionmenu Preset: 1
         option Custom
         option Temporal Stutter  (short chunks, frozen stripes)
@@ -386,7 +400,7 @@ endif
 
 clearinfo
 writeInfoLine:  "=================================================="
-writeInfoLine:  "  Temporal Turing Morph v1.1"
+writeInfoLine:  "  Temporal Turing Morph v1.3"
 writeInfoLine:  "=================================================="
 appendInfoLine: ""
 appendInfoLine: "Source   : ", srcName$, "  (", fixed$(srcDur, 3), " s  ", srcCh, " ch)"
@@ -408,17 +422,18 @@ appendInfoLine: "Edge taper: ", fixed$(edge_taper_ms, 1), " ms"
 appendInfoLine: ""
 
 # ============================================================
-# STEP 1: PREPARE MONO WORKING COPY
+# STEP 1: PREPARE ZERO-BASED MULTICHANNEL WORKING COPY
 # ============================================================
 
+# Keep the original channel layout for the actual audio mosaic. The R-D model
+# only needs one scalar energy value per segment, and Praat's Sound RMS query
+# handles multichannel Sounds directly, so no destructive mono mixdown is needed.
 selectObject: srcID
-if srcCh > 1
-    # True mono mixdown (average of all channels), not just channel 1 --
-    # otherwise a file with content only on channel 2 would come out silent.
-    monoSrc = Convert to mono
-    Rename: "tTM_mono"
-else
-    monoSrc = Copy: "tTM_mono"
+audioSrc = Copy: "tTM_audio"
+selectObject: audioSrc
+workStart = Get start time
+if workStart <> 0
+    Shift times by: -workStart
 endif
 
 # ============================================================
@@ -436,7 +451,7 @@ for i from 1 to nSeg
     if t2 > srcDur
         t2 = srcDur
     endif
-    selectObject: monoSrc
+    selectObject: audioSrc
     tmpSeg = Extract part: t1, t2, "rectangular", 1, "no"
     Rename: "tTM_seg_" + string$(i)
     segID#[i] = selected("Sound")
@@ -639,6 +654,13 @@ endfor
 
 appendInfoLine: "  A_mean final: ", fixed$(iterMean#[iterations], 4)
 
+# All stochastic choices are complete at this point. Restore Praat's safe RNG
+# state now so later non-random processing/visualization cannot leak a seeded
+# global RNG state if an unrelated runtime error occurs downstream.
+if random_seed > 0
+    random_initializeSafelyAndUnpredictably ()
+endif
+
 # ============================================================
 # STEP 5: COMPUTE PERMUTATION FROM R-D PATTERN
 # ============================================================
@@ -835,7 +857,10 @@ rawSynth = selected("Sound")
 
 if normalize_output = 1
     selectObject: rawSynth
-    Scale peak: 0.99
+    synthPeak = Get absolute extremum: 0, 0, "Sinc70"
+    if synthPeak > 0
+        Scale peak: 0.99
+    endif
 endif
 
 # ============================================================
@@ -848,7 +873,6 @@ endfor
 for i from 1 to nSeg
     removeObject: segID#[i]
 endfor
-removeObject: monoSrc
 
 # ============================================================
 # NAME OUTPUT
@@ -871,26 +895,30 @@ if draw_visualization = 1
 
     appendInfoLine: "[Viz] Drawing..."
 
+    # Picture text only: prevent underscores from being interpreted as subscripts.
+    vizSrcName$ = replace$(srcName$, "_", " ", 0)
+    vizOutputName$ = replace$(outputName$, "_", " ", 0)
+
     Erase all
 
     # --- Title bar ---
-    Select outer viewport: 0, 8, 0, 0.46
+    Select outer viewport: 0, 8, 0, 0.76
     Axes: 0, 1, 0, 1
     Font size: 11
     Colour: "Black"
-    Text: 0.5, "centre", 0.73, "half", "##Temporal Turing Morph v1.1##"
+    Text: 0.5, "centre", 0.80, "half", "##Temporal Turing Morph v1.3##"
     Font size: 7.5
     Colour: "{0.35, 0.35, 0.45}"
-    Text: 0.5, "centre", -0.08, "half",
-        ... srcName$
+    Text: 0.5, "centre", 0.05, "half",
+        ... vizSrcName$
         ... + "  |  " + string$(nSeg) + " segs × " + fixed$(chunk_duration_ms, 0) + "ms"
         ... + "  iter=" + string$(iterations)
         ... + "  " + modeStr$
         ... + "  morph=" + fixed$(morph_amount, 1)
 
     # --- Panel 1: activator pattern (the permutation driver) ---
-    Select outer viewport: 0, 8, 0.50, 1.42
-    Select inner viewport: 0.58, 7.65, 0.55, 1.37
+    Select outer viewport: 0, 8, 0.90, 1.82
+    Select inner viewport: 0.58, 7.65, 1.03, 1.73
     aMinViz = min(act#)
     aMaxViz = max(act#)
     aRangeViz = aMaxViz - aMinViz
@@ -923,8 +951,8 @@ if draw_visualization = 1
     Text top: "no", "1D activator pattern  (spatial structure -> reordering)"
 
     # --- Panel 2: Permutation map  original index → output slot ---
-    Select outer viewport: 0, 8, 1.46, 2.38
-    Select inner viewport: 0.58, 7.65, 1.51, 2.33
+    Select outer viewport: 0, 8, 1.98, 2.90
+    Select inner viewport: 0.58, 7.65, 2.11, 2.81
     Axes: 0, nSeg + 1, 0, nSeg + 1
     Paint rectangle: "{0.97, 0.97, 0.97}", 0, nSeg + 1, 0, nSeg + 1
     # Identity diagonal
@@ -967,12 +995,12 @@ if draw_visualization = 1
     endif
     ampMaxOut = outPeak * 1.15
 
-    Select outer viewport: 0, 8, 2.42, 3.14
-    Select inner viewport: 0.58, 7.65, 2.47, 3.09
-    Axes: 0, srcDur, -ampMax, ampMax
-    Paint rectangle: "{0.97, 0.97, 0.97}", 0, srcDur, -ampMax, ampMax
+    Select outer viewport: 0, 8, 3.20, 3.96
+    Select inner viewport: 0.58, 7.65, 3.32, 3.87
+    Axes: srcStart, srcStart + srcDur, -ampMax, ampMax
+    Paint rectangle: "{0.97, 0.97, 0.97}", srcStart, srcStart + srcDur, -ampMax, ampMax
     Colour: "{0.80, 0.80, 0.80}"
-    Draw line: 0, 0, srcDur, 0
+    Draw line: srcStart, 0, srcStart + srcDur, 0
     selectObject: srcID
     Colour: "{0.42, 0.48, 0.58}"
     Draw: 0, 0, -ampMax, ampMax, "no", "Curve"
@@ -980,10 +1008,10 @@ if draw_visualization = 1
     Draw inner box
     Font size: 7
     Text left: "yes", "Input"
-    Text top: "no", "Original: " + srcName$
+    Text top: "no", "Original: " + vizSrcName$
 
-    Select outer viewport: 0, 8, 3.17, 3.89
-    Select inner viewport: 0.58, 7.65, 3.22, 3.84
+    Select outer viewport: 0, 8, 4.12, 4.88
+    Select inner viewport: 0.58, 7.65, 4.24, 4.79
     Axes: 0, resultDur, -ampMaxOut, ampMaxOut
     Paint rectangle: "{0.97, 0.97, 0.97}", 0, resultDur, -ampMaxOut, ampMaxOut
     Colour: "{0.80, 0.80, 0.80}"
@@ -995,12 +1023,12 @@ if draw_visualization = 1
     Draw inner box
     Font size: 7
     Text left: "yes", "Output"
-    Text top: "no", outputName$
+    Text top: "no", vizOutputName$
     Text bottom: "yes", "Time (s)"
 
     # --- Panel 5: Activator energy evolution + arc profile overlay ---
-    Select outer viewport: 0, 5.5, 3.93, 4.85
-    Select inner viewport: 0.55, 5.20, 3.98, 4.80
+    Select outer viewport: 0, 5.5, 5.40, 6.52
+    Select inner viewport: 0.55, 5.20, 5.56, 6.36
 
     minE = iterMean#[1]
     maxE = iterMean#[1]
@@ -1057,37 +1085,42 @@ if draw_visualization = 1
     Font size: 7
     Text left: "yes", "A mean"
     Text bottom: "yes", "Iteration"
-    Text top: "no", "Activator mean A per iteration  (gold = arc profile, colour = progress)"
-
-    # --- Panel 6: R-D parameter summary ---
-    Select outer viewport: 5.5, 8, 3.93, 4.85
-    Select inner viewport: 5.68, 7.65, 3.98, 4.80
+    # Caption in its own band so it never sits on the plot frame.
+    Select outer viewport: 0, 5.5, 5.18, 5.36
     Axes: 0, 1, 0, 1
-    Paint rectangle: "{0.95, 0.95, 0.95}", 0, 1, 0, 1
     Font size: 7
     Colour: "Black"
-    Text: 0.06, "left", 0.93, "half", "##Activator-Inhibitor R-D##"
-    Font size: 6
+    Text: 0.5, "centre", 0.50, "half", "Activator mean A per iteration  (gold = arc profile, colour = progress)"
+
+    # --- Panel 6: R-D parameter summary ---
+    Select outer viewport: 5.5, 8, 5.40, 6.52
+    Select inner viewport: 5.68, 7.65, 5.52, 6.39
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.95, 0.95, 0.95}", 0, 1, 0, 1
+    Font size: 6.5
+    Colour: "Black"
+    Text: 0.06, "left", 0.95, "half", "##Activator-Inhibitor R-D##"
+    Font size: 5.5
     Colour: "{0.30, 0.30, 0.40}"
-    Text: 0.06, "left", 0.81, "half",
+    Text: 0.06, "left", 0.82, "half",
         ... "Da=" + fixed$(diffA, 3) + "  Di=" + fixed$(diffI, 3)
         ... + "  (Di/Da=" + fixed$(diffI / diffA, 0) + "x)"
-    Text: 0.06, "left", 0.69, "half",
+    Text: 0.06, "left", 0.70, "half",
         ... "r=" + fixed$(reaction_rate, 3) + "  s=" + fixed$(inhibition_strength, 3)
         ... + "  dt=" + fixed$(dtSafe, 5)
-    Text: 0.06, "left", 0.57, "half",
+    Text: 0.06, "left", 0.58, "half",
         ... "iter=" + string$(iterations) + "  segs=" + string$(nSeg)
         ... + "  perturb=" + fixed$(initial_perturbation, 3)
-    Text: 0.06, "left", 0.45, "half",
+    Text: 0.06, "left", 0.46, "half",
         ... "chunk=" + fixed$(chunk_duration_ms, 0) + "ms"
         ... + "  morph=" + fixed$(morph_amount, 2)
-    Text: 0.06, "left", 0.33, "half",
+    Text: 0.06, "left", 0.34, "half",
         ... "arc=" + string$(arc_mode) + "  str=" + fixed$(arc_strength, 2)
         ... + "  drift=" + fixed$(drift_strength, 2)
-    Text: 0.06, "left", 0.21, "half",
+    Text: 0.06, "left", 0.22, "half",
         ... "rupture p=" + fixed$(rupture_prob, 3)
         ... + "  str=" + fixed$(rupture_strength, 1)
-    Text: 0.06, "left", 0.09, "half",
+    Text: 0.06, "left", 0.10, "half",
         ... "mode: " + modeStr$
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
@@ -1095,6 +1128,10 @@ if draw_visualization = 1
     Font size: 10
     Colour: "Black"
     Line width: 1
+
+    # Leave Picture on the full-page viewport so export/copy captures the complete visualization.
+    Select outer viewport: 0, 8, 0, 6.64
+    Select inner viewport: 0, 8, 0, 6.64
 
 endif
 
@@ -1118,7 +1155,6 @@ if play_result = 1
     Play
 endif
 
-# Undo the predictable-RNG state so it doesn't persist across later Praat work.
-if random_seed > 0
-    random_initializeSafelyAndUnpredictably ()
-endif
+# Cleanup the zero-based multichannel working source after all visualization/playback.
+removeObject: audioSrc
+selectObject: resultID

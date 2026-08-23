@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4 (2026)
+# Version: 0.5 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -12,6 +12,18 @@
 #   forward and backward through the audio timeline. Two modes:
 #   Stutter (always play forward) creates rhythmic repetition,
 #   Scrub (reverse when moving back) creates tape manipulation.
+#
+#
+# Changelog v0.5:
+#   - VISUALIZATION ONLY: replaced the dense segment-bar display with a
+#     continuous read-head trajectory. X = source position; Y = output order.
+#     In Scrub mode backward grains visibly travel left; in Stutter mode the
+#     source position steps back but each grain still reads forward.
+#   - Source/output waveform panels now share one amplitude scale and use a
+#     zero-based mono visualization copy, without changing multichannel DSP.
+#   - Standardized title/subtitle, panel spacing, muted suite colours and
+#     summary strip; display names render underscores as spaces.
+#   - Fixed the final Picture viewport so full-page EPS/PNG export works.
 #
 # Changelog v0.4:
 #   - API compatibility: public form is byte-for-byte unchanged.
@@ -352,93 +364,246 @@ outputDuration = Get total duration
 # === Visualization ===
 if draw_visualization
     Erase all
-    
-    # Title
-    Select outer viewport: 0, 8, 0.1, 0.5
+    Black
+    Plain line
+
+    # Display-only mono, zero-based copies. DSP/output channel count are untouched.
+    selectObject: original
+    originalChannels = Get number of channels
+    if originalChannels > 1
+        vizOriginal = Convert to mono
+    else
+        vizOriginal = Copy: "zigzag_viz_original"
+    endif
+    selectObject: vizOriginal
+    vizStart = Get start time
+    if vizStart <> 0
+        Shift times by: -vizStart
+    endif
+
+    selectObject: result
+    resultChannels = Get number of channels
+    if resultChannels > 1
+        vizResult = Convert to mono
+    else
+        vizResult = Copy: "zigzag_viz_result"
+    endif
+    selectObject: vizResult
+    vizResultStart = Get start time
+    if vizResultStart <> 0
+        Shift times by: -vizResultStart
+    endif
+
+    # One amplitude scale for honest before/after comparison.
+    selectObject: vizOriginal
+    originalPeak = Get absolute extremum: 0, 0, "None"
+    selectObject: vizResult
+    outputPeak = Get absolute extremum: 0, 0, "None"
+    sharedPeak = max(originalPeak, outputPeak)
+    if sharedPeak < 0.01
+        sharedPeak = 0.01
+    endif
+    sharedAmp = sharedPeak * 1.12
+
+    displayName$ = replace$(soundName$, "_", " ", 0)
+
+    # ----------------------------------------------------------
+    # TITLE
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 0, 0.55
+    Select inner viewport: 0.60, 7.70, 0.04, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "ZigZag Effect: " + soundName$ + " (" + presetName$ + ", " + modeName$ + ")"
-    
-    # Original waveform
-    Select outer viewport: 0, 8, 0.6, 2.0
-    Select inner viewport: 0.6, 7.6, 0.7, 1.9
-    selectObject: original
-    Colour: "{0.6, 0.6, 0.6}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
+    Text: 0.5, "centre", 0.72, "half", "##ZIGZAG EFFECT##"
+    Font size: 7
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.18, "half",
+        ... displayName$ + "  |  " + presetName$ + "  |  " + modeName$
+        ... + "  |  " + string$(originalChannels) + " ch -> " + string$(resultChannels) + " ch"
+
+    # ----------------------------------------------------------
+    # ORIGINAL WAVEFORM
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 0.68, 1.72
+    Select inner viewport: 0.60, 7.70, 0.84, 1.64
+    Axes: 0, totalDuration, -sharedAmp, sharedAmp
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, totalDuration, -sharedAmp, sharedAmp
+    Colour: "{0.82, 0.82, 0.82}"
+    Draw line: 0, 0, totalDuration, 0
+    selectObject: vizOriginal
+    Colour: "{0.55, 0.55, 0.55}"
+    Line width: 1
+    Draw: 0, totalDuration, -sharedAmp, sharedAmp, "no", "Curve"
     Colour: "Black"
     Draw inner box
-    Font size: 8
-    Text left: "yes", "Original"
-    
-    # Result waveform
-    Select outer viewport: 0, 8, 2.1, 3.5
-    Select inner viewport: 0.6, 7.6, 2.2, 3.4
-    selectObject: result
-    Colour: "{0.6, 0.5, 0.4}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
+    Font size: 7
+    Text left: "yes", "Amp"
+
+    Select outer viewport: 0.60, 7.70, 0.64, 0.82
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text: 0.5, "centre", 0.5, "half", "Source"
+
+    # ----------------------------------------------------------
+    # ZIGZAG OUTPUT WAVEFORM
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 1.92, 2.96
+    Select inner viewport: 0.60, 7.70, 2.08, 2.88
+    Axes: 0, outputDuration, -sharedAmp, sharedAmp
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, outputDuration, -sharedAmp, sharedAmp
+    Colour: "{0.82, 0.82, 0.82}"
+    Draw line: 0, 0, outputDuration, 0
+    selectObject: vizResult
+    Colour: "{0.25, 0.45, 0.75}"
+    Line width: 1
+    Draw: 0, outputDuration, -sharedAmp, sharedAmp, "no", "Curve"
     Colour: "Black"
     Draw inner box
-    Text left: "yes", "ZigZag"
-    Text bottom: "yes", "Time (s)"
-    
-    # Segment pattern visualization
-    Select outer viewport: 0, 8, 3.7, 5.3
-    Select inner viewport: 0.6, 7.6, 3.9, 5.2
-    
-    # Limit display to first 200 segments for clarity
-    displaySegs = min(segmentCount, 200)
-    
-    Axes: 0, totalDuration, 0, displaySegs + 1
-    Paint rectangle: "{0.95, 0.95, 0.95}", 0, totalDuration, 0, displaySegs + 1
-    
-    # Draw zigzag path
-    for seg to displaySegs
-        startT = segStarts#[seg]
-        endT = segEnds#[seg]
-        dir = segDirections#[seg]
-        
-        # Color: forward=blue, backward=red
-        if dir = 1
-            segColor$ = "{0.3, 0.5, 0.8}"
-        else
-            segColor$ = "{0.8, 0.4, 0.3}"
-        endif
-        
-        # Draw segment bar
-        Paint rectangle: segColor$, startT, endT, seg - 0.4, seg + 0.4
-        
-        # Draw connecting line to next segment
-        if seg < displaySegs
-            nextStart = segStarts#[seg + 1]
-            Colour: "{0.5, 0.5, 0.5}"
-            Draw line: (startT + endT) / 2, seg, nextStart, seg + 1
+    Font size: 7
+    Text left: "yes", "Amp"
+
+    Select outer viewport: 0.60, 7.70, 1.88, 2.06
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text: 0.5, "centre", 0.5, "half", "Zigzag output"
+
+    # ----------------------------------------------------------
+    # READ-HEAD TRAJECTORY — direct visual description of process
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 3.22, 5.52
+    Select inner viewport: 0.60, 7.70, 3.40, 5.35
+    Axes: 0, totalDuration, 0, 1
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, totalDuration, 0, 1
+
+    # Light source-position guides.
+    Colour: "{0.88, 0.88, 0.90}"
+    Dotted line
+    for q from 1 to 3
+        gx = totalDuration * q / 4
+        Draw line: gx, 0, gx, 1
+    endfor
+    Solid line
+
+    # Keep the whole trajectory when feasible; for very large renders, sample
+    # every Nth segment only for display. DSP still uses every segment.
+    displayStep = ceiling(segmentCount / 240)
+    if displayStep < 1
+        displayStep = 1
+    endif
+    displayCount = ceiling(segmentCount / displayStep)
+    shown = 0
+    havePrevious = 0
+    previousPlayEnd = 0
+    previousY = 0
+
+    for seg from 1 to segmentCount
+        if (seg - 1) mod displayStep = 0
+            shown += 1
+            y0 = (shown - 1) / displayCount
+            y1 = shown / displayCount
+            startT = segStarts#[seg]
+            endT = segEnds#[seg]
+            dir = segDirections#[seg]
+
+            # Playback direction, not merely extraction bounds.
+            if dir = 1
+                playStart = startT
+                playEnd = endT
+                stroke$ = "{0.35, 0.60, 0.40}"
+            else
+                if playback_mode = 2
+                    # Scrub: the backward grain itself is read in reverse.
+                    playStart = endT
+                    playEnd = startT
+                    stroke$ = "{0.78, 0.28, 0.22}"
+                else
+                    # Stutter: source position steps back, but the grain still reads forward.
+                    playStart = startT
+                    playEnd = endT
+                    stroke$ = "{0.35, 0.60, 0.40}"
+                endif
+            endif
+
+            # Relocation between grains. In Stutter, the actual back-step is the
+            # red horizontal/diagonal jump; the grain that follows remains green.
+            if havePrevious
+                if playback_mode = 1 and dir = -1
+                    Colour: "{0.78, 0.28, 0.22}"
+                    Line width: 1.2
+                else
+                    Colour: "{0.68, 0.68, 0.70}"
+                    Line width: 0.7
+                endif
+                Draw line: previousPlayEnd, previousY, playStart, y0
+            endif
+
+            Colour: stroke$
+            Line width: 1.5
+            Draw line: playStart, y0, playEnd, y1
+
+            previousPlayEnd = playEnd
+            previousY = y1
+            havePrevious = 1
         endif
     endfor
-    
+
     Colour: "Black"
+    Line width: 1
     Draw inner box
     Font size: 7
-    Text left: "yes", "Segment #"
+    Text left: "yes", "Output order"
     Text bottom: "yes", "Source position (s)"
-    
-    # Legend
-    Axes: 0, 1, 0, 1
-    Font size: 6
-    Colour: "{0.3, 0.5, 0.8}"
-    Text: 0.02, "left", 0.97, "half", "Forward"
-    Colour: "{0.8, 0.4, 0.3}"
-    Text: 0.20, "left", 0.97, "half", "Backward"
-    
-    # Stats
-    Select outer viewport: 0, 8, 5.4, 5.7
+
+    # Process-panel title and compact direction key.
+    Select outer viewport: 0.60, 7.70, 3.08, 3.36
     Axes: 0, 1, 0, 1
     Font size: 7
-    Colour: "{0.4, 0.4, 0.4}"
-    Text: 0.5, "centre", 0.5, "half", "Segments: " + string$(segmentCount) + " | Changes/s: " + string$(direction_changes_per_second) + " | Duration: " + fixed$(outputDuration, 2) + "s"
-    
+    Colour: "Black"
+    Text: 0.50, "centre", 0.72, "half", "Read-head trajectory"
+    Font size: 6
+    Colour: "{0.35, 0.60, 0.40}"
+    Text: 0.02, "left", 0.16, "half", "Forward"
+    Colour: "{0.78, 0.28, 0.22}"
+    if playback_mode = 2
+        Text: 0.15, "left", 0.16, "half", "Reverse"
+    else
+        Text: 0.15, "left", 0.16, "half", "Back-step"
+    endif
+
+    # ----------------------------------------------------------
+    # SUMMARY STRIP
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 5.73, 6.28
+    Select inner viewport: 0.60, 7.70, 5.80, 6.22
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    Colour: "{0.25, 0.25, 0.35}"
+    Font size: 6
+    Text: 0.02, "left", 0.67, "half",
+        ... "##" + presetName$ + "##  |  " + modeName$
+        ... + "  |  Segments: " + string$(segmentCount)
+        ... + "  |  Changes/s: " + string$(direction_changes_per_second)
+        ... + "  |  Forward ratio: " + fixed$(forward_ratio, 2)
+    Text: 0.02, "left", 0.27, "half",
+        ... "Back distance: " + fixed$(backward_distance_factor, 2)
+        ... + "  |  Overlap: " + fixed$(effectiveOverlap * 1000, 2) + " ms"
+        ... + "  |  In: " + fixed$(totalDuration, 2) + " s"
+        ... + "  |  Out: " + fixed$(outputDuration, 2) + " s"
+    Colour: "Black"
+    Draw rectangle: 0, 1, 0, 1
+
+    removeObject: vizOriginal, vizResult
+
+    # Full page must be active when Picture is copied/exported.
+    Select outer viewport: 0, 8, 0, 6.35
+    Select inner viewport: 0, 8, 0, 6.35
+    Axes: 0, 8, 0, 6.35
     Font size: 10
     Colour: "Black"
+    Line width: 1
 endif
 
 # === Final Info ===

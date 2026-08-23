@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4 (2026)
+# Version: 0.7 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -12,6 +12,33 @@
 #   bidirectional sample delay processing. Each iteration adds
 #   resonances at harmonicBase^k intervals, creating rich harmonic
 #   textures similar to a tuned comb filter bank.
+#
+# Changelog v0.7 (2026) - visualization colour hierarchy only; DSP unchanged:
+#   - Diversified the three processed-data roles so blue is not repeated across
+#     waveform, process model and spectrum: output waveform remains library blue,
+#     resonance-field peaks use muted library amber, and output spectrum uses
+#     muted library green. Comb-process colours remain amber/red by character.
+#   - Input/reference data remain neutral grey; frames and labels remain black.
+#
+# Changelog v0.6 (2026) - visualization only; DSP unchanged:
+#   - Added a central process-explanation panel between waveform and spectra.
+#   - True-harmonic mode shows a stylized resonance field at F0, 2F0, 3F0...;
+#     peak height follows harmonic decay and visual width follows resonance Q.
+#   - Geometric/legacy comb modes show a delay ladder so the user can see how
+#     successive stages shorten the delay geometrically.
+#   - The panel is intentionally explanatory rather than a calibrated response
+#     plot: no scientific y-axis or false precision is implied.
+#
+# Changelog v0.5 (2026) - visualization only; DSP unchanged:
+#   - Brought the Picture output to the AudioTools library standard without
+#     changing its four-panel concept.
+#   - Standard title/subtitle block, 0.60-7.70 inner geometry, font hierarchy,
+#     panel grey and summary strip.
+#   - Input is library grey; processed output is library blue consistently in
+#     both waveform and spectrum panels.
+#   - Input and output waveforms now share one amplitude scale.
+#   - FIX: re-selects the full page at the end so Picture export/copy captures
+#     the complete figure rather than only the last legend viewport.
 #
 # Changelog v0.4 (2026):
 #   - HEADLINE: Character 1 is now a TRUE harmonic resonator bank.
@@ -68,7 +95,7 @@
 #   - Added visualization
 # ============================================================
 
-form Harmonic Resonance v0.4
+form Harmonic Resonance v0.7
     comment Select a Sound object first
 
     comment === Preset ===
@@ -251,7 +278,7 @@ totalDuration = Get total duration
 totalSamples = Get number of samples
 
 # === Info ===
-writeInfoLine: "=== Harmonic Resonance v0.4 ==="
+writeInfoLine: "=== Harmonic Resonance v0.7 ==="
 appendInfoLine: "Source: ", original_name$, " (", fixed$(originalDuration, 2), " s; ", channels, " ch)"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
@@ -448,39 +475,213 @@ removeObject: extended
 # === Visualization ===
 if draw_visualization
     Erase all
-    
-    # Title
-    Select outer viewport: 1, 8, 0.2, 0.6
+    Select outer viewport: 0, 8, 0, 6.45
+
+    # Visualization metrics. Input and output share one amplitude scale.
+    selectObject: original
+    vizOrigPeak = Get absolute extremum: 0, 0, "None"
+    selectObject: result
+    vizResPeak = Get absolute extremum: 0, 0, "None"
+    resultStart = Get start time
+    resultEnd = Get end time
+    wavePeak = max(vizOrigPeak, vizResPeak)
+    if wavePeak <= 1e-12
+        wavePeak = 1
+    endif
+    wavePeak = wavePeak * 1.05
+
+    presetLabel$ = replace$(presetName$, "Harmonics", " Harmonics", 0)
+
+    if character = 1
+        characterLabel$ = "true harmonic resonators"
+    elsif character = 2
+        characterLabel$ = "geometric comb"
+    else
+        characterLabel$ = "legacy feedback comb"
+    endif
+
+    # Title block - AudioTools standard.
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "Harmonic Resonance: " + original_name$
-    
-    # Original waveform
-    Select outer viewport: 0, 8, 0.8, 2.2
-    Select inner viewport: 0.6, 7.6, 0.9, 2.1
+    Text: 0.5, "centre", 0.68, "half", "##Harmonic Resonance v0.7##"
+    Font size: 7
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half", original_name$ + " | " + presetLabel$ + " | " + characterLabel$
+
+    # Original waveform.
+    Select outer viewport: 0, 8, 0.62, 1.48
+    Select inner viewport: 0.60, 7.70, 0.69, 1.42
+    Axes: sourceStart, sourceEnd, -wavePeak, wavePeak
+    Paint rectangle: "{0.97, 0.97, 0.97}", sourceStart, sourceEnd, -wavePeak, wavePeak
     selectObject: original
-    Colour: "{0.6, 0.6, 0.6}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
+    Colour: "{0.55, 0.55, 0.55}"
+    Draw: sourceStart, sourceEnd, -wavePeak, wavePeak, "no", "Curve"
     Colour: "Black"
     Draw inner box
-    Font size: 8
+    Font size: 7
     Text left: "yes", "Original"
-    
-    # Result waveform
-    Select outer viewport: 0, 8, 2.3, 3.7
-    Select inner viewport: 0.6, 7.6, 2.4, 3.6
+
+    # Result waveform.
+    Select outer viewport: 0, 8, 1.55, 2.41
+    Select inner viewport: 0.60, 7.70, 1.62, 2.35
+    Axes: resultStart, resultEnd, -wavePeak, wavePeak
+    Paint rectangle: "{0.97, 0.97, 0.97}", resultStart, resultEnd, -wavePeak, wavePeak
     selectObject: result
-    Colour: "{0.2, 0.5, 0.7}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
+    Colour: "{0.25, 0.45, 0.75}"
+    Draw: resultStart, resultEnd, -wavePeak, wavePeak, "no", "Curve"
     Colour: "Black"
     Draw inner box
+    Font size: 7
     Text left: "yes", "Harmonic"
     Text bottom: "yes", "Time (s)"
-    
-    # Original spectrum
-    Select outer viewport: 0, 4, 3.9, 5.5
-    Select inner viewport: 0.6, 3.8, 4.1, 5.4
+
+    # -----------------------------------------------------------------
+    # Process explanation panel. This is intentionally a visual model,
+    # not a calibrated transfer-function measurement.
+    # -----------------------------------------------------------------
+    Select outer viewport: 0, 8, 2.62, 3.86
+    Select inner viewport: 0.60, 7.70, 2.74, 3.72
+
+    if character = 1
+        displayHarmonics = min(activeHarmonics, 8)
+        processXmax = fundamentalHz * (displayHarmonics + 0.55)
+        if processXmax > spectrumMaxHz
+            processXmax = spectrumMaxHz
+        endif
+        if processXmax <= fundamentalHz
+            processXmax = fundamentalHz * 1.5
+        endif
+
+        Axes: 0, processXmax, 0, 1.12
+        Paint rectangle: "{0.97, 0.97, 0.97}", 0, processXmax, 0, 1.12
+
+        # Quiet baseline: source energy before tuned reinforcement.
+        Colour: "{0.78, 0.78, 0.78}"
+        Line width: 1
+        Draw line: 0, 0.10, processXmax, 0.10
+
+        # Stylized resonance peaks. Height follows the requested harmonic
+        # decay; width reflects Q but is given a minimum visible width.
+        for k to displayHarmonics
+            centreHzViz = fundamentalHz * k
+            if centreHzViz < processXmax
+                peakHeightViz = decay_factor ^ (k - 1)
+                bandwidthViz = max(2, centreHzViz / resonance_Q)
+                halfWidthViz = max(processXmax * 0.012, bandwidthViz * 1.2)
+
+                Colour: "{0.80, 0.60, 0.20}"
+                Line width: 1.7
+                prevSet = 0
+                for q from -12 to 12
+                    shapeX = q / 12
+                    xViz = centreHzViz + shapeX * halfWidthViz
+                    if xViz >= 0 and xViz <= processXmax
+                        yViz = 0.10 + peakHeightViz * 0.88 * (1 - shapeX ^ 2) ^ 2
+                        if prevSet = 1
+                            Draw line: prevXViz, prevYViz, xViz, yViz
+                        endif
+                        prevXViz = xViz
+                        prevYViz = yViz
+                        prevSet = 1
+                    endif
+                endfor
+                Line width: 1
+
+                # Minimal labels keep the panel explanatory, not analytical.
+                if k <= 4
+                    Font size: 6
+                    Colour: "{0.25, 0.25, 0.35}"
+                    if k = 1
+                        harmLabel$ = "F0"
+                    else
+                        harmLabel$ = string$(k) + "F0"
+                    endif
+                    Text: centreHzViz, "centre", 0.025, "bottom", harmLabel$
+                endif
+            endif
+        endfor
+
+        if activeHarmonics > displayHarmonics
+            Font size: 8
+            Colour: "{0.35, 0.35, 0.50}"
+            Text: processXmax * 0.96, "centre", 0.28, "half", "..."
+        endif
+
+        Colour: "Black"
+        Draw inner box
+        Font size: 7
+        Text top: "no", "Resonance field: the source excites tuned bands at F0, 2F0, 3F0 ..."
+        Text bottom: "yes", "Frequency  ->"
+        Font size: 6
+        Colour: "{0.35, 0.35, 0.50}"
+        Text: processXmax * 0.985, "right", 1.035, "half", "higher Q = narrower peaks"
+
+    else
+        displayIterations = min(num_iterations, 8)
+        Axes: 0.3, displayIterations + 0.7, 0, 1.12
+        Paint rectangle: "{0.97, 0.97, 0.97}", 0.3, displayIterations + 0.7, 0, 1.12
+
+        # Geometric comb explanation: each stage uses a shorter delay.
+        prevSet = 0
+        for k to displayIterations
+            relDelayViz = 1 / (harmonicBase ^ (k - 1))
+            yDelayViz = 0.12 + 0.82 * relDelayViz
+
+            if character = 2
+                nodeColour$ = "{0.80, 0.60, 0.20}"
+            else
+                nodeColour$ = "{0.78, 0.28, 0.22}"
+            endif
+
+            if prevSet = 1
+                Colour: "{0.60, 0.60, 0.60}"
+                Line width: 1.2
+                Draw line: k - 1, prevYDelayViz, k, yDelayViz
+            endif
+            Colour: nodeColour$
+            Paint circle (mm): nodeColour$, k, yDelayViz, 2.0
+            Line width: 1
+
+            Font size: 6
+            Colour: "{0.25, 0.25, 0.35}"
+            if k = 1
+                delayLabel$ = "D"
+            elsif k = 2
+                delayLabel$ = "D/base"
+            elsif k = 3
+                delayLabel$ = "D/base^2"
+            else
+                delayLabel$ = string$(k)
+            endif
+            Text: k, "centre", 0.035, "bottom", delayLabel$
+
+            prevYDelayViz = yDelayViz
+            prevSet = 1
+        endfor
+        Line width: 1
+
+        Colour: "Black"
+        Draw inner box
+        Font size: 7
+        if character = 2
+            Text top: "no", "Comb field: each stage reuses a geometrically shorter delay"
+        else
+            Text top: "no", "Feedback comb field: shorter delays are recursively folded into the result"
+        endif
+        Text bottom: "yes", "Processing stage  ->"
+        Font size: 6
+        Colour: "{0.35, 0.35, 0.50}"
+        Text: displayIterations + 0.55, "right", 1.035, "half", "delay shrinks by / base"
+    endif
+
+    # Original spectrum.
+    Select outer viewport: 0, 4, 4.08, 5.62
+    Select inner viewport: 0.60, 3.85, 4.20, 5.48
+    Axes: 0, spectrumMaxHz, 0, 1
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, spectrumMaxHz, 0, 1
     selectObject: original
     if channels > 1
         vizOrigMono = Convert to mono
@@ -490,7 +691,7 @@ if draw_visualization
     To Spectrum: "yes"
     origSpec = selected("Spectrum")
     removeObject: vizOrigMono
-    Colour: "{0.6, 0.6, 0.6}"
+    Colour: "{0.55, 0.55, 0.55}"
     Draw: 0, spectrumMaxHz, 0, 0, "no"
     Colour: "Black"
     Draw inner box
@@ -498,10 +699,12 @@ if draw_visualization
     Text left: "yes", "dB"
     Text bottom: "yes", "Original (Hz)"
     removeObject: origSpec
-    
-    # Result spectrum
-    Select outer viewport: 4, 8, 3.9, 5.5
-    Select inner viewport: 4.4, 7.6, 4.1, 5.4
+
+    # Result spectrum.
+    Select outer viewport: 4, 8, 4.08, 5.62
+    Select inner viewport: 4.45, 7.70, 4.20, 5.48
+    Axes: 0, spectrumMaxHz, 0, 1
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, spectrumMaxHz, 0, 1
     selectObject: result
     if channels > 1
         vizResMono = Convert to mono
@@ -511,7 +714,7 @@ if draw_visualization
     To Spectrum: "yes"
     resSpec = selected("Spectrum")
     removeObject: vizResMono
-    Colour: "{0.3, 0.6, 0.8}"
+    Colour: "{0.35, 0.60, 0.40}"
     Draw: 0, spectrumMaxHz, 0, 0, "no"
     Colour: "Black"
     Draw inner box
@@ -519,18 +722,22 @@ if draw_visualization
     Text left: "yes", "dB"
     Text bottom: "yes", "Harmonic (Hz)"
     removeObject: resSpec
-    
-    # Legend
-    Select outer viewport: 2, 8, 5.6, 5.9
-    Font size: 7
-    Colour: "{0.4, 0.4, 0.4}"
+
+    # Summary strip.
+    Select outer viewport: 0, 8, 5.84, 6.36
+    Select inner viewport: 0.60, 7.70, 5.89, 6.31
     Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    Font size: 6
+    Colour: "{0.25, 0.25, 0.35}"
     if character = 1
-        Text: 0.5, "centre", 0.5, "half", "F0: " + fixed$(fundamentalHz, 1) + " Hz | Harmonics: " + string$(activeHarmonics) + " | Q: " + fixed$(resonance_Q, 1) + " | Wet: " + fixed$(resonance_mix, 2)
+        Text: 0.5, "centre", 0.5, "half", "##F0## " + fixed$(fundamentalHz, 1) + " Hz | ##Harmonics## " + string$(activeHarmonics) + " | ##Q## " + fixed$(resonance_Q, 1) + " | ##Wet## " + fixed$(resonance_mix, 2) + " | ##Tail## " + fixed$(tail_duration_s, 2) + " s"
     else
-        Text: 0.5, "centre", 0.5, "half", "Geometric base: " + fixed$(harmonicBase, 2) + " | Iterations: " + string$(num_iterations) + " | Decay: " + fixed$(decay_factor, 2)
+        Text: 0.5, "centre", 0.5, "half", "##Base## " + fixed$(harmonicBase, 2) + " | ##Iterations## " + string$(num_iterations) + " | ##Decay## " + fixed$(decay_factor, 2) + " | ##Tail## " + fixed$(tail_duration_s, 2) + " s"
     endif
-    
+
+    # Full-page selection is required for complete Picture export/copy.
+    Select outer viewport: 0, 8, 0, 6.45
     Font size: 10
     Colour: "Black"
 endif
