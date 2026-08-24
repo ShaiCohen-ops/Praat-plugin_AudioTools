@@ -59,7 +59,7 @@
 #     reports the value actually used.
 #   - Every reported number is measured from the run, not
 #     assumed from the settings: achieved stretch factors,
-#     achieved metric-phase error, pool coverage, and the
+#     achieved selected source-phase mismatch, pool coverage, and the
 #     number of times the tabu queue had to be relaxed.
 #
 # DELIBERATE DEPARTURES FROM THE WRITTEN SPECIFICATION
@@ -1007,7 +1007,7 @@ else
     phaseImprovePct = 0
 endif
 
-appendInfoLine: "  mean metric-phase error ", fixed$(meanPhaseErr,4), " of a measure (max ", fixed$(maxPhaseErr,4), ")"
+appendInfoLine: "  mean selected source-phase mismatch ", fixed$(meanPhaseErr,4), " of a measure (max ", fixed$(maxPhaseErr,4), ")"
 appendInfoLine: "  random-draw baseline ", fixed$(baselinePhaseErr,4), " -> tournament is ", fixed$(phaseImprovePct,1), "% closer to the grid"
 if shrunkTournaments > 0
     appendInfoLine: "  ", shrunkTournaments, " tournaments ran with fewer than k candidates (tabu pressure)"
@@ -1282,7 +1282,7 @@ if draw_visualization
     Colour: "{0.35, 0.35, 0.50}"
     Text: 0.01, "left", 0.18, "half",
         ... string$(nSegs) + " segments | mean " + fixed$(meanSegMs, 1)
-        ... + " ms | grey = measure reference | red = segment cut"
+        ... + " ms | grey = measure reference | red = segment-cut markers (thinned when dense)"
 
     Select outer viewport: 0, 4, 0.90, 3.03
     Select inner viewport: 0.60, 3.85, 1.01, 2.86
@@ -1475,7 +1475,7 @@ if draw_visualization
     Colour: "{0.35, 0.35, 0.50}"
     Text: 0.01, "left", 0.18, "half",
         ... "grey = measure reference | " + fixed$(stepMs, 1)
-        ... + " ms steps | mean phase error " + fixed$(meanPhaseErr, 3)
+        ... + " ms steps | mean source-phase mismatch " + fixed$(meanPhaseErr, 3)
 
     Select outer viewport: 4, 8, 3.39, 5.52
     Select inner viewport: 4.45, 7.70, 3.50, 5.35
@@ -1561,7 +1561,7 @@ appendInfoLine: ""
 appendInfoLine: "=== COMPLETE ==="
 appendInfoLine: "Segments: ", nSegs, " (", segMethodName$, ") | coverage ", fixed$(coveragePct,1), "%, most-used ", maxUse, "x"
 appendInfoLine: "Mean winning cost: ", fixed$(meanWinCost,4), " | mean tournament spread: ", fixed$(meanSpread,4)
-appendInfoLine: "Mean metric-phase error: ", fixed$(meanPhaseErr,4), " of a measure = ", fixed$(1000 * meanPhaseErr * measureSec, 1), " ms"
+appendInfoLine: "Mean selected source-phase mismatch: ", fixed$(meanPhaseErr,4), " of a measure = ", fixed$(1000 * meanPhaseErr * measureSec, 1), " ms"
 appendInfoLine: "  vs random-draw baseline ", fixed$(baselinePhaseErr,4), " (", fixed$(phaseImprovePct,1), "% closer). Raise k to tighten this."
 appendInfoLine: "Immediate segment repeats: ", immediateRepeats, " of ", nSteps - 1, " joints"
 if shrunkTournaments > 0
