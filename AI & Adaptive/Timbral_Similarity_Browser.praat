@@ -231,6 +231,9 @@ endif
 if num_coefficients < 1
     exitScript: "Num_coefficients must be at least 1."
 endif
+if max_files_to_load < 0
+    exitScript: "Max_files_to_load must be 0 or greater."
+endif
 
 # v1.3 (item 4): the "too short to analyze" threshold was a hardcoded
 # 0.02 s that ignored the analysis settings entirely - with the Detailed
@@ -863,18 +866,23 @@ if join_mode = 2
     endfor
     joinDesc$ = "short fades"
 elsif join_mode = 3
-    minDurAll = 1e30
-    for i from 1 to n
-        idx = path#[i]
-        if sound_dur_'idx' < minDurAll
-            minDurAll = sound_dur_'idx'
+    if n < 2
+        joinOverlap = 0
+        joinDesc$ = "single sound (no join)"
+    else
+        minDurAll = 1e30
+        for i from 1 to n
+            idx = path#[i]
+            if sound_dur_'idx' < minDurAll
+                minDurAll = sound_dur_'idx'
+            endif
+        endfor
+        joinOverlap = join_fade_s
+        if joinOverlap > minDurAll * 0.45
+            joinOverlap = minDurAll * 0.45
         endif
-    endfor
-    joinOverlap = join_fade_s
-    if joinOverlap > minDurAll * 0.45
-        joinOverlap = minDurAll * 0.45
+        joinDesc$ = "crossfade (" + fixed$(joinOverlap * 1000, 1) + " ms overlap)"
     endif
-    joinDesc$ = "crossfade (" + fixed$(joinOverlap * 1000, 1) + " ms overlap)"
 else
     joinDesc$ = "hard concatenate"
 endif
@@ -901,7 +909,7 @@ selectObject: outputSound
 
 # Boundary positions must account for the shortening that overlap causes.
 cumulative_pos#[2] = sound_dur_'first_idx'
-if join_mode = 3
+if join_mode = 3 and n >= 2
     cumulative_pos#[2] = sound_dur_'first_idx' - joinOverlap
 endif
 for i from 2 to n
@@ -1054,11 +1062,8 @@ if draw_visualization
         for i from 1 to nValid - 1
             idx1 = path#[i]
             idx2 = path#[i + 1]
-            x1 = idx1 - 0.5
-            y1 = n - idx1 + 0.5
-            x2 = idx2 - 0.5
-            y2 = n - idx2 + 0.5
-            Draw line: x1, y1, x2, y2
+            Draw rectangle: idx1 - 1, idx1, n - idx2, n - idx2 + 1
+            Draw rectangle: idx2 - 1, idx2, n - idx1, n - idx1 + 1
         endfor
         Line width: 1
 
@@ -1067,7 +1072,7 @@ if draw_visualization
         Font size: 7
         Text left: "yes", "Sound #"
         Text bottom: "no", "Sound #"
-        Text top: "no", "Distance Matrix | red = path | grey = un-analyzable"
+        Text top: "no", "Distance Matrix | red = path transitions | grey = un-analyzable"
     else
         Select outer viewport: 0, 4, 2.10, 4.25
         Select inner viewport: 0.60, 3.85, 2.30, 4.00
