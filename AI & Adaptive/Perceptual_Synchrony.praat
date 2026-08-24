@@ -100,11 +100,25 @@ form Perceptual Synchrony
     boolean Play_result 1
 endform
 
+# === PARAMETER VALIDATION ===
+if min_gesture_duration_ms > max_gesture_duration_ms
+    exitScript: "Min_gesture_duration_ms must be less than or equal to Max_gesture_duration_ms."
+endif
+if gesture_threshold <= 0
+    exitScript: "Gesture_threshold must be greater than 0."
+endif
+if min_confidence < 0 or min_confidence > 1
+    exitScript: "Min_confidence must be between 0 and 1."
+endif
+if max_clusters_per_gesture < 1
+    exitScript: "Max_clusters_per_gesture must be at least 1."
+endif
+
 # === APPLY EFFECT PRESET ===
 if effect_preset = 1
     anchorBoostDB = 4.0
     anchorStampDB = 1.5
-    outsideTiltDB = 1.0
+    outsideGainDB = 1.0
     anchorWidth = 0.25
     outsideWidth = 0.4
     attackMs = 20
@@ -113,7 +127,7 @@ if effect_preset = 1
 elsif effect_preset = 2
     anchorBoostDB = 8.0
     anchorStampDB = 3.0
-    outsideTiltDB = 2.0
+    outsideGainDB = 2.0
     anchorWidth = 0.15
     outsideWidth = 0.45
     attackMs = 15
@@ -122,7 +136,7 @@ elsif effect_preset = 2
 elsif effect_preset = 3
     anchorBoostDB = 12.0
     anchorStampDB = 5.0
-    outsideTiltDB = 3.0
+    outsideGainDB = 3.0
     anchorWidth = 0.05
     outsideWidth = 0.5
     attackMs = 10
@@ -131,7 +145,7 @@ elsif effect_preset = 3
 else
     anchorBoostDB = 15.0
     anchorStampDB = 6.0
-    outsideTiltDB = 4.0
+    outsideGainDB = 4.0
     anchorWidth = 0.02
     outsideWidth = 0.55
     attackMs = 8
@@ -164,8 +178,8 @@ covarThresh = 0.4
 # === SETUP ===
 clearinfo
 writeInfoLine: "=============================================="
-writeInfoLine: "  PERCEPTUAL SYNCHRONY v3.2"
-writeInfoLine: "=============================================="
+appendInfoLine: "  PERCEPTUAL SYNCHRONY v3.2"
+appendInfoLine: "=============================================="
 appendInfoLine: ""
 if sync_mode = 1
     appendInfoLine: "Mode: ENHANCE ONLY (no time warping)"
@@ -184,6 +198,28 @@ selectObject: soundB
 durationB = Get total duration
 sampleRateB = Get sampling frequency
 
+# The synchrony engine treats A and B as two mono sources that are later
+# spatialized into a newly constructed stereo mix. Make that assumption
+# explicit and deterministic for multichannel inputs.
+selectObject: soundA
+channelsA = Get number of channels
+if channelsA > 1
+    workA = Convert to mono
+    Rename: "PerceptualSync_A_mono"
+else
+    workA = Copy: "PerceptualSync_A_mono"
+endif
+
+selectObject: soundB
+channelsB = Get number of channels
+if channelsB > 1
+    workB = Convert to mono
+    Rename: "PerceptualSync_B_mono"
+else
+    workB = Copy: "PerceptualSync_B_mono"
+endif
+
+appendInfoLine: "Input channels: A=", channelsA, " B=", channelsB, " -> mono working sources for analysis/spatial mix"
 appendInfoLine: "Duration A: ", fixed$(durationA, 3), " s"
 appendInfoLine: "Duration B: ", fixed$(durationB, 3), " s"
 appendInfoLine: "Effect preset: ", presetName$
@@ -194,7 +230,7 @@ appendInfoLine: ""
 # ============================================================
 
 procedure extractFeatures: .sound, .pfx$
-    # Extracts intensity, centroid, slope for a sound
+    # Extracts intensity, centroid, balance for a sound
     # Stores in global arrays with prefix .pfx$
     
     selectObject: .sound
@@ -253,11 +289,11 @@ procedure extractFeatures: .sound, .pfx$
             '.pfx$'_centroid[.i] = 1000
         endif
         
-        # Spectral slope (high/low ratio)
+        # Spectral balance (high/low ratio)
         if .lowPower > 0
-            '.pfx$'_slope[.i] = .highPower / .lowPower
+            '.pfx$'_balance[.i] = .highPower / .lowPower
         else
-            '.pfx$'_slope[.i] = 0
+            '.pfx$'_balance[.i] = 0
         endif
     endfor
     
@@ -341,12 +377,12 @@ procedure computeDerivatives: .pfx$, .n
     
     '.pfx$'_dInt[1] = 0
     '.pfx$'_dCent[1] = 0
-    '.pfx$'_dSlope[1] = 0
+    '.pfx$'_dBalance[1] = 0
     
     for .i from 2 to .n
         '.pfx$'_dInt[.i] = '.pfx$'_normInt[.i] - '.pfx$'_normInt[.i-1]
         '.pfx$'_dCent[.i] = '.pfx$'_normCent[.i] - '.pfx$'_normCent[.i-1]
-        '.pfx$'_dSlope[.i] = '.pfx$'_normSlope[.i] - '.pfx$'_normSlope[.i-1]
+        '.pfx$'_dBalance[.i] = '.pfx$'_normBalance[.i] - '.pfx$'_normBalance[.i-1]
     endfor
 endproc
 
@@ -362,7 +398,7 @@ procedure detectGestures: .pfx$, .n, .duration
     .gestureStart = 0
     
     for .i from 2 to .n
-        .totalChange = abs('.pfx$'_dCent[.i]) + abs('.pfx$'_dInt[.i]) + abs('.pfx$'_dSlope[.i])
+        .totalChange = abs('.pfx$'_dCent[.i]) + abs('.pfx$'_dInt[.i]) + abs('.pfx$'_dBalance[.i])
         
         if .inGesture = 0
             if .totalChange > gesture_threshold
@@ -404,7 +440,7 @@ procedure analyzeGestureShape: .pfx$, .g, .startFrame, .endFrame
     
     .accumCent = 0
     .accumInt = 0
-    .accumSlope = 0
+    .accumBalance = 0
     .risingCent = 0
     .fallingCent = 0
     .risingInt = 0
@@ -418,7 +454,7 @@ procedure analyzeGestureShape: .pfx$, .g, .startFrame, .endFrame
     for .j from .startFrame to .endFrame
         .accumCent = .accumCent + '.pfx$'_dCent[.j]
         .accumInt = .accumInt + '.pfx$'_dInt[.j]
-        .accumSlope = .accumSlope + '.pfx$'_dSlope[.j]
+        .accumBalance = .accumBalance + '.pfx$'_dBalance[.j]
         
         if '.pfx$'_dCent[.j] > 0.01
             .risingCent = .risingCent + 1
@@ -432,7 +468,7 @@ procedure analyzeGestureShape: .pfx$, .g, .startFrame, .endFrame
             .fallingInt = .fallingInt + 1
         endif
         
-        if ('.pfx$'_dCent[.j] > 0.005 and '.pfx$'_dSlope[.j] > 0.005) or ('.pfx$'_dCent[.j] < -0.005 and '.pfx$'_dSlope[.j] < -0.005)
+        if ('.pfx$'_dCent[.j] > 0.005 and '.pfx$'_dBalance[.j] > 0.005) or ('.pfx$'_dCent[.j] < -0.005 and '.pfx$'_dBalance[.j] < -0.005)
             .covarFrames = .covarFrames + 1
         endif
         
@@ -465,7 +501,7 @@ procedure analyzeGestureShape: .pfx$, .g, .startFrame, .endFrame
     # Store shape features
     '.pfx$'_gCentChange[.g] = .accumCent
     '.pfx$'_gIntChange[.g] = .accumInt
-    '.pfx$'_gSlopeChange[.g] = .accumSlope
+    '.pfx$'_gBalanceChange[.g] = .accumBalance
     '.pfx$'_gCentMono[.g] = max(.risingCent, .fallingCent) / (.totalFrames + 0.001)
     '.pfx$'_gIntMono[.g] = max(.risingInt, .fallingInt) / (.totalFrames + 0.001)
     '.pfx$'_gCovar[.g] = .covarFrames / (.totalFrames + 0.001)
@@ -491,7 +527,7 @@ procedure analyzeGestureShape: .pfx$, .g, .startFrame, .endFrame
         '.pfx$'_gPeakness[.g] = 0
     endif
     
-    '.pfx$'_gSalience[.g] = sqrt(.accumCent^2 + .accumInt^2 + .accumSlope^2)
+    '.pfx$'_gSalience[.g] = sqrt(.accumCent^2 + .accumInt^2 + .accumBalance^2)
 endproc
 
 
@@ -512,11 +548,11 @@ procedure tagGesture: .pfx$, .g
         '.pfx$'_tag_BF[.g] = 1
     endif
     
-    if '.pfx$'_gCentChange[.g] > noiseThresh and '.pfx$'_gSlopeChange[.g] > noiseThresh and '.pfx$'_gCovar[.g] > covarThresh
+    if '.pfx$'_gCentChange[.g] > noiseThresh and '.pfx$'_gBalanceChange[.g] > noiseThresh and '.pfx$'_gCovar[.g] > covarThresh
         '.pfx$'_tag_NB[.g] = 1
     endif
     
-    if '.pfx$'_gCentChange[.g] < dropThresh and '.pfx$'_gSlopeChange[.g] < dropThresh and '.pfx$'_gCovar[.g] > covarThresh
+    if '.pfx$'_gCentChange[.g] < dropThresh and '.pfx$'_gBalanceChange[.g] < dropThresh and '.pfx$'_gCovar[.g] > covarThresh
         '.pfx$'_tag_SD[.g] = 1
     endif
     
@@ -651,19 +687,19 @@ endproc
 # === STEP 1: FEATURE EXTRACTION ===
 appendInfoLine: "Extracting features..."
 
-@extractFeatures: soundA, "a"
-@extractFeatures: soundB, "b"
+@extractFeatures: workA, "a"
+@extractFeatures: workB, "b"
 
 # === STEP 2: NORMALIZATION ===
 appendInfoLine: "Normalizing features..."
 
 @normalizeFeature: "a_intensity", a_numFrames, "a_normInt"
 @normalizeFeature: "a_centroid", a_numFrames, "a_normCent"
-@normalizeFeature: "a_slope", a_numFrames, "a_normSlope"
+@normalizeFeature: "a_balance", a_numFrames, "a_normBalance"
 
 @normalizeFeature: "b_intensity", b_numFrames, "b_normInt"
 @normalizeFeature: "b_centroid", b_numFrames, "b_normCent"
-@normalizeFeature: "b_slope", b_numFrames, "b_normSlope"
+@normalizeFeature: "b_balance", b_numFrames, "b_normBalance"
 
 # === STEP 3: DERIVATIVES ===
 @computeDerivatives: "a", a_numFrames
@@ -836,7 +872,7 @@ if sync_mode = 2 and numClusters > 0
     appendInfoLine: ""
     appendInfoLine: "Creating time-aligned version of B..."
     
-    selectObject: soundB
+    selectObject: workB
     manipulation = To Manipulation: 0.01, 75, 600
     
     selectObject: manipulation
@@ -1031,7 +1067,7 @@ if sync_mode = 2 and numClusters > 0
     
     removeObject: manipulation, durationTier
 else
-    selectObject: soundB
+    selectObject: workB
     soundB_processed = Copy: "B_processed"
 endif
 
@@ -1042,7 +1078,7 @@ endif
 appendInfoLine: ""
 appendInfoLine: "Applying timbral binding effects..."
 
-selectObject: soundA
+selectObject: workA
 srA = Get sampling frequency
 
 selectObject: soundB_processed
@@ -1058,7 +1094,7 @@ endif
 
 minDur = min(durationA, durB_proc)
 
-selectObject: soundA
+selectObject: workA
 Extract part: 0, minDur, "rectangular", 1, "no"
 partA = selected("Sound")
 
@@ -1112,7 +1148,7 @@ if numClusters > 0
             Formula (part): startA, endA, 1, 1, ~ self * (if (x - startA) < attackSec then (1 + (effectBoost - 1) * ((x - startA) / attackSec)) else (if (endA - x) < releaseSec then (1 + (effectBoost - 1) * ((endA - x) / releaseSec)) else effectBoost fi) fi)
             
             selectObject: maskA
-            Formula (part): startA, endA, 1, 1, ~ 1
+            Formula (part): startA, endA, 1, 1, ~ max(self, if (x - startA) < attackSec then max(0, min(1, (x - startA) / attackSec)) else (if (endA - x) < releaseSec then max(0, min(1, (endA - x) / releaseSec)) else 1 fi) fi)
         endif
         
         if endB - startB > 0.001
@@ -1120,12 +1156,12 @@ if numClusters > 0
             Formula (part): startB, endB, 1, 1, ~ self * (if (x - startB) < attackSec then (1 + (effectBoost - 1) * ((x - startB) / attackSec)) else (if (endB - x) < releaseSec then (1 + (effectBoost - 1) * ((endB - x) / releaseSec)) else effectBoost fi) fi)
             
             selectObject: maskB
-            Formula (part): startB, endB, 1, 1, ~ 1
+            Formula (part): startB, endB, 1, 1, ~ max(self, if (x - startB) < attackSec then max(0, min(1, (x - startB) / attackSec)) else (if (endB - x) < releaseSec then max(0, min(1, (endB - x) / releaseSec)) else 1 fi) fi)
         endif
     endfor
 endif
 
-# Timbral stamp
+# Additive timbral stamp: 2.0-4.5 kHz band added through the smooth anchor mask
 selectObject: partA
 filteredA = Filter (pass Hann band): 2000, 4500, 500
 Scale peak: 0.5
@@ -1144,14 +1180,15 @@ Formula: ~ self + object[filteredB] * object[maskB] * stampGain
 
 removeObject: filteredA, filteredB
 
-# Differential tilt
-tiltGain = 10 ^ (outsideTiltDB / 20)
+# Outside differential gain: broadband contrast that fades smoothly
+# toward unity inside anchor masks. This is not a spectral tilt.
+outsideGainLin = 10 ^ (outsideGainDB / 20)
 
 selectObject: partA
-Formula: ~ self * (if object[maskA] < 0.5 then (1 + (tiltGain - 1) * 0.3) else 1 fi)
+Formula: ~ self * (1 + (outsideGainLin - 1) * 0.3 * (1 - object[maskA]))
 
 selectObject: partB
-Formula: ~ self * (if object[maskB] < 0.5 then (1 / (1 + (tiltGain - 1) * 0.3)) else 1 fi)
+Formula: ~ self * (1 / (1 + (outsideGainLin - 1) * 0.3 * (1 - object[maskB])))
 
 selectObject: partA
 Scale peak: 0.75
@@ -1190,6 +1227,7 @@ Scale peak: 0.95
 removeObject: partA, partB, maskA, maskB, panEnvA, panEnvB, leftCh, rightCh
 removeObject: a_intensityObj, a_spectrogramObj, b_intensityObj, b_spectrogramObj
 removeObject: soundB_processed
+removeObject: workA, workB
 
 # ============================================================
 # VISUALIZATION
@@ -1485,7 +1523,7 @@ appendInfoLine: "  Clusters: ", numClusters
 appendInfoLine: ""
 appendInfoLine: "  Effect preset: ", presetName$
 appendInfoLine: "    Anchor boost: +", anchorBoostDB, " dB"
-appendInfoLine: "    Timbral stamp: +", anchorStampDB, " dB (2-4kHz)"
+appendInfoLine: "    Timbral stamp: +", anchorStampDB, " dB control (2-4.5 kHz additive stamp)"
 appendInfoLine: "    Stereo: anchor=", anchorWidth, " / outside=", outsideWidth
 appendInfoLine: ""
 
