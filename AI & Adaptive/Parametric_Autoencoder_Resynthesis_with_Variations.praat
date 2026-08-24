@@ -546,7 +546,7 @@ if draw_network = 1
     Colour: "{0.35, 0.35, 0.50}"
     Text: 0.5, "centre", 0.22, "half", vizSoundName$ + " | " + presetName$ + " | " + string$(nparams) + " params -> " + string$(bottleneck_size) + " latent -> " + string$(nparams) + " params | " + string$(epochs) + " epochs"
 
-    # === Encoder topology ===
+    # === Autoencoder topology ===
     Select outer viewport: 0, 4, 0.70, 3.35
     Select inner viewport: 0.60, 3.85, 0.96, 3.13
     selectObject: autoencoder
@@ -556,7 +556,7 @@ if draw_network = 1
     Axes: 0, 1, 0, 1
     Font size: 7
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "##Encoder##  " + string$(nparams) + " -> " + string$(bottleneck_size)
+    Text: 0.5, "centre", 0.5, "half", "##Autoencoder topology##  " + string$(nparams) + " -> " + string$(bottleneck_size) + " -> " + string$(nparams)
 
     # === Decoder topology ===
     Select outer viewport: 4, 8, 0.70, 3.35
