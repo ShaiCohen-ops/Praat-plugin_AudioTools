@@ -448,10 +448,12 @@ endfor
 sdCent = if countCent > 1 then sqrt(sumSqCent / (countCent - 1)) else 1 fi
 
 # HNR stats
+# Use the explicit validity flag here too, so genuinely measured very-low
+# HNR values participate in the statistics just as they do in selection.
 sumHNR = 0
 countHNR = 0
 for i from 1 to nF
-    if hnr_vals#[i] > -40
+    if hnrValid#[i] = 1
         sumHNR += hnr_vals#[i]
         countHNR += 1
     endif
@@ -460,7 +462,7 @@ meanHNR = if countHNR > 0 then sumHNR / countHNR else 0 fi
 
 sumSqHNR = 0
 for i from 1 to nF
-    if hnr_vals#[i] > -40
+    if hnrValid#[i] = 1
         sumSqHNR += (hnr_vals#[i] - meanHNR)^2
     endif
 endfor
@@ -484,6 +486,28 @@ for i from 1 to nF
     endif
 endfor
 sdPitch = if countPitch > 1 then sqrt(sumSqPitch / (countPitch - 1)) else 50 fi
+
+# Pitch deviation for the visualization uses the same log-frequency
+# representation as High/Low Pitch ranking.
+sumLogPitch = 0
+countLogPitch = 0
+for i from 1 to nF
+    if pitch_vals#[i] > 0
+        logPitchHere = 12 * log2(pitch_vals#[i] / 55)
+        sumLogPitch += logPitchHere
+        countLogPitch += 1
+    endif
+endfor
+meanLogPitch = if countLogPitch > 0 then sumLogPitch / countLogPitch else 0 fi
+
+sumSqLogPitch = 0
+for i from 1 to nF
+    if pitch_vals#[i] > 0
+        logPitchHere = 12 * log2(pitch_vals#[i] / 55)
+        sumSqLogPitch += (logPitchHere - meanLogPitch)^2
+    endif
+endfor
+sdLogPitch = if countLogPitch > 1 then sqrt(sumSqLogPitch / (countLogPitch - 1)) else 1 fi
 
 # Intensity stats
 sumInt = 0
@@ -603,7 +627,8 @@ elsif selectionFeature$ = "pitch"
             # musical intervals rather than Hz differences.
             selVal#[nValidSel] = 12 * log2(pitch_vals#[i] / 55)
             selIdx#[nValidSel] = i
-            dist_vals#[i] = abs(pitch_vals#[i] - meanPitch) / max(sdPitch, 1e-9)
+            logPitchHere = 12 * log2(pitch_vals#[i] / 55)
+            dist_vals#[i] = abs(logPitchHere - meanLogPitch) / max(sdLogPitch, 1e-9)
         endif
     endfor
 elsif selectionFeature$ = "intensity"
@@ -1082,7 +1107,7 @@ if draw_visualization
     Font size: 7
     Text top: "no", "PCA Loadings | PC1 red | PC2 green | PC3 blue"
 
-    # === Selection score over time ===
+    # === Selection distance / feature deviation over time ===
     Select outer viewport: 4, 8, 5.80, 7.18
     Select inner viewport: 4.45, 7.70, 6.00, 6.96
 
@@ -1104,12 +1129,14 @@ if draw_visualization
     Font size: 6
     if selectionFeature$ = "PCA"
         Text left: "yes", "Distance"
+        scoreTitle$ = "Distance to PCA target"
     else
-        Text left: "yes", "|z-score|"
+        Text left: "yes", "|standardized deviation|"
+        scoreTitle$ = "Feature deviation from mean"
     endif
     Text bottom: "no", "Time (s)"
     Font size: 7
-    Text top: "no", "Selection Score | " + selectionFeature$
+    Text top: "no", scoreTitle$ + " | " + selectionFeature$
 
     # === Summary strip ===
     Select outer viewport: 0, 8, 7.42, 8.38
