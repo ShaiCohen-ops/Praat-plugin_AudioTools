@@ -15,7 +15,7 @@
 #
 # Features v3.0:
 #   - 3D Isometric scatter plot
-#   - Convex hull visualization for clusters
+#   - 3D cluster bounding-box visualization
 #   - Cluster transition matrix
 #   - Fixed audio scaling for all clusters
 #   - Enhanced cluster colors
@@ -41,12 +41,13 @@
 #     at every junction BOTH windows are near zero, stamping a deep
 #     ~22 Hz amplitude dip across the whole montage (v3.0's
 #     Concatenate path had the same double-taper flaw; v3.1 was
-#     faithfully equivalent to it). v3.2 places fragments at 50%
-#     Hann overlap-add: the window sum is exactly 1, junctions are
-#     seamless, and -- since every preset's analysis step is half
-#     the window -- contiguous same-cluster runs reconstruct the
-#     source EXACTLY. Each cluster's montage duration now also
-#     approximates the time that cluster occupies in the source.
+#     faithfully equivalent to it). v3.2 places fragments at fixed
+#     50% Hann overlap-add, avoiding the old double-taper junction
+#     dip. When the analysis hop is also half the window, contiguous
+#     same-cluster frames retain matching source spacing; other hop
+#     settings are intentionally remapped to the fixed 50% montage
+#     spacing. Each cluster montage duration therefore follows the
+#     number of assigned frames rather than preserving source time.
 #     Overlap_time_ms is deprecated (kept in the form for argument
 #     compatibility; ignored, with an info note).
 #   - FIX: the analysis grid started at t = step, skipping the
@@ -121,6 +122,7 @@ originalName$ = selected$("Sound")
 selectObject: originalSoundID
 duration = Get total duration
 sr = Get sampling frequency
+nch = Get number of channels
 
 # ============================================================
 # Apply Presets
@@ -147,6 +149,14 @@ elsif preset = 5
     presetName$ = "VeryFine_5"
 else
     presetName$ = "Custom"
+endif
+
+# Validation that depends on the final preset/custom values.
+if number_of_clusters < 2 or number_of_clusters > 8
+    exitScript: "Number_of_clusters must be between 2 and 8."
+endif
+if scale_peak <= 0 or scale_peak > 1
+    exitScript: "Scale_peak must be greater than 0 and at most 1."
 endif
 
 # Convert to seconds
@@ -435,8 +445,32 @@ if converged = 0
     appendInfoLine: "  Reached max iterations (", max_iterations, ")"
 endif
 
+# Final authoritative assignment using the final centroids. The regular
+# k-means loop assigns before each centroid update, so this pass makes the
+# stored cluster labels consistent with the centroids used downstream.
+selectObject: tableID
+for i from 1 to numFrames
+    val_e = Get value: i, "energy"
+    val_s = Get value: i, "stability"
+    val_b = Get value: i, "brightness"
+
+    min_dist = 1000
+    best_k = 1
+    for k from 1 to number_of_clusters
+        de = val_e - cent_en[k]
+        ds = val_s - cent_st[k]
+        db = val_b - cent_br[k]
+        dist = sqrt(de*de + ds*ds + db*db)
+        if dist < min_dist
+            min_dist = dist
+            best_k = k
+        endif
+    endfor
+    Set numeric value: i, "cluster", best_k
+endfor
+
 # ============================================================
-# STEP 4: CLUSTER CHARACTERIZATION & HULL COMPUTATION
+# STEP 4: CLUSTER CHARACTERIZATION & BOUNDING-BOX COMPUTATION
 # ============================================================
 appendInfoLine: ""
 appendInfoLine: "STEP 4: Characterizing Clusters..."
@@ -452,7 +486,7 @@ for k from 1 to number_of_clusters
         avg_s = Get mean: "stability"
         avg_b = Get mean: "brightness"
         
-        # Get bounding box for hull approximation
+        # Get axis-aligned 3D bounding box for visualization
         hull_min_e[k] = Get minimum: "energy"
         hull_max_e[k] = Get maximum: "energy"
         hull_min_s[k] = Get minimum: "stability"
@@ -597,13 +631,12 @@ for k from 1 to number_of_clusters
         # equivalent (same Hanning OLA) at O(N) cost.
         
         # v3.2: fragments are placed at 50% Hann overlap-add. Hann
-        # windows at half-window hops sum to exactly 1, so junctions
-        # are seamless (the old Overlap_time_ms placement left both
-        # windows near zero at every junction: a deep ~22 Hz dip
-        # stamped across the montage). Since every preset's analysis
-        # step is half the window, contiguous same-cluster runs
-        # reconstruct the source EXACTLY, and the montage duration
-        # approximates the time the cluster occupies in the source.
+        # Fixed 50% Hann overlap-add avoids the old double-taper
+        # junction dip. Montage placement is always half a synthesis
+        # window, independent of the analysis Step_size_ms. Therefore
+        # source spacing is matched only when the analysis hop itself
+        # equals half the window; otherwise the selected frames are
+        # intentionally remapped to fixed 50% montage spacing.
         # Overlap_time_ms is deprecated and ignored.
         frag_samples = round(window_length * sr)
         step_samples = round(frag_samples / 2)
@@ -622,9 +655,10 @@ for k from 1 to number_of_clusters
             Rename: clusterLabel$[k]
             finalSound = selected("Sound")
         else
-            # Pre-allocate destination at sr (matches originalSound's sr).
+            # Pre-allocate destination at the source sample rate and
+            # channel count so multichannel sources remain multichannel.
             finalSound = Create Sound from formula: clusterLabel$[k],
-                ... 1, 0, total_dur, sr, "0"
+                ... nch, 0, total_dur, sr, "0"
             
             # Place each Hanning-windowed fragment via Formula (part).
             # Fragment r writes into samples [(r-1)*step+1 .. (r-1)*step+L].
@@ -643,8 +677,8 @@ for k from 1 to number_of_clusters
                 offsetStr$ = string$(offset_samples)
                 
                 selectObject: finalSound
-                Formula (part): offset_sec, offset_sec + window_length, 1, 1,
-                    ... "self + object[" + fragStr$ + ", 1, col - " + offsetStr$ + "]"
+                Formula (part): offset_sec, offset_sec + window_length, 1, nch,
+                    ... "self + object[" + fragStr$ + ", row, col - " + offsetStr$ + "]"
                 
                 removeObject: frag
             endfor
@@ -756,7 +790,7 @@ if draw_visualization
     Text: ay_x - 0.08, "right", ay_y, "half", "Stability"
     Text: az_x, "centre", az_y + 0.08, "bottom", "Brightness"
 
-    # Cluster bounding boxes / hull approximations.
+    # Axis-aligned 3D cluster bounding boxes.
     Line width: 1.5
     for k from 1 to number_of_clusters
         if clusterSize[k] > 0
