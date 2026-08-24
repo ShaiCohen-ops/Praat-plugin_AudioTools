@@ -354,7 +354,7 @@ for i from 1 to nFiles
         rejectReason$ = "silent"
     elsif fileDur < 0.05
         isValid = 0
-        rejectReason$ = "shorter than the analysis window"
+        rejectReason$ = "shorter than the 50 ms minimum"
     endif
 
     if isValid
@@ -709,21 +709,25 @@ endfor
 
 # v0.6 fix 7: joining is a musical choice. Hard cut stays the default -
 # abrupt joins are part of corpus montage - with crossfades available.
+# Keep the ACTUAL overlap used after the 45% safety cap so the
+# visualization reports what was rendered, not only what was requested.
+actualJoinXfSec = 0
 if join_mode = 1
     Concatenate
 else
     if join_mode = 2
-        xfSec = crossfade_ms / 1000
+        actualJoinXfSec = crossfade_ms / 1000
     else
-        xfSec = crossfade_ms / 1000 * 4
+        actualJoinXfSec = crossfade_ms / 1000 * 4
     endif
-    if xfSec > minSelDur * 0.45
-        xfSec = minSelDur * 0.45
+    if actualJoinXfSec > minSelDur * 0.45
+        actualJoinXfSec = minSelDur * 0.45
     endif
-    if xfSec < 0.001
+    if actualJoinXfSec < 0.001
+        actualJoinXfSec = 0
         Concatenate
     else
-        Concatenate with overlap: xfSec
+        Concatenate with overlap: actualJoinXfSec
     endif
 endif
 finalID = selected("Sound")
@@ -761,12 +765,12 @@ if draw_visualization
         stabilityDesc$ = "temporal mean |delta C1|"
     endif
 
-    if join_mode = 1
+    if join_mode = 1 or actualJoinXfSec = 0
         joinDesc$ = "hard cut"
     elsif join_mode = 2
-        joinDesc$ = "short crossfade " + fixed$(crossfade_ms, 0) + " ms"
+        joinDesc$ = "short crossfade " + fixed$(actualJoinXfSec * 1000, 0) + " ms actual"
     else
-        joinDesc$ = "long crossfade " + fixed$(crossfade_ms * 4, 0) + " ms"
+        joinDesc$ = "long crossfade " + fixed$(actualJoinXfSec * 1000, 0) + " ms actual"
     endif
 
     if normalize_output_peak
