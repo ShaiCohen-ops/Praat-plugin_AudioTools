@@ -115,15 +115,15 @@ jaggedness_values# = zero#(number_of_selected_sounds)
 spr_values# = zero#(number_of_selected_sounds)
 
 resultsTable = Create Table with column names: "AudioTools_Results", number_of_selected_sounds,
-    ... "Filename Duration_s AnalysisChannel IntensityMean_dB HarmonicityMean_dB JitterLocal_percent RollOff85_Hz SpectralCentroid_Hz SpectralSpread_Hz Flatness_80_5000 SpectralJaggedness_dB SPR_50_2000_vs_2000_4000_dB"
+    ... "SoundName Duration_s AnalysisChannel IntensityMean_dB HarmonicityMean_dB JitterLocal_percent RollOff85_Hz SpectralCentroid_80_5000_Hz SpectralSpread_80_5000_Hz Flatness_80_5000 SpectralJaggedness_dB SPR_50_2000_vs_2000_4000_dB"
 
 appendInfoLine: "AudioTools batch analysis v0.2"
 appendInfoLine: "=========================="
 appendInfoLine: "Sounds: ", number_of_selected_sounds
 appendInfoLine: "Pitch range for periodicity/jitter: ", fixed$(pitch_floor_Hz, 0), "-", fixed$(pitch_ceiling_Hz, 0), " Hz"
-appendInfoLine: "Spectral descriptor band: ", spectral_min_Hz, "-", spectral_max_Hz, " Hz on ", descriptor_band_Hz, "-Hz bands (Nyquist-limited)"
-appendInfoLine: "Roll-off band: 20-8000 Hz (Nyquist-limited)"
-appendInfoLine: "SPR: 50-2000 Hz / 2000-4000 Hz integrated power"
+appendInfoLine: "Spectral descriptor band: ", spectral_min_Hz, "-", spectral_max_Hz, " Hz on ", descriptor_band_Hz, "-Hz bands; NA if Nyquist < 5000 Hz"
+appendInfoLine: "Roll-off band: 20-8000 Hz; NA if Nyquist < 8000 Hz"
+appendInfoLine: "SPR: 50-2000 Hz / 2000-4000 Hz integrated power; NA if Nyquist < 4000 Hz"
 appendInfoLine: ""
 appendInfoLine: "Sound", tab$, "Intensity", tab$, "HNR", tab$, "Jitter%", tab$, "RollOff85", tab$, "Centroid", tab$, "Flatness", tab$, "Jaggedness", tab$, "SPR"
 appendInfoLine: "------------------------------------------------------------------------------------------------------------"
@@ -218,101 +218,111 @@ for s from 1 to number_of_selected_sounds
         band_bins#[descriptor_band] = band_bins#[descriptor_band] + 1
     endfor
 
-    # 4a) Spectral roll-off: 85% of power in 20-8000 Hz (Nyquist-limited).
-    total_roll_power = 0
-    for band from 1 to n_descriptor_bands
-        band_center = (band - 0.5) * descriptor_band_Hz
-        if band_center >= rolloff_min_Hz and band_center <= min(rolloff_max_Hz, nyquist)
-            total_roll_power = total_roll_power + band_power#[band]
-        endif
-    endfor
-    if total_roll_power > 1e-30
-        target_power = 0.85 * total_roll_power
-        cumulative_power = 0
-        found_rolloff = 0
+    # 4a) Spectral roll-off: 85% of power in the fixed 20-8000 Hz band.
+    # If the full band is unavailable, leave the descriptor undefined so rows
+    # with different sample rates remain directly comparable.
+    if nyquist >= rolloff_max_Hz
+        total_roll_power = 0
         for band from 1 to n_descriptor_bands
             band_center = (band - 0.5) * descriptor_band_Hz
-            if band_center >= rolloff_min_Hz and band_center <= min(rolloff_max_Hz, nyquist) and found_rolloff = 0
-                cumulative_power = cumulative_power + band_power#[band]
-                if cumulative_power >= target_power
-                    rolloff85 = min(nyquist, band_center)
-                    found_rolloff = 1
-                endif
+            if band_center >= rolloff_min_Hz and band_center <= rolloff_max_Hz
+                total_roll_power = total_roll_power + band_power#[band]
             endif
         endfor
+        if total_roll_power > 1e-30
+            target_power = 0.85 * total_roll_power
+            cumulative_power = 0
+            found_rolloff = 0
+            for band from 1 to n_descriptor_bands
+                band_center = (band - 0.5) * descriptor_band_Hz
+                if band_center >= rolloff_min_Hz and band_center <= rolloff_max_Hz and found_rolloff = 0
+                    cumulative_power = cumulative_power + band_power#[band]
+                    if cumulative_power >= target_power
+                        rolloff85 = band_center
+                        found_rolloff = 1
+                    endif
+                endif
+            endfor
+        endif
     endif
 
-    # 4b) Band-limited centroid, spread, and flatness.
-    effective_spectral_max = min(spectral_max_Hz, nyquist)
-    band_count = 0
-    band_sum = 0
-    centroid_num = 0
-    band_max_power = 0
-    for band from 1 to n_descriptor_bands
-        band_center = (band - 0.5) * descriptor_band_Hz
-        if band_center >= spectral_min_Hz and band_center <= effective_spectral_max and band_bins#[band] > 0
-            p = band_power#[band]
-            band_count = band_count + 1
-            band_sum = band_sum + p
-            centroid_num = centroid_num + band_center * p
-            if p > band_max_power
-                band_max_power = p
-            endif
-        endif
-    endfor
-
-    if band_count > 0 and band_sum > 1e-30
-        centroid = centroid_num / band_sum
-        spread_num = 0
-        log_sum = 0
-        power_floor = max(1e-30, band_max_power * 1e-12)
+    # 4b) Band-limited centroid, spread, flatness, and jaggedness.
+    # These descriptors are defined only when the complete fixed 80-5000 Hz
+    # region is available, preventing hidden band changes across a mixed-rate batch.
+    if nyquist >= spectral_max_Hz
+        band_count = 0
+        band_sum = 0
+        centroid_num = 0
+        band_max_power = 0
         for band from 1 to n_descriptor_bands
             band_center = (band - 0.5) * descriptor_band_Hz
-            if band_center >= spectral_min_Hz and band_center <= effective_spectral_max and band_bins#[band] > 0
+            if band_center >= spectral_min_Hz and band_center <= spectral_max_Hz and band_bins#[band] > 0
                 p = band_power#[band]
-                spread_num = spread_num + (band_center - centroid) ^ 2 * p
-                p_log = max(p, power_floor)
-                log_sum = log_sum + ln(p_log)
-            endif
-        endfor
-        spread = sqrt(spread_num / band_sum)
-        flatness = exp(log_sum / band_count) / (band_sum / band_count)
-
-        # Local spectral irregularity on a fixed 20-Hz log-power grid, in dB.
-        # This is intentionally named jaggedness, not psychoacoustic roughness.
-        jag_sum = 0
-        jag_count = 0
-        for band from 2 to n_descriptor_bands - 1
-            band_center = (band - 0.5) * descriptor_band_Hz
-            if band_center >= spectral_min_Hz and band_center <= effective_spectral_max
-                if band_bins#[band - 1] > 0 and band_bins#[band] > 0 and band_bins#[band + 1] > 0
-                    prev_db = 10 * ln(max(band_power#[band - 1], power_floor)) / ln(10)
-                    curr_db = 10 * ln(max(band_power#[band], power_floor)) / ln(10)
-                    next_db = 10 * ln(max(band_power#[band + 1], power_floor)) / ln(10)
-                    local_baseline = (prev_db + next_db) / 2
-                    jag_sum = jag_sum + abs(curr_db - local_baseline)
-                    jag_count = jag_count + 1
+                band_count = band_count + 1
+                band_sum = band_sum + p
+                centroid_num = centroid_num + band_center * p
+                if p > band_max_power
+                    band_max_power = p
                 endif
             endif
         endfor
-        if jag_count > 0
-            spectralJaggedness = jag_sum / jag_count
+
+        if band_count > 0 and band_sum > 1e-30
+            centroid = centroid_num / band_sum
+            spread_num = 0
+            log_sum = 0
+            power_floor = max(1e-30, band_max_power * 1e-12)
+            for band from 1 to n_descriptor_bands
+                band_center = (band - 0.5) * descriptor_band_Hz
+                if band_center >= spectral_min_Hz and band_center <= spectral_max_Hz and band_bins#[band] > 0
+                    p = band_power#[band]
+                    spread_num = spread_num + (band_center - centroid) ^ 2 * p
+                    p_log = max(p, power_floor)
+                    log_sum = log_sum + ln(p_log)
+                endif
+            endfor
+            spread = sqrt(spread_num / band_sum)
+            flatness = exp(log_sum / band_count) / (band_sum / band_count)
+
+            # Local spectral irregularity on a fixed 20-Hz log-power grid, in dB.
+            # This is intentionally named jaggedness, not psychoacoustic roughness.
+            jag_sum = 0
+            jag_count = 0
+            for band from 2 to n_descriptor_bands - 1
+                band_center = (band - 0.5) * descriptor_band_Hz
+                if band_center >= spectral_min_Hz and band_center <= spectral_max_Hz
+                    if band_bins#[band - 1] > 0 and band_bins#[band] > 0 and band_bins#[band + 1] > 0
+                        prev_db = 10 * ln(max(band_power#[band - 1], power_floor)) / ln(10)
+                        curr_db = 10 * ln(max(band_power#[band], power_floor)) / ln(10)
+                        next_db = 10 * ln(max(band_power#[band + 1], power_floor)) / ln(10)
+                        local_baseline = (prev_db + next_db) / 2
+                        jag_sum = jag_sum + abs(curr_db - local_baseline)
+                        jag_count = jag_count + 1
+                    endif
+                endif
+            endfor
+            if jag_count > 0
+                spectralJaggedness = jag_sum / jag_count
+            endif
         endif
     endif
 
-    # 4c) Integrated spectral-power ratio: 50-2000 / 2000-4000 Hz.
-    low_power = 0
-    high_power = 0
-    for band from 1 to n_descriptor_bands
-        band_center = (band - 0.5) * descriptor_band_Hz
-        if band_center >= spr_low_min_Hz and band_center < spr_split_Hz
-            low_power = low_power + band_power#[band]
-        elsif band_center >= spr_split_Hz and band_center <= min(spr_high_max_Hz, nyquist)
-            high_power = high_power + band_power#[band]
+    # 4c) Integrated spectral-power ratio: fixed 50-2000 / 2000-4000 Hz.
+    # Leave undefined unless the entire high band is represented.
+    if nyquist >= spr_high_max_Hz
+        low_power = 0
+        high_power = 0
+        for band from 1 to n_descriptor_bands
+            band_center = (band - 0.5) * descriptor_band_Hz
+            if band_center >= spr_low_min_Hz and band_center < spr_split_Hz
+                low_power = low_power + band_power#[band]
+            elsif band_center >= spr_split_Hz and band_center <= spr_high_max_Hz
+                high_power = high_power + band_power#[band]
+            endif
+        endfor
+        if low_power > 1e-30 and high_power > 1e-30
+            spr = 10 * ln(low_power / high_power) / ln(10)
         endif
-    endfor
-    if low_power > 1e-30 and high_power > 1e-30
-        spr = 10 * ln(low_power / high_power) / ln(10)
     endif
 
     removeObject: specID
@@ -329,15 +339,15 @@ for s from 1 to number_of_selected_sounds
 
     # WRITE RAW VALUES TO TABLE
     selectObject: resultsTable
-    Set string value: s, "Filename", name$
+    Set string value: s, "SoundName", name$
     Set numeric value: s, "Duration_s", duration
     Set numeric value: s, "AnalysisChannel", analysis_channel
     Set numeric value: s, "IntensityMean_dB", intensityMean
     Set numeric value: s, "HarmonicityMean_dB", harmonicityMean
     Set numeric value: s, "JitterLocal_percent", jitterLocalPercent
     Set numeric value: s, "RollOff85_Hz", rolloff85
-    Set numeric value: s, "SpectralCentroid_Hz", centroid
-    Set numeric value: s, "SpectralSpread_Hz", spread
+    Set numeric value: s, "SpectralCentroid_80_5000_Hz", centroid
+    Set numeric value: s, "SpectralSpread_80_5000_Hz", spread
     Set numeric value: s, "Flatness_80_5000", flatness
     Set numeric value: s, "SpectralJaggedness_dB", spectralJaggedness
     Set numeric value: s, "SPR_50_2000_vs_2000_4000_dB", spr
@@ -456,7 +466,7 @@ if draw_visualization
             y = viz_rows - vr + 0.5
 
             selectObject: resultsTable
-            rowName$ = Get value: actual_row, "Filename"
+            rowName$ = Get value: actual_row, "SoundName"
             rowName$ = replace$(rowName$, "_", " ", 0)
             rowName$ = replace$(rowName$, "%", "pct", 0)
             rowName$ = left$(rowName$, 22)
@@ -573,7 +583,7 @@ if draw_visualization
         Text: 0.04, "left", 0.92, "half", "##Single-Sound feature summary##"
         Font size: 9
         selectObject: resultsTable
-        singleName$ = Get value: 1, "Filename"
+        singleName$ = Get value: 1, "SoundName"
         singleName$ = replace$(singleName$, "_", " ", 0)
         singleName$ = replace$(singleName$, "%", "pct", 0)
         Text: 0.04, "left", 0.84, "half", "Sound: " + singleName$
