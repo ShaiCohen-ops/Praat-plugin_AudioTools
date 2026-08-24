@@ -13,8 +13,11 @@
 #   is actually being heard.
 #
 # Changelog v0.5.1:
-#   - Visualization layout only: dedicated panel title/legend strips.
-#   - Larger summary bar and type; DSP and pedagogy unchanged.
+#   - Dedicated visualization panel title/legend strips and larger summary bar.
+#   - Phenomenon-specific high-frequency guards keep required components below Nyquist.
+#   - Measured-spectrum ranges follow generated components where needed.
+#   - Quadratic-combination proof labels the exact x^2-1 model and its second harmonics.
+#   - Sound-generation algorithms are otherwise unchanged.
 #
 # Changelog v0.5:
 #   - Same-ear two-tone demonstrations now use a centred mono mixture;
@@ -77,7 +80,7 @@ endform
 if show_help
     clearinfo
     appendInfoLine: "========================================"
-    appendInfoLine: "   ACOUSTIC PEDAGOGY v0.5 - HELP"
+    appendInfoLine: "   ACOUSTIC PEDAGOGY v0.5.1 - HELP"
     appendInfoLine: "========================================"
     appendInfoLine: ""
     appendInfoLine: "TUNING AND INTERVALS"
@@ -157,18 +160,25 @@ endif
 if phenomenon = 1
     f1 = f_base
     f2 = f_base * 3/2
+    if f2 >= nyquist * 0.98
+        exitScript: "Base frequency is too high for the 3:2 fifth: the upper tone must remain below Nyquist."
+    endif
     cents = 1200 * log2(f2 / f1)
     law1$ = "Pure fifth law: f2 / f1 = 3 / 2"
     law2$ = "Measured interval = " + fixed$(cents, 2) + " cents"
     law3$ = "Both tones are mixed to the same acoustic channel"
     summary$ = "3:2 fifth | " + fixed$(f1, 1) + " Hz + " + fixed$(f2, 1) + " Hz | ratio " + fixed$(f2/f1, 4)
     proof_mode$ = "lissajous"
+    viz_fmax = min(max(f1,f2) * 1.15, nyquist)
     @pair_demo: f1, f2, dur, amp, "Just Intonation - Pure 3:2 Fifth", "sameear"
 
 elsif phenomenon = 2
     comma = (1.5 ^ 12) / (2 ^ 7)
     f1 = f_base
     f2 = f_base * comma
+    if f2 >= nyquist * 0.98
+        exitScript: "Base frequency is too high for the Pythagorean-comma comparison."
+    endif
     comma_cents = 1200 * log2(comma)
     beat = abs(f2 - f1)
     law1$ = "Pythagorean comma = (3/2)^12 / 2^7"
@@ -176,11 +186,15 @@ elsif phenomenon = 2
     law3$ = "Same-ear sum exposes the slow beat at " + fixed$(beat, 2) + " Hz"
     summary$ = "Pythagorean comma | " + fixed$(comma_cents, 2) + " cents | beat " + fixed$(beat, 2) + " Hz"
     proof_mode$ = "lissajous"
+    viz_fmax = min(max(f1,f2) * 1.15, nyquist)
     @pair_demo: f1, f2, dur, amp, "Pythagorean Comma - Closure Error", "sameear"
 
 elsif phenomenon = 3
     f1 = f_base * 5/4
     f2 = f_base * 81/64
+    if max(f1,f2) >= nyquist * 0.98
+        exitScript: "Base frequency is too high for the syntonic-comma comparison."
+    endif
     ratio = f2 / f1
     comma_cents = 1200 * log2(ratio)
     beat = abs(f2 - f1)
@@ -189,6 +203,7 @@ elsif phenomenon = 3
     law3$ = "Same-ear mixture makes the tuning discrepancy audible"
     summary$ = "Syntonic comma | " + fixed$(comma_cents, 2) + " cents | beat " + fixed$(beat, 2) + " Hz"
     proof_mode$ = "lissajous"
+    viz_fmax = min(max(f1,f2) * 1.15, nyquist)
     @pair_demo: f1, f2, dur, amp, "Syntonic Comma - 5:4 vs 81:64", "sameear"
 
 elsif phenomenon = 4
@@ -198,6 +213,9 @@ elsif phenomenon = 4
     wolf_ratio = pure_ratio / pyth_comma
     pure_cents = 1200 * log2(pure_ratio)
     wolf_cents = 1200 * log2(wolf_ratio)
+    if f_base * max(pure_ratio,wolf_ratio) >= nyquist * 0.98
+        exitScript: "Base frequency is too high for the wolf-fifth comparison: both upper tones must remain below Nyquist."
+    endif
     law1$ = "Pure fifth = 3/2 = " + fixed$(pure_cents, 2) + " cents"
     law2$ = "Pythagorean wolf = (3/2) / comma = " + fixed$(wolf_cents, 2) + " cents"
     law3$ = "Harmonic-rich dyads expose beating partials"
@@ -224,6 +242,7 @@ elsif phenomenon = 5
     proof_f1 = f_base
     proof_f2 = f2
     proof_f3 = erb
+    viz_fmax = min(max(f1,f2) * 1.15, nyquist)
     @pair_demo: f1, f2, dur, amp, "Critical-Band Roughness", "sameear"
 
 elsif phenomenon = 6
@@ -284,6 +303,7 @@ elsif phenomenon = 8
     proof_mode$ = "binaural"
     proof_f1 = f1
     proof_f2 = f2
+    viz_fmax = min(max(f1,f2) * 1.15, nyquist)
     @pair_demo: f1, f2, dur, amp, "Binaural Beats - Headphones", "binaural"
 
 elsif phenomenon = 9
@@ -298,8 +318,8 @@ elsif phenomenon = 9
             n_used = n_used + 1
         endif
     endfor
-    if n_used < 1
-        exitScript: "Base frequency is too high for the square-wave demonstration."
+    if n_used < 2
+        exitScript: "Base frequency is too high for the square-wave demonstration: at least the fundamental and third harmonic must remain below Nyquist."
     endif
     formula$ = "0"
     for k from 1 to max_terms
@@ -390,8 +410,8 @@ elsif phenomenon = 11
     if n_harm > 16
         n_harm = 16
     endif
-    if n_harm < 1
-        exitScript: "Base frequency is too high for the harmonic-series demonstration."
+    if n_harm < 2
+        exitScript: "Base frequency is too high for the harmonic-series demonstration: at least two harmonics must remain below Nyquist."
     endif
     norm = 0
     for i from 1 to n_harm
@@ -440,10 +460,10 @@ elsif phenomenon = 12
         ... string$(a) + "*" + pair$ + " + " + string$(q*a) + "*(" + pair$ + "^2-1)"
     id_nonlinear = selected("Sound")
     Scale peak: amp
-    law1$ = "Model: y = a*x + q*a*(x^2 - mean(x^2))"
-    law2$ = "Squaring creates f2-f1 and f1+f2 terms physically"
+    law1$ = "Model: y = a*x + q*a*(x^2 - 1)"
+    law2$ = "Squaring creates difference, sum, and second-harmonic terms"
     law3$ = "Unlike Tartini, these extra components exist in the signal"
-    summary$ = "Nonlinear combination tones | 400 and 600 Hz | generated 200 and 1000 Hz"
+    summary$ = "Quadratic nonlinearity | primaries 400, 600 Hz | new 200, 800, 1000, 1200 Hz"
     proof_mode$ = "combination"
     proof_f1 = fdiff
     proof_f2 = f1
@@ -1002,13 +1022,18 @@ procedure draw_proof: .id1, .id2, .id3
         Text left: "yes", "Relative amplitude"
 
     elsif proof_mode$ = "combination"
+        .second1 = 2 * proof_f2
+        .second2 = 2 * proof_f3
+        .xmax = max(.second2, proof_f4) * 1.10
         Select inner viewport: 4.50, 7.55, 3.30, 4.50
-        Axes: 0, proof_f4*1.15, 0, 1
+        Axes: 0, .xmax, 0, 1
         Colour: "{0.85,0.85,0.85}"
-        Draw line: 0, 0.5, proof_f4*1.15, 0.5
+        Draw line: 0, 0.5, .xmax, 0.5
         Colour: "{0.80,0.35,0.25}"
         Draw line: proof_f1, 0.18, proof_f1, 0.82
+        Draw line: .second1, 0.18, .second1, 0.82
         Draw line: proof_f4, 0.18, proof_f4, 0.82
+        Draw line: .second2, 0.18, .second2, 0.82
         Colour: "{0.20,0.45,0.75}"
         Draw line: proof_f2, 0.18, proof_f2, 0.82
         Draw line: proof_f3, 0.18, proof_f3, 0.82
@@ -1016,9 +1041,12 @@ procedure draw_proof: .id1, .id2, .id3
         Draw inner box
         Font size: 6
         Text bottom: "yes", "Frequency (Hz)"
-        Text: proof_f1, "centre", 0.10, "half", "difference"
-        Text: proof_f4, "centre", 0.10, "half", "sum"
-        Text: (proof_f2+proof_f3)/2, "centre", 0.90, "half", "primaries"
+        Text: proof_f1, "centre", 0.10, "half", "f2-f1"
+        Text: proof_f4, "centre", 0.10, "half", "f1+f2"
+        Text: proof_f2, "centre", 0.90, "half", "f1"
+        Text: proof_f3, "centre", 0.90, "half", "f2"
+        Text: .second1, "centre", 0.72, "half", "2f1"
+        Text: .second2, "centre", 0.72, "half", "2f2"
 
     elsif proof_mode$ = "formant"
         Select inner viewport: 4.50, 7.55, 3.30, 4.50
