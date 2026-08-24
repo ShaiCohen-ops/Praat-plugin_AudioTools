@@ -1007,14 +1007,17 @@ if draw_visualization
     Select outer viewport: 4, 8, 2.61, 4.50
     Select inner viewport: 4.45, 7.70, 2.85, 4.25
 
-    selectObject: matH
+    # Visualization fix: matH may contain the processed RIGHT-channel
+    # activations after stereo synthesis. matH_left is the saved processed
+    # H used for the LEFT channel (and for mono output), so draw that copy.
+    selectObject: matH_left
     hRows = Get number of rows
     hCols = Get number of columns
 
     hMax = 0
     for r from 1 to hRows
         for c from 1 to hCols
-            selectObject: matH
+            selectObject: matH_left
             val = Get value in cell: r, c
             if val > hMax
                 hMax = val
@@ -1043,7 +1046,7 @@ if draw_visualization
         for c from 2 to hCols
             t1 = specX1 + (c - 2) * specDx
             t2 = specX1 + (c - 1) * specDx
-            selectObject: matH
+            selectObject: matH_left
             v1 = Get value in cell: comp, c - 1
             v2 = Get value in cell: comp, c
             Draw line: t1, v1, t2, v2
