@@ -218,6 +218,7 @@ form Self-Attention Recomposer v1.3
     positive Fade_duration_s 0.01
     integer Random_seed 0
     boolean Draw_visualization 1
+    boolean Play_result 1
 endform
 
 # Defaults for parameters removed from form
@@ -1084,7 +1085,10 @@ for t from 2 to outputLength
     plusObject: chunkSnd_'t'
 endfor
 
-if chunk_join = 2 and outputLength >= 2
+if outputLength = 1
+    Concatenate
+    joinDesc$ = "single chunk (no join)"
+elsif chunk_join = 2
     # Overlap must be shorter than the shortest chunk in the sequence.
     minOutChunk = 1e30
     for t from 1 to outputLength
@@ -1365,4 +1369,6 @@ endif
 removeObject: textGrid
 
 selectObject: finalOutput
-Play
+if play_result
+    Play
+endif
