@@ -39,9 +39,9 @@ form PCA Tone Shaper v1.0  (validity-aware adaptive EQ)
         option Mid focused (300/1800 Hz)
         option Gentle (low strength)
         option Strong (full range, high strength)
-    positive Chunk_ms 200
+    positive Control_smoothing_ms 200
     positive Frame_step_seconds 0.01
-    positive Pca_strength 1.0
+    real Pca_strength 1.0
     positive Depth_dB 9
     positive Low_hi_crossover1_hz 200
     positive Low_hi_crossover2_hz 2000
@@ -60,8 +60,8 @@ form PCA Tone Shaper v1.0  (validity-aware adaptive EQ)
 endform
 
 # ---------- validation ----------
-if chunk_ms <= 0
-    exitScript: "Chunk_ms must be greater than 0."
+if control_smoothing_ms <= 0
+    exitScript: "Control_smoothing_ms must be greater than 0."
 endif
 if frame_step_seconds <= 0
     exitScript: "Frame_step_seconds must be greater than 0."
@@ -600,8 +600,8 @@ for pc from 1 to 3
 endfor
 
 # ---------- zero-phase control smoothing ----------
-# Chunk_ms is now the control smoothing timescale, not an FFT block size.
-tau = max(dt, chunk_ms / 1000 / 3)
+# Control_smoothing_ms is now the control smoothing timescale, not an FFT block size.
+tau = max(dt, control_smoothing_ms / 1000 / 3)
 alpha = dt / (tau + dt)
 
 procedure smoothControl: .n
@@ -866,7 +866,7 @@ if draw_visualization
     Font size: 6
     Colour: "{0.25, 0.25, 0.35}"
     summary1$ = "##Input##  " + vizOrigName$ + " | " + string$(nch) + " channel(s) | formant-valid frames " + fixed$(100 * fmtFrac, 1) + "\% "
-    summary2$ = "##Analysis##  formant PCA " + formantState$ + " | smoothing " + fixed$(chunk_ms, 0) + " ms | frame step " + fixed$(frame_step_seconds * 1000, 1) + " ms"
+    summary2$ = "##Analysis##  formant PCA " + formantState$ + " | smoothing " + fixed$(control_smoothing_ms, 0) + " ms | frame step " + fixed$(frame_step_seconds * 1000, 1) + " ms"
     summary3$ = "##EQ & Output##  crossovers " + fixed$(low_hi_crossover1_hz, 0) + " / " + fixed$(low_hi_crossover2_hz, 0) + " Hz | high top " + fixed$(high_band_top_hz, 0) + " Hz | " + levelMode$ + " | peak " + fixed$(outPeakFinal, 3)
     Text: 0.02, "left", 0.78, "half", summary1$
     Text: 0.02, "left", 0.50, "half", summary2$
