@@ -3,7 +3,9 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4.1 (2026) - Visualization frame alignment fix
+# Version: 0.4.2 (2026) - Naming, validation, and gain-visualization corrections
+# v0.4.2 (2026): Renamed misleading 1D pan patterns; exact-one-Sound validation; complete pan-range clamping;
+#                visualization now plots the actual L/R automation gains, including Tremolo; Random Walk DSP unchanged.
 # v0.4.1 (2026): VISUALIZATION ONLY - restore panel drawing frame after L/C/R labels; DSP unchanged.
 # v0.4 (2026): SPATIAL VISUALIZATION STANDARDIZATION ONLY - label rails, compact summary, typography; DSP unchanged.
 # License: MIT License
@@ -45,18 +47,20 @@ form Panning Variations
     optionmenu Panning_pattern: 1
         option Linear Sweep (L → R)
         option Linear Sweep (R → L)
-        option Circular Rotation
-        option Figure-8 Pattern
+        option Sine Auto-Pan
+        option Double-Rate Sine Auto-Pan
         option Ping-Pong (bounce)
         option Random Walk
-        option Spiral (expanding)
-        option Spiral (contracting)
+        option Expanding Sine Auto-Pan
+        option Contracting Sine Auto-Pan
         option Tremolo (both channels)
         option Static Position
     comment ─────────────────────────────────────────
-    comment Motion Parameters
+    comment Motion Parameters (pattern-dependent)
     positive Motion_speed_(Hz) 1.0
+    comment (used by Tremolo; sweeps/static/random walk ignore it)
     positive Number_of_cycles 2.0
+    comment (used by cyclic pan patterns; random walk ignores it)
     comment ─────────────────────────────────────────
     comment Pan Range
     real Min_pan 0.0
@@ -75,8 +79,8 @@ endform
 # VALIDATION
 # ============================================================
 
-if numberOfSelected("Sound") = 0
-    exitScript: "Please select a Sound object first."
+if numberOfSelected("Sound") <> 1
+    exitScript: "Please select exactly one Sound object."
 endif
 
 original = selected("Sound")
@@ -87,11 +91,15 @@ duration = Get total duration
 sr = Get sampling frequency
 nChan = Get number of channels
 
-# Clamp pan range
+# Clamp pan range fully to [0, 1]
 if min_pan < 0
     min_pan = 0
+elsif min_pan > 1
+    min_pan = 1
 endif
-if max_pan > 1
+if max_pan < 0
+    max_pan = 0
+elsif max_pan > 1
     max_pan = 1
 endif
 if min_pan > max_pan
@@ -108,17 +116,17 @@ if panning_pattern = 1
 elsif panning_pattern = 2
     patternName$ = "SweepRL"
 elsif panning_pattern = 3
-    patternName$ = "Circular"
+    patternName$ = "SinePan"
 elsif panning_pattern = 4
-    patternName$ = "Figure8"
+    patternName$ = "DoubleSinePan"
 elsif panning_pattern = 5
     patternName$ = "PingPong"
 elsif panning_pattern = 6
     patternName$ = "Random"
 elsif panning_pattern = 7
-    patternName$ = "SpiralOut"
+    patternName$ = "ExpandPan"
 elsif panning_pattern = 8
-    patternName$ = "SpiralIn"
+    patternName$ = "ContractPan"
 elsif panning_pattern = 9
     patternName$ = "Tremolo"
 else
@@ -130,7 +138,7 @@ endif
 # ============================================================
 
 writeInfoLine: "============================================"
-writeInfoLine: "Panning Variations v0.4.1"
+writeInfoLine: "Panning Variations v0.4.2"
 writeInfoLine: "============================================"
 appendInfoLine: "Input: ", originalName$
 appendInfoLine: "Duration: ", fixed$(duration, 3), " s"
@@ -138,8 +146,13 @@ appendInfoLine: "Sample rate: ", sr, " Hz"
 appendInfoLine: "Input channels: ", nChan
 appendInfoLine: "--------------------------------------------"
 appendInfoLine: "Pattern: ", patternName$
-appendInfoLine: "Speed: ", motion_speed, " Hz"
-appendInfoLine: "Cycles: ", number_of_cycles
+if panning_pattern = 3 or panning_pattern = 4 or panning_pattern = 5 or panning_pattern = 7 or panning_pattern = 8
+    appendInfoLine: "Cycles: ", number_of_cycles
+elsif panning_pattern = 9
+    appendInfoLine: "Tremolo speed: ", motion_speed, " Hz"
+elsif panning_pattern = 6
+    appendInfoLine: "Motion: stochastic random walk (Speed/Cycles not used)"
+endif
 appendInfoLine: "Pan range: ", fixed$(min_pan, 2), " - ", fixed$(max_pan, 2)
 appendInfoLine: "Constant power: ", if use_constant_power then "ON" else "OFF" fi
 appendInfoLine: "--------------------------------------------"
@@ -160,9 +173,11 @@ endif
 # CREATE PANNING CURVE
 # ============================================================
 
-# Store pan values for visualization
+# Store pan and actual automation gains for visualization
 for i from 0 to curve_resolution
     panCurve[i] = 0.5
+    gainLCurve[i] = 0
+    gainRCurve[i] = 0
 endfor
 
 # Calculate motion frequency based on cycles and duration
@@ -209,11 +224,11 @@ for i from 0 to curve_resolution
         pan = 1 - t_norm
         
     elsif panning_pattern = 3
-        # Circular Rotation (sine wave)
+        # Sine auto-pan across the 1D stereo field
         pan = 0.5 + 0.5 * sin(2 * pi * motionFreq * time)
         
     elsif panning_pattern = 4
-        # Figure-8 (double frequency creates figure-8 in 2D space)
+        # Double-rate sine auto-pan across the 1D stereo field
         pan = 0.5 + 0.5 * sin(4 * pi * motionFreq * time)
         
     elsif panning_pattern = 5
@@ -246,12 +261,12 @@ for i from 0 to curve_resolution
         pan = walkPos
         
     elsif panning_pattern = 7
-        # Spiral Out (increasing amplitude rotation)
+        # Expanding sine auto-pan: excursion grows from centre to full range
         envelope = t_norm
         pan = 0.5 + 0.5 * envelope * sin(2 * pi * motionFreq * time)
         
     elsif panning_pattern = 8
-        # Spiral In (decreasing amplitude rotation)
+        # Contracting sine auto-pan: excursion shrinks from full range to centre
         envelope = 1 - t_norm
         pan = 0.5 + 0.5 * envelope * sin(2 * pi * motionFreq * time)
         
@@ -304,6 +319,10 @@ for i from 0 to curve_resolution
     if gainR < 0.001
         gainR = 0.001
     endif
+
+    # Store the exact automation gains that are sent to the IntensityTiers
+    gainLCurve[i] = gainL
+    gainRCurve[i] = gainR
     
     # Convert linear gain to dB (reference = 1.0 = ~70 dB in IntensityTier convention)
     leftDb = 70 + 20 * log10(gainL)
@@ -369,7 +388,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "Panning Variations: " + originalName$ + " (" + patternName$ + ")" + " | v0.4.1"
+    Text: 0.5, "centre", 0.5, "half", "Panning Variations: " + originalName$ + " (" + patternName$ + ")" + " | v0.4.2"
 
     # === Panning Curve ===
     Select outer viewport: 0, 8, 0.6, 2.1
@@ -430,30 +449,16 @@ if draw_visualization
     for i from 1 to curve_resolution
         t1 = (i - 1) * duration / curve_resolution
         t2 = i * duration / curve_resolution
-        p1 = panCurve[i - 1]
-        p2 = panCurve[i]
-        if use_constant_power
-            g1 = cos(p1 * pi / 2)
-            g2 = cos(p2 * pi / 2)
-        else
-            g1 = 1 - p1
-            g2 = 1 - p2
-        endif
+        g1 = gainLCurve[i - 1]
+        g2 = gainLCurve[i]
         Draw line: t1, g1, t2, g2
     endfor
     Colour: "{0.8, 0.5, 0.3}"
     for i from 1 to curve_resolution
         t1 = (i - 1) * duration / curve_resolution
         t2 = i * duration / curve_resolution
-        p1 = panCurve[i - 1]
-        p2 = panCurve[i]
-        if use_constant_power
-            g1 = sin(p1 * pi / 2)
-            g2 = sin(p2 * pi / 2)
-        else
-            g1 = p1
-            g2 = p2
-        endif
+        g1 = gainRCurve[i - 1]
+        g2 = gainRCurve[i]
         Draw line: t1, g1, t2, g2
     endfor
     Colour: "Black"
@@ -505,8 +510,16 @@ if draw_visualization
     Text: 0.02, "left", 0.76, "half", "##Summary##"
     Font size: 6
     Colour: "{0.35, 0.35, 0.50}"
-    Text: 0.02, "left", 0.46, "half", patternName$ + " | Speed " + fixed$(motionFreq, 2) + " Hz | Range " + fixed$(min_pan, 2) + "-" + fixed$(max_pan, 2)
-    Text: 0.02, "left", 0.18, "half", "Cycles " + fixed$(number_of_cycles, 2) + " | Constant power " + if use_constant_power then "ON" else "OFF" fi + " | Duration " + fixed$(duration, 2) + " s"
+    if panning_pattern = 3 or panning_pattern = 4 or panning_pattern = 5 or panning_pattern = 7 or panning_pattern = 8
+        Text: 0.02, "left", 0.46, "half", patternName$ + " | Cycles " + fixed$(number_of_cycles, 2) + " | Range " + fixed$(min_pan, 2) + "-" + fixed$(max_pan, 2)
+    elsif panning_pattern = 9
+        Text: 0.02, "left", 0.46, "half", patternName$ + " | Speed " + fixed$(motion_speed, 2) + " Hz | Equal L/R modulation"
+    elsif panning_pattern = 6
+        Text: 0.02, "left", 0.46, "half", patternName$ + " | Stochastic walk | Range " + fixed$(min_pan, 2) + "-" + fixed$(max_pan, 2)
+    else
+        Text: 0.02, "left", 0.46, "half", patternName$ + " | Range " + fixed$(min_pan, 2) + "-" + fixed$(max_pan, 2)
+    endif
+    Text: 0.02, "left", 0.18, "half", "Constant power " + if use_constant_power then "ON" else "OFF" fi + " | Duration " + fixed$(duration, 2) + " s"
     Select inner viewport: 0.60, 7.70, 5.17, 5.83
     Axes: 0, 1, 0, 1
     Colour: "Black"
