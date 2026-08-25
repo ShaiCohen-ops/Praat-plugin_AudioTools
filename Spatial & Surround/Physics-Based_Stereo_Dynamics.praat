@@ -3,7 +3,13 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.6.2 (2026)
+# Version: 0.6.3 (2026)
+# v0.6.3 (2026): PRESET SEMANTICS CORRECTION - named presets now own the
+# complete physics/pan/level/mapping/amplitude block. The visible Custom
+# controls through Amplitude_scale are ignored by named presets; all current
+# named presets explicitly use lateral weighting (louder at centre) and the
+# control-curve mapping family. Input handling, wet/dry mix, output gain,
+# visualization and playback remain global. DSP formulas are unchanged; only preset resolution changed.
 # v0.6.2 (2026): REPORTING/VISUALIZATION CORRECTION ONLY - stop the physics
 #   integrator at the final audio sample, and draw the motion path with the
 #   same [-1,+1] pan clamp used by the audio. DSP mapping/output unchanged.
@@ -142,9 +148,9 @@ if numberOfSelected("Sound") <> 1
     exitScript: "Please select a Sound object first."
 endif
 
-form Physics-Based Stereo Dynamics v0.6.2
+form Physics-Based Stereo Dynamics v0.6.3
     optionmenu Preset: 2
-        option Custom (use the three sentence fields below)
+        option Custom (use controls below)
         option Bouncy Rubber Ball (L to R)
         option Steel Ball Drop (Center)
         option Ping Pong Frenzy (Wide Stereo)
@@ -160,13 +166,13 @@ form Physics-Based Stereo Dynamics v0.6.2
         option Spring Oscillation (ballistic height, sine pan)
         option Pendulum Swing (ballistic height, wide sine pan)
         option Rolling Downhill (ballistic, L to R)
-    comment Custom only. Keep the key= words; only the numbers matter.
+    comment Custom only through Amplitude_scale. Named presets override this block.
     sentence Physics h0=1.2 v0=6.0 grav=9.8 rest=0.75 bounces=8
     sentence Pan_path start=-0.9 end=0.9 cycles=2
     optionmenu Pan_motion: 1
         option Linear (start -> end)
         option Oscillating (sine between start and end)
-    comment Level, mapping, output
+    comment Custom only (continued): level model, geometry, mapping, amplitude.
     optionmenu Level_model: 1
         option Lateral weighting, louder at centre (uses |pan| only)
         option Lateral weighting, louder at edges (uses |pan| only)
@@ -301,6 +307,16 @@ else
     output_gain_handling = mix_and_output_gain - 3
 endif
 peak_target = 0.99
+
+# v0.6.3: named presets must not inherit half of Level_model or Mapping from
+# the visible Custom block. All current named presets were designed around
+# the original lateral-position weighting and control-curve mappings, so
+# force those model families here. Each preset branch below still supplies
+# its own attenuation direction/amount and mapping quantity.
+if preset <> 1
+    distance_model = 1
+    mapping_model = 1
+endif
 
 # === Apply preset OR copy custom values explicitly ===
 if preset = 1
@@ -1056,7 +1072,7 @@ resultName$ = selected$("Sound")
 # ============================================================
 # REPORT
 # ============================================================
-writeInfoLine: "=== Physics-Based Stereo Dynamics v0.6.2 ==="
+writeInfoLine: "=== Physics-Based Stereo Dynamics v0.6.3 ==="
 appendInfoLine: "Input: ", originalName$, "  (", fixed$(duration, 3), " s, ",
     ... nChannels, " ch @ ", sr, " Hz)"
 appendInfoLine: "Source handling: ", inputNote$
@@ -1070,6 +1086,9 @@ if input_handling = 2 and nChannels = 2
     appendInfoLine: "  get quieter. That is balance modulation, not panning."
 endif
 appendInfoLine: "Preset: ", presetName$
+if preset <> 1
+    appendInfoLine: "  Named preset owns Physics/Pan/Level/Geometry/Mapping/Amplitude; Custom block ignored."
+endif
 if parseFailed = 1 and preset = 1
     appendInfoLine: "  NOTE: one or more key= entries in the sentence fields could not"
     appendInfoLine: "        be read and fell back to their defaults. Keep the key words"
@@ -1215,7 +1234,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##PHYSICS-BASED STEREO DYNAMICS v0.6.2##"
+    Text: 0.5, "centre", 0.68, "half", "##PHYSICS-BASED STEREO DYNAMICS v0.6.3##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
     if mapping_model = 1
