@@ -3,7 +3,9 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4 (2025) - Fixed panning
+# Version: 0.4.2 (2026)
+# v0.4.2 (2026): FORMULA SYNTAX FIX ONLY - replace unsupported `elsif` in the generated Praat Formula clamp with nested if/else/fi.
+# v0.4.1 (2026): Clamp the actual DSP pan position to [-1,+1] before the constant-power law; downmix any multichannel wet source to mono before panning.
 # v0.4 (2026): SPATIAL VISUALIZATION STANDARDIZATION ONLY - label rails, compact summary, typography; DSP unchanged.
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
@@ -19,6 +21,14 @@
 # Citation:
 #   Cohen, S. (2025). Praat AudioTools: An Offline Analysis-Resynthesis Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v0.4.2:
+#   - FIXED: Praat Formula expressions do not accept `elsif`; the pan clamp now uses nested if/else/fi.
+#
+# Changelog v0.4.1:
+#   - FIXED: center + depth*modulator is clamped to [-1,+1] in the DSP, matching the visualization and preventing negative pan gains.
+#   - FIXED: any input with more than one channel is downmixed to mono before the wet autopan stage.
+#   - FIXED: for 3+ channel input, the dry path is also reduced safely to stereo instead of implicitly reading only channels 1-2.
 #
 # Changelog v0.4:
 #   - FIXED: Used row instead of col to detect channel (critical bug)
@@ -37,7 +47,7 @@ dur = Get total duration
 sr = Get sampling frequency
 nCh = Get number of channels
 
-form Simple Rate Panning v0.4
+form Simple Rate Panning v0.4.2
     comment ==== Presets ====
     optionmenu Preset: 1
         option Custom
@@ -172,7 +182,7 @@ else
     waveName$ = "Sawtooth"
 endif
 
-writeInfoLine: "=== Simple Rate Panning v0.4 ==="
+writeInfoLine: "=== Simple Rate Panning v0.4.2 ==="
 appendInfoLine: "Input: ", originalName$
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Rate: ", fixed$(pan_rate_Hz, 2), " Hz"
@@ -189,9 +199,9 @@ appendInfoLine: ""
 
 # First convert to mono (sum channels) for proper autopan
 selectObject: original
-if nCh = 2
+if nCh > 1
     monoSource = Convert to mono
-    appendInfoLine: "Converted stereo to mono for panning..."
+    appendInfoLine: "Downmixed ", nCh, " input channels to mono for panning..."
 else
     monoSource = Copy: "temp_mono"
 endif
@@ -205,8 +215,13 @@ if dryLevel > 0
     selectObject: original
     if nCh = 1
         drySound = Convert to stereo
-    else
+    elsif nCh = 2
         drySound = Copy: "temp_dry"
+    else
+        dryMono = Convert to mono
+        selectObject: dryMono
+        drySound = Convert to stereo
+        removeObject: dryMono
     endif
 endif
 
@@ -235,10 +250,15 @@ else
     modFormula$ = "(2*(" + rateStr$ + "*x + " + phaseStr$ + "/(2*pi) - floor(" + rateStr$ + "*x + " + phaseStr$ + "/(2*pi) + 0.5)))"
 endif
 
+# Pan position is center + depth*modulator, clamped to the legal stereo range.
+# The visualization already used this clamp; v0.4.1 made the DSP identical.
+panPositionFormula$ = "(" + centerStr$ + " + " + depthStr$ + "*" + modFormula$ + ")"
+panClampedFormula$ = "(if " + panPositionFormula$ + " < -1 then -1 else if " + panPositionFormula$ + " > 1 then 1 else " + panPositionFormula$ + " fi fi)"
+
 # Pan angle formula: 0.5*pi * normalized_pan_position
-# normalized_pan = (pan_position + 1) / 2, where pan_position = center + depth * mod
-# This gives panAngle from 0 (full left) to pi/2 (full right)
-panAngleFormula$ = "0.5*pi * (0.5 + 0.5*(" + centerStr$ + " + " + depthStr$ + "*" + modFormula$ + "))"
+# normalized_pan = (pan_clamped + 1) / 2
+# This gives panAngle from 0 (full left) to pi/2 (full right).
+panAngleFormula$ = "0.5*pi * (0.5 + 0.5*" + panClampedFormula$ + ")"
 
 # CRITICAL FIX: Use 'row' to detect channel, not 'col'!
 # row=1 is left channel, row=2 is right channel
@@ -292,7 +312,7 @@ if draw_visualization
     Select outer viewport: 0, 8, 0, 0.5
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "Simple Rate Panning: " + presetName$ + " (" + waveName$ + " @ " + fixed$(pan_rate_Hz, 2) + " Hz)" + " | v0.4"
+    Text: 0.5, "centre", 0.5, "half", "Simple Rate Panning: " + presetName$ + " (" + waveName$ + " @ " + fixed$(pan_rate_Hz, 2) + " Hz)" + " | v0.4.2"
     
     # Original waveform
     Select outer viewport: 0, 8, 0.5, 1.7
