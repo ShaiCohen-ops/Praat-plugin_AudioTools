@@ -1,0 +1,154 @@
+name: Build macOS v1.36.1 pathfix3 external
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/build-macos-v1361-pathfix3-external.yml'
+      - 'Max-MSP/Praat_AudioTools_CI/**/*.zip'
+
+env:
+  SOURCE_SHA256: f7a5de4a7b5223b8451a527b075d4ccbaf90873605d590e9dff89dd87c5d3895
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Locate BuildKit and patch source
+        id: kit
+        shell: bash
+        run: |
+          set -euxo pipefail
+          ZIP="$(find "$GITHUB_WORKSPACE/Max-MSP/Praat_AudioTools_CI" -type f -name 'Praat_AudioTools_macOS_BuildKit*.zip' -print -quit)"
+          test -n "$ZIP"
+          DEST="$RUNNER_TEMP/buildkit"
+          rm -rf "$DEST"
+          mkdir -p "$DEST"
+          ditto -x -k "$ZIP" "$DEST"
+          TOP_CMAKE="$(find "$DEST" -type f -path '*/source_project/CMakeLists.txt' -print -quit)"
+          test -n "$TOP_CMAKE"
+          SOURCE_PROJECT="$(dirname "$TOP_CMAKE")"
+          SRC="$SOURCE_PROJECT/source/AudioTools.praat~/AudioTools.praat~.cpp"
+          test -f "$SRC"
+          echo "$SOURCE_SHA256  $SRC" | shasum -a 256 -c -
+          grep -F -q 'AudioTools.praat~ v1.36.1' "$SRC"
+
+          python3 - "$SRC" <<'PY'
+          from pathlib import Path
+          import re, sys
+
+          p = Path(sys.argv[1])
+          s = p.read_text()
+
+          count = len(re.findall(r'\bProcHandle\b', s))
+          if count != 7:
+              raise SystemExit(f'Expected 7 ProcHandle tokens, found {count}')
+          s = re.sub(r'\bProcHandle\b', 'AudioToolsProcHandle', s)
+
+          inc_old = '#include "ext_obex.h"\n#include "z_dsp.h"'
+          inc_new = '#include "ext_obex.h"\n#include "ext_path.h"\n#include "z_dsp.h"'
+          if inc_old not in s:
+              raise SystemExit('include insertion point not found')
+          s = s.replace(inc_old, inc_new, 1)
+
+          marker = 'static std::string atoms_to_path(long argc, t_atom* argv)\n{\n'
+          if marker not in s:
+              raise SystemExit('atoms_to_path marker not found')
+
+          helper = 'static std::string normalize_host_file_path(const std::string& rawPath)\n{\n#ifdef __APPLE__\n    if (rawPath.empty()) return rawPath;\n    char fileName[MAX_PATH_CHARS] = {0};\n    strncpy_zero(fileName, rawPath.c_str(), MAX_PATH_CHARS);\n    short pathId = 0;\n    t_fourcc fileType = 0;\n    if (locatefile_extended(fileName, &pathId, &fileType, nullptr, 0) == 0) {\n        char absolutePath[MAX_PATH_CHARS] = {0};\n        if (path_toabsolutesystempath(pathId, fileName, absolutePath) == 0 && absolutePath[0] != \'\\0\')\n            return std::string(absolutePath);\n    }\n    char nativePath[MAX_PATH_CHARS] = {0};\n    if (path_nameconform(rawPath.c_str(), nativePath, PATH_STYLE_NATIVE, PATH_TYPE_ABSOLUTE) == 0 && nativePath[0] != \'\\0\')\n        return std::string(nativePath);\n#endif\n    return rawPath;\n}\n\n'
+          s = s.replace(marker, helper + marker, 1)
+
+          old = '    std::string fullPath=formparse::atomsString(argc,argv);\n    x->scriptPath=gensym(fullPath.c_str());\n'
+          new = '    std::string fullPath=normalize_host_file_path(formparse::atomsString(argc,argv));\n    x->scriptPath=gensym(fullPath.c_str());\n'
+          if old not in s:
+              raise SystemExit('script path assignment not found')
+          s = s.replace(old, new, 1)
+
+          old = '    std::string fullPath = atoms_to_path(argc, argv);\n#ifdef _WIN32\n'
+          new = '    std::string fullPath = normalize_host_file_path(atoms_to_path(argc, argv));\n#ifdef _WIN32\n'
+          if old not in s:
+              raise SystemExit('praatexe path assignment not found')
+          s = s.replace(old, new, 1)
+
+          p.write_text(s)
+          print('Applied ProcHandle fix and Max Path API normalization')
+          PY
+
+          grep -F -q '#include "ext_path.h"' "$SRC"
+          grep -F -q 'locatefile_extended(fileName' "$SRC"
+          grep -F -q 'path_toabsolutesystempath(pathId' "$SRC"
+          grep -F -q 'normalize_host_file_path(formparse::atomsString' "$SRC"
+          echo "source_project=$SOURCE_PROJECT" >> "$GITHUB_OUTPUT"
+
+      - name: Configure Universal2 external
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cmake -S "${{ steps.kit.outputs.source_project }}" -B "$RUNNER_TEMP/praat-build" -G Xcode -DCMAKE_OSX_ARCHITECTURES="x86_64;arm64" -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 -DMAX_SDK_PACKAGE_OUT_OF_TREE=ON
+
+      - name: Build Release external
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cmake --build "$RUNNER_TEMP/praat-build" --config Release --parallel 3
+
+      - name: Fix bundle metadata and verify
+        id: ext
+        shell: bash
+        run: |
+          set -euxo pipefail
+          MXO="$(find "$RUNNER_TEMP/praat-build" -type d -name 'AudioTools.praat~.mxo' -print -quit)"
+          test -n "$MXO"
+          BIN="$MXO/Contents/MacOS/AudioTools.praat~"
+          PLIST="$MXO/Contents/Info.plist"
+          test -f "$BIN"
+          test -f "$PLIST"
+
+          plutil -replace CFBundleExecutable -string 'AudioTools.praat~' "$PLIST"
+          plutil -replace CFBundleVersion -string '1.36.1' "$PLIST"
+          plutil -replace CFBundleShortVersionString -string '1.36.1' "$PLIST"
+          EXEC_NAME="$(plutil -extract CFBundleExecutable raw -o - "$PLIST")"
+          test "$EXEC_NAME" = 'AudioTools.praat~'
+          test -f "$MXO/Contents/MacOS/$EXEC_NAME"
+
+          ARCHS="$(lipo -archs "$BIN")"
+          echo "External architectures: $ARCHS"
+          echo "$ARCHS" | grep -q x86_64
+          echo "$ARCHS" | grep -q arm64
+
+          STRINGS_OUT="$RUNNER_TEMP/AudioTools.strings.txt"
+          strings "$BIN" > "$STRINGS_OUT"
+          grep -F -q 'AudioTools.praat~ v1.36.1' "$STRINGS_OUT"
+          if grep -F -q 'v1.25-mac' "$STRINGS_OUT"; then
+            exit 1
+          fi
+
+          codesign --force --deep --sign - "$MXO"
+          codesign --verify --deep --strict --verbose=2 "$MXO"
+          file "$BIN"
+          otool -L "$BIN"
+          echo "mxo=$MXO" >> "$GITHUB_OUTPUT"
+
+      - name: Package corrected external
+        shell: bash
+        run: |
+          set -euxo pipefail
+          OUT="$GITHUB_WORKSPACE/AudioTools.praat~_v1.36.1_macOS_Universal2_pathfix3.zip"
+          ditto -c -k --sequesterRsrc --keepParent "${{ steps.ext.outputs.mxo }}" "$OUT"
+          shasum -a 256 "$OUT" | tee "$GITHUB_WORKSPACE/AudioTools.praat~_v1.36.1_macOS_Universal2_pathfix3.sha256"
+
+      - name: Upload corrected external
+        uses: actions/upload-artifact@v4
+        with:
+          name: AudioTools.praat~-v1.36.1-macOS-Universal2-pathfix3
+          path: |
+            AudioTools.praat~_v1.36.1_macOS_Universal2_pathfix3.zip
+            AudioTools.praat~_v1.36.1_macOS_Universal2_pathfix3.sha256
+          if-no-files-found: error
+          retention-days: 30
