@@ -3,7 +3,11 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.6.3 (2026)
+# Version: 0.6.4 (2026)
+# v0.6.4 (2026): FIX total-mechanical-energy normalization in Custom mode.
+#   maxEtot is now the measured maximum of g*h + v^2/2 over the completed
+#   simulation, rather than max(Ep) + max(Ek), whose components can peak at
+#   different times and therefore overstate the normalization denominator.
 # v0.6.3 (2026): PRESET SEMANTICS CORRECTION - named presets now own the
 # complete physics/pan/level/mapping/amplitude block. The visible Custom
 # controls through Amplitude_scale are ignored by named presets; all current
@@ -148,7 +152,7 @@ if numberOfSelected("Sound") <> 1
     exitScript: "Please select a Sound object first."
 endif
 
-form Physics-Based Stereo Dynamics v0.6.3
+form Physics-Based Stereo Dynamics v0.6.4
     optionmenu Preset: 2
         option Custom (use controls below)
         option Bouncy Rubber Ball (L to R)
@@ -848,7 +852,18 @@ endfor
 
 maxEp = gravityVal * maxHeightSeen
 maxEk = 0.5 * maxSpeedSeen * maxSpeedSeen
-maxEtot = maxEp + maxEk
+
+# v0.6.4: total mechanical energy must be normalized by the maximum of
+# Ep + Ek at the SAME simulation instant. max(Ep) + max(Ek) is generally
+# larger because those two maxima need not occur together.
+maxEtot = 0
+for i from 1 to nSim
+    eNow = gravityVal * height#[i] + 0.5 * speed#[i] * speed#[i]
+    if eNow > maxEtot
+        maxEtot = eNow
+    endif
+endfor
+
 if maxEp < 1e-12
     maxEp = 1e-12
 endif
@@ -1072,7 +1087,7 @@ resultName$ = selected$("Sound")
 # ============================================================
 # REPORT
 # ============================================================
-writeInfoLine: "=== Physics-Based Stereo Dynamics v0.6.3 ==="
+writeInfoLine: "=== Physics-Based Stereo Dynamics v0.6.4 ==="
 appendInfoLine: "Input: ", originalName$, "  (", fixed$(duration, 3), " s, ",
     ... nChannels, " ch @ ", sr, " Hz)"
 appendInfoLine: "Source handling: ", inputNote$
@@ -1234,7 +1249,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##PHYSICS-BASED STEREO DYNAMICS v0.6.3##"
+    Text: 0.5, "centre", 0.68, "half", "##PHYSICS-BASED STEREO DYNAMICS v0.6.4##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
     if mapping_model = 1
