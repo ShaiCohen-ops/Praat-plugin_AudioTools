@@ -3,7 +3,10 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4 (2026) - Added Manual per-channel pan/gain mode
+# Version: 0.5.1 (2026) - Renamed Circular Pan to Stereo Spread; DSP unchanged
+# v0.5.1 (2026): Renamed Circular Pan to Stereo Spread for accurate terminology; DSP unchanged.
+# v0.5 (2026): 5.1/7.1 Lo/Ro-style fold-downs now omit LFE; 7.1 rear-surround coefficients corrected;
+#              exact channel-count validation for layout-specific modes; routing visualization aligned to actual gains.
 # v0.4 (2026): SPATIAL VISUALIZATION STANDARDIZATION ONLY - label rails, compact summary, typography; DSP unchanged.
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
@@ -27,7 +30,7 @@
 # Changelog v0.2:
 #   - Modern selectObject: syntax throughout
 #   - Proper object ID tracking
-#   - Added mix mode presets (Split, Circular, Mono, Front-Back)
+#   - Added mix mode presets (Split, Stereo Spread, Mono, Front-Back)
 #   - Added visualization of channel panning
 #   - Added play_result toggle
 #   - Cleanup of intermediate objects
@@ -45,12 +48,12 @@ form Mix Multi-Channel to Stereo
     comment Mix Mode
     optionmenu Mix_mode: 2
         option Split L/R (first half left, second half right)
-        option Circular Pan (distribute across stereo field)
+        option Stereo Spread (distribute channels across stereo field)
         option Mono Sum (all channels center)
         option Front-Back (odds left, evens right)
         option Quad to Stereo (1+3 left, 2+4 right)
-        option 5.1 Downmix (standard film mix)
-        option 7.1 Downmix (standard film mix)
+        option 5.1 Downmix (Lo/Ro, LFE omitted)
+        option 7.1 Downmix (Lo/Ro, LFE omitted)
         option Manual (per-channel pan/gain lists)
     comment ─────────────────────────────────────────
     comment Manual mode: one value per channel, space or comma separated
@@ -70,8 +73,8 @@ endform
 # VALIDATION
 # ============================================================
 
-if numberOfSelected("Sound") = 0
-    exitScript: "Please select a Sound object first."
+if numberOfSelected("Sound") <> 1
+    exitScript: "Please select exactly one Sound object."
 endif
 
 original = selected("Sound")
@@ -93,7 +96,7 @@ endif
 if mix_mode = 1
     modeName$ = "Split"
 elsif mix_mode = 2
-    modeName$ = "Circular"
+    modeName$ = "StereoSpread"
 elsif mix_mode = 3
     modeName$ = "Mono"
 elsif mix_mode = 4
@@ -113,7 +116,7 @@ endif
 # ============================================================
 
 writeInfoLine: "============================================"
-writeInfoLine: "Mix Multi-Channel to Stereo v0.4"
+writeInfoLine: "Mix Multi-Channel to Stereo v0.5.1"
 writeInfoLine: "============================================"
 appendInfoLine: "Input: ", originalName$
 appendInfoLine: "Channels: ", nChan
@@ -210,7 +213,7 @@ elsif mix_mode = 2
         endif
     endfor
     
-    appendInfoLine: "Circular: Ch 1 at left → Ch ", nChan, " at right"
+    appendInfoLine: "Stereo Spread: Ch 1 at left → Ch ", nChan, " at right"
 
 # === MONO SUM ===
 elsif mix_mode = 3
@@ -245,8 +248,8 @@ elsif mix_mode = 4
 
 # === QUAD TO STEREO ===
 elsif mix_mode = 5
-    if nChan < 4
-        appendInfoLine: "Warning: Quad mode expects 4 channels, found ", nChan
+    if nChan <> 4
+        exitScript: "Quad to Stereo requires exactly 4 channels (FL, FR, RL, RR); found " + string$(nChan) + "."
     endif
     
     # Standard quad: FL(1), FR(2), RL(3), RR(4)
@@ -261,18 +264,13 @@ elsif mix_mode = 5
             gainL[ch] = 0
             gainR[ch] = 1
         elsif ch = 3
-            panPos[ch] = 0.15
+            panPos[ch] = 0
             gainL[ch] = 0.7
             gainR[ch] = 0
         elsif ch = 4
-            panPos[ch] = 0.85
+            panPos[ch] = 1
             gainL[ch] = 0
             gainR[ch] = 0.7
-        else
-            # Extra channels to center
-            panPos[ch] = 0.5
-            gainL[ch] = 0.5
-            gainR[ch] = 0.5
         endif
     endfor
     
@@ -280,12 +278,14 @@ elsif mix_mode = 5
 
 # === 5.1 DOWNMIX ===
 elsif mix_mode = 6
-    if nChan < 6
-        appendInfoLine: "Warning: 5.1 mode expects 6 channels, found ", nChan
+    if nChan <> 6
+        exitScript: "5.1 Downmix requires exactly 6 channels in order L, R, C, LFE, Ls, Rs; found " + string$(nChan) + "."
     endif
     
-    # Standard 5.1: L(1), R(2), C(3), LFE(4), Ls(5), Rs(6)
-    # ITU downmix: L = L + 0.707*C + 0.707*Ls, R = R + 0.707*C + 0.707*Rs
+    # 5.1 Lo/Ro-style order: L(1), R(2), C(3), LFE(4), Ls(5), Rs(6)
+    # Lout = L + 0.707*C + 0.707*Ls
+    # Rout = R + 0.707*C + 0.707*Rs
+    # LFE is intentionally omitted from the stereo downmix.
     sqrt2inv = 1 / sqrt(2)
     
     for ch from 1 to nChan
@@ -300,41 +300,42 @@ elsif mix_mode = 6
             gainL[ch] = 0
             gainR[ch] = 1
         elsif ch = 3
-            # Center
+            # Center at -3 dB to both outputs
             panPos[ch] = 0.5
             gainL[ch] = sqrt2inv
             gainR[ch] = sqrt2inv
         elsif ch = 4
-            # LFE - typically reduced or omitted
+            # LFE omitted
             panPos[ch] = 0.5
-            gainL[ch] = 0.5
-            gainR[ch] = 0.5
+            gainL[ch] = 0
+            gainR[ch] = 0
         elsif ch = 5
-            # Left Surround
-            panPos[ch] = 0.2
+            # Left Surround at -3 dB to left only
+            panPos[ch] = 0
             gainL[ch] = sqrt2inv
             gainR[ch] = 0
         elsif ch = 6
-            # Right Surround
-            panPos[ch] = 0.8
+            # Right Surround at -3 dB to right only
+            panPos[ch] = 1
             gainL[ch] = 0
             gainR[ch] = sqrt2inv
-        else
-            panPos[ch] = 0.5
-            gainL[ch] = 0.3
-            gainR[ch] = 0.3
         endif
     endfor
     
-    appendInfoLine: "5.1 ITU downmix: L+0.707*C+0.707*Ls → L"
+    appendInfoLine: "5.1 Lo/Ro: L + 0.707*C + 0.707*Ls → L"
+    appendInfoLine: "          R + 0.707*C + 0.707*Rs → R; LFE omitted"
 
 # === 7.1 DOWNMIX ===
 elsif mix_mode = 7
-    if nChan < 8
-        appendInfoLine: "Warning: 7.1 mode expects 8 channels, found ", nChan
+    if nChan <> 8
+        exitScript: "7.1 Downmix requires exactly 8 channels in order L, R, C, LFE, Ls, Rs, Lb, Rb; found " + string$(nChan) + "."
     endif
     
-    # Standard 7.1: L(1), R(2), C(3), LFE(4), Ls(5), Rs(6), Lb(7), Rb(8)
+    # 7.1 Lo/Ro-style order: L(1), R(2), C(3), LFE(4), Ls(5), Rs(6), Lb(7), Rb(8)
+    # Dolby-style default path folds side+rear surrounds to 5.1, then applies 5.1 Lo/Ro:
+    # Lout = L + 0.707*C + 0.707*Ls + 0.707*Lb
+    # Rout = R + 0.707*C + 0.707*Rs + 0.707*Rb
+    # LFE is intentionally omitted from the stereo downmix.
     sqrt2inv = 1 / sqrt(2)
     
     for ch from 1 to nChan
@@ -351,33 +352,31 @@ elsif mix_mode = 7
             gainL[ch] = sqrt2inv
             gainR[ch] = sqrt2inv
         elsif ch = 4
+            # LFE omitted
             panPos[ch] = 0.5
-            gainL[ch] = 0.5
-            gainR[ch] = 0.5
+            gainL[ch] = 0
+            gainR[ch] = 0
         elsif ch = 5
-            panPos[ch] = 0.15
+            panPos[ch] = 0
             gainL[ch] = sqrt2inv
             gainR[ch] = 0
         elsif ch = 6
-            panPos[ch] = 0.85
+            panPos[ch] = 1
             gainL[ch] = 0
             gainR[ch] = sqrt2inv
         elsif ch = 7
-            panPos[ch] = 0.1
-            gainL[ch] = 0.6
+            panPos[ch] = 0
+            gainL[ch] = sqrt2inv
             gainR[ch] = 0
         elsif ch = 8
-            panPos[ch] = 0.9
+            panPos[ch] = 1
             gainL[ch] = 0
-            gainR[ch] = 0.6
-        else
-            panPos[ch] = 0.5
-            gainL[ch] = 0.3
-            gainR[ch] = 0.3
+            gainR[ch] = sqrt2inv
         endif
     endfor
     
-    appendInfoLine: "7.1 downmix applied"
+    appendInfoLine: "7.1 Lo/Ro: L + 0.707*C + 0.707*Ls + 0.707*Lb → L"
+    appendInfoLine: "          R + 0.707*C + 0.707*Rs + 0.707*Rb → R; LFE omitted"
 
 # === MANUAL (per-channel pan + gain lists) ===
 else
@@ -486,7 +485,7 @@ if draw_visualization
     Select outer viewport: 0.5, 8, 0, 0.5
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "Multi-Channel to Stereo: " + originalName$ + " (" + modeName$ + ")" + " | v0.4"
+    Text: 0.5, "centre", 0.5, "half", "Multi-Channel to Stereo: " + originalName$ + " (" + modeName$ + ")" + " | v0.5.1"
     
     # === Channel Routing Diagram ===
     Select outer viewport: 0, 8, 0.6, 4.5
@@ -567,14 +566,20 @@ if draw_visualization
     for ch from 1 to nChan
         yPos = nChan - ch + 0.5
         
-        # Pan indicator
-        panX = panPos[ch]
-        
-        # Color by position
-        r = panX
-        b = 1 - panX
-        Colour: "{" + fixed$(r, 2) + ", 0.4, " + fixed$(b, 2) + "}"
-        Paint circle (mm): "{" + fixed$(r, 2) + ", 0.4, " + fixed$(b, 2) + "}", panX, yPos, 2
+        # Pan indicator. Muted channels (e.g. LFE in Lo/Ro) are shown as OFF.
+        if gainL[ch] + gainR[ch] > 0.001
+            panX = panPos[ch]
+            
+            # Color by position
+            r = panX
+            b = 1 - panX
+            Colour: "{" + fixed$(r, 2) + ", 0.4, " + fixed$(b, 2) + "}"
+            Paint circle (mm): "{" + fixed$(r, 2) + ", 0.4, " + fixed$(b, 2) + "}", panX, yPos, 2
+        else
+            Font size: 5
+            Colour: "{0.45, 0.45, 0.45}"
+            Text: 0.5, "centre", yPos, "half", "OFF"
+        endif
         
         # Channel label
         Font size: 6
