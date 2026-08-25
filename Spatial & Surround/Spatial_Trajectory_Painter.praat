@@ -3,7 +3,14 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.7.3 (2026) - Ambisonic trajectory output, optional drawn elevation
+# Version: 0.7.5 (2026) - compact main form + optional Advanced details
+# v0.7.5 (2026): UI ONLY - compact main form; technical mapping/render controls moved to optional Advanced details.
+# v0.7.4 (2026): CONTROL-TIER / VISUALIZATION CORRECTION - draw spatial
+#   controls with generic RealTier objects (unitless, signed values) instead of
+#   PitchTier, so Absolute azimuth/elevation are genuinely representable; reject
+#   legacy PitchTier selections with a clear migration message. When Ambisonic
+#   shared peak protection attenuates the rendered channels, apply the same
+#   factor to gainArr so heatmap/power diagnostics describe the final output.
 # v0.7.3 (2026): VISUALIZATION LAYOUT FIX - inset trajectory endpoint labels away from the adjacent panel rail; DSP unchanged.
 # v0.7.2 (2026): VISUALIZATION LAYOUT FIX - keep trajectory endpoint labels inside their panel; DSP unchanged.
 # v0.7.1 (2026): VISUALIZATION LAYOUT FIX - separate title/subtitle bands; DSP unchanged.
@@ -14,7 +21,7 @@
 # Description:
 #   Spatial Trajectory Painter
 #   Convert a Sound to mono, then draw a curve directly on the
-#   waveform (a PitchTier opened together with the sound). The mono
+#   waveform (a RealTier opened together with the sound). The mono
 #   signal follows that curve over time and is rendered to one of
 #   two output representations (Output_representation):
 #
@@ -60,7 +67,7 @@
 #   ABSOLUTE - a fixed scale, meaning depends on the representation:
 #     Speaker array: channel_position =
 #       (drawn_value - Base_value) / Step_value + 1, e.g. with
-#       Base=100, Step=100: 100 Hz -> ch.1, 200 Hz -> ch.2, ...
+#       Base=100, Step=100: value 100 -> ch.1, 200 -> ch.2, ...
 #     Ambisonic trajectory: the drawn value IS the azimuth in degrees
 #       directly (e.g. 90 -> 90 deg), wrapped to 0-360.
 #     Useful when you want precise, repeatable control, or motion
@@ -77,18 +84,18 @@
 # Usage:
 #   PHASE 1 - Select 1 Sound -> Run -> a mono copy is made and an
 #             editor opens showing the waveform with an empty
-#             PitchTier curve ("movement") on top.
-#             Click at the desired time/height inside the CURVE
+#             RealTier curve ("movement") on top.
+#             Click at the desired time/value inside the CURVE
 #             panel (not the waveform panel) to move the cursor
 #             there, then press Ctrl-T (Cmd-T on Mac) to drop a
 #             point. Repeat to draw the movement. One point is
 #             enough for a fixed, static pan position / direction.
 #   PHASE 2 - Back in the Objects window, select the MONO sound
-#             (name ends in "_mono") AND the "movement" PitchTier
+#             (name ends in "_mono") AND the "movement" RealTier
 #             -> Run again -> the multichannel result is created
 #             (N speaker channels, or 4/9/16 ambiX channels,
 #             depending on Output_representation).
-#             The mono sound and the movement PitchTier are removed
+#             The mono sound and the movement RealTier are removed
 #             at the end of Phase 2 along with the other temporary
 #             objects, leaving only the final multichannel result.
 #             If you want to redraw and try again, re-run Phase 1
@@ -116,7 +123,7 @@
 #
 # Changelog:
 #   v0.7 - Optional DRAWN ELEVATION for Ambisonic trajectory mode. A
-#          second, independent PitchTier (movement_elevation) can now
+#          second, independent RealTier (movement_elevation) can now
 #          drive elevation over time, in parallel with the azimuth curve
 #          (movement_azimuth), producing genuine full-3D movement instead
 #          of horizontal motion at a fixed height. The only change to the
@@ -139,17 +146,15 @@
 # Spatial Trajectory Painter (Form-Based, Two-Phase)
 #
 # A. SETUP: Select 1 Sound -> Run -> mono copy + editor open for drawing.
-# B. CREATE: Select mono Sound + PitchTier "movement" -> Run -> panned
+# B. CREATE: Select mono Sound + RealTier "movement" -> Run -> panned
 #            or ambisonic output, per Output_representation.
 ###############################################################################
 
-form Spatial Trajectory Painter Settings
-    comment Output representation:
+form Spatial Trajectory Painter v0.7.5
+    comment Main controls (unused representation-specific choices are ignored):
     optionmenu Output_representation: 1
         option Speaker array
         option Ambisonic trajectory (ambiX ACN/SN3D)
-
-    comment Speaker array settings (used only when Output_representation = Speaker array):
     optionmenu Number_of_channels: 3
         option 4
         option 6
@@ -159,45 +164,52 @@ form Spatial Trajectory Painter Settings
     optionmenu Topology 1
         option Line (clamp at ends)
         option Ring (wrap around)
-
-    comment Ambisonic settings (used only when Output_representation = Ambisonic trajectory):
     optionmenu Ambisonic_order: 1
         option First order (4 ch)
         option Second order (9 ch)
         option Third order (16 ch)
-    comment Elevation: use one fixed value, or draw a 2nd curve (Phase 1 then opens a 2nd editor).
     optionmenu Elevation_control: 1
         option Fixed elevation
         option Drawn elevation curve
     real Fixed_elevation_(degrees) 0
-    comment Drawn-elevation mapping (used only when Elevation_control = Drawn elevation curve):
-    optionmenu Elevation_mapping: 1
-        option Relative
-        option Absolute degrees
-    real Minimum_elevation_(degrees) -45
-    real Maximum_elevation_(degrees) 45
-    comment Distance controls inverse-distance amplitude attenuation only (no near-field compensation).
-    positive Distance_(meters) 1.0
-    real Trajectory_rotation_(degrees) 0
-
-    comment Mapping mode (how the drawn height becomes a position):
     optionmenu Mapping_mode 1
         option Relative (fit drawn curve to full range)
-        option Absolute (fixed height-to-position mapping)
-
-    comment Absolute mode, Speaker array: value = Base_value means channel 1, +Step_value means channel 2, etc.
-    comment Absolute mode, Ambisonic: the drawn value IS the azimuth in degrees directly (wrapped to 0-360).
-    comment (Base_value / Step_value below apply to Speaker array only.)
-    positive Base_value 100
-    positive Step_value 100
-
-    comment Control resolution for reading the drawn curve:
-    positive Control_rate_(Hz) 100
-
-    comment Output:
-    word Output_name movement_output
+        option Absolute (fixed value-to-position mapping)
+    boolean Edit_details 0
     boolean Draw_visualization 1
 endform
+
+# Technical defaults. These remain active unless Edit_details is opened.
+output_name$ = "movement_output"
+elevation_mapping = 1
+minimum_elevation = -45
+maximum_elevation = 45
+distance = 1.0
+trajectory_rotation = 0
+base_value = 100
+step_value = 100
+control_rate = 100
+
+if edit_details
+    beginPause: "Spatial Trajectory Painter - Advanced details"
+        comment: "Drawn elevation (Ambisonic only)"
+        optionmenu: "Elevation mapping", elevation_mapping
+            option: "Relative"
+            option: "Absolute degrees"
+        real: "Minimum elevation (degrees)", minimum_elevation
+        real: "Maximum elevation (degrees)", maximum_elevation
+        comment: "Ambisonic trajectory"
+        positive: "Distance (meters)", distance
+        real: "Trajectory rotation (degrees)", trajectory_rotation
+        comment: "Absolute mapping - Speaker array only"
+        positive: "Base value", base_value
+        positive: "Step value", step_value
+        comment: "Output / technical"
+        word: "Output name", output_name$
+        positive: "Control rate (Hz)", control_rate
+        comment: "Distance is inverse-distance amplitude only; no near-field compensation."
+    advancedClicked = endPause: "Use defaults", "Apply", 2, 1
+endif
 
 # drawnElevation is true only for Ambisonic mode with a drawn elevation curve.
 # In Speaker-array mode the elevation controls are ignored entirely, and in
@@ -261,7 +273,15 @@ endfor
 ###############################################################################
 
 n_sounds = numberOfSelected("Sound")
-n_tiers = numberOfSelected("PitchTier")
+n_tiers = numberOfSelected("RealTier")
+n_legacyPitchTiers = numberOfSelected("PitchTier")
+
+# v0.7.4 changed the drawing objects from PitchTier to generic RealTier so
+# signed/unitless Absolute coordinates are directly representable. Do not
+# silently treat an old PitchTier selection as a fresh Phase 1 request.
+if n_legacyPitchTiers > 0
+    exitScript: "Legacy control tier detected: v0.7.4+ uses RealTier instead of PitchTier. Re-run Phase 1 from the original Sound to create the new 'movement' RealTier(s), then draw/process those. Existing v0.7.3 PitchTiers are not consumed automatically."
+endif
 
 if n_sounds = 1 and n_tiers = 0
     # === PHASE 1: SETUP ===
@@ -278,10 +298,10 @@ if n_sounds = 1 and n_tiers = 0
 
     if drawnElevation = 1
         # --- Two independent curves: azimuth + elevation ---
-        # Both PitchTiers share the mono Sound's time domain. Each opens in
+        # Both RealTiers share the mono Sound's time domain. Each opens in
         # its own editor so azimuth and elevation can be drawn separately.
-        movement_az = Create PitchTier: "movement_azimuth", xmin, xmax
-        movement_el = Create PitchTier: "movement_elevation", xmin, xmax
+        movement_az = Create RealTier: "movement_azimuth", xmin, xmax
+        movement_el = Create RealTier: "movement_elevation", xmin, xmax
 
         selectObject: mono
         plusObject: movement_az
@@ -296,11 +316,14 @@ if n_sounds = 1 and n_tiers = 0
         appendInfoLine: "  * Editor with 'movement_azimuth'   -> draws AZIMUTH over time."
         appendInfoLine: "  * Editor with 'movement_elevation' -> draws ELEVATION over time."
         appendInfoLine: "In EACH editor:"
-        appendInfoLine: "1. Click at the desired time/height INSIDE THE CURVE PANEL"
+        appendInfoLine: "1. Click at the desired time/value INSIDE THE CURVE PANEL"
         appendInfoLine: "   (not the waveform panel) to position the cursor there."
         appendInfoLine: "2. Press Ctrl-T (Windows/Linux) or Cmd-T (Mac) to drop a point."
         appendInfoLine: "   Repeat to draw the curve. Drag existing points to reshape."
         appendInfoLine: "   Draw at least one point in BOTH editors."
+        appendInfoLine: "   These are unitless RealTier editors (signed values are allowed)."
+        appendInfoLine: "   If Absolute azimuth needs values outside the visible range, use RealTier > Set range... (for example -180 to 180 or 0 to 360)."
+        appendInfoLine: "   For Absolute elevation, -90 to +90 fits inside the default RealTier range."
         appendInfoLine: "   Output: Ambisonic trajectory (" + orderName$ + " order, 'n_ch' ambiX channels)."
         appendInfoLine: "   Azimuth mapping (Mapping_mode):"
         appendInfoLine: "     Relative -> drawn range maps to one full 360-degree turn (+Rotation)."
@@ -319,17 +342,26 @@ if n_sounds = 1 and n_tiers = 0
         exitScript: "Phase 1 complete. Draw both curves, select the mono Sound + both tiers, and run again."
     else
         # --- Single curve: azimuth / channel position only ---
-        movement = Create PitchTier: "movement", xmin, xmax
+        movement = Create RealTier: "movement", xmin, xmax
 
         selectObject: mono
         plusObject: movement
         View & Edit
 
         writeInfoLine: "=== PHASE 1: EDITOR OPENED ==="
-        appendInfoLine: "1. Click at the desired time/height INSIDE THE CURVE PANEL"
+        appendInfoLine: "1. Click at the desired time/value INSIDE THE CURVE PANEL"
         appendInfoLine: "   (not the waveform panel) to position the cursor there."
         appendInfoLine: "2. Press Ctrl-T (Windows/Linux) or Cmd-T (Mac) to drop a point."
         appendInfoLine: "   Repeat to draw the movement. Drag existing points to reshape."
+        appendInfoLine: "   This is a unitless RealTier editor: signed values are allowed."
+        if mapping_mode = 2
+            if output_representation = 1
+                speakerAbsMax = base_value + step_value * (n_ch - 1)
+                appendInfoLine: "   For Speaker Absolute mode, set the RealTier view range to include at least Base=" + fixed$(base_value, 1) + " through channel " + string$(n_ch) + " value=" + fixed$(speakerAbsMax, 1) + " (RealTier > Set range...)."
+            else
+                appendInfoLine: "   For Absolute azimuth beyond the visible range, use RealTier > Set range... (e.g. -180 to 180 or 0 to 360)."
+            endif
+        endif
         if output_representation = 1
             appendInfoLine: "   Output: Speaker array ('n_ch' channels)."
             appendInfoLine: "   With Mapping_mode = Relative (default): whatever range you"
@@ -343,7 +375,7 @@ if n_sounds = 1 and n_tiers = 0
             appendInfoLine: "   With Mapping_mode = Absolute: the drawn value IS the azimuth in"
             appendInfoLine: "   degrees directly (plus Trajectory_rotation), wrapped to 0-360 --"
             appendInfoLine: "   e.g. 360 wraps to the same as 0 (front), so there is no need to"
-            appendInfoLine: "   draw all the way down to a height of 0 to reach front."
+            appendInfoLine: "   draw a value of 0 to reach front."
             appendInfoLine: "   Elevation and distance stay fixed at 'fixed_elevation:1' deg / 'distance:2' m."
         endif
         appendInfoLine: "3. Go back to the Objects window."
@@ -359,11 +391,11 @@ elsif n_sounds = 1 and (n_tiers = 1 or n_tiers = 2)
     mono = selected("Sound")
     mono_name$ = selected$("Sound")
 
-    # Capture the selected PitchTier id(s) and name(s) NOW, before any
+    # Capture the selected RealTier id(s) and name(s) NOW, before any
     # selectObject narrows the selection (which would drop the tiers).
     for i to n_tiers
-        selTierId[i] = selected("PitchTier", i)
-        selTierName$[i] = selected$("PitchTier", i)
+        selTierId[i] = selected("RealTier", i)
+        selTierName$[i] = selected$("RealTier", i)
     endfor
 
     # --- Sound safety checks (shared by both phases) ---
@@ -396,9 +428,9 @@ elsif n_sounds = 1 and (n_tiers = 1 or n_tiers = 2)
             elsif n_tiers = 1 and selTierName$[1] = "movement_elevation"
                 exitScript: "Error: only 'movement_elevation' is selected; the azimuth curve 'movement_azimuth' is missing from the selection. Select the mono Sound PLUS BOTH tiers and run again."
             elsif n_tiers = 1
-                exitScript: "Error: 'Drawn elevation curve' needs TWO PitchTiers named 'movement_azimuth' and 'movement_elevation', but only 1 is selected (" + diag$ + "). Select the mono Sound plus BOTH tiers, or re-run Phase 1 in drawn-elevation mode. Elevation_control must match between Phase 1 and Phase 2."
+                exitScript: "Error: 'Drawn elevation curve' needs TWO RealTiers named 'movement_azimuth' and 'movement_elevation', but only 1 is selected (" + diag$ + "). Select the mono Sound plus BOTH tiers, or re-run Phase 1 in drawn-elevation mode. Elevation_control must match between Phase 1 and Phase 2."
             else
-                exitScript: "Error: 'Drawn elevation curve' needs EXACTLY two PitchTiers ('movement_azimuth' and 'movement_elevation'), but 'n_tiers' are selected (" + diag$ + "). Deselect any extra PitchTiers and select only the mono Sound + those two."
+                exitScript: "Error: 'Drawn elevation curve' needs EXACTLY two RealTiers ('movement_azimuth' and 'movement_elevation'), but 'n_tiers' are selected (" + diag$ + "). Deselect any extra RealTiers and select only the mono Sound + those two."
             endif
         endif
 
@@ -415,10 +447,10 @@ elsif n_sounds = 1 and (n_tiers = 1 or n_tiers = 2)
             endif
         endfor
         if movement_az = 0
-            exitScript: "Error: no PitchTier named 'movement_azimuth' is selected. Select the mono Sound plus 'movement_azimuth' and 'movement_elevation' created in Phase 1."
+            exitScript: "Error: no RealTier named 'movement_azimuth' is selected. Select the mono Sound plus 'movement_azimuth' and 'movement_elevation' created in Phase 1."
         endif
         if movement_el = 0
-            exitScript: "Error: no PitchTier named 'movement_elevation' is selected. Select the mono Sound plus 'movement_azimuth' and 'movement_elevation' created in Phase 1."
+            exitScript: "Error: no RealTier named 'movement_elevation' is selected. Select the mono Sound plus 'movement_azimuth' and 'movement_elevation' created in Phase 1."
         endif
 
         # movement drives azimuth for the shared sampling / range code below.
@@ -461,7 +493,7 @@ elsif n_sounds = 1 and (n_tiers = 1 or n_tiers = 2)
             if n_tiers = 2 and hasAz = 1 and hasEl = 1
                 exitScript: "Error: Elevation_control mismatch. You selected the two drawn curves 'movement_azimuth' + 'movement_elevation', but this run has Elevation_control = Fixed elevation, which expects ONE 'movement' tier. Set Elevation_control = Drawn elevation curve to use both curves."
             else
-                exitScript: "Error: this mode needs ONE PitchTier ('movement'), but 'n_tiers' are selected. To draw a moving elevation, set Elevation_control = Drawn elevation curve and re-run Phase 1."
+                exitScript: "Error: this mode needs ONE RealTier ('movement'), but 'n_tiers' are selected. To draw a moving elevation, set Elevation_control = Drawn elevation curve and re-run Phase 1."
             endif
         endif
 
@@ -515,7 +547,7 @@ elsif n_sounds = 1 and (n_tiers = 1 or n_tiers = 2)
     endif
 
 else
-    exitScript: "SELECTION ERROR: To start, select 1 Sound. To finish, select the mono Sound AND the 'movement' PitchTier (or, for drawn elevation, 'movement_azimuth' AND 'movement_elevation')."
+    exitScript: "SELECTION ERROR: To start, select 1 Sound. To finish, select the mono Sound AND the 'movement' RealTier (or, for drawn elevation, 'movement_azimuth' AND 'movement_elevation')."
 endif
 
 ###############################################################################
@@ -796,6 +828,13 @@ if output_representation = 2
             selectObject: ch_id[c]
             Formula: "self * " + scaleStr$
         endfor
+        # gainArr drives the heatmap and power diagnostic. It must describe the
+        # FINAL effective channel gains after the same shared protection factor.
+        for c to n_ch
+            for f from 0 to n_frames
+                gainArr[c,f] = gainArr[c,f] * scaleFactor
+            endfor
+        endfor
         appendInfoLine: "Peak protection: global peak was ", fixed$(globalPeak, 4), " -- applied ", fixed$(headroom_dB, 1), " dB (shared across all ", n_ch, " channels)."
     else
         appendInfoLine: "Peak protection: global peak ", fixed$(globalPeak, 4), " (no attenuation needed)."
@@ -953,7 +992,8 @@ if draw_visualization = 1
     # ---   fast movement could cause between frames, without needing to
     # ---   resample the full audio-rate signal. For Speaker array this
     # ---   should sit near 1 (equal-power); for Ambisonic trajectory it
-    # ---   reflects the SN3D per-order energy scaled by distanceGain^2.
+    # ---   reflects the FINAL SN3D per-order energy after distanceGain and,
+    # ---   when triggered, the shared peak-protection scale factor.
     # ---   NOTE: meanPower is averaged over control frames only, while
     # ---   minPower/maxPower are taken over control frames AND inter-frame
     # ---   midpoints (a larger, denser set) -- the summary panel labels
@@ -1027,7 +1067,7 @@ if draw_visualization = 1
     Axes: 0, 1, 0, 1
     Colour: "Black"
     Font size: 12
-    Text: 0.5, "Centre", 0.5, "Half", "##SPATIAL TRAJECTORY PAINTER v0.7.3##"
+    Text: 0.5, "Centre", 0.5, "Half", "##SPATIAL TRAJECTORY PAINTER v0.7.5##"
     Select outer viewport: 0, 8, 0.30, 0.55
     Select inner viewport: 0.60, 7.70, 0.31, 0.54
     Axes: 0, 1, 0, 1
