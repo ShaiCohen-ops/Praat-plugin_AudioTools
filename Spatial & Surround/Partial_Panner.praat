@@ -3,7 +3,9 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4.1 (2026)
+# Version: 0.4.2 (2026)
+# v0.4.2 (2026): VISUALIZATION ONLY - Effective width panel now plots the actual
+#                 pan_width * frequency-scaling curve, including negative Reverse width.
 # v0.4.1 (2026): Validation and routing consistency fixes: exact-one Sound selection;
 #                 positive bandwidth validation; valid post-Nyquist frequency range;
 #                 stereo spread arc forced to 180 degrees as documented; multichannel
@@ -75,7 +77,7 @@
 
 clearinfo
 
-form Partial Panner v0.4.1 (Multichannel)
+form Partial Panner v0.4.2 (Multichannel)
     comment ─────────────────────────────────────────
     comment Preset
     optionmenu Preset: 3
@@ -259,7 +261,7 @@ endfor
 # ============================================================
 
 writeInfoLine: "============================================"
-appendInfoLine: "Partial Panner v0.4.1"
+appendInfoLine: "Partial Panner v0.4.2"
 appendInfoLine: "============================================"
 appendInfoLine: "Input: ", originalName$
 appendInfoLine: "Duration: ", fixed$(duration, 3), " s"
@@ -774,13 +776,29 @@ if draw_visualization
     minLogF = ln(minFreq)
     maxLogF = ln(maxFreq)
     
-    Axes: minLogF, maxLogF, 0, 1.05
-    Paint rectangle: "{0.96, 0.96, 0.96}", minLogF, maxLogF, 0, 1.05
+    # Scale the vertical axis to the actual effective-width range.
+    # Positive pan_width is shown above zero; Reverse (negative) below zero.
+    widthAbs = abs(pan_width)
+    widthPad = max(0.05, 0.05 * widthAbs)
+    if widthAbs < 0.000001
+        widthYmin = -0.05
+        widthYmax = 0.05
+    elsif pan_width > 0
+        widthYmin = 0
+        widthYmax = pan_width + widthPad
+    else
+        widthYmin = pan_width - widthPad
+        widthYmax = 0
+    endif
     
-    # 1.0 reference
+    Axes: minLogF, maxLogF, widthYmin, widthYmax
+    Paint rectangle: "{0.96, 0.96, 0.96}", minLogF, maxLogF, widthYmin, widthYmax
+    
+    # Zero reference and requested Pan_width reference.
     Colour: "{0.78, 0.65, 0.78}"
     Dotted line
-    Draw line: minLogF, 1.0, maxLogF, 1.0
+    Draw line: minLogF, 0, maxLogF, 0
+    Draw line: minLogF, pan_width, maxLogF, pan_width
     Solid line
     
     # LF protection line
@@ -788,18 +806,19 @@ if draw_visualization
         lfLogF = ln(lF_protection_Hz)
         Colour: "{0.85, 0.55, 0.55}"
         Dotted line
-        Draw line: lfLogF, 0, lfLogF, 1.05
+        Draw line: lfLogF, widthYmin, lfLogF, widthYmax
         Solid line
         Font size: 6
         Colour: "{0.65, 0.45, 0.45}"
-        Text: lfLogF, "left", 0.10, "half", " LF protect"
+        lfLabelY = widthYmin + 0.10 * (widthYmax - widthYmin)
+        Text: lfLogF, "left", lfLabelY, "half", " LF protect"
     endif
     
-    # Sample the freqScale curve at the band centers
+    # Sample the actual effective-width curve: pan_width * freqScale.
     Colour: "{0.30, 0.55, 0.50}"
     Line width: 1.5
     prevLogF = minLogF
-    prevScale = 0
+    prevWidth = 0
     nSamples = 80
     for k from 1 to nSamples
         progress = (k - 0.5) / nSamples
@@ -811,15 +830,16 @@ if draw_visualization
             lfS = (f / lF_protection_Hz) ^ 2
             fScale = fScale * (0.2 + 0.8 * lfS)
         endif
+        effWidth = pan_width * fScale
         if k > 1
-            Draw line: prevLogF, prevScale, logF, fScale
+            Draw line: prevLogF, prevWidth, logF, effWidth
         endif
         prevLogF = logF
-        prevScale = fScale
+        prevWidth = effWidth
     endfor
     Line width: 1
     
-    # Mark the band centers as dots on the curve
+    # Mark band centers at their actual effective width.
     for i from 1 to number_of_bands
         logCenter = ln(bandCenter[i])
         freqNorm = (logCenter - minLogF) / (maxLogF - minLogF)
@@ -828,10 +848,11 @@ if draw_visualization
             lfS = (bandCenter[i] / lF_protection_Hz) ^ 2
             fScale = fScale * (0.2 + 0.8 * lfS)
         endif
+        effWidth = pan_width * fScale
         rgb$ = "{" + fixed$(bandColR#[i], 2) + ","
             ... + fixed$(bandColG#[i], 2) + ","
             ... + fixed$(bandColB#[i], 2) + "}"
-        Paint circle (mm): rgb$, logCenter, fScale, 1.2
+        Paint circle (mm): rgb$, logCenter, effWidth, 1.2
     endfor
     
     Colour: "Black"
@@ -845,7 +866,7 @@ if draw_visualization
     Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Effective width"
     Select outer viewport: 4.2, 8, 3.00, 4.60
     Select inner viewport: 4.55, 7.75, 3.2, 4.5
-    Axes: minLogF, maxLogF, 0, 1.05
+    Axes: minLogF, maxLogF, widthYmin, widthYmax
     Text bottom: "yes", "Frequency (Hz)"
     
     # ----------------------------------------------------------
