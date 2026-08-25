@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.3.1 (2026)
+# Version: 1.4 (2026)
 # v1.3 (2026): SPATIAL VISUALIZATION STANDARDIZATION ONLY - label rails, compact summary, typography; DSP unchanged.
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
@@ -122,7 +122,7 @@ endif
 # FORM
 # ============================================================
 
-form MCMC Musical Variation v1.3
+form MCMC Musical Variation v1.3.1
     comment === Aesthetic Mode ===
     optionmenu Aesthetic_mode: 2
         option Custom
@@ -328,11 +328,41 @@ sDeg_7 = 11
 
 # ============================================================
 # MONO CONVERSION
+# Cancellation-safe: preserve the ordinary channel average unless
+# it nearly cancels relative to the strongest source channel.
 # ============================================================
 
 selectObject: srcSound
 if srcCh > 1
-    monoSrc = Convert to mono
+    strongestChannel = 1
+    strongestRms = -1
+    for ch from 1 to srcCh
+        selectObject: srcSound
+        tmpChannel = Extract one channel: ch
+        channelRms = Get root-mean-square: 0, 0
+        if channelRms > strongestRms
+            strongestRms = channelRms
+            strongestChannel = ch
+        endif
+        removeObject: tmpChannel
+    endfor
+
+    selectObject: srcSound
+    avgSrc = Convert to mono
+    selectObject: avgSrc
+    averageRms = Get root-mean-square: 0, 0
+
+    if strongestRms > 1e-12 and averageRms < 0.10 * strongestRms
+        removeObject: avgSrc
+        selectObject: srcSound
+        monoSrc = Extract one channel: strongestChannel
+        Rename: "mcmc_src"
+        appendInfoLine: "Mono source: channel average nearly cancelled; using strongest channel " + string$(strongestChannel) + "."
+    else
+        monoSrc = avgSrc
+        selectObject: monoSrc
+        Rename: "mcmc_src"
+    endif
 else
     monoSrc = Copy: "mcmc_src"
 endif
@@ -830,7 +860,7 @@ endproc
 
 clearinfo
 writeInfoLine:  "=================================================="
-writeInfoLine:  "  MCMC Musical Variation v1.3"
+writeInfoLine:  "  MCMC Musical Variation v1.3.1"
 writeInfoLine:  "=================================================="
 appendInfoLine: ""
 appendInfoLine: "Source    : ", srcName$, " (", fixed$(srcDur, 2), " s)"
@@ -867,7 +897,34 @@ appendInfoLine: ""
 
 @computeEnergy
 currentEnergy = energyResult
-appendInfoLine: "Initial energy: ", fixed$(currentEnergy, 4)
+initialEnergy = currentEnergy
+
+# Component values of the CURRENT (accepted) state.  computeEnergy leaves
+# e1..e7 holding whatever it last evaluated, which after a REJECTED step is
+# the proposal, not the state — so these are only refreshed on acceptance.
+curE1 = e1
+curE2 = e2
+curE3 = e3
+curE4 = e4
+curE5 = e5
+curE6 = e6
+curE7 = e7
+
+# Per-proposal-type diagnostics
+moveName$ [1] = "PitchNudge"
+moveName$ [2] = "DynSwell"
+moveName$ [3] = "Rubato"
+moveName$ [4] = "PhrTrans"
+moveName$ [5] = "TmSwap"
+moveName$ [6] = "GlobTrans"
+moveName$ [7] = "TempoWarp"
+moveName$ [8] = "DynArch"
+for k from 1 to 8
+    propTried [k] = 0
+    propOk    [k] = 0
+    propDsum  [k] = 0
+endfor
+appendInfoLine: "Initial energy: ", fixed$(initialEnergy, 4)
 appendInfoLine: ""
 appendInfoLine: "Running MCMC chain..."
 appendInfoLine: ""
@@ -916,27 +973,35 @@ for step from 1 to nSteps
     if u < cum1
         @proposePitchNudge
         propName$ = "PitchNudge"
+        propIdx = 1
     elsif u < cum2
         @proposeDynamicSwell
         propName$ = "DynSwell"
+        propIdx = 2
     elsif u < cum3
         @proposeMicroRubato
         propName$ = "Rubato"
+        propIdx = 3
     elsif u < cum4
         @proposePhraseTranspose
         propName$ = "PhrTrans"
+        propIdx = 4
     elsif u < cum5
         @proposeTemporalSwap
         propName$ = "TmSwap"
+        propIdx = 5
     elsif u < cum6
         @proposeGlobalTranspose
         propName$ = "GlobTrans"
+        propIdx = 6
     elsif u < cum7
         @proposeTempoWarp
         propName$ = "TempoWarp"
+        propIdx = 7
     else
         @proposeDynamicArch
         propName$ = "DynArch"
+        propIdx = 8
     endif
 
     # Compute proposed energy
@@ -966,6 +1031,32 @@ for step from 1 to nSteps
 
     eTrace_'step'   = currentEnergy
     accTrace_'step' = accepted
+
+    # --- chain diagnostics (v1.4) -----------------------------------
+    if accepted = 1
+        curE1 = e1
+        curE2 = e2
+        curE3 = e3
+        curE4 = e4
+        curE5 = e5
+        curE6 = e6
+        curE7 = e7
+    endif
+    ecTrace_1_'step' = w1 * curE1
+    ecTrace_2_'step' = w2 * curE2
+    ecTrace_3_'step' = w3 * curE3
+    ecTrace_4_'step' = w4 * curE4
+    ecTrace_5_'step' = w5 * curE5
+    ecTrace_6_'step' = w6 * curE6
+    ecTrace_7_'step' = w7 * curE7
+    tTrace_'step'  = tCur
+    dTrace_'step'  = deltaE
+    piTrace_'step' = propIdx
+    propTried [propIdx] = propTried [propIdx] + 1
+    propDsum  [propIdx] = propDsum  [propIdx] + deltaE
+    if accepted = 1
+        propOk [propIdx] = propOk [propIdx] + 1
+    endif
 
     # Render variation at thinning interval if accepted
     if accepted = 1 and varCount < maxVar
@@ -1008,6 +1099,11 @@ for step from 1 to nSteps
 
 endfor
 
+# All stochastic proposal and acceptance draws are complete. Return
+# Praat's global RNG to safe/unpredictable mode so a fixed Seed here
+# cannot make a subsequently-run script deterministic.
+random_initializeSafelyAndUnpredictably ()
+
 # v1.3: The loop above only renders on an accepted step that also
 # lands on the thinning interval, so it is possible to reach the
 # end of the chain with varCount = 0 (nothing rendered), which
@@ -1040,6 +1136,18 @@ appendInfoLine: "  Final E    : ", fixed$(currentEnergy, 4)
 
 # ============================================================
 # VISUALIZATION
+#
+# Canvas: 8.0 x 8.95 in.
+#
+#   Source waveform | Variation 1 waveform     (half-width pair)
+#   Energy trace + temperature                 (full width)
+#   Energy component breakdown                 (full width)
+#   Proposal diagnostics                       (full width)
+#   Pitch contour heatmap | per-variation E    (half-width pair)
+#   Summary
+#
+# Every panel is numbered on both axes.  v1.3 had axis LABELS but no ticks
+# and no numbers anywhere, so no value could be read off any panel.
 # ============================================================
 
 if draw_visualization = 1 and varCount > 0
@@ -1047,7 +1155,14 @@ if draw_visualization = 1 and varCount > 0
     appendInfoLine: ""
     appendInfoLine: "Drawing visualization..."
 
-    # Get amplitude range from original
+    canvasH = 8.95
+
+    # Absolute page x for the rotated rail labels: one for the left/full
+    # panels, one for the right-hand half panels, so every rail lines up
+    # regardless of how wide its panel is.
+    railLeft  = 0.30
+    railRight = 3.98
+
     selectObject: monoSrc
     origPeak = Get absolute extremum: 0, 0, "None"
     if origPeak < 0.001
@@ -1055,37 +1170,45 @@ if draw_visualization = 1 and varCount > 0
     endif
     ampMax = origPeak * 1.15
 
-    # Get first variation duration
     selectObject: variation_1
     var1Dur = Get total duration
 
     Erase all
+    Select outer viewport: 0, 8, 0, canvasH
 
-    # === TITLE ===
-    Select outer viewport: 0, 8, 0, 0.28
-    Axes: 0, 1, 0, 1
+    # === TITLE =======================================================
+    # Text strips must use Select INNER viewport: Axes maps to the inner
+    # viewport, so an outer-viewport strip is silently inset by the standard
+    # margins and the two lines collapse onto each other.
     Font size: 12
-    Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "##MCMC Musical Variation v1.3.2##"
-    Select outer viewport: 0, 8, 0.28, 0.50
+    Select inner viewport: 0.6, 7.7, 0.04, 0.38
     Axes: 0, 1, 0, 1
+    Colour: "Black"
+    Text: 0.5, "centre", 0.80, "half", "##MCMC Musical Variation##"
     Font size: 7
+    Select inner viewport: 0.6, 7.7, 0.04, 0.38
+    Axes: 0, 1, 0, 1
     Colour: "{0.4, 0.4, 0.5}"
-    Text: 0.5, "centre", 0.5, "half",
+    Text: 0.5, "centre", 0.18, "half",
         ... "[" + presetName$ + "]  " + srcName$
         ... + "  |  " + string$(nPhrases) + " phrases"
         ... + "  |  " + string$(nSteps) + " steps"
         ... + "  |  " + string$(varCount) + " variations"
-        ... + "  |  acc " + fixed$(acceptRate*100, 0) + "%"
+        ... + "  |  acc " + fixed$(acceptRate*100, 0) + "\%  "
 
-    # === PANEL 1: Original waveform ===
-    Select outer viewport: 0, 4, 0.52, 1.42
-    Select inner viewport: 0.55, 3.8, 0.57, 1.37
+    @niceTick: srcDur
+    tickSrc = niceTick.t
+    @niceTick: var1Dur
+    tickVar = niceTick.t
+
+    # === PANEL 1: Source waveform ====================================
+    Font size: 7
+    Select outer viewport: 0, 4, 0.44, 1.16
+    Select inner viewport: 0.60, 3.75, 0.54, 1.06
     Axes: 0, srcDur, -ampMax, ampMax
     Paint rectangle: "{0.97, 0.97, 0.97}", 0, srcDur, -ampMax, ampMax
     Colour: "{0.82, 0.82, 0.82}"
     Draw line: 0, 0, srcDur, 0
-    # Phrase boundaries
     for pp from 1 to nPhrases
         pBound = phraseStart_'pp'
         if pBound > 0.001
@@ -1100,21 +1223,19 @@ if draw_visualization = 1 and varCount > 0
     Draw: 0, 0, -ampMax, ampMax, "no", "Curve"
     Colour: "Black"
     Draw inner box
-    Font size: 7
-    Select outer viewport: 0.08, 0.52, 0.52, 1.42
-    Select inner viewport: 0.08, 0.52, 0.54, 1.4
-    Axes: 0, 1, 0, 1
-    Font size: 7
-    Colour: "Black"
-    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Source"
-    Select outer viewport: 0, 4, 0.52, 1.42
-    Select inner viewport: 0.55, 3.8, 0.57, 1.37
-    Axes: 0, srcDur, -ampMax, ampMax
-    Text top: "no", "Input  (dotted = phrase boundaries)"
 
-    # === PANEL 2: Variation 1 waveform ===
-    Select outer viewport: 4, 8, 0.52, 1.42
-    Select inner viewport: 4.2, 7.8, 0.57, 1.37
+    Font size: 7
+    Select inner viewport: 0.60, 3.75, 0.54, 1.06
+    Axes: 0, srcDur, -ampMax, ampMax
+    Marks bottom every: 1, tickSrc, "yes", "yes", "no"
+    Text bottom: "yes", "Source time (s)"
+    Text top: "no", "Input  (dotted = phrase boundaries)"
+    @railLabelAt: 0.60, 3.75, 0.54, 1.06, 7, railLeft, "Source"
+
+    # === PANEL 2: Variation 1 waveform ===============================
+    Font size: 7
+    Select outer viewport: 4, 8, 0.44, 1.16
+    Select inner viewport: 4.25, 7.70, 0.54, 1.06
     Axes: 0, var1Dur, -ampMax, ampMax
     Paint rectangle: "{0.97, 0.97, 0.97}", 0, var1Dur, -ampMax, ampMax
     Colour: "{0.82, 0.82, 0.82}"
@@ -1124,23 +1245,32 @@ if draw_visualization = 1 and varCount > 0
     Draw: 0, 0, -ampMax, ampMax, "no", "Curve"
     Colour: "Black"
     Draw inner box
+
     Font size: 7
-    Select outer viewport: 4.02, 4.4, 0.52, 1.42
-    Select inner viewport: 4.02, 4.4, 0.54, 1.4
-    Axes: 0, 1, 0, 1
-    Font size: 7
-    Colour: "Black"
-    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Var 1"
-    Select outer viewport: 4, 8, 0.52, 1.42
-    Select inner viewport: 4.2, 7.8, 0.57, 1.37
+    Select inner viewport: 4.25, 7.70, 0.54, 1.06
     Axes: 0, var1Dur, -ampMax, ampMax
+    Marks bottom every: 1, tickVar, "yes", "yes", "no"
+    Text bottom: "yes", "Variation time (s)"
     Text top: "no", "Variation 1  (E=" + fixed$(varEnergy_1, 3) + ")"
+    @railLabelAt: 4.25, 7.70, 0.54, 1.06, 7, railRight, "Var 1"
 
-    # === PANEL 3: Energy trace ===
-    Select outer viewport: 0, 8, 1.50, 2.30
-    Select inner viewport: 0.55, 7.75, 1.55, 2.12
+    # =================================================================
+    # === PANEL 3: Energy trace + temperature =========================
+    #
+    # v1.3 shaded every accepted step with a green column.  At a 90%+
+    # acceptance rate that washes the whole panel and carries no signal,
+    # so acceptance is now a row of tick marks along the top instead.
+    # Temperature had been squeezed onto the energy axis at an arbitrary
+    # 30% of the energy range, giving a line whose height meant nothing;
+    # it now has its own right-hand axis, numbered.
+    # =================================================================
+    etX1 = 0.60
+    etX2 = 7.70
+    etY1 = 1.66
+    etY2 = 2.62
 
-    # Find min/max energy
+    Select outer viewport: 0, 8, 1.54, 2.72
+
     eMin = eTrace_1
     eMax = eTrace_1
     for s from 1 to nSteps
@@ -1151,38 +1281,91 @@ if draw_visualization = 1 and varCount > 0
             eMax = eTrace_'s'
         endif
     endfor
+    if initialEnergy < eMin
+        eMin = initialEnergy
+    endif
+    if initialEnergy > eMax
+        eMax = initialEnergy
+    endif
     eRange = eMax - eMin
     if eRange < 0.01
         eRange = 0.01
     endif
-    ePlotMin = eMin - eRange * 0.1
-    ePlotMax = eMax + eRange * 0.15
+    ePlotMin = eMin - eRange * 0.10
+    ePlotMax = eMax + eRange * 0.22
 
+    tHi = tStart
+    if tEnd > tHi
+        tHi = tEnd
+    endif
+    tHi = tHi * 1.15
+    if tHi < 0.01
+        tHi = 0.01
+    endif
+
+    @niceTick: nSteps
+    tickStep = niceTick.t
+    @niceTick: ePlotMax - ePlotMin
+    tickE = niceTick.t
+    @niceTick: tHi
+    tickT = niceTick.t
+
+    Font size: 6
+    Select inner viewport: etX1, etX2, etY1, etY2
     Axes: 1, nSteps, ePlotMin, ePlotMax
-    Paint rectangle: "{0.97, 0.97, 0.97}", 1, nSteps, ePlotMin, ePlotMax
+    Paint rectangle: "{0.975, 0.977, 0.985}", 1, nSteps, ePlotMin, ePlotMax
 
-    # Shade accepted steps
-    for s from 1 to nSteps
-        if accTrace_'s' = 1
-            Paint rectangle: "{0.88, 0.94, 0.88}", s - 0.5, s + 0.5, ePlotMin, ePlotMax
-        endif
-    endfor
+    Colour: "{0.88, 0.89, 0.93}"
+    Line width: 1
+    gV = tickStep
+    while gV < nSteps
+        Draw line: gV, ePlotMin, gV, ePlotMax
+        gV += tickStep
+    endwhile
 
-    # Mark render points
+    # Render points: full-height columns
     for v from 1 to varCount
-        # Exact step where this variation was rendered, recorded
-        # at render time (v1.3) — not guessed from v * thin, since
-        # a variation is only rendered on an accepted step that
-        # also lands on the thinning interval.
         rStep = renderStep_'v'
         if rStep > nSteps
             rStep = nSteps
         endif
-        Colour: "{0.80, 0.80, 0.95}"
-        Paint rectangle: "{0.80, 0.80, 0.95}", rStep - 0.6, rStep + 0.6, ePlotMin, ePlotMax
+        Paint rectangle: "{0.86, 0.86, 0.96}", rStep - 0.45, rStep + 0.45, ePlotMin, ePlotMax
     endfor
 
-    # Draw energy line
+    # Acceptance as a tick row along the top of the panel
+    accY1 = ePlotMax - (ePlotMax - ePlotMin) * 0.055
+    accY2 = ePlotMax
+    for s from 1 to nSteps
+        if accTrace_'s' = 1
+            Paint rectangle: "{0.25, 0.60, 0.30}", s - 0.42, s + 0.42, accY1, accY2
+        else
+            Paint rectangle: "{0.82, 0.30, 0.25}", s - 0.42, s + 0.42, accY1, accY2
+        endif
+    endfor
+    Colour: "{0.55, 0.55, 0.58}"
+    Line width: 1
+    Draw line: 1, accY1, nSteps, accY1
+
+    # Starting energy reference
+    Colour: "{0.60, 0.60, 0.65}"
+    Dashed line
+    Draw line: 1, initialEnergy, nSteps, initialEnergy
+    Solid line
+
+    # Best energy reached so far
+    bestSoFar = eTrace_1
+    Colour: "{0.35, 0.55, 0.35}"
+    Line width: 1
+    for s from 1 to nSteps - 1
+        sN = s + 1
+        b1 = bestSoFar
+        if eTrace_'sN' < bestSoFar
+            bestSoFar = eTrace_'sN'
+        endif
+        Draw line: s, b1, sN, bestSoFar
+    endfor
+
+    # Energy trace
     Colour: "{0.75, 0.25, 0.15}"
     Line width: 1.5
     for s from 1 to nSteps - 1
@@ -1191,54 +1374,244 @@ if draw_visualization = 1 and varCount > 0
     endfor
     Line width: 1
 
-    # Temperature overlay (normalized to energy axis)
+    # Temperature on its own right-hand scale
+    Font size: 6
+    Select inner viewport: etX1, etX2, etY1, etY2
+    Axes: 1, nSteps, 0, tHi
     Colour: "{0.25, 0.50, 0.80}"
-    Line width: 1
+    Line width: 1.2
     Dotted line
     for s from 1 to nSteps - 1
         sN = s + 1
-        if doAnneal = 1 and nSteps > 1
-            tNorm1 = tStart + (tEnd - tStart) * (s - 1) / (nSteps - 1)
-            tNorm2 = tStart + (tEnd - tStart) * (sN - 1) / (nSteps - 1)
-        else
-            tNorm1 = tStart
-            tNorm2 = tStart
-        endif
-        # Scale T to energy plot range
-        tPlot1 = ePlotMin + (tNorm1 / (tStart + 0.001)) * eRange * 0.3
-        tPlot2 = ePlotMin + (tNorm2 / (tStart + 0.001)) * eRange * 0.3
-        Draw line: s, tPlot1, sN, tPlot2
+        Draw line: s, tTrace_'s', sN, tTrace_'sN'
     endfor
     Solid line
     Line width: 1
+    Marks right every: 1, tickT, "yes", "yes", "no"
 
+    Font size: 6
+    Select inner viewport: etX1, etX2, etY1, etY2
+    Axes: 1, nSteps, ePlotMin, ePlotMax
     Colour: "Black"
+    Line width: 1
     Draw inner box
+
+    Font size: 6
+    Select inner viewport: etX1, etX2, etY1, etY2
+    Axes: 1, nSteps, ePlotMin, ePlotMax
+    Marks bottom every: 1, tickStep, "yes", "yes", "no"
+    Marks left every: 1, tickE, "yes", "yes", "no"
+
     Font size: 7
-    Select outer viewport: 0.08, 0.52, 1.50, 2.30
-    Select inner viewport: 0.08, 0.52, 1.52, 2.28
-    Axes: 0, 1, 0, 1
-    Font size: 7
-    Colour: "Black"
-    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Energy"
-    Select outer viewport: 0, 8, 1.50, 2.30
-    Select inner viewport: 0.55, 7.75, 1.55, 2.12
+    Select inner viewport: etX1, etX2, etY1, etY2
     Axes: 1, nSteps, ePlotMin, ePlotMax
     Text bottom: "yes", "MCMC step"
-    Text top: "no",
-        ... "Energy trace  (green=accepted  blue=render  red=energy  dotted=T)"
+    Text top: "no", "##Energy trace##  —  red = total E, green line = best so far, dashed = start, ticks (top): green = accepted, red = rejected, lilac = render, dotted blue = temperature, numbered on the RIGHT axis"
+    @railLabelAt: etX1, etX2, etY1, etY2, 7, railLeft, "Energy"
 
-    # === PANEL 4: Pitch contour heatmap (variation x phrase) ===
-    Select outer viewport: 0, 4, 2.55, 3.65
-    Select inner viewport: 0.55, 3.8, 2.60, 3.43
+    # =================================================================
+    # === PANEL 4: Energy component breakdown =========================
+    #
+    # Each term is plotted WEIGHTED (wN * eN), which is what actually
+    # competes inside the total, so a term with a small raw value but a
+    # large weight is not made to look harmless.
+    # =================================================================
+    ecX1 = 0.60
+    ecX2 = 7.70
+    ecY1 = 3.22
+    ecY2 = 4.12
 
-    if varCount > 1 and nPhrases > 1
-        Axes: 0, nPhrases, 0, varCount
-        Paint rectangle: "{0.97, 0.97, 0.97}", 0, nPhrases, 0, varCount
+    Select outer viewport: 0, 8, 3.10, 4.22
 
-        # Find pitch range across all variations
-        pcMin = 0
-        pcMax = 0
+    ecMax = 0
+    for k from 1 to 7
+        for s from 1 to nSteps
+            if ecTrace_'k'_'s' > ecMax
+                ecMax = ecTrace_'k'_'s'
+            endif
+        endfor
+    endfor
+    if ecMax < 0.01
+        ecMax = 0.01
+    endif
+    ecPlotMax = ecMax * 1.30
+    @niceTick: ecPlotMax
+    tickEc = niceTick.t
+
+    Font size: 6
+    Select inner viewport: ecX1, ecX2, ecY1, ecY2
+    Axes: 1, nSteps, 0, ecPlotMax
+    Paint rectangle: "{0.975, 0.977, 0.985}", 1, nSteps, 0, ecPlotMax
+
+    Colour: "{0.88, 0.89, 0.93}"
+    gV = tickStep
+    while gV < nSteps
+        Draw line: gV, 0, gV, ecPlotMax
+        gV += tickStep
+    endwhile
+
+    ecCol$ [1] = "{0.85, 0.20, 0.20}"
+    ecCol$ [2] = "{0.95, 0.55, 0.10}"
+    ecCol$ [3] = "{0.80, 0.72, 0.10}"
+    ecCol$ [4] = "{0.20, 0.65, 0.30}"
+    ecCol$ [5] = "{0.15, 0.55, 0.80}"
+    ecCol$ [6] = "{0.45, 0.25, 0.75}"
+    ecCol$ [7] = "{0.75, 0.30, 0.60}"
+    ecName$ [1] = "scale"
+    ecName$ [2] = "voice"
+    ecName$ [3] = "range"
+    ecName$ [4] = "rhythm"
+    ecName$ [5] = "dyn"
+    ecName$ [6] = "phrase"
+    ecName$ [7] = "contour"
+
+    Line width: 1.3
+    for k from 1 to 7
+        Colour: ecCol$ [k]
+        for s from 1 to nSteps - 1
+            sN = s + 1
+            Draw line: s, ecTrace_'k'_'s', sN, ecTrace_'k'_'sN'
+        endfor
+    endfor
+    Line width: 1
+
+    # Legend strip along the top of the panel
+    Font size: 5
+    Select inner viewport: ecX1, ecX2, ecY1, ecY2
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "White", 0.008, 0.700, 0.905, 0.988
+    Colour: "{0.70, 0.70, 0.75}"
+    Draw rectangle: 0.008, 0.700, 0.905, 0.988
+    for k from 1 to 7
+        lgx = 0.020 + (k - 1) * 0.0965
+        Colour: ecCol$ [k]
+        Line width: 2
+        Draw line: lgx, 0.946, lgx + 0.020, 0.946
+        Line width: 1
+        Colour: "{0.20, 0.20, 0.24}"
+        Text: lgx + 0.026, "left", 0.946, "half", ecName$ [k]
+    endfor
+
+    Font size: 6
+    Select inner viewport: ecX1, ecX2, ecY1, ecY2
+    Axes: 1, nSteps, 0, ecPlotMax
+    Colour: "Black"
+    Line width: 1
+    Draw inner box
+
+    Font size: 6
+    Select inner viewport: ecX1, ecX2, ecY1, ecY2
+    Axes: 1, nSteps, 0, ecPlotMax
+    Marks bottom every: 1, tickStep, "yes", "yes", "no"
+    Marks left every: 1, tickEc, "yes", "yes", "no"
+
+    Font size: 7
+    Select inner viewport: ecX1, ecX2, ecY1, ecY2
+    Axes: 1, nSteps, 0, ecPlotMax
+    Text bottom: "yes", "MCMC step"
+    Text top: "no", "##Energy components##  —  weighted contribution of each criterion to the total above"
+    @railLabelAt: ecX1, ecX2, ecY1, ecY2, 7, railLeft, "Weighted E"
+
+    # =================================================================
+    # === PANEL 5: Proposal diagnostics ===============================
+    #
+    # Per move type: how often it was tried, how often it was accepted,
+    # and its mean deltaE.  This is the panel to read when tuning the
+    # proposal weights — a move with a high accept rate and a mean deltaE
+    # near zero is doing nothing but burning steps.
+    # =================================================================
+    pdX1 = 0.60
+    pdX2 = 7.70
+    pdY1 = 4.72
+    pdY2 = 5.62
+
+    Select outer viewport: 0, 8, 4.60, 5.72
+
+    pdTriedMax = 1
+    for k from 1 to 8
+        if propTried [k] > pdTriedMax
+            pdTriedMax = propTried [k]
+        endif
+    endfor
+    pdPlotMax = pdTriedMax * 1.35
+
+    Font size: 6
+    Select inner viewport: pdX1, pdX2, pdY1, pdY2
+    Axes: 0.4, 8.6, 0, pdPlotMax
+    Paint rectangle: "{0.975, 0.977, 0.985}", 0.4, 8.6, 0, pdPlotMax
+
+    for k from 1 to 8
+        # tried (pale) with accepted (solid) drawn inside it
+        Paint rectangle: "{0.80, 0.83, 0.90}", k - 0.34, k + 0.34, 0, propTried [k]
+        Paint rectangle: "{0.20, 0.45, 0.72}", k - 0.34, k + 0.34, 0, propOk [k]
+    endfor
+
+    Colour: "Black"
+    Line width: 1
+    Draw inner box
+
+    # Labels: name, n, accept rate and mean deltaE per move
+    Font size: 5
+    Select inner viewport: pdX1, pdX2, pdY1, pdY2
+    Axes: 0.4, 8.6, 0, pdPlotMax
+    for k from 1 to 8
+        if propTried [k] > 0
+            pdRate = propOk [k] / propTried [k]
+            pdMeanD = propDsum [k] / propTried [k]
+            pdLab$ = string$(propOk [k]) + "/" + string$(propTried [k])
+            pdLab2$ = fixed$(pdRate * 100, 0) + "\%  dE " + fixed$(pdMeanD, 2)
+        else
+            pdLab$ = "0/0"
+            pdLab2$ = "not tried"
+        endif
+        Colour: "{0.20, 0.20, 0.24}"
+        Text: k, "centre", propTried [k] + pdPlotMax * 0.135, "half", pdLab$
+        Colour: "{0.45, 0.45, 0.50}"
+        Text: k, "centre", propTried [k] + pdPlotMax * 0.055, "half", pdLab2$
+    endfor
+
+    Font size: 6
+    Select inner viewport: pdX1, pdX2, pdY1, pdY2
+    Axes: 0.4, 8.6, 0, pdPlotMax
+    @niceTick: pdPlotMax
+    tickPd = niceTick.t
+    Marks left every: 1, tickPd, "yes", "yes", "no"
+    for k from 1 to 8
+        One mark bottom: k, "no", "yes", "no", moveName$ [k]
+    endfor
+
+    Font size: 7
+    Select inner viewport: pdX1, pdX2, pdY1, pdY2
+    Axes: 0.4, 8.6, 0, pdPlotMax
+    Text bottom: "yes", "Proposal type"
+    Text top: "no", "##Proposal diagnostics##  —  pale = proposed, solid = accepted; labels give accepted/tried, accept rate and mean dE (proposed minus current)"
+    @railLabelAt: pdX1, pdX2, pdY1, pdY2, 7, railLeft, "Steps"
+
+    # =================================================================
+    # === PANEL 6: Pitch contour heatmap ==============================
+    #
+    # Row 0 is the UNCHANGED starting contour (initPc), which v1.3 stored
+    # but never drew — without it there is nothing to read the variations
+    # against.  Cells now carry their semitone value.
+    # =================================================================
+    hmX1 = 0.60
+    hmX2 = 3.75
+    hmY1 = 6.22
+    hmY2 = 7.22
+
+    Select outer viewport: 0, 4, 6.10, 7.32
+
+    if nPhrases > 0
+        pcMin = initPc_1
+        pcMax = initPc_1
+        for pp from 1 to nPhrases
+            if initPc_'pp' < pcMin
+                pcMin = initPc_'pp'
+            endif
+            if initPc_'pp' > pcMax
+                pcMax = initPc_'pp'
+            endif
+        endfor
         for v from 1 to varCount
             vt = varTranspo_'v'
             for pp from 1 to nPhrases
@@ -1256,50 +1629,103 @@ if draw_visualization = 1 and varCount > 0
             pcRange = 1
         endif
 
-        for v from 1 to varCount
-            vt = varTranspo_'v'
+        Font size: 6
+        Select inner viewport: hmX1, hmX2, hmY1, hmY2
+        Axes: 0, nPhrases, -1, varCount
+        Paint rectangle: "{0.97, 0.97, 0.97}", 0, nPhrases, -1, varCount
+
+        showCellText = 0
+        if nPhrases <= 10 and varCount <= 10
+            showCellText = 1
+        endif
+
+        for v from 0 to varCount
             for pp from 1 to nPhrases
-                pcVal = varPc_'v'_'pp' + vt
+                if v = 0
+                    pcVal = initPc_'pp'
+                else
+                    pcVal = varPc_'v'_'pp' + varTranspo_'v'
+                endif
                 norm = (pcVal - pcMin) / pcRange
-                # Blue (low) to Red (high)
                 cR = 0.15 + norm * 0.70
                 cG = 0.30 + norm * 0.10
                 cB = 0.75 - norm * 0.55
                 cRs$ = fixed$(cR, 2)
                 cGs$ = fixed$(cG, 2)
                 cBs$ = fixed$(cB, 2)
+                yLo = v - 1
+                yHi = v
                 Paint rectangle: "{" + cRs$ + "," + cGs$ + "," + cBs$ + "}",
-                    ... pp - 1, pp, v - 1, v
+                    ... pp - 1, pp, yLo, yHi
+                if showCellText = 1
+                    Font size: 5
+                    Colour: "White"
+                    Text: pp - 0.5, "centre", yLo + 0.5, "half", fixed$(pcVal, 0)
+                endif
             endfor
         endfor
 
+        # Separate the reference row from the variations
+        Font size: 6
+        Select inner viewport: hmX1, hmX2, hmY1, hmY2
+        Axes: 0, nPhrases, -1, varCount
+        Colour: "White"
+        Line width: 2
+        Draw line: 0, 0, nPhrases, 0
+        Line width: 1
         Colour: "Black"
         Draw inner box
+
+        Font size: 6
+        Select inner viewport: hmX1, hmX2, hmY1, hmY2
+        Axes: 0, nPhrases, -1, varCount
+        @niceTick: nPhrases
+        tickPh = niceTick.t
+        if tickPh < 1
+            tickPh = 1
+        endif
+        Marks bottom every: 1, tickPh, "yes", "yes", "no"
+        One mark left: -0.5, "no", "yes", "no", "##src##"
+        hmEvery = 1
+        if varCount > 12
+            hmEvery = 2
+        endif
+        if varCount > 24
+            hmEvery = 5
+        endif
+        for v from 1 to varCount
+            vMod = v - floor(v / hmEvery) * hmEvery
+            if vMod = 0 or hmEvery = 1
+                One mark left: v - 0.5, "no", "yes", "no", "V" + string$(v)
+            endif
+        endfor
+
         Font size: 7
-        Select outer viewport: 0.08, 0.52, 2.55, 3.65
-        Select inner viewport: 0.08, 0.52, 2.57, 3.63
-        Axes: 0, 1, 0, 1
-        Font size: 7
-        Colour: "Black"
-        Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Variation"
-        Select outer viewport: 0, 4, 2.55, 3.65
-        Select inner viewport: 0.55, 3.8, 2.60, 3.43
-        Axes: 0, nPhrases, 0, varCount
+        Select inner viewport: hmX1, hmX2, hmY1, hmY2
+        Axes: 0, nPhrases, -1, varCount
         Text bottom: "yes", "Phrase"
-        Text top: "no", "Pitch contour  (blue=low  red=high)"
+        Text top: "no", "Pitch contour, semitones  (blue " + fixed$(pcMin, 0) + " to red " + fixed$(pcMax, 0) + "; row ##src## = unchanged source)"
+        @railLabelAt: hmX1, hmX2, hmY1, hmY2, 7, railLeft, "Variation"
     else
+        Font size: 7
+        Select inner viewport: hmX1, hmX2, hmY1, hmY2
         Axes: 0, 1, 0, 1
         Paint rectangle: "{0.96, 0.96, 0.96}", 0, 1, 0, 1
-        Font size: 7
         Colour: "{0.5, 0.5, 0.5}"
-        Text: 0.5, "centre", 0.5, "half", "Need >1 var + >1 phrase for heatmap"
+        Text: 0.5, "centre", 0.5, "half", "No phrases detected"
         Colour: "Black"
-        Draw inner box
+        Select inner viewport: hmX1, hmX2, hmY1, hmY2
+        Axes: 0, 1, 0, 1
+        Draw rectangle: 0, 1, 0, 1
     endif
 
-    # === PANEL 5: Per-variation energy bar chart ===
-    Select outer viewport: 4, 8, 2.55, 3.65
-    Select inner viewport: 4.2, 7.8, 2.60, 3.43
+    # === PANEL 7: Per-variation energy bar chart =====================
+    beX1 = 4.25
+    beX2 = 7.70
+    beY1 = 6.22
+    beY2 = 7.22
+
+    Select outer viewport: 4, 8, 6.10, 7.32
 
     vEmin = varEnergy_1
     vEmax = varEnergy_1
@@ -1315,10 +1741,34 @@ if draw_visualization = 1 and varCount > 0
     if vErange < 0.01
         vErange = 0.01
     endif
-    vEplotMax = vEmax + vErange * 0.15
+    # A single variation gives vErange = 0, so the headroom for the value
+    # labels has to come from the bar height, not from the spread.
+    if vErange < vEmax * 0.05
+        vErange = vEmax * 0.05
+    endif
+    if vErange < 0.01
+        vErange = 0.01
+    endif
+    vEplotMax = vEmax + vErange * 0.28
+    if vEplotMax < vEmax * 1.10
+        vEplotMax = vEmax * 1.10
+    endif
+    @niceTick: vEplotMax
+    tickVe = niceTick.t
 
-    Axes: 0, varCount + 1, 0, vEplotMax
-    Paint rectangle: "{0.97, 0.97, 0.97}", 0, varCount + 1, 0, vEplotMax
+    # Centre a small number of bars instead of letting one bar fill the panel
+    beHalf = varCount / 2 + 0.1
+    if beHalf < 2.1
+        beHalf = 2.1
+    endif
+    beCtr = (varCount + 1) / 2
+    beLo = beCtr - beHalf
+    beHi = beCtr + beHalf
+
+    Font size: 6
+    Select inner viewport: beX1, beX2, beY1, beY2
+    Axes: beLo, beHi, 0, vEplotMax
+    Paint rectangle: "{0.975, 0.977, 0.985}", beLo, beHi, 0, vEplotMax
 
     for v from 1 to varCount
         norm = (varEnergy_'v' - vEmin) / vErange
@@ -1330,49 +1780,71 @@ if draw_visualization = 1 and varCount > 0
         cBs$ = fixed$(cB, 2)
         Paint rectangle: "{" + cRs$ + "," + cGs$ + "," + cBs$ + "}",
             ... v - 0.35, v + 0.35, 0, varEnergy_'v'
-        # Label
-        Font size: 6
-        Colour: "White"
-        Text: v, "centre", varEnergy_'v' * 0.5, "half", "V" + string$(v)
     endfor
 
     Colour: "Black"
+    Line width: 1
     Draw inner box
-    Font size: 7
-    Select outer viewport: 4.02, 4.4, 2.55, 3.65
-    Select inner viewport: 4.02, 4.4, 2.57, 3.63
-    Axes: 0, 1, 0, 1
-    Font size: 7
-    Colour: "Black"
-    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Energy"
-    Select outer viewport: 4, 8, 2.55, 3.65
-    Select inner viewport: 4.2, 7.8, 2.60, 3.43
-    Axes: 0, varCount + 1, 0, vEplotMax
-    Text bottom: "yes", "Variation"
-    Text top: "no", "Energy per rendered variation  (lower = better fit to the selected energy criteria)"
 
-    # === PANEL 6: SUMMARY ===
-    Select outer viewport: 0, 8, 3.95, 4.95
-    Select inner viewport: 0.60, 7.70, 4.02, 4.88
-    Axes: 0, 1, 0, 1
-    Paint rectangle: "{0.95, 0.95, 0.95}", 0, 1, 0, 1
-    Font size: 7
-    Colour: "Black"
-    Text: 0.02, "left", 0.88, "half", "##MCMC Musical Variation v1.3.2##"
+    Font size: 5
+    Select inner viewport: beX1, beX2, beY1, beY2
+    Axes: beLo, beHi, 0, vEplotMax
+    for v from 1 to varCount
+        # Inside the bar where it fits, above it only for very short bars —
+        # a value printed above a full-height bar lands on the caption.
+        if varEnergy_'v' > vEplotMax * 0.16
+            Colour: "White"
+            Text: v, "centre", varEnergy_'v' - vEplotMax * 0.055, "half", fixed$(varEnergy_'v', 2)
+        else
+            Colour: "{0.20, 0.20, 0.24}"
+            Text: v, "centre", varEnergy_'v' + vEplotMax * 0.055, "half", fixed$(varEnergy_'v', 2)
+        endif
+    endfor
+
     Font size: 6
+    Select inner viewport: beX1, beX2, beY1, beY2
+    Axes: beLo, beHi, 0, vEplotMax
+    Marks left every: 1, tickVe, "yes", "yes", "no"
+    for v from 1 to varCount
+        One mark bottom: v, "no", "yes", "no", "V" + string$(v)
+    endfor
+
+    Font size: 7
+    Select inner viewport: beX1, beX2, beY1, beY2
+    Axes: beLo, beHi, 0, vEplotMax
+    Text bottom: "yes", "Variation  (rendered at steps shown in the energy trace)"
+    Text top: "no", "Energy per rendered variation  (lower = better fit to the selected criteria)"
+    @railLabelAt: beX1, beX2, beY1, beY2, 7, railRight, "Energy"
+
+    # === PANEL 8: SUMMARY ============================================
+    Font size: 7
+    Select outer viewport: 0, 8, 7.74, 8.88
+    Select inner viewport: 0.60, 7.70, 7.80, 8.84
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    Colour: "Black"
+    Text: 0.02, "left", 0.88, "half", "##Summary##"
+
+    Font size: 6
+    Select inner viewport: 0.60, 7.70, 7.80, 8.84
+    Axes: 0, 1, 0, 1
     Colour: "{0.35, 0.35, 0.40}"
     Text: 0.02, "left", 0.68, "half",
         ... "Source: " + srcName$ + "  (" + fixed$(srcDur,2) + " s)"
         ... + "  |  Mode: " + presetName$
         ... + "  |  Phrases: " + string$(nPhrases)
         ... + "  |  T: " + fixed$(tStart,2) + " -> " + fixed$(tEnd,2)
-    Text: 0.02, "left", 0.48, "half",
+        ... + "  |  Seed: " + string$(seed)
+    Text: 0.02, "left", 0.50, "half",
         ... "Steps: " + string$(nSteps)
         ... + "  |  Accepted: " + string$(nAccepted)
-        ... + "  (" + fixed$(acceptRate*100,1) + "%)"
+        ... + "  (" + fixed$(acceptRate*100,1) + "\% )"
         ... + "  |  Rendered: " + string$(varCount)
         ... + "  |  Thinning: " + string$(thin)
-    Text: 0.02, "left", 0.28, "half",
+        ... + "  |  Initial E=" + fixed$(initialEnergy,3)
+        ... + "  Final E=" + fixed$(currentEnergy,3)
+        ... + "  Delta=" + fixed$(currentEnergy - initialEnergy, 3)
+    Text: 0.02, "left", 0.32, "half",
         ... "E weights: scale=" + fixed$(w1,1)
         ... + " voice=" + fixed$(w2,1)
         ... + " range=" + fixed$(w3,1)
@@ -1380,22 +1852,36 @@ if draw_visualization = 1 and varCount > 0
         ... + " dyn=" + fixed$(w5,1)
         ... + " phrase=" + fixed$(w6,1)
         ... + " contour=" + fixed$(w7,1)
-    Text: 0.02, "left", 0.10, "half",
-        ... "Initial E=" + fixed$(eTrace_1,3)
-        ... + "  Final E=" + fixed$(currentEnergy,3)
-        ... + "  Delta=" + fixed$(currentEnergy - eTrace_1, 3)
-        ... + "  Tonal center: " + string$(tonalCenter) + " st"
+        ... + "  |  Tonal center: " + string$(tonalCenter) + " st"
+
+    # An acceptance rate this high means the temperature is large relative
+    # to the energy scale: nearly every proposal passes, so the chain is a
+    # random walk rather than annealed exploration.  Worth saying out loud
+    # on the figure rather than leaving it to be inferred from "acc 92%".
+    if acceptRate > 0.85
+        chainNote$ = "Note: acceptance " + fixed$(acceptRate*100,0) + "\%   — T is high relative to the energy scale, so the chain is exploring nearly freely rather than descending. Lower Start\_ temp for more selective behaviour."
+    elsif acceptRate < 0.15
+        chainNote$ = "Note: acceptance " + fixed$(acceptRate*100,0) + "\%   — T is low relative to the energy scale, so the chain is nearly frozen. Raise Start\_ temp or lower the weights for more movement."
+    else
+        chainNote$ = "Acceptance " + fixed$(acceptRate*100,0) + "\%   is in a workable range for annealed exploration."
+    endif
+    Colour: "{0.45, 0.35, 0.30}"
+    Text: 0.02, "left", 0.13, "half", chainNote$
+
+    Font size: 6
+    Select inner viewport: 0.60, 7.70, 7.80, 8.84
+    Axes: 0, 1, 0, 1
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
 
-    Select outer viewport: 0, 8, 0, 5.05
-    Font size: 10
+    # Save as / Copy from the Picture window exports the CURRENT viewport
+    # selection, so the script must end on the whole canvas or the export
+    # comes out cropped to the last panel drawn.
     Colour: "Black"
     Line width: 1
     Solid line
     Font size: 10
-    Colour: "Black"
-    Line width: 1
+    Select outer viewport: 0, 8, 0, canvasH
 
     appendInfoLine: "  Visualization complete."
 endif
@@ -1520,3 +2006,44 @@ else
     appendInfoLine: "  Individual variations kept in Objects list"
     selectObject: mcmcMulti
 endif
+
+# ============================================================
+# VISUALIZATION HELPERS
+# ============================================================
+
+# Text left: / Text right: position a rotated panel label against whatever
+# drawing frame is current, so panels of different widths get their names at
+# different x.  Placing them at an ABSOLUTE page position instead keeps the
+# rails straight across half-width and full-width panels alike.
+# Vertical alignment must be "bottom", not "half": "half" anchors the glyph
+# bounding box, so a descender shifts that one label off the rail.
+procedure railLabelAt: .x1, .x2, .y1, .y2, .size, .targetIn, .label$
+    .xn = (.targetIn - .x1) / (.x2 - .x1)
+    Font size: .size
+    Select inner viewport: .x1, .x2, .y1, .y2
+    Axes: 0, 1, 0, 1
+    Colour: "Black"
+    Text special: .xn, "centre", 0.5, "bottom", "Helvetica", .size, "90", .label$
+endproc
+
+# Axis tick spacing: the largest 1/2/5 x 10^k step that still gives roughly
+# eight divisions across the span.
+procedure niceTick: .span
+    if .span <= 0
+        .t = 1
+    else
+        .raw  = .span / 8
+        .expo = floor(log10(.raw))
+        .base = .raw / 10 ^ .expo
+        if .base < 1.5
+            .m = 1
+        elsif .base < 3.5
+            .m = 2
+        elsif .base < 7.5
+            .m = 5
+        else
+            .m = 10
+        endif
+        .t = .m * 10 ^ .expo
+    endif
+endproc
