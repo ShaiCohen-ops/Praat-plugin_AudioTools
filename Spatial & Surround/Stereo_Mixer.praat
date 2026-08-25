@@ -3,7 +3,13 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.6.1 (2026) - Fix stereo mix channel routing (right gains were dropped)
+# Version: 0.6.2 (2026) - Input/order/custom-gain semantics tightened
+# v0.6.2 (2026):
+#   - INPUT: reject 3+ channel sources instead of silently discarding channels 3+.
+#   - ORDER: document Sound numbering as Objects-list order (top to bottom), not click order.
+#   - UI: optional second dialog exposes Custom L/R gains for Sounds 5-8 without enlarging the main form.
+#   - PRESET: rename misleading "All Center (mono sum)" to "All Unity (preserve stereo / dual-mono)"; DSP unchanged.
+#   - NAMING: output suffix now reports source count as Nsrc rather than the misleading Nch.
 # v0.6.1 (2026): VISUALIZATION LAYOUT FIX - separate header bands and output/Summary spacing; DSP unchanged.
 # v0.6 (2026): SPATIAL VISUALIZATION STANDARDIZATION ONLY - label rails, compact summary, typography; DSP unchanged.
 # License: MIT License
@@ -15,7 +21,8 @@
 #
 # Usage:
 #   Select 1-8 Sound objects and run this script.
-#   Sounds are mixed in selection order (first selected = Sound 1).
+#   Sounds are numbered in Objects-list order (top to bottom), which is
+#   what selected("Sound", i) returns; this is not click/selection order.
 #
 # Changelog v0.6:
 #   - Fixed mix formula: object[id, row, col] so each output channel
@@ -47,25 +54,38 @@ if numSounds > 8
     exitScript: "Too many sounds selected! Maximum is 8."
 endif
 
-# Store sound IDs before form
+# Store sound IDs before form. selected("Sound", i) follows the Objects
+# list order (top to bottom), not the order in which the user clicked.
 for i from 1 to numSounds
     tempSoundID_'i' = selected("Sound", i)
 endfor
 
-form Stereo Mixer v0.6.1
+# Stereo Mixer intentionally supports mono and stereo sources only. In older
+# versions, 3+ channel sources entered the loop, but only rows 1 and 2 were
+# ever read into the stereo result, silently discarding the remaining channels.
+for i from 1 to numSounds
+    selectObject: tempSoundID_'i'
+    inputChannels = Get number of channels
+    if inputChannels > 2
+        badName$ = selected$("Sound")
+        exitScript: "Sound " + string$(i) + " ('" + badName$ + "') has " + string$(inputChannels) + " channels. Stereo Mixer accepts mono or stereo sources only; downmix the source explicitly first."
+    endif
+endfor
+
+form Stereo Mixer v0.6.2
     comment === PRESET PANNING ===
     optionmenu Preset: 1
         option Custom (use gains below)
-        option All Center (mono sum)
+        option All Unity (preserve stereo / dual-mono)
         option Stereo Spread (alternate L R)
         option Wide Spread (hard L R)
         option Left Heavy
         option Right Heavy
         option Fade L to R
         option Fade R to L
-        option V Shape (outside in)
-    comment === CUSTOM GAINS (Sound 1-4 shown, edit script for 5-8) ===
-    comment Sounds mixed in selection order
+        option V Shape (L to R to L)
+    comment === CUSTOM GAINS (Sounds 1-4) ===
+    comment Sound numbering = Objects-list order (top to bottom)
     real Gain_1_L 1.0
     real Gain_1_R 1.0
     real Gain_2_L 1.0
@@ -74,12 +94,17 @@ form Stereo Mixer v0.6.1
     real Gain_3_R 1.0
     real Gain_4_L 1.0
     real Gain_4_R 1.0
+    boolean Edit_custom_gains_5_to_8 0
     comment === OUTPUT ===
     boolean Normalize_output 1
     real Target_peak 0.95
     boolean Draw_visualization 1
     boolean Play_result 1
 endform
+
+if normalize_output and target_peak <= 0
+    exitScript: "Target_peak must be greater than 0 when Normalize_output is enabled."
+endif
 
 stopwatch
 
@@ -97,7 +122,8 @@ gainR#[3] = gain_3_R
 gainL#[4] = gain_4_L
 gainR#[4] = gain_4_R
 
-# Default gains for sounds 5-8 (edit here if needed)
+# Default Custom gains for Sounds 5-8. To keep the main form compact,
+# these are edited in an optional second dialog when Custom is selected.
 gainL#[5] = 1.0
 gainR#[5] = 1.0
 gainL#[6] = 1.0
@@ -107,13 +133,35 @@ gainR#[7] = 1.0
 gainL#[8] = 1.0
 gainR#[8] = 1.0
 
+if preset = 1 and numSounds > 4 and edit_custom_gains_5_to_8
+    beginPause: "Stereo Mixer - Custom gains 5-8"
+        comment: "Only Sounds that exist in the current selection are used."
+        real: "Gain_5_L", gainL#[5]
+        real: "Gain_5_R", gainR#[5]
+        real: "Gain_6_L", gainL#[6]
+        real: "Gain_6_R", gainR#[6]
+        real: "Gain_7_L", gainL#[7]
+        real: "Gain_7_R", gainR#[7]
+        real: "Gain_8_L", gainL#[8]
+        real: "Gain_8_R", gainR#[8]
+    endPause: "Apply", 1
+    gainL#[5] = gain_5_L
+    gainR#[5] = gain_5_R
+    gainL#[6] = gain_6_L
+    gainR#[6] = gain_6_R
+    gainL#[7] = gain_7_L
+    gainR#[7] = gain_7_R
+    gainL#[8] = gain_8_L
+    gainR#[8] = gain_8_R
+endif
+
 # === Apply Presets (FIXED for any numSounds) ===
 if preset = 2
     for i from 1 to numSounds
         gainL#[i] = 1.0
         gainR#[i] = 1.0
     endfor
-    presetName$ = "Center"
+    presetName$ = "Unity"
 elsif preset = 3
     for i from 1 to numSounds
         if (i mod 2) = 1
@@ -198,9 +246,10 @@ else
 endif
 
 clearinfo
-writeInfoLine: "=== Stereo Mixer v0.6.1 ==="
+writeInfoLine: "=== Stereo Mixer v0.6.2 ==="
 appendInfoLine: "Mixing ", numSounds, " sounds"
 appendInfoLine: "Preset: ", presetName$
+appendInfoLine: "Sound numbering: Objects-list order (top to bottom)"
 appendInfoLine: ""
 
 # === Restore Sound IDs and Get Properties ===
@@ -327,7 +376,7 @@ if normalize_output
     appendInfoLine: "Normalized to peak: ", target_peak
 endif
 
-resultName$ = "Mixed_" + presetName$ + "_" + string$(numSounds) + "ch"
+resultName$ = "Mixed_" + presetName$ + "_" + string$(numSounds) + "src"
 Rename: resultName$
 
 elapsed = stopwatch
@@ -348,7 +397,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "##Stereo Mixer v0.6.1##"
+    Text: 0.5, "centre", 0.5, "half", "##Stereo Mixer v0.6.2##"
     Select outer viewport: 0, 8, 0.28, 0.50
     Select inner viewport: 0.60, 7.70, 0.29, 0.49
     Axes: 0, 1, 0, 1
