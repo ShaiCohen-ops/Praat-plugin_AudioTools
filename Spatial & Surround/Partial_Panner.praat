@@ -3,7 +3,11 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4 (2025)
+# Version: 0.4.1 (2026)
+# v0.4.1 (2026): Validation and routing consistency fixes: exact-one Sound selection;
+#                 positive bandwidth validation; valid post-Nyquist frequency range;
+#                 stereo spread arc forced to 180 degrees as documented; multichannel
+#                 dry signal anchored to front Channel 1 instead of replicated to all channels.
 # v0.4 (2026): SPATIAL VISUALIZATION STANDARDIZATION ONLY - label rails, compact summary, typography; DSP unchanged.
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
@@ -71,7 +75,7 @@
 
 clearinfo
 
-form Partial Panner v0.4 (Multichannel)
+form Partial Panner v0.4.1 (Multichannel)
     comment ─────────────────────────────────────────
     comment Preset
     optionmenu Preset: 3
@@ -186,8 +190,8 @@ endif
 # VALIDATION
 # ============================================================
 
-if numberOfSelected("Sound") = 0
-    exitScript: "Please select a Sound object first."
+if numberOfSelected("Sound") <> 1
+    exitScript: "Please select exactly one Sound object."
 endif
 
 original = selected("Sound")
@@ -198,9 +202,12 @@ duration = Get total duration
 sr = Get sampling frequency
 nInputCh = Get number of channels
 
-# Clamp parameters
+# Validate / clamp parameters
 if number_of_bands < 1
     number_of_bands = 1
+endif
+if bandwidth_octaves <= 0
+    exitScript: "Bandwidth_octaves must be greater than 0."
 endif
 if dry_wet_mix < 0
     dry_wet_mix = 0
@@ -208,15 +215,25 @@ endif
 if dry_wet_mix > 1
     dry_wet_mix = 1
 endif
-if spread_arc_degrees < 10
-    spread_arc_degrees = 10
-endif
-if spread_arc_degrees > 360
-    spread_arc_degrees = 360
+
+# Stereo is intrinsically a 180-degree left/right field in this implementation.
+# Keep the visualization and DSP semantics aligned by forcing the documented arc.
+if nCh = 2
+    spread_arc_degrees = 180
+else
+    if spread_arc_degrees < 10
+        spread_arc_degrees = 10
+    endif
+    if spread_arc_degrees > 360
+        spread_arc_degrees = 360
+    endif
 endif
 
 maxFreq = min(max_frequency_Hz, sr / 2 * 0.95)
 minFreq = min_frequency_Hz
+if minFreq >= maxFreq
+    exitScript: "Invalid frequency range after Nyquist limiting: Min_frequency_Hz (" + fixed$(minFreq, 1) + " Hz) must be below the effective maximum (" + fixed$(maxFreq, 1) + " Hz)."
+endif
 
 # ============================================================
 # COMPUTE SPEAKER ANGLES (azimuths in radians)
@@ -242,7 +259,7 @@ endfor
 # ============================================================
 
 writeInfoLine: "============================================"
-appendInfoLine: "Partial Panner v0.4"
+appendInfoLine: "Partial Panner v0.4.1"
 appendInfoLine: "============================================"
 appendInfoLine: "Input: ", originalName$
 appendInfoLine: "Duration: ", fixed$(duration, 3), " s"
@@ -409,8 +426,9 @@ for i from 1 to number_of_bands
 endfor
 
 # ============================================================
-# DRY SIGNAL  (centered, replicated across all output channels)
-# Replaces v0.2's two-copy + Combine to stereo dance.
+# DRY SIGNAL
+# Stereo: mono-center anchor (same signal in L and R).
+# Multichannel: front anchor only on Channel 1 (0 degrees).
 # ============================================================
 
 if dry_wet_mix < 1.0
@@ -418,11 +436,15 @@ if dry_wet_mix < 1.0
     monoIdStr$ = string$(monoSound)
     
     selectObject: dryMulti
-    # Each output channel gets the mono source content
-    for s from 1 to nCh
-        Formula (part): 0, duration, s, s,
+    if nCh = 2
+        for s from 1 to 2
+            Formula (part): 0, duration, s, s,
+                ... "object[" + monoIdStr$ + ", col]"
+        endfor
+    else
+        Formula (part): 0, duration, 1, 1,
             ... "object[" + monoIdStr$ + ", col]"
-    endfor
+    endif
 endif
 
 # ============================================================
