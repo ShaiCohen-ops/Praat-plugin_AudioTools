@@ -65,7 +65,7 @@ form Chord Detection v0.4.1
     positive Min_peak_separation_Hz 12
     positive Harmonic_tolerance_cents 45
     boolean Downweight_harmonic_duplicates 1
-    real Harmonic_downweight_percent 12
+    real Harmonic_residual_weight_percent 12
     natural Max_peaks_to_keep 36
     positive Pitch_class_floor_percent 22
     comment === Decision ===
@@ -90,7 +90,7 @@ if preset = 2
     relative_peak_threshold_dB = 30
     min_peak_separation_Hz = 20
     harmonic_tolerance_cents = 55
-    harmonic_downweight_percent = 15
+    harmonic_residual_weight_percent = 15
     max_peaks_to_keep = 24
     pitch_class_floor_percent = 28
     min_confidence_percent = 9
@@ -105,7 +105,7 @@ elsif preset = 3
     relative_peak_threshold_dB = 35
     min_peak_separation_Hz = 12
     harmonic_tolerance_cents = 45
-    harmonic_downweight_percent = 12
+    harmonic_residual_weight_percent = 12
     max_peaks_to_keep = 36
     pitch_class_floor_percent = 22
     min_confidence_percent = 7
@@ -120,7 +120,7 @@ elsif preset = 4
     relative_peak_threshold_dB = 40
     min_peak_separation_Hz = 8
     harmonic_tolerance_cents = 40
-    harmonic_downweight_percent = 10
+    harmonic_residual_weight_percent = 10
     max_peaks_to_keep = 48
     pitch_class_floor_percent = 20
     min_confidence_percent = 5
@@ -135,7 +135,7 @@ elsif preset = 5
     relative_peak_threshold_dB = 42
     min_peak_separation_Hz = 6
     harmonic_tolerance_cents = 45
-    harmonic_downweight_percent = 15
+    harmonic_residual_weight_percent = 15
     max_peaks_to_keep = 64
     pitch_class_floor_percent = 18
     min_confidence_percent = 5
@@ -150,7 +150,7 @@ elsif preset = 6
     relative_peak_threshold_dB = 30
     min_peak_separation_Hz = 25
     harmonic_tolerance_cents = 60
-    harmonic_downweight_percent = 8
+    harmonic_residual_weight_percent = 8
     max_peaks_to_keep = 20
     pitch_class_floor_percent = 30
     min_confidence_percent = 0
@@ -179,10 +179,10 @@ if harmonic_tolerance_cents < 5
 elsif harmonic_tolerance_cents > 150
     harmonic_tolerance_cents = 150
 endif
-if harmonic_downweight_percent < 0
-    harmonic_downweight_percent = 0
-elsif harmonic_downweight_percent > 100
-    harmonic_downweight_percent = 100
+if harmonic_residual_weight_percent < 0
+    harmonic_residual_weight_percent = 0
+elsif harmonic_residual_weight_percent > 100
+    harmonic_residual_weight_percent = 100
 endif
 if max_peaks_to_keep < 4
     max_peaks_to_keep = 4
@@ -208,8 +208,8 @@ time_step = time_step_ms / 1000
 skip_transient = skip_transient_ms / 1000
 min_chord_duration = min_chord_duration_ms / 1000
 pc_floor = pitch_class_floor_percent / 100
-harmonic_downweight = harmonic_downweight_percent / 100
-min_confirm_frames = round(min_chord_duration / time_step)
+harmonic_residual_weight = harmonic_residual_weight_percent / 100
+min_confirm_frames = ceiling(min_chord_duration / time_step)
 if min_confirm_frames < 1
     min_confirm_frames = 1
 endif
@@ -284,6 +284,10 @@ stable_start = skip_transient
 pending_chord$ = ""
 pending_start = skip_transient
 pending_count = 0
+longest_pending_chord$ = ""
+longest_pending_start = skip_transient
+longest_pending_end = skip_transient
+longest_pending_count = 0
 
 bestFrameConfidence = -1
 bestFrameChord$ = ""
@@ -489,7 +493,7 @@ while analysis_time + window_size <= duration + 1e-12
                                 if hGuess >= 2 and hGuess <= 8
                                     centsDiff = 1200 * abs(ln(ratio / hGuess) / ln(2))
                                     if centsDiff <= harmonic_tolerance_cents
-                                        factor = harmonic_downweight
+                                        factor = harmonic_residual_weight
                                     endif
                                 endif
                             endif
@@ -686,10 +690,19 @@ while analysis_time + window_size <= duration + 1e-12
         if chord_name$ = pending_chord$
             pending_count += 1
         else
+            # Close the previous unconfirmed run at the start of this frame.
+            # Keep it only if it is the longest fallback candidate so far.
+            if pending_chord$ <> "" and pending_count > longest_pending_count
+                longest_pending_chord$ = pending_chord$
+                longest_pending_start = pending_start
+                longest_pending_end = analysis_time
+                longest_pending_count = pending_count
+            endif
             pending_chord$ = chord_name$
             pending_start = analysis_time
             pending_count = 1
         endif
+
         if pending_count >= min_confirm_frames
             stable_chord$ = pending_chord$
             stable_start = pending_start
@@ -727,6 +740,15 @@ while analysis_time + window_size <= duration + 1e-12
     analysis_time += time_step
 endwhile
 
+# Close the final pending run for fallback bookkeeping. If no chord ever
+# reached confirmation, the longest unconfirmed run is preserved.
+if stable_chord$ = "" and pending_chord$ <> "" and pending_count > longest_pending_count
+    longest_pending_chord$ = pending_chord$
+    longest_pending_start = pending_start
+    longest_pending_end = duration
+    longest_pending_count = pending_count
+endif
+
 # Close confirmed final segment. If nothing reached confirmation, preserve
 # the longest pending interpretation rather than returning an empty grid.
 if stable_chord$ <> ""
@@ -734,11 +756,11 @@ if stable_chord$ <> ""
     segment_start_'n_segments' = stable_start
     segment_end_'n_segments' = duration
     segment_label_'n_segments'$ = stable_chord$
-elsif pending_chord$ <> ""
+elsif longest_pending_chord$ <> ""
     n_segments += 1
-    segment_start_'n_segments' = pending_start
-    segment_end_'n_segments' = duration
-    segment_label_'n_segments'$ = pending_chord$
+    segment_start_'n_segments' = longest_pending_start
+    segment_end_'n_segments' = longest_pending_end
+    segment_label_'n_segments'$ = longest_pending_chord$
 endif
 
 # ---------- Build TextGrid from the ledgers ----------
@@ -768,7 +790,12 @@ for i from 1 to n_segments
     Set interval text: 1, interval, segment_label_'i'$
 endfor
 
-# Tier 2: frame pitch-class evidence.
+# Tier 2: frame pitch-class evidence. Keep the skipped prefix blank.
+first_frame_start = frame_start_1
+if first_frame_start > 0.001 and first_frame_start < duration - 0.001
+    selectObject: textgrid
+    Insert boundary: 2, first_frame_start
+endif
 for i from 2 to frame_number
     b = frame_start_'i'
     if b > 0.001 and b < duration - 0.001
@@ -1125,6 +1152,7 @@ procedure drawVisualization: .analysisId, .textgrid, .duration, .nFrames, .nSegm
         .st = segment_start_'.i'
         .en = segment_end_'.i'
         .lab$ = segment_label_'.i'$
+        .labDisplay$ = replace$(.lab$, "#", "♯", 0)
         if index(.lab$, "Major") > 0 or index(.lab$, "Maj7") > 0
             .c$ = "{0.38,0.64,0.42}"
         elsif index(.lab$, "Minor") > 0 or index(.lab$, "Min7") > 0
@@ -1140,7 +1168,7 @@ procedure drawVisualization: .analysisId, .textgrid, .duration, .nFrames, .nSegm
         if .en - .st > max(0.22, .duration / 14)
             Colour: "Black"
             Font size: 6
-            Text: 0.5 * (.st + .en), "centre", 0.5, "half", .lab$
+            Text: 0.5 * (.st + .en), "centre", 0.5, "half", .labDisplay$
         endif
     endfor
     Colour: "Black"
@@ -1175,9 +1203,10 @@ procedure drawVisualization: .analysisId, .textgrid, .duration, .nFrames, .nSegm
         endif
         Paint rectangle: .c$, .pc + 0.12, .pc + 0.88, 0, .v
         @pitchClassToName: .pc
+        .pcDisplay$ = replace$(pitchClassToName.result$, "#", "♯", 0)
         Colour: "Black"
         Font size: 6
-        Text: .pc + 0.5, "centre", -0.09, "half", pitchClassToName.result$
+        Text: .pc + 0.5, "centre", -0.09, "half", .pcDisplay$
     endfor
     Colour: "Black"
     Draw inner box
@@ -1221,7 +1250,7 @@ procedure drawVisualization: .analysisId, .textgrid, .duration, .nFrames, .nSegm
     Marks left every: 1, 25, "yes", "yes", "no"
     Marks bottom: 3, "yes", "yes", "no"
     Font size: 7
-    Text left: "yes", "Confidence (%)"
+    Text left: "yes", "Confidence (percent)"
     Text bottom: "yes", "Time (s)"
 
     # Footer summary.
@@ -1230,7 +1259,7 @@ procedure drawVisualization: .analysisId, .textgrid, .duration, .nFrames, .nSegm
     Paint rectangle: "{0.96,0.96,0.96}", 0, 1, 0.15, 0.85
     Font size: 7
     Colour: "{0.30,0.30,0.30}"
-    .footer$ = "frames=" + string$(.nFrames) + " | segments=" + string$(.nSegments) + " | A4=" + fixed$(tuning_A4_Hz, 1) + " Hz | peaks<=" + string$(max_peaks_to_keep) + " | PC floor=" + fixed$(pitch_class_floor_percent, 0) + "% | confirm=" + fixed$(min_chord_duration_ms, 0) + " ms"
+    .footer$ = "frames=" + string$(.nFrames) + " | segments=" + string$(.nSegments) + " | A4=" + fixed$(tuning_A4_Hz, 1) + " Hz | peaks<=" + string$(max_peaks_to_keep) + " | PC floor=" + fixed$(pitch_class_floor_percent, 0) + " percent | confirm=" + fixed$(min_chord_duration_ms, 0) + " ms"
     Text: 0.5, "centre", 0.5, "half", .footer$
 
     Font size: 10
