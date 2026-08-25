@@ -2,7 +2,10 @@
 # Praat AudioTools - Multitrack_Router.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
-# Version: 3.3.4 (2026)
+# Version: 3.3.5 (2026)
+# v3.3.5 (2026): TIMING CORRECTION - negative Gap_s now always determines overlap depth;
+#                  Crossfade_s is clamped to the actual overlap and controls edge-fade length only.
+#                  Gap=-0.50 / Crossfade=0.05 therefore keeps 0.50 s overlap with 0.05 s edge fades.
 # v3.3.4 (2026): VISUALIZATION LAYOUT FIX - separate header bands and output/Summary spacing; DSP unchanged.
 # v3.3.3 (2026): SPATIAL VISUALIZATION STANDARDIZATION ONLY - label rails, compact summary, typography; DSP unchanged.
 # License: MIT License
@@ -559,7 +562,7 @@ endform
 
     clearinfo
     appendInfoLine: "=================================================="
-    appendInfoLine: "  Multitrack Router v3.3.4  ·  ", presetName$[preset]
+    appendInfoLine: "  Multitrack Router v3.3.5  ·  ", presetName$[preset]
     appendInfoLine: "=================================================="
     appendInfoLine: ""
     appendInfoLine: nSounds, " sounds -> ", number_of_tracks, " tracks  ",
@@ -748,25 +751,27 @@ endform
                     pEnd = segStart[prev] + segDur[prev]
                     prop = pEnd + gap_seconds
                     if gap_seconds < 0
+                        # v3.3.5: Gap_s alone determines placement / overlap depth.
+                        # Crossfade_s never shortens the requested overlap; it only
+                        # controls the edge-fade length, clamped to the overlap that
+                        # is actually available after the t=0 boundary clamp.
                         ovl = abs(gap_seconds)
-                        if crossfade_seconds > 0
-                            ovl = crossfade_seconds
-                        endif
                         prop = pEnd - ovl
                         if prop < 0
                             prop = 0
-                            # FIX (Bug C v3.3): re-clamp the actual overlap
-                            # length when start was clamped to 0.
+                            # Re-clamp to the overlap actually available when the
+                            # requested negative gap would place the current segment
+                            # before time zero.
                             ovl = pEnd
                         endif
                         if crossfade_seconds > 0
-                            # FIX (Bug A v3.3): use max() instead of
-                            # overwriting per-segment fades. The longer
-                            # fade wins; user-supplied fade-out / fade-in
-                            # is preserved if it exceeds crossfade_seconds.
-                            cfLen = ovl
-                            if cfLen > crossfade_seconds
-                                cfLen = crossfade_seconds
+                            # Preserve user per-segment fades: the longer edge fade
+                            # wins. If Crossfade_s is shorter than the overlap, the
+                            # middle of the overlap remains at full level; when it
+                            # equals the overlap, the whole overlap is crossfaded.
+                            cfLen = crossfade_seconds
+                            if cfLen > ovl
+                                cfLen = ovl
                             endif
                             if segType[prev] = 1
                                 if segFdOut[prev] < cfLen
@@ -1072,7 +1077,7 @@ endform
         Axes: 0, 1, 0, 1
         Font size: 12
         Colour: "Black"
-        Text: 0.5, "centre", 0.5, "half", "##MULTITRACK ROUTER v3.3.4##"
+        Text: 0.5, "centre", 0.5, "half", "##MULTITRACK ROUTER v3.3.5##"
         Select outer viewport: 0, 8, 0.28, 0.55
         Select inner viewport: 0.60, 7.70, 0.29, 0.54
         Axes: 0, 1, 0, 1
