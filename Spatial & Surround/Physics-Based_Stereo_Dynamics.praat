@@ -3,7 +3,11 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.6.1 (2026)
+# Version: 0.6.2 (2026)
+# v0.6.2 (2026): REPORTING/VISUALIZATION CORRECTION ONLY - stop the physics
+#   integrator at the final audio sample, and draw the motion path with the
+#   same [-1,+1] pan clamp used by the audio. DSP mapping/output unchanged.
+# v0.6.1 (2026): visualization frame alignment fix.
 # v0.6 (2026): SPATIAL VISUALIZATION STANDARDIZATION ONLY - label rails, compact summary, typography; DSP unchanged.
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
@@ -138,7 +142,7 @@ if numberOfSelected("Sound") <> 1
     exitScript: "Please select a Sound object first."
 endif
 
-form Physics-Based Stereo Dynamics v0.6
+form Physics-Based Stereo Dynamics v0.6.2
     optionmenu Preset: 2
         option Custom (use the three sentence fields below)
         option Bouncy Rubber Ball (L to R)
@@ -735,48 +739,53 @@ for i from 1 to nSim
     endif
 
     # --- advance one step, resolving any impact inside it ---
-    remaining = dt
-    while remaining > 1e-12
-        # Exact ballistic step: h(tau) = h + v*tau - g*tau^2/2
-        hEnd = h + v * remaining - 0.5 * gravityVal * remaining * remaining
-        if hEnd >= 0 or bouncesDone >= numBounces
-            if hEnd < 0
-                hEnd = 0
-                v = 0
-            else
-                v = v - gravityVal * remaining
-            endif
-            h = hEnd
-            remaining = 0
-        else
-            # Solve 0.5*g*tau^2 - v*tau - h = 0 for the first positive root
-            disc = v * v + 2 * gravityVal * h
-            if disc < 0
-                disc = 0
-            endif
-            tau = (v + sqrt(disc)) / gravityVal
-            if tau < 0
-                tau = 0
-            endif
-            if tau > remaining
-                tau = remaining
-            endif
-            vImpact = v - gravityVal * tau
-            h = 0
-            v = -vImpact * bounceCoef
-            bouncesDone = bouncesDone + 1
-            if firstImpactTime < 0
-                firstImpactTime = t + (dt - remaining) + tau
-            endif
-            lastImpactTime = t + (dt - remaining) + tau
-            remaining = remaining - tau
-            if abs(v) < 1e-6
-                v = 0
-                h = 0
+    # v0.6.2: the last stored sample is already at t = duration. Do not
+    # integrate one extra dt beyond the audio and accidentally count an
+    # impact that the rendered sound can never contain.
+    if i < nSim
+        remaining = dt
+        while remaining > 1e-12
+            # Exact ballistic step: h(tau) = h + v*tau - g*tau^2/2
+            hEnd = h + v * remaining - 0.5 * gravityVal * remaining * remaining
+            if hEnd >= 0 or bouncesDone >= numBounces
+                if hEnd < 0
+                    hEnd = 0
+                    v = 0
+                else
+                    v = v - gravityVal * remaining
+                endif
+                h = hEnd
                 remaining = 0
+            else
+                # Solve 0.5*g*tau^2 - v*tau - h = 0 for the first positive root
+                disc = v * v + 2 * gravityVal * h
+                if disc < 0
+                    disc = 0
+                endif
+                tau = (v + sqrt(disc)) / gravityVal
+                if tau < 0
+                    tau = 0
+                endif
+                if tau > remaining
+                    tau = remaining
+                endif
+                vImpact = v - gravityVal * tau
+                h = 0
+                v = -vImpact * bounceCoef
+                bouncesDone = bouncesDone + 1
+                if firstImpactTime < 0
+                    firstImpactTime = t + (dt - remaining) + tau
+                endif
+                lastImpactTime = t + (dt - remaining) + tau
+                remaining = remaining - tau
+                if abs(v) < 1e-6
+                    v = 0
+                    h = 0
+                    remaining = 0
+                endif
             endif
-        endif
-    endwhile
+        endwhile
+    endif
 endfor
 
 if maxHeightSeen < 1e-9
@@ -1047,7 +1056,7 @@ resultName$ = selected$("Sound")
 # ============================================================
 # REPORT
 # ============================================================
-writeInfoLine: "=== Physics-Based Stereo Dynamics v0.6 ==="
+writeInfoLine: "=== Physics-Based Stereo Dynamics v0.6.2 ==="
 appendInfoLine: "Input: ", originalName$, "  (", fixed$(duration, 3), " s, ",
     ... nChannels, " ch @ ", sr, " Hz)"
 appendInfoLine: "Source handling: ", inputNote$
@@ -1206,7 +1215,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##PHYSICS-BASED STEREO DYNAMICS v0.6.1##"
+    Text: 0.5, "centre", 0.68, "half", "##PHYSICS-BASED STEREO DYNAMICS v0.6.2##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
     if mapping_model = 1
@@ -1266,19 +1275,20 @@ if draw_visualization
         frac = (k - 1) / (nDraw - 1)
         pathCol$ = "{" + fixed$(0.20 + frac * 0.65, 2) + ", " + fixed$(0.45 - frac * 0.20, 2) + ", " + fixed$(0.80 - frac * 0.55, 2) + "}"
         Colour: pathCol$
+        # v0.6.2: draw the same clamped pan position used by the DSP.
         p1 = pan#[i1]
         p2 = pan#[i2]
-        if p1 < -1.3
-            p1 = -1.3
+        if p1 < -1
+            p1 = -1
         endif
-        if p1 > 1.3
-            p1 = 1.3
+        if p1 > 1
+            p1 = 1
         endif
-        if p2 < -1.3
-            p2 = -1.3
+        if p2 < -1
+            p2 = -1
         endif
-        if p2 > 1.3
-            p2 = 1.3
+        if p2 > 1
+            p2 = 1
         endif
         Draw line: p1, height#[i1], p2, height#[i2]
     endfor
@@ -1295,11 +1305,11 @@ if draw_visualization
         if height#[i1] < hTop * 0.002 and speed#[i1] > maxSpeedSeen * 0.05
             rr = 1.0 + 3.5 * ampTrace#[i1] / maxAmpTrace
             pp = pan#[i1]
-            if pp < -1.3
-                pp = -1.3
+            if pp < -1
+                pp = -1
             endif
-            if pp > 1.3
-                pp = 1.3
+            if pp > 1
+                pp = 1
             endif
             Paint circle (mm): "{0.85, 0.35, 0.20}", pp, 0, rr
         endif
