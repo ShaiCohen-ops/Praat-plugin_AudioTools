@@ -3,7 +3,20 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.1 (2025) - Multi-channel rewrite
+# Version: 1.1.4 (2026) - Spectral-flux / DBAP / multichannel-mix fixes
+# v1.1.4 (2026): DSP / VALIDATION FIXES.
+#   - Spectral flux is now true frame-to-frame change: each 80-8000 Hz
+#     magnitude spectrum is L2-normalized, then compared with the previous
+#     analysis frame. The resulting L2 distance is normalized to [0,1].
+#   - Per-channel IntensityTier multiplication no longer rescales every
+#     channel independently; DBAP gain ratios are preserved.
+#   - Wet/dry mixing now builds an n-channel, power-normalized dry mono bed,
+#     so 3-8 channel outputs never index nonexistent dry channels.
+#   - Surround 5.1 keeps channel 4 as LFE but excludes it from full-range
+#     DBAP and dry distribution; no crossover/LFE synthesis is invented.
+#   - Custom channel count is clamped before speaker coordinates are built.
+#   - Analysis_windows is an integer and must be at least 2.
+#   - Gain heatmap / speaker map follow the same LFE exclusion as the audio.
 # v1.1.3 (2026): RUNTIME VISUAL QA - relaxed panel spacing, shorter panel titles, compact Info reporting; DSP unchanged.
 # v1.1.2 (2026): SPATIAL VISUALIZATION STANDARDIZATION ONLY - label rails, compact summary, typography; DSP unchanged.
 # License: MIT License
@@ -18,9 +31,10 @@
 #     0 = pure tone,  1 = white noise
 #     → controls orbit RADIUS:  noise = wide spread, tone = center
 #
-#   SPECTRAL FLUX (inter-bin variation):
-#     mean(|amp[k] - amp[k-1]|) across frequency bins
-#     → controls orbit SPEED:   irregular = fast, smooth = slow
+#   SPECTRAL FLUX (frame-to-frame spectral change):
+#     L2 distance between consecutive L2-normalized magnitude spectra
+#     in the 80-8000 Hz analysis band, normalized to [0,1]
+#     → controls orbit SPEED: changing spectrum = fast, stable = slow
 #
 #   SPATIAL MODEL:
 #   The source is treated as a point moving in 2D speaker space.
@@ -69,7 +83,7 @@ endif
 # FORM
 # ============================================================
 
-form Spectral Panning Mapper v1.1.3
+form Spectral Panning Mapper v1.1.4
     comment === Preset ===
     optionmenu Preset: 3
         option Custom
@@ -89,7 +103,7 @@ form Spectral Panning Mapper v1.1.3
     comment === Speaker Layout (Custom only) ===
     integer Num_channels 4
     comment === Analysis ===
-    positive Analysis_windows 10
+    integer Analysis_windows 10
     positive Panning_update_rate_Hz 100
     comment === Orbit Parameters ===
     positive Base_orbit_radius 0.3
@@ -119,6 +133,21 @@ fluxInfl     = flux_speed_influence
 rolloff      = rolloff_exponent
 mixPct       = mix_percent
 
+# Validate form values BEFORE any custom speaker coordinates are built.
+if nChan < 2
+    nChan = 2
+elsif nChan > 8
+    nChan = 8
+endif
+if nWindows < 2
+    exitScript: "Analysis_windows must be at least 2."
+endif
+if mixPct < 0
+    mixPct = 0
+elsif mixPct > 100
+    mixPct = 100
+endif
+
 # ============================================================
 # PRESETS
 # Sets: nChan, spkX[i], spkY[i], baseRadius, flatInfl,
@@ -126,6 +155,7 @@ mixPct       = mix_percent
 # ============================================================
 
 presetName$ = "Custom"
+lfeChannel = 0
 
 if preset = 2
     # Stereo Sweep
@@ -224,19 +254,23 @@ elsif preset = 8
     fluxInfl   = 2.0
     rolloff    = 1.0
     presetName$ = "Surround51"
-    # L, R, C, LFE(center), Ls, Rs
-    spkX[1] = -0.707
-    spkY[1] = 0.707
-    spkX[2] = 0.707
-    spkY[2] = 0.707
+    lfeChannel = 4
+    # L, R, C, LFE, Ls, Rs. Reference horizontal geometry follows
+    # ITU-R BS.775: L/R at +/-30 deg, surrounds nominally +/-110 deg.
+    # +Y is front and -X is left in this 2D map. Channel 4 is non-positional
+    # LFE and is NOT fed full-range DBAP audio.
+    spkX[1] = -0.500000
+    spkY[1] = 0.866025
+    spkX[2] = 0.500000
+    spkY[2] = 0.866025
     spkX[3] = 0.0
     spkY[3] = 1.0
     spkX[4] = 0.0
     spkY[4] = 0.0
-    spkX[5] = -0.707
-    spkY[5] = -0.707
-    spkX[6] = 0.707
-    spkY[6] = -0.707
+    spkX[5] = -0.939693
+    spkY[5] = -0.342020
+    spkX[6] = 0.939693
+    spkY[6] = -0.342020
 
 elsif preset = 9
     # Octagon Orbit
@@ -324,19 +358,6 @@ else
     endfor
 endif
 
-# Safety clamp
-if nChan < 2
-    nChan = 2
-endif
-if nChan > 8
-    nChan = 8
-endif
-if mixPct < 0
-    mixPct = 0
-endif
-if mixPct > 100
-    mixPct = 100
-endif
 wetLevel = mixPct / 100
 dryLevel = 1 - wetLevel
 
@@ -360,13 +381,16 @@ endif
 
 clearinfo
 writeInfoLine:  "=================================================="
-writeInfoLine:  "  Spectral Panning Mapper v1.1.3"
+writeInfoLine:  "  Spectral Panning Mapper v1.1.4"
 writeInfoLine:  "=================================================="
 appendInfoLine: "Source   : ", srcName$, " | ", fixed$(srcDur, 3), " s | ", srcCh, " ch @ ", fixed$(srcSr, 0), " Hz"
 appendInfoLine: "Preset   : ", presetName$, " | output ", nChan, " ch | mix ", fixed$(mixPct, 0), "% wet"
 appendInfoLine: "Analysis : ", nWindows, " windows | update ", fixed$(updateHz, 0), " Hz"
 appendInfoLine: "Mapping  : radius ", fixed$(baseRadius, 2), " + flatness*", fixed$(flatInfl, 2),
     ... " | speed ", fixed$(baseSpeed, 2), " + flux*", fixed$(fluxInfl, 2), " Hz | rolloff ", fixed$(rolloff, 2)
+if lfeChannel > 0
+    appendInfoLine: "5.1 LFE  : channel ", lfeChannel, " kept silent (no crossover/LFE synthesis)."
+endif
 appendInfoLine: ""
 appendInfoLine: "[1/4] Spectral analysis"
 
@@ -383,12 +407,14 @@ flatness# = zero#(nWindows)
 flux#     = zero#(nWindows)
 winTime#  = zero#(nWindows)
 
+# Spectral flux state: previous L2-normalized magnitude spectrum.
+# All analysis windows have the same duration, so the 80-8000 Hz bin count
+# remains constant from frame to frame.
+prevNorm# = zero#(1)
+prevValidBins = 0
+
 for ww from 1 to nWindows
-    if nWindows > 1
-        winTime#[ww] = winHalf + (ww - 1) * (srcDur - 2 * winHalf) / (nWindows - 1)
-    else
-        winTime#[ww] = srcDur / 2
-    endif
+    winTime#[ww] = winHalf + (ww - 1) * (srcDur - 2 * winHalf) / (nWindows - 1)
 
     tStart = winTime#[ww] - winHalf
     tEnd   = winTime#[ww] + winHalf
@@ -411,12 +437,11 @@ for ww from 1 to nWindows
 
     lnSum     = 0
     linSum    = 0
-    fluxSum   = 0
+    magEnergy = 0
     validBins = 0
-    fluxBins  = 0
-    prevAmp   = 0
     minFreq   = 80
     maxFreq   = 8000
+    currAmp#  = zero#(nBins)
 
     for bin from 1 to nBins
         freq = (bin - 1) * binWidth
@@ -424,43 +449,80 @@ for ww from 1 to nWindows
             re = Get real value in bin: bin
             im = Get imaginary value in bin: bin
             amp = sqrt(re * re + im * im)
-            pw  = amp * amp
+            validBins = validBins + 1
+            currAmp#[validBins] = amp
+            magEnergy = magEnergy + amp * amp
+
+            pw = amp * amp
             if pw < 1e-12
                 pw = 1e-12
             endif
             lnSum  = lnSum  + ln(pw)
             linSum = linSum + pw
-            if validBins > 0
-                fluxSum  = fluxSum  + abs(amp - prevAmp)
-                fluxBins = fluxBins + 1
-            endif
-            prevAmp   = amp
-            validBins = validBins + 1
         endif
     endfor
 
-    # Wiener entropy (spectral flatness)
+    # Wiener entropy / spectral flatness.
     if validBins > 0 and linSum > 0
-        geoMean  = exp(lnSum / validBins)
+        geoMean   = exp(lnSum / validBins)
         arithMean = linSum / validBins
         flatness#[ww] = geoMean / arithMean
+        if flatness#[ww] < 0
+            flatness#[ww] = 0
+        elsif flatness#[ww] > 1
+            flatness#[ww] = 1
+        endif
     else
-        flatness#[ww] = 0.2
+        flatness#[ww] = 0
     endif
 
-    # Spectral flux (normalized to 0-1)
-    if fluxBins > 0
-        rawFlux = fluxSum / fluxBins * 10
-        if rawFlux > 1
-            rawFlux = 1
-        endif
-        flux#[ww] = rawFlux
+    # True frame-to-frame spectral flux. Normalize each frame's magnitude
+    # vector to unit L2 norm, then measure its L2 distance from the previous
+    # normalized frame. Unit non-negative vectors have distance <= sqrt(2),
+    # so dividing the squared distance by 2 yields a natural [0,1] measure.
+    if ww = 1 or validBins <= 0 or prevValidBins <> validBins
+        flux#[ww] = 0
     else
-        flux#[ww] = 0.1
+        if magEnergy > 1e-24
+            normDen = sqrt(magEnergy)
+        else
+            normDen = 0
+        endif
+        fluxSq = 0
+        for vb from 1 to validBins
+            if normDen > 0
+                currNorm = currAmp#[vb] / normDen
+            else
+                currNorm = 0
+            endif
+            diff = currNorm - prevNorm#[vb]
+            fluxSq = fluxSq + diff * diff
+        endfor
+        fluxVal = sqrt(fluxSq / 2)
+        if fluxVal < 0
+            fluxVal = 0
+        elsif fluxVal > 1
+            fluxVal = 1
+        endif
+        flux#[ww] = fluxVal
     endif
+
+    # Save this frame as the reference for the next one. Silence becomes a
+    # zero vector; otherwise save the L2-normalized magnitudes.
+    if validBins > 0
+        prevNorm# = zero#(validBins)
+        if magEnergy > 1e-24
+            normDen = sqrt(magEnergy)
+            for vb from 1 to validBins
+                prevNorm#[vb] = currAmp#[vb] / normDen
+            endfor
+        endif
+    else
+        prevNorm# = zero#(1)
+    endif
+    prevValidBins = validBins
 
     removeObject: winSnd, spec
-
 endfor
 
 flatMin = flatness#[1]
@@ -571,32 +633,40 @@ for gi from 1 to nGrid
     orbitX#[gi] = srcX
     orbitY#[gi] = srcY
 
-    # DBAP gains
+    # DBAP gains. In the Surround 5.1 preset, channel 4 is LFE and is
+    # deliberately excluded from the full-range panning normalization.
     totalPower = 0
     for ch from 1 to nChan
-        dx   = srcX - spkX[ch]
-        dy   = srcY - spkY[ch]
-        dist = sqrt(dx * dx + dy * dy)
-        if dist < minDist
-            dist = minDist
+        if ch = lfeChannel
+            chGain_'ch' = 0
+        else
+            dx   = srcX - spkX[ch]
+            dy   = srcY - spkY[ch]
+            dist = sqrt(dx * dx + dy * dy)
+            if dist < minDist
+                dist = minDist
+            endif
+            chGain_'ch' = 1 / (dist ^ rolloff)
+            totalPower  = totalPower + chGain_'ch' * chGain_'ch'
         endif
-        chGain_'ch' = 1 / (dist ^ rolloff)
-        totalPower  = totalPower + chGain_'ch' * chGain_'ch'
     endfor
 
-    # Power normalization
+    # Power normalization over active full-range channels only.
     if totalPower > 0
         normFactor = sqrt(totalPower)
         for ch from 1 to nChan
-            chGain_'ch' = chGain_'ch' / normFactor
+            if ch <> lfeChannel
+                chGain_'ch' = chGain_'ch' / normFactor
+            endif
         endfor
     endif
 
-    # Write to IntensityTiers (dB, floored at -60)
+    # Write to IntensityTiers. -120 dB is only a numerical floor for the
+    # tier; the LFE channel is forced to exact zero after multiplication.
     for ch from 1 to nChan
         g = chGain_'ch'
-        if g < 0.001
-            g = 0.001
+        if g < 0.000001
+            g = 0.000001
         endif
         gDb = 20 * log10(g)
         selectObject: chanTier_'ch'
@@ -620,8 +690,14 @@ for ch from 1 to nChan
     chanCopy_'ch' = Copy: "spm_ch" + string$(ch)
     selectObject: chanCopy_'ch'
     plusObject: chanTier_'ch'
-    Multiply: "yes"
+    # Do NOT rescale each rendered channel independently: that would undo
+    # the DBAP ratios. Preserve the gain envelope exactly.
+    Multiply: "no"
     chanOut_'ch' = selected("Sound")
+    if ch = lfeChannel
+        selectObject: chanOut_'ch'
+        Formula: "0"
+    endif
     removeObject: chanCopy_'ch', chanTier_'ch'
 endfor
 
@@ -638,34 +714,40 @@ for ch from 1 to nChan
     removeObject: chanOut_'ch'
 endfor
 
-# Wet/dry mix using object[] syntax (safe, ID-independent)
+# Wet/dry mix. The wet path is always derived from the mono analysis source,
+# so the dry reference is an unpanned mono bed distributed with equal power
+# across the active full-range output channels. This gives drySnd exactly the
+# same channel count as wetSound and avoids undefined row access for 3-8 ch.
 if dryLevel > 0
-    selectObject: srcSound
-    if srcCh = 1
-        drySnd = Convert to stereo
-    else
-        drySnd = Copy: "spm_dry"
+    activeDryChannels = nChan
+    if lfeChannel > 0
+        activeDryChannels = nChan - 1
     endif
-    # Pad dry to wet duration if needed (in case of rounding)
-    selectObject: wetSound
-    wetDurTmp = Get total duration
-    selectObject: drySnd
-    dryDurTmp = Get total duration
-    if abs(wetDurTmp - dryDurTmp) > 0.005
-        # Trim to shorter
-        trimTo = wetDurTmp
-        if dryDurTmp < trimTo
-            trimTo = dryDurTmp
+    drySpreadGain = 1 / sqrt(activeDryChannels)
+    dryGainStr$ = fixed$(drySpreadGain, 12)
+
+    for ch from 1 to nChan
+        selectObject: monoSrc
+        dryCh_'ch' = Copy: "spm_dry_ch" + string$(ch)
+        selectObject: dryCh_'ch'
+        if ch = lfeChannel
+            Formula: "0"
+        else
+            Formula: "self * " + dryGainStr$
         endif
-        selectObject: wetSound
-        trimW = Extract part: 0, trimTo, "rectangular", 1, "no"
-        removeObject: wetSound
-        wetSound = trimW
-        selectObject: drySnd
-        trimD = Extract part: 0, trimTo, "rectangular", 1, "no"
-        removeObject: drySnd
-        drySnd = trimD
-    endif
+    endfor
+
+    selectObject: dryCh_1
+    for ch from 2 to nChan
+        plusObject: dryCh_'ch'
+    endfor
+    Combine to stereo
+    drySnd = selected("Sound")
+
+    for ch from 1 to nChan
+        removeObject: dryCh_'ch'
+    endfor
+
     wStr$ = string$(wetLevel)
     dStr$ = string$(dryLevel)
     selectObject: wetSound
@@ -710,7 +792,7 @@ if draw_visualization = 1
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "##Spectral Panning Mapper v1.1.3##"
+    Text: 0.5, "centre", 0.5, "half", "##Spectral Panning Mapper v1.1.4##"
     Select outer viewport: 0, 8, 0.28, 0.50
     Axes: 0, 1, 0, 1
     Font size: 7
@@ -781,7 +863,7 @@ if draw_visualization = 1
     Colour: "{0.82, 0.42, 0.15}"
     Text: srcDur * 0.78, "left", 1.07, "half", "Flatness (->radius)"
     Colour: "{0.18, 0.58, 0.52}"
-    Text: srcDur * 0.78, "left", 0.94, "half", "Flux (->speed)"
+    Text: srcDur * 0.78, "left", 0.94, "half", "Flux frame change (->speed)"
     Colour: "Black"
     Draw inner box
     Font size: 7
@@ -833,22 +915,29 @@ if draw_visualization = 1
     srcX0 = orbitX#[1]
     srcY0 = orbitY#[1]
     for ch from 1 to nChan
-        dx0   = srcX0 - spkX[ch]
-        dy0   = srcY0 - spkY[ch]
-        dist0 = sqrt(dx0*dx0 + dy0*dy0)
-        if dist0 < minDist
-            dist0 = minDist
+        if ch <> lfeChannel
+            dx0   = srcX0 - spkX[ch]
+            dy0   = srcY0 - spkY[ch]
+            dist0 = sqrt(dx0*dx0 + dy0*dy0)
+            if dist0 < minDist
+                dist0 = minDist
+            endif
+            g0 = 1 / (dist0 ^ rolloff)
+            spkSz = 2.5 + g0 * 3.5
+            if spkSz > 8
+                spkSz = 8
+            endif
+            Paint circle (mm): "{0.25, 0.48, 0.72}", spkX[ch], spkY[ch], spkSz
+            Colour: "White"
+            Font size: 6
+            Text: spkX[ch], "centre", spkY[ch], "half", string$(ch)
         endif
-        g0 = 1 / (dist0 ^ rolloff)
-        spkSz = 2.5 + g0 * 3.5
-        if spkSz > 8
-            spkSz = 8
-        endif
-        Paint circle (mm): "{0.25, 0.48, 0.72}", spkX[ch], spkY[ch], spkSz
-        Colour: "White"
-        Font size: 6
-        Text: spkX[ch], "centre", spkY[ch], "half", string$(ch)
     endfor
+    if lfeChannel > 0
+        Colour: "{0.45, 0.45, 0.48}"
+        Font size: 5
+        Text: -1.28, "left", -1.23, "half", "Ch4 LFE reserved (silent)"
+    endif
 
     # Listener position (green dot)
     Paint circle (mm): "{0.25, 0.65, 0.35}", 0, 0, 2.5
@@ -949,22 +1038,29 @@ if draw_visualization = 1
         hSrcX = orbitX#[nearGi]
         hSrcY = orbitY#[nearGi]
 
-        # Recompute gains at this point
+        # Recompute gains at this point using the same active-channel rule
+        # as the audio renderer (5.1 LFE excluded).
         hTotalPow = 0
         for ch from 1 to nChan
-            hdx = hSrcX - spkX[ch]
-            hdy = hSrcY - spkY[ch]
-            hd  = sqrt(hdx*hdx + hdy*hdy)
-            if hd < minDist
-                hd = minDist
+            if ch = lfeChannel
+                hg_'ch' = 0
+            else
+                hdx = hSrcX - spkX[ch]
+                hdy = hSrcY - spkY[ch]
+                hd  = sqrt(hdx*hdx + hdy*hdy)
+                if hd < minDist
+                    hd = minDist
+                endif
+                hg_'ch' = 1 / (hd ^ rolloff)
+                hTotalPow = hTotalPow + hg_'ch' * hg_'ch'
             endif
-            hg_'ch' = 1 / (hd ^ rolloff)
-            hTotalPow = hTotalPow + hg_'ch' * hg_'ch'
         endfor
         if hTotalPow > 0
             hNorm = sqrt(hTotalPow)
             for ch from 1 to nChan
-                hg_'ch' = hg_'ch' / hNorm
+                if ch <> lfeChannel
+                    hg_'ch' = hg_'ch' / hNorm
+                endif
             endfor
         endif
 
@@ -1028,7 +1124,7 @@ if draw_visualization = 1
     Paint rectangle: "{0.95, 0.95, 0.95}", 0, 1, 0, 1
     Font size: 7
     Colour: "Black"
-    Text: 0.02, "left", 0.84, "half", "##Spectral Panning Mapper v1.1.3##"
+    Text: 0.02, "left", 0.84, "half", "##Spectral Panning Mapper v1.1.4##"
     Font size: 6
     Colour: "{0.35, 0.35, 0.40}"
     Text: 0.02, "left", 0.60, "half",
@@ -1081,7 +1177,11 @@ for ch from 1 to nChan
     if abs(infoY) < 0.0005
         infoY = 0
     endif
-    appendInfoLine: "  Ch", ch, ": (", fixed$(infoX, 3), ", ", fixed$(infoY, 3), ")"
+    if ch = lfeChannel
+        appendInfoLine: "  Ch", ch, " LFE: reserved / silent (no crossover generated)"
+    else
+        appendInfoLine: "  Ch", ch, ": (", fixed$(infoX, 3), ", ", fixed$(infoY, 3), ")"
+    endif
 endfor
 
 if play_result = 1
