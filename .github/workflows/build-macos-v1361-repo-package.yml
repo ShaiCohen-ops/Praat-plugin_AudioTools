@@ -1,0 +1,197 @@
+name: Build macOS v1.36.1 repo package
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/build-macos-v1361-repo-package.yml'
+      - 'Max-MSP/Praat_AudioTools_CI/**/*.zip'
+
+permissions:
+  contents: write
+
+env:
+  SOURCE_SHA256: f7a5de4a7b5223b8451a527b075d4ccbaf90873605d590e9dff89dd87c5d3895
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 35
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Locate BuildKit and apply tested macOS fixes
+        id: kit
+        shell: bash
+        run: |
+          set -euxo pipefail
+          ZIP="$(find "$GITHUB_WORKSPACE/Max-MSP/Praat_AudioTools_CI" -type f -name 'Praat_AudioTools_macOS_BuildKit*.zip' -print -quit)"
+          test -n "$ZIP"
+          DEST="$RUNNER_TEMP/buildkit"
+          rm -rf "$DEST"
+          mkdir -p "$DEST"
+          ditto -x -k "$ZIP" "$DEST"
+          TOP_CMAKE="$(find "$DEST" -type f -path '*/source_project/CMakeLists.txt' -print -quit)"
+          test -n "$TOP_CMAKE"
+          SOURCE_PROJECT="$(dirname "$TOP_CMAKE")"
+          KIT="$(dirname "$SOURCE_PROJECT")"
+          SRC="$SOURCE_PROJECT/source/AudioTools.praat~/AudioTools.praat~.cpp"
+          test -f "$SRC"
+          test -d "$KIT/package_template/praat"
+          echo "$SOURCE_SHA256  $SRC" | shasum -a 256 -c -
+          grep -F -q 'AudioTools.praat~ v1.36.1' "$SRC"
+
+          python3 - "$SRC" <<'PY'
+          from pathlib import Path
+          import re, sys
+          p = Path(sys.argv[1])
+          s = p.read_text()
+          count = len(re.findall(r'\bProcHandle\b', s))
+          if count != 7:
+              raise SystemExit(f'Expected 7 ProcHandle tokens, found {count}')
+          s = re.sub(r'\bProcHandle\b', 'AudioToolsProcHandle', s)
+          inc_old = '#include "ext_obex.h"\n#include "z_dsp.h"'
+          inc_new = '#include "ext_obex.h"\n#include "ext_path.h"\n#include "z_dsp.h"'
+          if inc_old not in s:
+              raise SystemExit('include insertion point not found')
+          s = s.replace(inc_old, inc_new, 1)
+          marker = 'static std::string atoms_to_path(long argc, t_atom* argv)\n{\n'
+          if marker not in s:
+              raise SystemExit('atoms_to_path marker not found')
+          helper = 'static std::string normalize_host_file_path(const std::string& rawPath)\n{\n#ifdef __APPLE__\n    if (rawPath.empty()) return rawPath;\n    char fileName[MAX_PATH_CHARS] = {0};\n    strncpy_zero(fileName, rawPath.c_str(), MAX_PATH_CHARS);\n    short pathId = 0;\n    t_fourcc fileType = 0;\n    if (locatefile_extended(fileName, &pathId, &fileType, nullptr, 0) == 0) {\n        char absolutePath[MAX_PATH_CHARS] = {0};\n        if (path_toabsolutesystempath(pathId, fileName, absolutePath) == 0 && absolutePath[0] != \'\\0\')\n            return std::string(absolutePath);\n    }\n    char nativePath[MAX_PATH_CHARS] = {0};\n    if (path_nameconform(rawPath.c_str(), nativePath, PATH_STYLE_NATIVE, PATH_TYPE_ABSOLUTE) == 0 && nativePath[0] != \'\\0\')\n        return std::string(nativePath);\n#endif\n    return rawPath;\n}\n\n'
+          s = s.replace(marker, helper + marker, 1)
+          old = '    std::string fullPath=formparse::atomsString(argc,argv);\n    x->scriptPath=gensym(fullPath.c_str());\n'
+          new = '    std::string fullPath=normalize_host_file_path(formparse::atomsString(argc,argv));\n    x->scriptPath=gensym(fullPath.c_str());\n'
+          if old not in s:
+              raise SystemExit('script path assignment not found')
+          s = s.replace(old, new, 1)
+          old = '    std::string fullPath = atoms_to_path(argc, argv);\n#ifdef _WIN32\n'
+          new = '    std::string fullPath = normalize_host_file_path(atoms_to_path(argc, argv));\n#ifdef _WIN32\n'
+          if old not in s:
+              raise SystemExit('praatexe path assignment not found')
+          s = s.replace(old, new, 1)
+          p.write_text(s)
+          print('Applied tested v1.36.1 macOS fixes')
+          PY
+
+          grep -F -q '#include "ext_path.h"' "$SRC"
+          grep -F -q 'path_toabsolutesystempath(pathId' "$SRC"
+          echo "kit=$KIT" >> "$GITHUB_OUTPUT"
+          echo "source_project=$SOURCE_PROJECT" >> "$GITHUB_OUTPUT"
+
+      - name: Configure Universal2 external
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cmake -S "${{ steps.kit.outputs.source_project }}" -B "$RUNNER_TEMP/praat-build" -G Xcode -DCMAKE_OSX_ARCHITECTURES="x86_64;arm64" -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 -DMAX_SDK_PACKAGE_OUT_OF_TREE=ON
+
+      - name: Build Release external
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cmake --build "$RUNNER_TEMP/praat-build" --config Release --parallel 3
+
+      - name: Finalize external
+        id: external
+        shell: bash
+        run: |
+          set -euxo pipefail
+          MXO="$(find "$RUNNER_TEMP/praat-build" -type d -name 'AudioTools.praat~.mxo' -print -quit)"
+          test -n "$MXO"
+          BIN="$MXO/Contents/MacOS/AudioTools.praat~"
+          PLIST="$MXO/Contents/Info.plist"
+          test -f "$BIN"
+          test -f "$PLIST"
+          plutil -replace CFBundleExecutable -string 'AudioTools.praat~' "$PLIST"
+          plutil -replace CFBundleVersion -string '1.36.1' "$PLIST"
+          plutil -replace CFBundleShortVersionString -string '1.36.1' "$PLIST"
+          test "$(plutil -extract CFBundleExecutable raw -o - "$PLIST")" = 'AudioTools.praat~'
+          ARCHS="$(lipo -archs "$BIN")"
+          echo "$ARCHS" | grep -q x86_64
+          echo "$ARCHS" | grep -q arm64
+          STRINGS_OUT="$RUNNER_TEMP/AudioTools.strings.txt"
+          strings "$BIN" > "$STRINGS_OUT"
+          grep -F -q 'AudioTools.praat~ v1.36.1' "$STRINGS_OUT"
+          codesign --force --deep --sign - "$MXO"
+          codesign --verify --deep --strict "$MXO"
+          echo "mxo=$MXO" >> "$GITHUB_OUTPUT"
+
+      - name: Stage package without Praat.app
+        id: package
+        shell: bash
+        run: |
+          set -euxo pipefail
+          STAGE="$RUNNER_TEMP/stage"
+          PKG="$STAGE/Praat_AudioTools"
+          rm -rf "$STAGE"
+          mkdir -p "$STAGE"
+          ditto "${{ steps.kit.outputs.kit }}/package_template/praat" "$PKG"
+          mkdir -p "$PKG/externals" "$PKG/misc/plugin_AudioTools"
+          rm -rf "$PKG/externals/AudioTools.praat~.mxo"
+          rm -rf "$PKG/externals/Praat.app"
+          ditto "${{ steps.external.outputs.mxo }}" "$PKG/externals/AudioTools.praat~.mxo"
+
+          rm -rf "$PKG/misc/plugin_AudioTools"
+          mkdir -p "$PKG/misc/plugin_AudioTools"
+          rsync -a --exclude '.git/' --exclude '.github/' --exclude 'Max-MSP/' --exclude '.DS_Store' --exclude '*.zip' ./ "$PKG/misc/plugin_AudioTools/"
+
+          test -f "$PKG/package-info.json"
+          test -f "$PKG/patchers/praat.maxpat"
+          test -f "$PKG/javascript/AudioTools.praat.library.js"
+          test -f "$PKG/javascript/AudioTools.praat.ui.js"
+          test -f "$PKG/javascript/AudioTools.praat.info.js"
+          test -d "$PKG/externals/AudioTools.praat~.mxo"
+          test ! -e "$PKG/externals/Praat.app"
+          SCRIPT_COUNT="$(find "$PKG/misc/plugin_AudioTools" -type f -name '*.praat' | wc -l | tr -d ' ')"
+          echo "Bundled .praat files: $SCRIPT_COUNT"
+          test "$SCRIPT_COUNT" -gt 400
+          echo "pkg=$PKG" >> "$GITHUB_OUTPUT"
+
+      - name: Create repo ZIP and verify size
+        id: zip
+        shell: bash
+        run: |
+          set -euxo pipefail
+          PKG="${{ steps.package.outputs.pkg }}"
+          OUT="$GITHUB_WORKSPACE/Max-MSP/Praat_AudioTools_1.0.0_macOS_Universal2.zip"
+          rm -f "$OUT"
+          cd "$(dirname "$PKG")"
+          ditto -c -k --sequesterRsrc --keepParent "$(basename "$PKG")" "$OUT"
+          SIZE="$(stat -f%z "$OUT")"
+          MIB="$(python3 -c "print(round($SIZE/1048576, 2))")"
+          echo "ZIP size: $MIB MiB"
+          test "$SIZE" -lt 100000000
+          unzip -l "$OUT" | grep -F 'AudioTools.praat~.mxo/' >/dev/null
+          if unzip -l "$OUT" | grep -F 'Praat.app/' >/dev/null; then
+            echo 'ERROR: Praat.app unexpectedly present in ZIP'
+            exit 1
+          fi
+          shasum -a 256 "$OUT" | tee "$GITHUB_WORKSPACE/Max-MSP/Praat_AudioTools_1.0.0_macOS_Universal2.sha256"
+          echo "size_mib=$MIB" >> "$GITHUB_OUTPUT"
+
+      - name: Commit macOS ZIP to repository
+        shell: bash
+        run: |
+          set -euxo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Max-MSP/Praat_AudioTools_1.0.0_macOS_Universal2.zip Max-MSP/Praat_AudioTools_1.0.0_macOS_Universal2.sha256
+          if git diff --cached --quiet; then
+            echo 'Package unchanged; nothing to commit.'
+          else
+            git commit -m "Add macOS Universal2 package without bundled Praat"
+            git push
+          fi
+
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Praat_AudioTools-1.0.0-macOS-Universal2-no-Praat-v1.36.1
+          path: |
+            Max-MSP/Praat_AudioTools_1.0.0_macOS_Universal2.zip
+            Max-MSP/Praat_AudioTools_1.0.0_macOS_Universal2.sha256
+          if-no-files-found: error
+          retention-days: 90
