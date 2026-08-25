@@ -3,7 +3,13 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 2.6 (2026)
+# Version: 2.6.3 (2026)
+# v2.6.3 (2026): ANALYSIS/VISUALIZATION FIXES ONLY - DSP unchanged.
+#   - Score visualization now records the actual timeline placements as they are built,
+#     so every displayed block matches a real entry, its voice, start time, and duration.
+#   - Mono report now uses true zero-lag normalized L/R correlation C/sqrt(EL*ER);
+#     the separate 0..200% mono-fold ratio remains referenced to uncorrelated L/R.
+#   - V4 reporting now says centered reverberant field rather than diffuse field.
 # v2.6.2 (2026): SPATIAL VISUALIZATION STANDARDIZATION ONLY - label rails, compact summary, typography; DSP unchanged.
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
@@ -222,7 +228,7 @@ endif
 #     not show which voice entered when.
 # ============================================================
 
-form Perceptual Fugue v2.6.2
+form Perceptual Fugue v2.6.3
     comment === Preset ===
     optionmenu Preset: 2
         option Custom
@@ -467,7 +473,7 @@ spatialIldPreview = exposition_ILD_factor
 
 clearinfo
 writeInfoLine: "=================================================="
-writeInfoLine: " PERCEPTUAL FUGUE v2.6.2"
+writeInfoLine: " PERCEPTUAL FUGUE v2.6.3"
 writeInfoLine: "=================================================="
 appendInfoLine: ""
 appendInfoLine: "Source: ", soundName$, " | ", fixed$(monoDur, 3), " s | ", monoSr, " Hz"
@@ -875,6 +881,18 @@ procedure placeAt: .timeline, .fragment, .startSec
     placeAt_result = .timeline
 endproc
 
+procedure recordEntry: .voice, .startSec, .fragment, .kind
+    # v2.6.3: record the same fragment that is actually placed into a
+    # voice timeline. The visualization later reads this list directly.
+    selectObject: .fragment
+    .entryDur = Get total duration
+    nEntry += 1
+    entV[nEntry] = .voice
+    entT[nEntry] = .startSec
+    entL[nEntry] = .entryDur
+    entK[nEntry] = .kind
+endproc
+
 procedure applySpatial: .monoSnd
     selectObject: .monoSnd
     .dur = Get total duration
@@ -1124,6 +1142,10 @@ headMotifT2 = transposeResult
 # ============================================================
 
 appendInfoLine: "Building voice timelines..."
+# v2.6.3: the score panel is driven by this placement log.
+# Kinds: 1 subject-family, 2 answer-family, 3 counter-subject,
+#        4 retrograde, 5 augmented, 6 fragment, 7 filtered support, 8 pedal.
+nEntry = 0
 vt1 = Create Sound from formula: "vt1", 1, 0, totalDur, monoSr, "0"
 vt2 = Create Sound from formula: "vt2", 1, 0, totalDur, monoSr, "0"
 vt3 = Create Sound from formula: "vt3", 1, 0, totalDur, monoSr, "0"
@@ -1134,8 +1156,10 @@ endif
 # ---- I. EXPOSITION ----
 @placeAt: vt1, subject, 0
 vt1 = placeAt_result
+@recordEntry: 1, 0, subject, 1
 @placeAt: vt1, counterSubject, subDur
 vt1 = placeAt_result
+@recordEntry: 1, subDur, counterSubject, 3
 
 @lowPassAsym: subject, 800
 .v1pad = filtResult
@@ -1144,15 +1168,19 @@ Formula: "self * 0.4"
 @applyFades: .v1pad
 @placeAt: vt1, .v1pad, 2 * subDur
 vt1 = placeAt_result
+@recordEntry: 1, 2 * subDur, .v1pad, 7
 removeObject: .v1pad
 
 @placeAt: vt2, answer, subDur
 vt2 = placeAt_result
+@recordEntry: 2, subDur, answer, 2
 @placeAt: vt2, counterSubject, 2 * subDur
 vt2 = placeAt_result
+@recordEntry: 2, 2 * subDur, counterSubject, 3
 
 @placeAt: vt3, subjectLow, 2 * subDur
 vt3 = placeAt_result
+@recordEntry: 3, 2 * subDur, subjectLow, 1
 
 if numV >= 4
     @lowPassAsym: subject, 600
@@ -1162,6 +1190,7 @@ if numV >= 4
     @applyFades: .v4pad
     @placeAt: vt4, .v4pad, 2 * subDur
     vt4 = placeAt_result
+    @recordEntry: 4, 2 * subDur, .v4pad, 7
     removeObject: .v4pad
 endif
 
@@ -1171,12 +1200,16 @@ halfSub = subDur * 0.5
 
 @placeAt: vt1, headMotif, epStart
 vt1 = placeAt_result
+@recordEntry: 1, epStart, headMotif, 6
 @placeAt: vt2, headMotifT1, epStart + halfSub * 0.5
 vt2 = placeAt_result
+@recordEntry: 2, epStart + halfSub * 0.5, headMotifT1, 6
 @placeAt: vt1, headMotifT2, epStart + halfSub
 vt1 = placeAt_result
+@recordEntry: 1, epStart + halfSub, headMotifT2, 6
 @placeAt: vt2, headMotif, epStart + halfSub * 1.5
 vt2 = placeAt_result
+@recordEntry: 2, epStart + halfSub * 1.5, headMotif, 6
 
 @lowPassAsym: subjectLow, 500
 .v3ep = filtResult
@@ -1185,6 +1218,7 @@ Formula: "self * 0.3"
 @applyFades: .v3ep
 @placeAt: vt3, .v3ep, epStart
 vt3 = placeAt_result
+@recordEntry: 3, epStart, .v3ep, 7
 removeObject: .v3ep
 
 # ---- III. MIDDLE ENTRIES ----
@@ -1192,23 +1226,36 @@ midStart = episodeEnd
 
 @placeAt: vt1, retroSubject, midStart
 vt1 = placeAt_result
+if include_retrograde
+    @recordEntry: 1, midStart, retroSubject, 4
+else
+    @recordEntry: 1, midStart, retroSubject, 1
+endif
 
 @transposeByRatio: answer, answerRatio
 .ansT2 = transposeResult
 @applyFades: .ansT2
 @placeAt: vt2, .ansT2, midStart + subDur
 vt2 = placeAt_result
+@recordEntry: 2, midStart + subDur, .ansT2, 2
 removeObject: .ansT2
 
 @placeAt: vt3, augSubject, midStart
 vt3 = placeAt_result
+if include_augmentation
+    @recordEntry: 3, midStart, augSubject, 5
+else
+    @recordEntry: 3, midStart, augSubject, 1
+endif
 
 @placeAt: vt1, counterSubject, midStart + subDur
 vt1 = placeAt_result
+@recordEntry: 1, midStart + subDur, counterSubject, 3
 
 if numV >= 4
     @placeAt: vt4, answerLow, midStart + subDur
     vt4 = placeAt_result
+    @recordEntry: 4, midStart + subDur, answerLow, 2
 endif
 
 # ---- IV. STRETTO ----
@@ -1216,26 +1263,33 @@ strStart = middleEnd
 
 @placeAt: vt1, subject, strStart
 vt1 = placeAt_result
+@recordEntry: 1, strStart, subject, 1
 @placeAt: vt2, answer, strStart + comp * subDur
 vt2 = placeAt_result
+@recordEntry: 2, strStart + comp * subDur, answer, 2
 @placeAt: vt3, subjectLow, strStart + 2 * comp * subDur
 vt3 = placeAt_result
+@recordEntry: 3, strStart + 2 * comp * subDur, subjectLow, 1
 
 if numV >= 4
     @placeAt: vt4, answerLow, strStart + 3 * comp * subDur
     vt4 = placeAt_result
+    @recordEntry: 4, strStart + 3 * comp * subDur, answerLow, 2
 endif
 
 @placeAt: vt1, counterSubject, strStart + comp * subDur
 vt1 = placeAt_result
+@recordEntry: 1, strStart + comp * subDur, counterSubject, 3
 @placeAt: vt2, counterSubject, strStart + 2 * comp * subDur
 vt2 = placeAt_result
+@recordEntry: 2, strStart + 2 * comp * subDur, counterSubject, 3
 
 # ---- V. PEDAL + CADENCE ----
 pedStart = strettoEnd
 
 @placeAt: vt3, pedalDrone, pedStart
 vt3 = placeAt_result
+@recordEntry: 3, pedStart, pedalDrone, 8
 
 @lowPassAsym: answer, 600
 .v2ped = filtResult
@@ -1244,10 +1298,12 @@ Formula: "self * 0.35"
 @applyFades: .v2ped
 @placeAt: vt2, .v2ped, pedStart
 vt2 = placeAt_result
+@recordEntry: 2, pedStart, .v2ped, 7
 removeObject: .v2ped
 
 @placeAt: vt1, subject, pedStart + subDur
 vt1 = placeAt_result
+@recordEntry: 1, pedStart + subDur, subject, 1
 
 if numV >= 4
     @lowPassAsym: answerLow, 500
@@ -1257,6 +1313,7 @@ if numV >= 4
     @applyFades: .v4ped
     @placeAt: vt4, .v4ped, pedStart
     vt4 = placeAt_result
+    @recordEntry: 4, pedStart, .v4ped, 7
     removeObject: .v4ped
 endif
 
@@ -1451,17 +1508,19 @@ if mcRef < 1e-30
 endif
 mcRatio = mcEnergySum / mcRef
 mcDb = 10 * log10(max(mcRatio, 1e-12))
-# v2.6: also report a proper correlation coefficient. The ratio above
-# compares the mono fold with what an uncorrelated pair would give, so
-# it runs 0..200% rather than being a percentage of energy retained -
-# which is what v2.4 called it.
-#   E(L+R)/2 = (EL + ER + 2C)/4, so rho = 2C/(EL+ER) = mcRatio - 1
-mcRho = mcRatio - 1
-if mcRho > 1
-    mcRho = 1
-endif
-if mcRho < -1
-    mcRho = -1
+# v2.6.3: true zero-lag normalized L/R correlation. The mono-fold
+# ratio above has a different denominator and is intentionally kept as
+# a separate 0..200% diagnostic relative to an uncorrelated reference.
+#   E((L+R)/2) = (EL + ER + 2C)/4
+#   C = (4*E_sum - EL - ER)/2
+#   rho = C / sqrt(EL*ER)
+mcCross = (4 * mcEnergySum - mcEnergyL - mcEnergyR) / 2
+mcRhoDefined = 0
+mcRho = 0
+if mcEnergyL > 1e-30 and mcEnergyR > 1e-30
+    mcRho = mcCross / sqrt(mcEnergyL * mcEnergyR)
+    mcRho = min(1, max(-1, mcRho))
+    mcRhoDefined = 1
 endif
 removeObject: mcL, mcR, mcSum
 selectObject: fugueId
@@ -1481,8 +1540,12 @@ appendInfoLine: "  Read it against these anchors, not as 'energy retained':"
 appendInfoLine: "    200% = the two channels are identical and in phase"
 appendInfoLine: "    100% = uncorrelated"
 appendInfoLine: "      0% = anti-phase, complete cancellation"
-appendInfoLine: "  Correlation coefficient: ", fixed$(mcRho, 3),
-    ... "   (+1 in phase, 0 uncorrelated, -1 anti-phase)"
+if mcRhoDefined
+    appendInfoLine: "  Zero-lag normalized correlation: ", fixed$(mcRho, 3),
+        ... "   (+1 in phase, 0 uncorrelated, -1 anti-phase)"
+else
+    appendInfoLine: "  Zero-lag normalized correlation: undefined (a channel is silent)"
+endif
 if mcRatio < 0.6
     appendInfoLine: "  Substantial cancellation, as expected: V3's right channel is"
     appendInfoLine: "  polarity inverted by design. This mix is NOT mono-compatible."
@@ -1556,7 +1619,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "##Perceptual Fugue v2.6.2##"
+    Text: 0.5, "centre", 0.5, "half", "##Perceptual Fugue v2.6.3##"
     Select outer viewport: 0, 8, 0.28, 0.5
     Axes: 0, 1, 0, 1
     Font size: 7
@@ -1597,89 +1660,8 @@ if draw_visualization
     Colour: "{0.90, 0.90, 0.94}"
     Paint rectangle: "{0.94, 0.94, 0.97}", lastMusicalEnd, fugueDur, 0.4, numV + 0.42
 
-    # Entry blocks: {voice, start, length, kind}
-    # kind 1 subject, 2 answer, 3 retrograde, 4 augmented,
-    #      5 fragment, 6 pedal
-    # Built inline: a Praat procedure cannot be declared inside an if
-    # block, and this whole panel lives inside one.
-    nEntry = 0
-    nEntry += 1
-    entV[nEntry] = 1
-    entT[nEntry] = 0
-    entL[nEntry] = subDur
-    entK[nEntry] = 1
-    nEntry += 1
-    entV[nEntry] = 2
-    entT[nEntry] = subDur
-    entL[nEntry] = subDur
-    entK[nEntry] = 2
-    nEntry += 1
-    entV[nEntry] = 3
-    entT[nEntry] = 2 * subDur
-    entL[nEntry] = subDur
-    entK[nEntry] = 1
-    if numV >= 4
-        nEntry += 1
-        entV[nEntry] = 4
-        entT[nEntry] = 2.5 * subDur
-        entL[nEntry] = subDur
-        entK[nEntry] = 2
-    endif
-    nEntry += 1
-    entV[nEntry] = 1
-    entT[nEntry] = expoEnd
-    entL[nEntry] = subDur * 0.5
-    entK[nEntry] = 5
-    nEntry += 1
-    entV[nEntry] = 2
-    entT[nEntry] = expoEnd + subDur * 0.25
-    entL[nEntry] = subDur * 0.5
-    entK[nEntry] = 5
-    nEntry += 1
-    entV[nEntry] = 3
-    entT[nEntry] = expoEnd + subDur * 0.5
-    entL[nEntry] = subDur * 0.5
-    entK[nEntry] = 5
-    nEntry += 1
-    entV[nEntry] = 1
-    entT[nEntry] = episodeEnd
-    entL[nEntry] = subDur
-    entK[nEntry] = 3
-    nEntry += 1
-    entV[nEntry] = 2
-    entT[nEntry] = episodeEnd + subDur * 0.5
-    entL[nEntry] = subDur
-    entK[nEntry] = 2
-    nEntry += 1
-    entV[nEntry] = 3
-    entT[nEntry] = episodeEnd
-    entL[nEntry] = 2 * subDur
-    entK[nEntry] = 4
-    for k from 1 to numV
-        nEntry += 1
-        entV[nEntry] = k
-        entT[nEntry] = middleEnd + (k - 1) * comp * subDur
-        entL[nEntry] = subDur
-        entK[nEntry] = 1
-    endfor
-    nEntry += 1
-    entV[nEntry] = 2
-    entT[nEntry] = strettoEnd
-    entL[nEntry] = 2 * subDur
-    entK[nEntry] = 6
-    nEntry += 1
-    entV[nEntry] = 1
-    entT[nEntry] = strettoEnd + subDur
-    entL[nEntry] = subDur
-    entK[nEntry] = 1
-    if numV >= 4
-        nEntry += 1
-        entV[nEntry] = 4
-        entT[nEntry] = strettoEnd
-        entL[nEntry] = 2 * subDur
-        entK[nEntry] = 6
-    endif
-
+    # Entry blocks come directly from @recordEntry calls made beside every
+    # @placeAt in the audio timeline. No second, hand-maintained score exists.
     for ent from 1 to nEntry
         vv = entV[ent]
         if vv <= numV
@@ -1692,14 +1674,20 @@ if draw_visualization
                 kCol$ = "{0.82, 0.45, 0.22}"
                 kLab$ = "A"
             elsif kk = 3
+                kCol$ = "{0.44, 0.38, 0.68}"
+                kLab$ = "CS"
+            elsif kk = 4
                 kCol$ = "{0.55, 0.30, 0.70}"
                 kLab$ = "R"
-            elsif kk = 4
+            elsif kk = 5
                 kCol$ = "{0.20, 0.60, 0.45}"
                 kLab$ = "Aug"
-            elsif kk = 5
+            elsif kk = 6
                 kCol$ = "{0.75, 0.68, 0.20}"
                 kLab$ = "frag"
+            elsif kk = 7
+                kCol$ = "{0.50, 0.58, 0.62}"
+                kLab$ = "pad"
             else
                 kCol$ = "{0.45, 0.45, 0.50}"
                 kLab$ = "Ped"
@@ -1735,7 +1723,7 @@ if draw_visualization
     Line width: 1
     Draw inner box
     Font size: 6
-    Text bottom: "yes", "Score: S subject, A answer, R retrograde, Aug augmented, frag fragment, Ped pedal"
+    Text bottom: "yes", "Score: S subject, A answer, CS counter-subject, R retrograde, Aug augmented, frag fragment, pad filtered support, Ped pedal"
 
     Select outer viewport: 0, 8, 2.48, 3.32
     Select inner viewport: 0.8, 7.6, 2.54, 3.26
@@ -1862,7 +1850,7 @@ appendInfoLine: "    V1 Dux   : pitch x1.0, LEFT  (ITD +", fixed$(exposition_ITD
 appendInfoLine: "    V2 Comes : pitch x", fixed$(answerRatio, 3), " (", intervalName$, "), RIGHT"
 appendInfoLine: "    V3 Third : pitch x0.5 (8vb), center + polarity inv"
 if numV >= 4
-    appendInfoLine: "    V4 Fourth: pitch x", fixed$(v4ratio, 3), ", diffuse field"
+    appendInfoLine: "    V4 Fourth: pitch x", fixed$(v4ratio, 3), ", centered reverberant field"
 endif
 appendInfoLine: ""
 appendInfoLine: "  Structure:"
