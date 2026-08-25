@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 4.8.1 (2026)
+# Version: 4.10 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -822,11 +822,28 @@ endif
 
 # ============================================================
 # VISUALIZATION
+#
+# Canvas: 8.0 x 8.62 in.  All panels share the 0.65 / 7.65 horizontal grid.
+#
+#   Input waveform                          source time
+#   Measured output envelope (L up / R down)
+#   Morse score strip                       } all on SCORE time, 0..totalDuration
+#   Layer accumulation timeline             |  (ticks on every panel, numbers
+#   Stereo accumulation (L up / R down)     /   only on the last one)
+#   Pitch x Pan field
+#   Summary
+#
+# v4.9 changes: three overprinted axis labels separated; every "%" escaped
+# (it is italic markup and was being swallowed); axis numbers added throughout;
+# one summary box instead of two; pitch ladder moved to a semitone axis and
+# merged with the pan map; new stereo accumulation panel.
 # ============================================================
 
 if draw_visualization = 1
 
-    # Voice colors (blue→orange gradient across pan field)
+    canvasH = 8.10
+
+    # Voice colors (blue -> orange gradient across the pan field)
     vColR[1] = 0.22
     vColG[1] = 0.48
     vColB[1] = 0.82
@@ -846,28 +863,46 @@ if draw_visualization = 1
     vColG[6] = 0.28
     vColB[6] = 0.12
 
+    for i from 1 to 6
+        vCol$[i] = "{" + fixed$(vColR[i],2) + ", " + fixed$(vColG[i],2) + ", " + fixed$(vColB[i],2) + "}"
+    endfor
+
     Erase all
     Black
     Line width: 1
-    Font size: 10
+    Solid line
+    Select outer viewport: 0, 8, 0, canvasH
+
+    @niceTick: totalDuration
+    tickScore = niceTick.t
+    @niceTick: sourceXmax - sourceXmin
+    tickSrc = niceTick.t
 
     # ----------------------------------------------------------
     # TITLE
+    # A title strip must use Select INNER viewport: Axes maps to the inner
+    # viewport, so an outer-viewport strip is silently inset by the standard
+    # margins and its text lands lower than the strip implies — which is how
+    # the panel-1 caption came to print through the title in v4.8.
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 0.0, 0.55
-    Axes: 0, 1, 0, 1
     Font size: 12
+    Select inner viewport: 0.65, 7.65, 0.04, 0.40
+    Axes: 0, 1, 0, 1
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half",
-    ... "Messagesquisse Opening v4.8.1   [" + soundName$ + "]   MIDI " +
-    ... string$(midiNote) + " (" + noteName$ + ")   preset: " + preset_name$
+    Text: 0.5, "centre", 0.78, "half", "##Messagesquisse Opening##"
+    Font size: 7
+    Select inner viewport: 0.65, 7.65, 0.04, 0.40
+    Axes: 0, 1, 0, 1
+    Colour: "{0.40, 0.40, 0.50}"
+    Text: 0.5, "centre", 0.20, "half",
+    ... soundName$ + "  |  target MIDI " + string$(midiNote) + " (" + noteName$ + ")"
+    ... + "  |  preset: " + preset_name$
+    ... + "  |  dot=" + fixed$(dot, 3) + " s"
+    ... + "  |  wet " + fixed$(wetMix*100, 0) + "\%  / dry " + fixed$(dryMix*100, 0) + "\%  "
 
     # ----------------------------------------------------------
     # PANEL 1 — Input waveform
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 0.60, 1.55
-    Select inner viewport: 0.65, 7.65, 0.65, 1.50
-
     selectObject: originalSound
     inPeak = Get absolute extremum: 0, 0, "None"
     if inPeak < 0.001
@@ -875,6 +910,9 @@ if draw_visualization = 1
     endif
     ampMax = inPeak * 1.15
 
+    Font size: 7
+    Select outer viewport: 0, 8, 0.44, 1.22
+    Select inner viewport: 0.65, 7.65, 0.54, 1.10
     Axes: sourceXmin, sourceXmax, -ampMax, ampMax
     Paint rectangle: "{0.97, 0.97, 0.97}", sourceXmin, sourceXmax, -ampMax, ampMax
     Colour: "{0.82, 0.82, 0.82}"
@@ -884,74 +922,281 @@ if draw_visualization = 1
     Draw: 0, 0, -ampMax, ampMax, "no", "Curve"
     Colour: "Black"
     Draw inner box
-    Font size: 7
-    Text left: "yes", "Input"
-    Text top: "no", "Original: " + soundName$
 
-    # ----------------------------------------------------------
-    # PANEL 2 — Output L channel
-    # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 1.60, 2.40
-    Select inner viewport: 0.65, 7.65, 1.65, 2.35
+    Font size: 7
+    Select inner viewport: 0.65, 7.65, 0.54, 1.10
+    Axes: sourceXmin, sourceXmax, -ampMax, ampMax
+    Marks bottom every: 1, tickSrc, "yes", "yes", "no"
+    Text bottom: "yes", "Source time (s)"
+    Text top: "no", "Original source: " + soundName$
+    @railLabelAt: 0.65, 7.65, 0.54, 1.10, 7, 0.32, "Input"
 
     selectObject: finalStereo
     outPeak = Get absolute extremum: 0, 0, "None"
     if outPeak < 0.001
         outPeak = 0.001
     endif
-    outAmpMax = outPeak * 1.15
 
-    Axes: 0, totalDuration, -outAmpMax, outAmpMax
-    Paint rectangle: "{0.96, 0.97, 1.00}", 0, totalDuration, -outAmpMax, outAmpMax
-    Colour: "{0.82, 0.82, 0.82}"
-    Draw line: 0, 0, totalDuration, 0
+    # ----------------------------------------------------------
+    # PANEL 2 — Measured output envelope (L up / R down)
+    #
+    # v4.8 gave L and R a full waveform panel each.  Two panels of dense
+    # drone hair is a lot of page for a comparison the reader then has to
+    # make by eye across a gap; one mirrored envelope puts L against R
+    # directly, in the same grammar as the predicted stack below it.
+    #
+    # This panel is MEASURED (windowed RMS of the rendered file); the stack
+    # below is PREDICTED from the entry times, fade shape and pan law.  They
+    # are not redundant: score-advancing segmentation means layer i reads
+    # original[entry_i ...], so a quiet passage in the source makes that voice
+    # quiet, and no parameter-derived panel can show it.  The correlation
+    # printed in the caption is how closely the render actually followed the
+    # plan on this run.
+    # ----------------------------------------------------------
+    enX1 = 0.65
+    enX2 = 7.65
+    enY1 = 1.72
+    enY2 = 2.34
+
+    Select outer viewport: 0, 8, 1.54, 2.44
+
     selectObject: finalStereo
     Extract one channel: 1
-    leftCh = selected("Sound")
-    Colour: "{0.20, 0.45, 0.82}"
-    Draw: 0, 0, -outAmpMax, outAmpMax, "no", "Curve"
-    removeObject: leftCh
-    Colour: "Black"
-    Draw inner box
-    Font size: 7
-    Text left: "yes", "Out L"
-
-    # ----------------------------------------------------------
-    # PANEL 3 — Output R channel
-    # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 2.44, 3.24
-    Select inner viewport: 0.65, 7.65, 2.49, 3.19
-
-    Axes: 0, totalDuration, -outAmpMax, outAmpMax
-    Paint rectangle: "{1.00, 0.96, 0.95}", 0, totalDuration, -outAmpMax, outAmpMax
-    Colour: "{0.82, 0.82, 0.82}"
-    Draw line: 0, 0, totalDuration, 0
+    envL = selected("Sound")
     selectObject: finalStereo
     Extract one channel: 2
-    rightCh = selected("Sound")
+    envR = selected("Sound")
+
+    nEnvCols = 240
+    if totalDuration / nEnvCols * samplingFrequency < 16
+        nEnvCols = floor(totalDuration * samplingFrequency / 16)
+    endif
+    if nEnvCols < 20
+        nEnvCols = 20
+    endif
+    envW = totalDuration / nEnvCols
+    envDry = dryMix * 0.707
+
+    # Pass 1: raw windowed RMS, plus the predicted gain at the same instants.
+    for c from 1 to nEnvCols
+        cT0 = (c - 1) * envW
+        cT1 = c * envW
+        cTm = (cT0 + cT1) / 2
+        selectObject: envL
+        mL = Get root-mean-square: cT0, cT1
+        selectObject: envR
+        mR = Get root-mean-square: cT0, cT1
+        if mL = undefined
+            mL = 0
+        endif
+        if mR = undefined
+            mR = 0
+        endif
+        envRawL[c] = mL
+        envRawR[c] = mR
+
+        pL = envDry
+        pR = envDry
+        for i from 1 to 6
+            if cTm < entry[i]
+                env = 0
+            elsif fadeDur > 0.001 and cTm < entry[i] + fadeDur
+                env = 0.5 - 0.5 * cos(pi * (cTm - entry[i]) / fadeDur)
+            else
+                env = 1
+            endif
+            pL = pL + wetMix * panGainL[i] * env
+            pR = pR + wetMix * panGainR[i] * env
+        endfor
+        envPreL[c] = pL
+        envPreR[c] = pR
+    endfor
+    removeObject: envL, envR
+
+    # Pass 2: 5-point moving average.  Six sustained drones a semitone or two
+    # apart beat against each other, so the raw per-window RMS is hash at this
+    # panel height; smoothing keeps the shape and drops the hair.  The
+    # correlation below is computed on the SMOOTHED values, i.e. on what is
+    # actually drawn.
+    envSm = 2
+    envMax = 0.0001
+    sumML = 0
+    sumMR = 0
+    sumPL = 0
+    sumPR = 0
+    sumMLPL = 0
+    sumMRPR = 0
+    sumML2 = 0
+    sumMR2 = 0
+    sumPL2 = 0
+    sumPR2 = 0
+    for c from 1 to nEnvCols
+        accL = 0
+        accR = 0
+        nAcc = 0
+        for k from c - envSm to c + envSm
+            if k >= 1 and k <= nEnvCols
+                accL = accL + envRawL[k]
+                accR = accR + envRawR[k]
+                nAcc = nAcc + 1
+            endif
+        endfor
+        mL = accL / nAcc
+        mR = accR / nAcc
+        envValL[c] = mL
+        envValR[c] = mR
+        if mL > envMax
+            envMax = mL
+        endif
+        if mR > envMax
+            envMax = mR
+        endif
+        pL = envPreL[c]
+        pR = envPreR[c]
+        sumML += mL
+        sumMR += mR
+        sumPL += pL
+        sumPR += pR
+        sumMLPL += mL * pL
+        sumMRPR += mR * pR
+        sumML2 += mL * mL
+        sumMR2 += mR * mR
+        sumPL2 += pL * pL
+        sumPR2 += pR * pR
+    endfor
+
+    @pearson: nEnvCols, sumML, sumPL, sumMLPL, sumML2, sumPL2
+    corrL = pearson.r
+    @pearson: nEnvCols, sumMR, sumPR, sumMRPR, sumMR2, sumPR2
+    corrR = pearson.r
+
+    envMax = envMax * 1.15
+    @niceTickN: 2 * envMax, 5
+    tickEnv = niceTickN.t
+
+    Font size: 6
+    Select inner viewport: enX1, enX2, enY1, enY2
+    Axes: 0, totalDuration, -envMax, envMax
+    Paint rectangle: "{0.975, 0.977, 0.985}", 0, totalDuration, -envMax, envMax
+
+    for c from 1 to nEnvCols
+        cT0 = (c - 1) * envW
+        cT1 = c * envW
+        Paint rectangle: "{0.20, 0.45, 0.82}", cT0, cT1, 0, envValL[c]
+        Paint rectangle: "{0.82, 0.22, 0.18}", cT0, cT1, -envValR[c], 0
+    endfor
+
+    Font size: 6
+    Select inner viewport: enX1, enX2, enY1, enY2
+    Axes: 0, totalDuration, -envMax, envMax
+    Colour: "{0.30, 0.30, 0.30}"
+    Line width: 1
+    Draw line: 0, 0, totalDuration, 0
+    Colour: "{0.20, 0.45, 0.82}"
+    Text: totalDuration * 0.012, "left", envMax * 0.72, "half", "##L##"
     Colour: "{0.82, 0.22, 0.18}"
-    Draw: 0, 0, -outAmpMax, outAmpMax, "no", "Curve"
-    removeObject: rightCh
+    Text: totalDuration * 0.012, "left", -envMax * 0.72, "half", "##R##"
     Colour: "Black"
+    Select inner viewport: enX1, enX2, enY1, enY2
+    Axes: 0, totalDuration, -envMax, envMax
     Draw inner box
+
+    Font size: 6
+    Select inner viewport: enX1, enX2, enY1, enY2
+    Axes: 0, totalDuration, -envMax, envMax
+    Marks bottom every: 1, tickScore, "no", "yes", "no"
+    Marks left every: 1, tickEnv, "yes", "yes", "no"
+
     Font size: 7
-    Text left: "yes", "Out R"
-    Text bottom: "yes", "Time (s)"
+    Select inner viewport: enX1, enX2, enY1, enY2
+    Axes: 0, totalDuration, -envMax, envMax
+    corrTxt$ = "r = " + fixed$(corrL, 2) + " L / " + fixed$(corrR, 2) + " R"
+    if corrL = undefined or corrR = undefined
+        corrTxt$ = "r = n/a"
+    endif
+    Text top: "no", "Measured output envelope, smoothed windowed RMS  (peak " + fixed$(outPeak, 3) + ")  —  against the predicted stack below: " + corrTxt$
+    @railLabelAt: enX1, enX2, enY1, enY2, 7, 0.32, "RMS"
 
     # ----------------------------------------------------------
-    # PANEL 4 — Layer accumulation timeline
-    # Each voice: silent block (grey) + active block (colored)
+    # PANEL 4 — Morse score strip
+    #
+    # The 36-unit S-A-C-H-E-R score that generates the entry times was
+    # documented only in the header comment.  Drawing it directly above the
+    # layer timeline makes the letter-to-entry mapping visible: each voice
+    # enters exactly where the previous letter ends.
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 3.30, 4.70
-    Select inner viewport: 0.65, 7.65, 3.38, 4.65
+    msName$[1] = "S"
+    msName$[2] = "A"
+    msName$[3] = "C"
+    msName$[4] = "H"
+    msName$[5] = "E"
+    msName$[6] = "R"
+    # 1 = dot, 3 = dash; symbols within a letter are separated by one unit
+    msPat$[1] = "111"
+    msPat$[2] = "13"
+    msPat$[3] = "3131"
+    msPat$[4] = "1111"
+    msPat$[5] = "1"
+    msPat$[6] = "131"
 
-    rowH    = 1.0
-    panelH  = 6.0 * rowH
+    Font size: 6
+    Select outer viewport: 0, 8, 2.44, 3.02
+    Select inner viewport: 0.65, 7.65, 2.60, 2.92
+    Axes: 0, totalDuration, 0, 1
+    Paint rectangle: "{0.975, 0.977, 0.985}", 0, totalDuration, 0, 1
+
+    for i from 1 to 6
+        msT = entry[i]
+        msN = length(msPat$[i])
+        for k from 1 to msN
+            msSym$ = mid$(msPat$[i], k, 1)
+            msLen = number(msSym$) * dot
+            Paint rectangle: vCol$[i], msT, msT + msLen, 0.30, 0.72
+            msT = msT + msLen + gap
+        endfor
+        # letter name above its span, and the boundary that starts the voice
+        Colour: "{0.30, 0.30, 0.35}"
+        Font size: 6
+        Text: entry[i] + (msT - gap - entry[i]) / 2, "centre", 0.86, "half", "##" + msName$[i] + "##"
+        if entry[i] > 0.0001
+            Colour: "{0.55, 0.55, 0.60}"
+            Dotted line
+            Draw line: entry[i], 0, entry[i], 1
+            Solid line
+            Colour: "{0.35, 0.35, 0.40}"
+            Font size: 5
+            msLabY = 0.16
+            if i > 1
+                if entry[i] - entry[i - 1] < totalDuration * 0.08
+                    msLabY = 0.06
+                endif
+            endif
+            Text: entry[i], "left", msLabY, "half", " " + fixed$(entry[i], 2) + " s"
+        endif
+    endfor
+
+    Colour: "Black"
+    Line width: 1
+    Draw inner box
+
+    Font size: 6
+    Select inner viewport: 0.65, 7.65, 2.60, 2.92
+    Axes: 0, totalDuration, 0, 1
+    Marks bottom every: 1, tickScore, "no", "yes", "no"
+    Text top: "no", "Morse score, S-A-C-H-E-R  (bars = dots and dashes; each letter boundary is the next voice's entry)"
+    @railLabelAt: 0.65, 7.65, 2.60, 2.92, 6, 0.32, "Score"
+
+    # ----------------------------------------------------------
+    # PANEL 5 — Layer accumulation timeline
+    # ----------------------------------------------------------
+    Font size: 7
+    Select outer viewport: 0, 8, 3.02, 3.98
+    Select inner viewport: 0.65, 7.65, 3.12, 3.90
+    rowH   = 1.0
+    panelH = 6.0 * rowH
     Axes: 0, totalDuration, 0, panelH
-
     Paint rectangle: "{0.97, 0.97, 0.97}", 0, totalDuration, 0, panelH
 
-    # Entry time tick marks
     for i from 1 to 6
         if entry[i] > 0.0001
             Colour: "{0.80, 0.80, 0.80}"
@@ -962,178 +1207,317 @@ if draw_visualization = 1
     endfor
 
     for i from 1 to 6
-        row     = 6 - i
-        barBot  = row * rowH + 0.08
-        barTop  = (row + 1) * rowH - 0.08
-
-        # Silent pre-entry block (light grey)
+        row    = 6 - i
+        barBot = row * rowH + 0.10
+        barTop = (row + 1) * rowH - 0.10
         if entry[i] > 0.001
             Paint rectangle: "{0.88, 0.88, 0.88}", 0, entry[i], barBot, barTop
         endif
-
-        # Active block (voice color)
-        cR$ = fixed$(vColR[i], 2)
-        cG$ = fixed$(vColG[i], 2)
-        cB$ = fixed$(vColB[i], 2)
-        vColor$ = "{" + cR$ + ", " + cG$ + ", " + cB$ + "}"
-        Paint rectangle: vColor$, entry[i], totalDuration, barBot, barTop
-
-        # Label inside bar
+        Paint rectangle: vCol$[i], entry[i], totalDuration, barBot, barTop
         Colour: "White"
-        Font size: 7
-        Text: entry[i] + activeDur[i] * 0.50, "centre",
-        ... barBot + rowH * 0.42, "half",
-        ... pitchName$[i] + "  " + fixed$(targetFreq[i], 1) + " Hz   pan " + fixed$(panPos[i], 2)
+        Font size: 6
+        # Gains are shown as rounded percentages: fixed$ ignores its precision
+        # argument for very small numbers and would print a 17-digit 6e-17 for
+        # a hard-panned voice's opposite channel.
+        barLab$ = fixed$(targetFreq[i], 1) + " Hz   pan " + fixed$(panPos[i], 2)
+        if activeDur[i] > totalDuration * 0.30
+            barLab$ = barLab$ + "   L " + string$(round(panGainL[i] * 100)) + "\%  R " + string$(round(panGainR[i] * 100)) + "\% "
+        endif
+        Text: entry[i] + activeDur[i] * 0.50, "centre", barBot + rowH * 0.40, "half", barLab$
     endfor
 
     Colour: "Black"
-    Draw inner box
-    Font size: 7
-    Text left: "yes", "Layer"
-    Text bottom: "yes", "Score time (s)"
-    Text top: "no", "Layer Accumulation Timeline  (grey=silent  colored=active drone)"
-
-    # ----------------------------------------------------------
-    # PANEL 5 — Stereo pan field map
-    # ----------------------------------------------------------
-    Select outer viewport: 0, 5.5, 4.78, 5.60
-    Select inner viewport: 0.65, 5.20, 4.85, 5.55
-
-    Axes: -1.15, 1.15, -0.3, 1.0
-    Paint rectangle: "{0.97, 0.97, 0.97}", -1.15, 1.15, -0.3, 1.0
-
-    # Stereo field baseline
-    Colour: "{0.70, 0.70, 0.70}"
-    Line width: 2
-    Draw line: -1.0, 0.5, 1.0, 0.5
     Line width: 1
+    Draw inner box
 
-    # L / R labels
+    Font size: 6
+    Select inner viewport: 0.65, 7.65, 3.12, 3.90
+    Axes: 0, totalDuration, 0, panelH
+    Marks bottom every: 1, tickScore, "no", "yes", "no"
+    for i from 1 to 6
+        row = 6 - i
+        One mark left: row * rowH + 0.5, "no", "yes", "no", pitchName$[i]
+    endfor
+    Font size: 7
+    Select inner viewport: 0.65, 7.65, 3.12, 3.90
+    Axes: 0, totalDuration, 0, panelH
+    Text top: "no", "Layer accumulation  (grey = not yet entered, colour = sounding; entry times are marked on the Morse strip above)"
+    @railLabelAt: 0.65, 7.65, 3.12, 3.90, 7, 0.32, "Voice"
+
+    # ----------------------------------------------------------
+    # PANEL 6 — Stereo accumulation
+    #
+    # v4.8 showed the score and the finished stereo with nothing in between.
+    # This is the missing middle: each voice's fade-in envelope times its
+    # constant-power pan gain, stacked, L upward and R downward, with the dry
+    # signal as the grey base.  The visible asymmetry between the two halves
+    # IS the pan field; where the two sides are equal, the field is centred.
+    # ----------------------------------------------------------
+    saX1 = 0.65
+    saX2 = 7.65
+    saY1 = 4.10
+    saY2 = 4.96
+
+    Font size: 6
+    Select outer viewport: 0, 8, 3.98, 5.42
+
+    nCols = 320
+    colW  = totalDuration / nCols
+    dryG  = dryMix * 0.707
+
+    # y extent = the largest total the stack can reach on either side
+    sumL = dryG
+    sumR = dryG
+    for i from 1 to 6
+        sumL = sumL + wetMix * panGainL[i]
+        sumR = sumR + wetMix * panGainR[i]
+    endfor
+    saMax = sumL
+    if sumR > saMax
+        saMax = sumR
+    endif
+    if saMax < 0.01
+        saMax = 0.01
+    endif
+    saMax = saMax * 1.10
+    @niceTickN: 2 * saMax, 6
+    tickSa = niceTickN.t
+
+    Select inner viewport: saX1, saX2, saY1, saY2
+    Axes: 0, totalDuration, -saMax, saMax
+    Paint rectangle: "{0.975, 0.977, 0.985}", 0, totalDuration, -saMax, saMax
+
+    for c from 1 to nCols
+        cT0 = (c - 1) * colW
+        cT1 = c * colW
+        cTm = (cT0 + cT1) / 2
+        accL = 0
+        accR = 0
+        if dryG > 0
+            Paint rectangle: "{0.80, 0.80, 0.82}", cT0, cT1, 0, dryG
+            Paint rectangle: "{0.80, 0.80, 0.82}", cT0, cT1, -dryG, 0
+            accL = dryG
+            accR = dryG
+        endif
+        for i from 1 to 6
+            # fade-in envelope actually applied to the layer at its entry
+            if cTm < entry[i]
+                env = 0
+            elsif fadeDur > 0.001 and cTm < entry[i] + fadeDur
+                env = 0.5 - 0.5 * cos(pi * (cTm - entry[i]) / fadeDur)
+            else
+                env = 1
+            endif
+            gL = wetMix * panGainL[i] * env
+            gR = wetMix * panGainR[i] * env
+            if gL > 0.0005
+                Paint rectangle: vCol$[i], cT0, cT1, accL, accL + gL
+                accL = accL + gL
+            endif
+            if gR > 0.0005
+                Paint rectangle: vCol$[i], cT0, cT1, -accR - gR, -accR
+                accR = accR + gR
+            endif
+        endfor
+    endfor
+
+    Font size: 6
+    Select inner viewport: saX1, saX2, saY1, saY2
+    Axes: 0, totalDuration, -saMax, saMax
+    Colour: "{0.30, 0.30, 0.30}"
+    Line width: 1
+    Draw line: 0, 0, totalDuration, 0
+    Font size: 6
     Colour: "{0.20, 0.45, 0.82}"
-    Font size: 7
-    Text: -1.0, "centre", 0.82, "half", "L"
+    Text: totalDuration * 0.012, "left", saMax * 0.80, "half", "##L##"
     Colour: "{0.82, 0.22, 0.18}"
-    Text:  1.0, "centre", 0.82, "half", "R"
-    Colour: "{0.60, 0.60, 0.60}"
-    Text:  0.0, "centre", 0.82, "half", "C"
+    Text: totalDuration * 0.012, "left", -saMax * 0.80, "half", "##R##"
+    Colour: "Black"
+    Select inner viewport: saX1, saX2, saY1, saY2
+    Axes: 0, totalDuration, -saMax, saMax
+    Draw inner box
 
-    # Centre reference tick
-    Colour: "{0.85, 0.85, 0.85}"
+    Font size: 6
+    Select inner viewport: saX1, saX2, saY1, saY2
+    Axes: 0, totalDuration, -saMax, saMax
+    Marks bottom every: 1, tickScore, "yes", "yes", "no"
+    Marks left every: 1, tickSa, "yes", "yes", "no"
+
+    Font size: 7
+    Select inner viewport: saX1, saX2, saY1, saY2
+    Axes: 0, totalDuration, -saMax, saMax
+    Text bottom: "yes", "Score time (s)"
+    Text top: "no", "Stereo accumulation  (fade envelope x constant-power pan gain, stacked; L above, R below; grey = dry)"
+    @railLabelAt: saX1, saX2, saY1, saY2, 7, 0.32, "Stacked gain"
+
+    # ----------------------------------------------------------
+    # PANEL 7 — Pitch x Pan field
+    #
+    # Replaces v4.8's separate pan map and pitch ladder.  The ladder was on a
+    # LINEAR Hz axis, where a semitone is 4 Hz at the bottom of the hexachord
+    # and 7 Hz at the top, so four of the six labels collided; and its fMax
+    # assumed A was the highest pitch when B is.  A semitone axis spaces the
+    # set evenly by construction, and putting pan on x shows both structural
+    # dimensions of the piece in one panel.
+    # ----------------------------------------------------------
+    ppX1 = 0.65
+    ppX2 = 7.65
+    ppY1 = 5.50
+    ppY2 = 6.44
+
+    Select outer viewport: 0, 8, 5.42, 6.92
+
+    stMin = 0
+    stMax = 0
+    for i from 1 to 6
+        stVal[i] = 12 * log10(targetFreq[i] / baseFreq) / log10(2)
+        if i = 1
+            stMin = stVal[i]
+            stMax = stVal[i]
+        endif
+        if stVal[i] < stMin
+            stMin = stVal[i]
+        endif
+        if stVal[i] > stMax
+            stMax = stVal[i]
+        endif
+    endfor
+    stLo = stMin - 1.8
+    stHi = stMax + 1.8
+
+    Font size: 6
+    Select inner viewport: ppX1, ppX2, ppY1, ppY2
+    Axes: -1.18, 1.18, stLo, stHi
+    Paint rectangle: "{0.975, 0.977, 0.985}", -1.18, 1.18, stLo, stHi
+
+    Colour: "{0.88, 0.89, 0.93}"
+    Line width: 1
+    for i from 1 to 6
+        Draw line: -1.18, stVal[i], 1.18, stVal[i]
+    endfor
+    Colour: "{0.82, 0.82, 0.85}"
     Dotted line
-    Draw line: 0, 0.2, 0, 0.8
+    Draw line: 0, stLo, 0, stHi
     Solid line
 
-    # Voice dots on the field line
+    # Label side alternates with PITCH RANK, not with index: the hexachord
+    # contains 2, 3 and 4 semitones from the root, which are too close to
+    # separate vertically at this panel height, and at Pan_spread = 0 every
+    # dot shares one x.  Alternating by rank guarantees that any two
+    # neighbouring pitches end up on opposite sides of their dots.
     for i from 1 to 6
-        dotR = vColR[i]
-        dotG = vColG[i]
-        dotB = vColB[i]
-        Paint circle (mm): "{" + fixed$(dotR,2) + ", " + fixed$(dotG,2) + ", " + fixed$(dotB,2) + "}", panPos[i], 0.5, 2.8
-        Colour: "Black"
+        ppRank[i] = 1
+        for j from 1 to 6
+            if stVal[j] < stVal[i]
+                ppRank[i] = ppRank[i] + 1
+            endif
+        endfor
+    endfor
+
+    for i from 1 to 6
+        Paint circle (mm): vCol$[i], panPos[i], stVal[i], 1.9
+        Colour: "{0.20, 0.20, 0.24}"
         Font size: 6
-        Text: panPos[i], "centre", 0.18, "half", pitchName$[i]
+        ppLab$ = "##" + pitchName$[i] + "##  " + fixed$(targetFreq[i], 1) + " Hz"
+        ppSideRight = 1
+        if ppRank[i] - 2 * floor(ppRank[i] / 2) = 0
+            ppSideRight = 0
+        endif
+        # ...and a dot sitting on the frame is always labelled inward, so a
+        # hard-panned voice's text cannot run outside the panel.
+        if panPos[i] > 0.72
+            ppSideRight = 0
+        endif
+        if panPos[i] < -0.72
+            ppSideRight = 1
+        endif
+        if ppSideRight = 1
+            Text: panPos[i] + 0.045, "left", stVal[i], "half", ppLab$
+        else
+            Text: panPos[i] - 0.045, "right", stVal[i], "half", ppLab$
+        endif
     endfor
 
     Colour: "Black"
+    Line width: 1
     Draw inner box
+
+    Font size: 6
+    Select inner viewport: ppX1, ppX2, ppY1, ppY2
+    Axes: -1.18, 1.18, stLo, stHi
+    # Semitone marks, not Hz: the hexachord contains 2, 3 and 4 semitones from
+    # the root, so per-pitch Hz labels collide at this panel height.  Each dot
+    # already carries its own frequency.
+    Marks left every: 1, 2, "yes", "yes", "no"
+    One mark bottom: -1, "no", "yes", "no", "L"
+    One mark bottom: -0.5, "no", "yes", "no", "-0.5"
+    One mark bottom: 0, "no", "yes", "no", "C"
+    One mark bottom: 0.5, "no", "yes", "no", "0.5"
+    One mark bottom: 1, "no", "yes", "no", "R"
+
     Font size: 7
-    Text top: "no", "Stereo Pan Map  (L←  " + fixed$(pSpread*100,0) + "% spread  →R)"
+    Select inner viewport: ppX1, ppX2, ppY1, ppY2
+    Axes: -1.18, 1.18, stLo, stHi
+    Text bottom: "yes", "Pan position  (" + fixed$(pSpread*100, 0) + "\%  spread)"
+    Text top: "no", "Pitch x pan field  —  SACHER hexachord on a semitone axis, placed in the stereo image"
+    @railLabelAt: ppX1, ppX2, ppY1, ppY2, 7, 0.32, "Semitones from root"
 
     # ----------------------------------------------------------
-    # PANEL 6 — MIDI / pitch ladder
-    # Shows the six SACHER pitches as horizontal bars
+    # SUMMARY
+    # v4.8 drew two grey boxes on two different grids, the second of which
+    # ("run parameters are reported in the Info window") carried no data.
     # ----------------------------------------------------------
-    Select outer viewport: 5.5, 8, 4.78, 5.60
-    Select inner viewport: 5.68, 7.65, 4.85, 5.55
-
-    # Frequency range for y axis
-    fMin = targetFreq[3] * 0.85
-    fMax = targetFreq[2] * 1.15
-    Axes: 0, 1, fMin, fMax
-    Paint rectangle: "{0.97, 0.97, 0.97}", 0, 1, fMin, fMax
-
-    for i from 1 to 6
-        bR = vColR[i]
-        bG = vColG[i]
-        bB = vColB[i]
-        Paint rectangle: "{" + fixed$(bR,2) + ", " + fixed$(bG,2) + ", " + fixed$(bB,2) + "}",
-        ... 0.1, 0.75, targetFreq[i] - (fMax-fMin)*0.025, targetFreq[i] + (fMax-fMin)*0.025
-        Colour: "Black"
-        Font size: 6
-        Text: 0.80, "left", targetFreq[i], "half", pitchName$[i] + "  " + fixed$(targetFreq[i],1)
-    endfor
-
-    Colour: "Black"
-    Draw inner box
     Font size: 7
-    Text left: "yes", "Hz"
-    Text top: "no", "SACHER Pitches"
-
-    # ----------------------------------------------------------
-    # STATS FOOTER
-    # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 5.65, 6.20
-    Select inner viewport: 0.30, 7.80, 5.70, 6.15
+    Select outer viewport: 0, 8, 6.96, 8.08
+    Select inner viewport: 0.65, 7.65, 7.02, 8.02
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
-    Font size: 7
     Colour: "Black"
-    Text: 0.01, "left", 0.82, "half",
-    ... "##Messagesquisse Opening v4.8.1  | SACHER Hexachord  |  Morse Temporal Structure##"
-    Colour: "{0.35, 0.35, 0.60}"
-    Text: 0.80, "left", 0.82, "half", "Preset: " + preset_name$
+    Text: 0.02, "left", 0.88, "half", "##Summary##  —  SACHER hexachord, Morse temporal structure"
     Font size: 6
+    Colour: "{0.35, 0.35, 0.40}"
+    Text: 0.72, "left", 0.88, "half", "Preset: " + preset_name$
+
+    Font size: 6
+    Select inner viewport: 0.65, 7.65, 7.02, 8.02
+    Axes: 0, 1, 0, 1
     Colour: "{0.30, 0.30, 0.35}"
-    Text: 0.01, "left", 0.55, "half",
-    ... "Source: " + soundName$ + "  (" + fixed$(originalDuration, 3) + " s)" +
-    ... "   Target reg: MIDI " + string$(midiNote) + " (" + noteName$ + " = " + fixed$(baseFreq, 2) + " Hz)" +
-    ... "   Src pitch: MIDI " + string$(sourceMidi) + " (" + fixed$(sourcePitchFreq, 2) + " Hz)" +
-    ... "   dot=" + fixed$(dot, 4) + " s   Score=" + fixed$(totalDuration, 3) + " s"
-    Text: 0.01, "left", 0.30, "half",
-    ... "Wet=" + fixed$(wetMix*100, 0) + "%   Dry=" + fixed$(dryMix*100, 0) + "%" +
-    ... "   Pan spread=" + fixed$(pSpread*100, 0) + "%" +
-    ... "   Fade=" + fixed$(fadeDur*1000, 1) + " ms" +
-    ... "   Loop=" + string$(loopShort) +
-    ... "   SR=" + string$(samplingFrequency) + " Hz"
-    Text: 0.01, "left", 0.08, "half",
-    ... "Layers:  " +
-    ... "Eb=" + fixed$(targetFreq[1],1) + "Hz  " +
-    ... "A=" + fixed$(targetFreq[2],1) + "Hz  " +
-    ... "C=" + fixed$(targetFreq[3],1) + "Hz  " +
-    ... "B=" + fixed$(targetFreq[4],1) + "Hz  " +
-    ... "E=" + fixed$(targetFreq[5],1) + "Hz  " +
-    ... "D=" + fixed$(targetFreq[6],1) + "Hz"
-    Colour: "Black"
-    Draw rectangle: 0, 1, 0, 1
+    Text: 0.02, "left", 0.68, "half",
+    ... "Source: " + soundName$ + "  (" + fixed$(originalDuration, 3) + " s)"
+    ... + "   |   Target register: MIDI " + string$(midiNote) + " (" + noteName$ + " = " + fixed$(baseFreq, 2) + " Hz)"
+    ... + "   |   Assumed source pitch: MIDI " + string$(sourceMidi) + " (" + fixed$(sourcePitchFreq, 2) + " Hz)"
+    Text: 0.02, "left", 0.50, "half",
+    ... "dot=" + fixed$(dot, 4) + " s   dash=" + fixed$(dash, 4) + " s   score = 36 units = " + fixed$(totalDuration, 3) + " s"
+    ... + "   |   Wet " + fixed$(wetMix*100, 0) + "\%  / dry " + fixed$(dryMix*100, 0) + "\%  "
+    ... + "   |   Pan spread " + fixed$(pSpread*100, 0) + "\%  "
+    ... + "   |   Fade " + fixed$(fadeDur*1000, 1) + " ms"
+    ... + "   |   Loop " + string$(loopShort)
+    ... + "   |   SR " + string$(samplingFrequency) + " Hz"
+    Text: 0.02, "left", 0.32, "half",
+    ... "Layers (entry s / Hz / pan):  "
+    ... + pitchName$[1] + " " + fixed$(entry[1],2) + "/" + fixed$(targetFreq[1],1) + "/" + fixed$(panPos[1],2) + "   "
+    ... + pitchName$[2] + " " + fixed$(entry[2],2) + "/" + fixed$(targetFreq[2],1) + "/" + fixed$(panPos[2],2) + "   "
+    ... + pitchName$[3] + " " + fixed$(entry[3],2) + "/" + fixed$(targetFreq[3],1) + "/" + fixed$(panPos[3],2) + "   "
+    ... + pitchName$[4] + " " + fixed$(entry[4],2) + "/" + fixed$(targetFreq[4],1) + "/" + fixed$(panPos[4],2) + "   "
+    ... + pitchName$[5] + " " + fixed$(entry[5],2) + "/" + fixed$(targetFreq[5],1) + "/" + fixed$(panPos[5],2) + "   "
+    ... + pitchName$[6] + " " + fixed$(entry[6],2) + "/" + fixed$(targetFreq[6],1) + "/" + fixed$(panPos[6],2)
+    Text: 0.02, "left", 0.13, "half",
+    ... "Output peak " + fixed$(outPeak, 4) + "   |   duration " + fixed$(totalDuration, 3) + " s   |   stereo"
 
-    Font size: 10
-    Colour: "Black"
-    Line width: 1
-
-
-    # ----------------------------------------------------------
-    # Summary strip
-    # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 6.32, 6.88
-    Select inner viewport: 0.60, 7.70, 6.32 + 0.04, 6.88 - 0.04
-    Axes: 0, 1, 0, 1
-    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
-    Font size: 7
-    Colour: "Black"
-    Text: 0.02, "left", 0.72, "half", "##Summary##"
     Font size: 6
-    Colour: "{0.25, 0.25, 0.35}"
-    Text: 0.02, "left", 0.45, "half", "Pitch-field opening • structural events • transformed output"
-    Text: 0.02, "left", 0.20, "half", "Messagesquisse Opening • run parameters are reported in the Info window"
+    Select inner viewport: 0.65, 7.65, 7.02, 8.02
+    Axes: 0, 1, 0, 1
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
 
-    pageHeight = 6.98
-    Select outer viewport: 0, 8, 0, pageHeight
-    Font size: 10
+    # Save as / Copy from the Picture window exports the CURRENT viewport
+    # selection, so the script must end on the whole canvas or the export
+    # comes out cropped to the last panel drawn.
     Colour: "Black"
     Line width: 1
     Solid line
+    Font size: 10
+    Select outer viewport: 0, 8, 0, canvasH
 endif
 
 # ============================================================
@@ -1162,3 +1546,64 @@ selectObject: finalStereo
 if play_result = 1
     Play
 endif
+
+# ============================================================
+# VISUALIZATION HELPERS
+# ============================================================
+
+# Text left: / Text right: position a rotated panel label against whatever
+# drawing frame is current, so panels of different widths get their names at
+# different x — in v4.8 the five rail labels sat at four different positions.
+# Placing them at an ABSOLUTE page position keeps the rail straight.
+# Vertical alignment must be "bottom", not "half": "half" anchors the glyph
+# bounding box, so a descender shifts that one label off the rail.
+procedure railLabelAt: .x1, .x2, .y1, .y2, .size, .targetIn, .label$
+    .xn = (.targetIn - .x1) / (.x2 - .x1)
+    Font size: .size
+    Select inner viewport: .x1, .x2, .y1, .y2
+    Axes: 0, 1, 0, 1
+    Colour: "Black"
+    Text special: .xn, "centre", 0.5, "bottom", "Helvetica", .size, "90", .label$
+endproc
+
+# Axis tick spacing: the largest 1/2/5 x 10^k step that still gives roughly
+# the requested number of divisions across the span.  Short panels need a
+# coarser step or the numbers stack on top of each other.
+procedure niceTick: .span
+    @niceTickN: .span, 8
+    .t = niceTickN.t
+endproc
+
+procedure niceTickN: .span, .divisions
+    if .span <= 0
+        .t = 1
+    else
+        .raw  = .span / .divisions
+        .expo = floor(log10(.raw))
+        .base = .raw / 10 ^ .expo
+        if .base < 1.5
+            .m = 1
+        elsif .base < 3.5
+            .m = 2
+        elsif .base < 7.5
+            .m = 5
+        else
+            .m = 10
+        endif
+        .t = .m * 10 ^ .expo
+    endif
+endproc
+
+
+# Pearson r from running sums, so the measured envelope and the predicted
+# stack can be compared without a second pass over the audio.
+procedure pearson: .n, .sx, .sy, .sxy, .sx2, .sy2
+    .num = .n * .sxy - .sx * .sy
+    .d1  = .n * .sx2 - .sx * .sx
+    .d2  = .n * .sy2 - .sy * .sy
+    if .d1 <= 0 or .d2 <= 0
+        .r = undefined
+    else
+        .r = .num / sqrt(.d1 * .d2)
+    endif
+endproc
