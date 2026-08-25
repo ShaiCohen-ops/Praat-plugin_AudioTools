@@ -169,7 +169,7 @@ jobs:
             echo 'ERROR: Praat.app unexpectedly present in ZIP'
             exit 1
           fi
-          shasum -a 256 "$OUT" | tee "$GITHUB_WORKSPACE/Max-MSP/Praat_AudioTools_1.0.0_macOS_Universal2.sha256"
+          (cd "$(dirname "$OUT")" && shasum -a 256 "$(basename "$OUT")") | tee "$GITHUB_WORKSPACE/Max-MSP/Praat_AudioTools_1.0.0_macOS_Universal2.sha256"
           echo "size_mib=$MIB" >> "$GITHUB_OUTPUT"
 
       - name: Commit macOS ZIP to repository
