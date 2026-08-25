@@ -3,7 +3,14 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.5 (2025)
+# Version: 0.5.1 (2026)
+# v0.5.1 (2026): Validation/reporting fixes only; random-walk and PSOLA DSP unchanged.
+#   - Require at least 1 output channel and at least 1 interior control point.
+#   - Require Min_factor < Max_factor and unity inside the allowed range,
+#     because every DurationTier is anchored to 1.0 at both endpoints.
+#   - Require Pitch_ceiling > Pitch_floor before creating Manipulation objects.
+#   - Clarify that Variability is the walk parameter, while the reported SD
+#     is measured over all interior factor samples and is not the same target.
 # v0.5 (2026): SPATIAL VISUALIZATION STANDARDIZATION ONLY - label rails, compact summary, typography; DSP unchanged.
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
@@ -73,7 +80,7 @@ tmin = Get start time
 tmax = Get end time
 totalDur = tmax - tmin
 
-form Random DurationTier Multichannel Generator v0.5
+form Random DurationTier Multichannel Generator v0.5.1
     comment ==== Presets ====
     optionmenu Preset: 1
         option Custom
@@ -146,6 +153,24 @@ elsif preset = 7
     max_factor = 5.00
 endif
 
+# v0.5.1: validate the effective values after preset application.
+# Named presets are valid by construction; these checks primarily protect Custom.
+if number_of_channels < 1
+    exitScript: "Number_of_channels must be at least 1."
+endif
+if control_points < 1
+    exitScript: "Control_points must be at least 1."
+endif
+if min_factor >= max_factor
+    exitScript: "Min_factor must be smaller than Max_factor."
+endif
+if min_factor > 1.0 or max_factor < 1.0
+    exitScript: "The duration-factor range must include 1.0 because every DurationTier is anchored to unity at the start and end."
+endif
+if pitch_ceiling <= pitch_floor
+    exitScript: "Pitch_ceiling must be greater than Pitch_floor."
+endif
+
 # Resolve preset name and boundary handling name for display
 if preset = 1
     presetName$ = "Custom"
@@ -175,13 +200,13 @@ endif
 nTiers = number_of_channels
 nPts = control_points
 
-writeInfoLine: "=== Random DurationTier Multichannel Generator v0.5 ==="
+writeInfoLine: "=== Random DurationTier Multichannel Generator v0.5.1 ==="
 appendInfoLine: "Processing: ", origName$
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Duration: ", fixed$(totalDur, 3), " s"
 appendInfoLine: "Number of channels: ", nTiers
 appendInfoLine: "Control points per channel: ", nPts
-appendInfoLine: "Variability: ", fixed$(variability, 2)
+appendInfoLine: "Variability parameter: ", fixed$(variability, 2)
 appendInfoLine: "Range: ", fixed$(min_factor, 2), " to ", fixed$(max_factor, 2)
 appendInfoLine: "Boundary handling: ", boundaryName$
 appendInfoLine: ""
@@ -374,9 +399,9 @@ nResultCh = Get number of channels
 # COMPUTE ACHIEVED STATISTICS  (for summary bar)
 # ============================================================
 
-# Achieved variance over all factor samples (excluding tmin/tmax anchors
-# which are always exactly 1.0). The "interior" stats are what the user
-# actually asked for via variability.
+# Descriptive statistics over all interior factor samples, excluding the
+# tmin/tmax unity anchors. These are observed sample statistics, not a
+# direct target implied by the Variability parameter.
 sumF = 0
 sumF2 = 0
 nInterior = 0
@@ -418,7 +443,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##RANDOM DURATION-TIER MULTICHANNEL GENERATOR v0.5##"
+    Text: 0.5, "centre", 0.68, "half", "##RANDOM DURATION-TIER MULTICHANNEL GENERATOR v0.5.1##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
     Text: 0.5, "centre", -0.22, "half",
@@ -780,12 +805,12 @@ if draw_visualization
         ... + "  |  Pitch: " + fixed$(pitch_floor, 0) + "-" + fixed$(pitch_ceiling, 0) + " Hz"
     
     Text: 0.02, "left", 0.28, "half",
-        ... "Variability target: " + fixed$(variability, 2)
-        ... + "  |  Achieved std-dev: " + fixed$(achievedSD, 3)
+        ... "Variability parameter: " + fixed$(variability, 2)
+        ... + "  |  Interior-factor SD: " + fixed$(achievedSD, 3)
         ... + "  |  Mean factor: " + fixed$(meanF, 3)
         ... + "  |  Output: " + fixed$(finalDur, 2) + " s"
         ... + "  |  Peak: " + fixed$(finalPeak, 3)
-        ... + "  |  Tiers stored: " + string$(nFactorsTotal)
+        ... + "  |  Factor samples: " + string$(nFactorsTotal)
     
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
@@ -832,8 +857,8 @@ appendInfoLine: "Original: ", origName$
 appendInfoLine: "Result: ", finalName$
 appendInfoLine: "Channels: ", nTiers
 appendInfoLine: "Boundary handling: ", boundaryName$
-appendInfoLine: "Variability target: ", fixed$(variability, 3),
-    ... "    Achieved std-dev: ", fixed$(achievedSD, 3)
+appendInfoLine: "Variability parameter: ", fixed$(variability, 3),
+    ... "    Interior-factor SD: ", fixed$(achievedSD, 3)
 appendInfoLine: "Peak: ", fixed$(scale_peak, 2)
 if keep_duration_tiers
     appendInfoLine: "Duration tiers: kept (", nTiers, " tiers)"
