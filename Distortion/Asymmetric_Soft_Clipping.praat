@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4 (2026) - Suite-standard visualization
+# Version: 0.4.1 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -26,6 +26,19 @@
 #   Cohen, S. (2025). Praat AudioTools: An Offline Analysis-Resynthesis
 #   Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v0.4.1 (2026):
+#   - FIXED: final summary now appends to the Info window instead of
+#     erasing the earlier diagnostic report.
+#   - FIXED: peak normalization skips a silent (zero-peak) result safely.
+#   - RENAMED: "Conditional limiter to 0.95" ->
+#     "Attenuate to 0.95 only if peak > 0.95"; the DSP is unchanged.
+#   - FIXED: visualization DC references now distinguish raw y(0),
+#     zero-in/zero-out compensation, and source-dependent mean removal.
+#   - FIXED: transfer-function bounds follow the selected DC mode;
+#     source-dependent mean removal no longer shows a static ceiling.
+#   - FIXED: multichannel waveform labels use Ch 1 / Ch 2 and state
+#     when additional channels are preserved but not drawn.
 #
 # Changelog v0.4 (2026):
 #   - VISUALIZATION STANDARDIZATION ONLY; audio/DSP, analysis,
@@ -107,7 +120,7 @@
 #     across older Praat versions. 5 presets.
 # ============================================================
 
-form Asymmetric Soft Clipping v0.4
+form Asymmetric Soft Clipping v0.4.1
     comment Select a Preset (overrides sliders below)
     optionmenu Preset: 1
         option Manual (Use settings below)
@@ -131,7 +144,7 @@ form Asymmetric Soft Clipping v0.4
         option Remove final mean
     optionmenu Output_level: 1
         option Preserve shaped level
-        option Conditional limiter to 0.95
+        option Attenuate to 0.95 only if peak > 0.95
         option Normalize peak to 0.95
     boolean Draw_visualization 1
     boolean Play_result 1
@@ -195,7 +208,7 @@ selectObject: original
 inputDur = Get total duration
 inputCh = Get number of channels
 
-writeInfoLine: "=== Asymmetric Soft Clipping v0.4 ==="
+writeInfoLine: "=== Asymmetric Soft Clipping v0.4.1 ==="
 appendInfoLine: "Source: ", origName$, " (", fixed$(inputDur, 2), " s, ", inputCh, " ch)"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
@@ -279,26 +292,29 @@ appendInfoLine: "Peak before level stage: ", fixed$(prePeak, 4)
 # max|g*f(x)| = 0.95 * f(x) / max|f(x)| for every non-zero g. With
 # Scale_peak on, gains of 0.2, 0.8 and 2.0 gave byte-identical output.
 # The parameter was displayed and reported while controlling nothing.
-# A conditional limiter leaves Output_Gain meaningful until it actually
-# overshoots. Preserve is the default, matching Scale_peak = 0.
+# Conditional attenuation leaves Output_Gain meaningful until the result
+# actually overshoots 0.95. Preserve is the default, matching Scale_peak = 0.
 levelScale = 1
 if output_level = 2
     if prePeak > 0.95
         selectObject: result
         Scale peak: 0.95
         levelScale = 0.95 / prePeak
-        levelDesc$ = "limited to 0.95"
+        levelDesc$ = "attenuated to 0.95"
     else
         levelDesc$ = "unchanged"
     endif
 elsif output_level = 3
-    selectObject: result
-    Scale peak: 0.95
     if prePeak > 0
+        selectObject: result
+        Scale peak: 0.95
         levelScale = 0.95 / prePeak
+        levelDesc$ = "normalized to 0.95"
+        appendInfoLine: "  NOTE: peak normalization divides Output_Gain back out - it no longer affects the result."
+    else
+        levelDesc$ = "silent; normalization skipped"
+        appendInfoLine: "  NOTE: result peak is zero; normalization was skipped."
     endif
-    levelDesc$ = "normalized to 0.95"
-    appendInfoLine: "  NOTE: peak normalization divides Output_Gain back out - it no longer affects the result."
 else
     levelDesc$ = "preserved"
     # v0.3 (item 5): tanh bounds the shaped signal to +/-1, so the peak
@@ -351,7 +367,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##Asymmetric Soft Clipping v0.4##"
+    Text: 0.5, "centre", 0.68, "half", "##Asymmetric Soft Clipping v0.4.1##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
     Text: 0.5, "centre", 0.22, "half",
@@ -432,17 +448,34 @@ if draw_visualization
     Text: -1.45, "left", 1, "bottom", " +1 full scale"
     Text: -1.45, "left", -1, "top", " -1 full scale"
     
-    # Engine ceiling: |Output_Gain| after the level stage
-    engineCeil = abs(output_Gain) * levelScale
-    if engineCeil > 0.001 and engineCeil < yLim
+    # Static tanh output bounds. Raw mode is symmetric around zero.
+    # DC compensation subtracts the raw zero-input offset, so the two
+    # bounds move by the same amount. Final-mean removal is source-dependent
+    # and therefore has no x-only static bound to draw here.
+    if bias_mode = 1
+        upperBound = abs(output_Gain) * levelScale
+        lowerBound = -abs(output_Gain) * levelScale
+        boundLabel$ = "tanh bounds"
+    elsif bias_mode = 2
+        upperBound = (abs(output_Gain) - zeroOffset) * levelScale
+        lowerBound = (-abs(output_Gain) - zeroOffset) * levelScale
+        boundLabel$ = "DC-comp. bounds"
+    endif
+    if bias_mode <> 3
         Colour: "{0.85, 0.72, 0.45}"
         Dotted line
-        Draw line: -1.5, engineCeil, 1.5, engineCeil
-        Draw line: -1.5, -engineCeil, 1.5, -engineCeil
+        if upperBound > -yLim and upperBound < yLim
+            Draw line: -1.5, upperBound, 1.5, upperBound
+        endif
+        if lowerBound > -yLim and lowerBound < yLim
+            Draw line: -1.5, lowerBound, 1.5, lowerBound
+        endif
         Solid line
         Font size: 6
         Colour: "{0.60, 0.45, 0.20}"
-        Text: 1.45, "right", engineCeil, "bottom", "ceiling "
+        if upperBound > -yLim and upperBound < yLim
+            Text: 1.45, "right", upperBound, "bottom", boundLabel$
+        endif
     endif
     
     # Bias offset reference (vertical line at the input level
@@ -562,7 +595,14 @@ if draw_visualization
     Font size: 7
     Colour: "{0.55, 0.55, 0.55}"
     Text: 0.10, "left", 0.13, "half", "Level: " + levelDesc$
-    Text: 0.10, "left", 0.06, "half", "DC: " + biasDesc$ + " (y(0)=" + fixed$(zeroOffset, 3) + ")"
+    if bias_mode = 1
+        dcViz$ = "Raw y(0): " + fixed$(zeroOffset, 3)
+    elsif bias_mode = 2
+        dcViz$ = "Raw y(0): " + fixed$(zeroOffset, 3) + " -> effective 0"
+    else
+        dcViz$ = "Raw y(0): " + fixed$(zeroOffset, 3) + " | final source-dependent"
+    endif
+    Text: 0.10, "left", 0.06, "half", dcViz$
     
     Colour: "Black"
     Draw inner box
@@ -624,8 +664,10 @@ if draw_visualization
     Line width: 1
     Draw inner box
     Font size: 7
-    if nResultCh > 1
-        Text top: "no", "Output  (blue=L  orange=R)"
+    if nResultCh = 2
+        Text top: "no", "Output  (blue=Ch 1  orange=Ch 2)"
+    elsif nResultCh > 2
+        Text top: "no", "Output  (Ch 1/2 shown; " + string$(nResultCh) + " channels preserved)"
     else
         Text top: "no", "Output (mono)"
     endif
@@ -675,7 +717,7 @@ endif
 # === Final ===
 selectObject: result
 
-writeInfoLine: "=== Asymmetric Soft Clipping v0.4 ==="
+appendInfoLine: "--- Final result ---"
 appendInfoLine: "Source: ", origName$
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Drive: ", fixed$(drive, 2), " | Bias: ", fixed$(bias, 3)

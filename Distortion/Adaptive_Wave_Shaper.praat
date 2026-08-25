@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.8 (2026) - Suite-standard visualization
+# Version: 0.8.1 (2026) - output-level terminology and multichannel visualization labels
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -25,7 +25,7 @@
 #     1. Multiply by drive (raw level boost)
 #     2. Apply N rounds of symmetric folding through ±threshold
 #     3. Optional saturation (sin / tanh / none)
-#     4. Output level stage (normalize / conditional limiter /
+#     4. Output level stage (normalize / conditional attenuation /
 #        preserve)
 #
 #   Folding behavior note: at high drive (>2x threshold) and
@@ -37,6 +37,18 @@
 #   Cohen, S. (2025). Praat AudioTools: An Offline Analysis-Resynthesis
 #   Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v0.8.1 (2026):
+#   - TERMINOLOGY ONLY: renamed the second Output_level choice from
+#     "Conditional limiter" to "Attenuate to 0.9 only if peak > 1".
+#     The DSP is unchanged: when the pre-output peak exceeds 1.0, the
+#     entire file is scaled uniformly to peak 0.9; no dynamic limiter
+#     is involved.
+#   - VISUALIZATION: multichannel waveform labels are now channel-
+#     neutral (Ch 1 / Ch 2 rather than L / R). For outputs above two
+#     channels the panel states that only the first two channels are
+#     shown, while the summary and Info report the full retained
+#     channel count. Audio/DSP unchanged.
 #
 # Changelog v0.8 (2026):
 #   - VISUALIZATION STANDARDIZATION ONLY; audio/DSP, analysis,
@@ -104,8 +116,9 @@
 #     reduces the excess by only 2 * threshold, so drive 8 with
 #     threshold 0.01 still leaves about 7.84 after eight folds. The
 #     pre-output peak is now reported, Output_level replaces the
-#     Normalize boolean (normalize / conditional limiter /
-#     preserve), and Preserve warns when the peak exceeds 1.0.
+#     Normalize boolean (normalize / conditional attenuation /
+#     preserve; originally labelled conditional limiter), and Preserve
+#     warns when the peak exceeds 1.0.
 #   - CORRECTED: the sin blend was described as non-monotonic. Its
 #     derivative 0.6*cos(2x) + 0.7 stays within [0.1, 1.3] and never
 #     reaches zero, so it is monotonically increasing everywhere -
@@ -152,7 +165,7 @@
 #   - Added transfer function display
 # ============================================================
 
-form Adaptive Wave Shaper v0.8
+form Adaptive Wave Shaper v0.8.1
     comment Select a Sound object first
     
     comment === Preset ===
@@ -188,7 +201,7 @@ form Adaptive Wave Shaper v0.8
     comment === Output ===
     optionmenu Output_level: 1
         option Normalize to 0.9
-        option Conditional limiter (only if peak > 1)
+        option Attenuate to 0.9 only if peak > 1
         option Preserve
     boolean Draw_visualization 1
     boolean Play_result 1
@@ -274,7 +287,7 @@ else
 endif
 
 # === Info ===
-writeInfoLine: "=== Adaptive Wave Shaper v0.8 ==="
+writeInfoLine: "=== Adaptive Wave Shaper v0.8.1 ==="
 appendInfoLine: "Source: ", original_name$, " (", fixed$(duration, 2), " s, ", input_n_channels, " ch)"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Saturation: ", satName$
@@ -484,7 +497,7 @@ elsif output_level = 2
     if prePeak > 1.0
         selectObject: result
         Scale peak: 0.9
-        levelDesc$ = "limited to 0.9 (peak was " + fixed$(prePeak, 2) + ")"
+        levelDesc$ = "attenuated to 0.9 (peak was " + fixed$(prePeak, 2) + ")"
     else
         levelDesc$ = "unchanged (peak " + fixed$(prePeak, 3) + ")"
     endif
@@ -528,7 +541,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##Adaptive Wave Shaper v0.8##"
+    Text: 0.5, "centre", 0.68, "half", "##Adaptive Wave Shaper v0.8.1##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
     Text: 0.5, "centre", 0.22, "half",
@@ -778,8 +791,10 @@ if draw_visualization
     Line width: 1
     Draw inner box
     Font size: 7
-    if nResultCh > 1
-        Text top: "no", "Output  (blue=L  orange=R)"
+    if nResultCh = 2
+        Text top: "no", "Output  (blue=Ch 1  orange=Ch 2)"
+    elsif nResultCh > 2
+        Text top: "no", "Output  (blue=Ch 1  orange=Ch 2; showing 2 of " + string$(nResultCh) + " ch)"
     else
         Text top: "no", "Output (mono)"
     endif
@@ -810,7 +825,7 @@ if draw_visualization
         ... + "  |  J-sens: " + fixed$(jitter_sensitivity, 1)
         ... + "  |  S-sens: " + fixed$(shimmer_sensitivity, 1)
         ... + "  |  Level: " + levelDesc$
-        ... + "  |  Output: " + fixed$(finalDur, 2) + " s, peak " + fixed$(finalPeak, 3)
+        ... + "  |  Output: " + fixed$(finalDur, 2) + " s, " + string$(nResultCh) + " ch, peak " + fixed$(finalPeak, 3)
     
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
@@ -834,6 +849,7 @@ appendInfoLine: ""
 appendInfoLine: "=== Done ==="
 appendInfoLine: "Created: ", selected$("Sound")
 appendInfoLine: "Duration: ", fixed$(finalDur, 2), " s"
+appendInfoLine: "Channels: ", nResultCh
 appendInfoLine: "Peak: ", fixed$(finalPeak, 4)
 
 if play_result
