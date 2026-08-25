@@ -3,8 +3,10 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.4 (2026) - Stable temperature mapping, correct weight metric,
-#                        representative-channel analysis, weighted projection
+# Version: 1.7 (2026) - Rebuilt figure: 2:1 phase-space panel with clustered
+#                        event cloud, arrowed attractor path, plan overlay,
+#                        legend + callouts; plan-timeline panel replacing both
+#                        spectrograms; layout + label-collision fixes
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -621,8 +623,11 @@ if fileReadable(tempStats$)
     if nPTP$ <> "?"
         nPTrajPts = number(nPTP$)
     endif
-    if nPTrajPts > 200
-        nPTrajPts = 200
+    # The attractor curve is the one element that genuinely needs
+    # resolution: at 200 points a Lorenz spiral renders as a polygon.
+    # 800 segments cost ~0.3 s in the Picture window.
+    if nPTrajPts > 800
+        nPTrajPts = 800
     endif
     for iTP from 0 to nPTrajPts - 1
         @parseStatLine: statsText$, "ptr_" + string$(iTP) + "="
@@ -666,27 +671,160 @@ endif
 
 ###############################################################################
 # VISUALIZATION
+#
+# Canvas: 8.0 x 10.50 in.  All panels share the 0.60 / 7.70 horizontal grid.
+#
+# Panel stack:
+#   Original waveform + event boundaries      source time (what was segmented)
+#   Output waveform                       \   output time
+#   Plan timeline                         /   (what came out, and WHEN each
+#                                              source event is used)
+#   Phase-space mapping                       (WHERE in feature space it goes)
+#   Summary
+#
+# The output/timeline pair shares one x axis: ticks on both panels, numbers
+# only on the lower one.
+#
+# Both spectrograms were dropped (v1.6 / v1.7).  The output one gave ~7 px per
+# event at 300 plan steps — texture, not structure — on a time axis 3-4x
+# compressed relative to the panel above it.  The original one was legible but
+# not load-bearing: the waveform above it already shows the segmentation and
+# the phase-space scatter shows the spectral spread in the coordinates the
+# algorithm actually uses.  The plan timeline replaces them and carries what
+# the figure was missing: selection order, dwell and repetition.
 ###############################################################################
 
 if draw_visualization
     appendInfoLine: "Drawing visualization..."
 
-    Erase all
-    Select outer viewport: 0, 8, 0, 8
+    canvasH = 9.22
 
-    # === Title ===
-    Select outer viewport: 0, 8, 0, 0.5
-    Axes: 0, 1, 0, 1
+    Erase all
+    Select outer viewport: 0, 8, 0, canvasH
+
+    # =================================================================
+    # Cluster the projected event cloud ONCE, up front, so the plan
+    # timeline and the phase-space panel can share one colour code.
+    #
+    # Plain k-means over the same 2-D weighted projection that gets
+    # plotted, with deterministic farthest-point seeding so a given run
+    # always produces the same colouring.  It is a reading aid for the
+    # scatter, not a claim about structure in the full state space.
+    # =================================================================
+    kClust = 1
+    if nPEvPts >= 6
+        kClust = 2
+    endif
+    if nPEvPts >= 15
+        kClust = 3
+    endif
+
+    if nPEvPts > 0
+        cmX = 0
+        cmY = 0
+        for iK from 0 to nPEvPts - 1
+            cmX += pep_'iK'_x
+            cmY += pep_'iK'_y
+        endfor
+        cmX /= nPEvPts
+        cmY /= nPEvPts
+
+        bestD = -1
+        bestI = 0
+        for iK from 0 to nPEvPts - 1
+            ddK = (pep_'iK'_x - cmX)^2 + (pep_'iK'_y - cmY)^2
+            if bestD < 0 or ddK < bestD
+                bestD = ddK
+                bestI = iK
+            endif
+        endfor
+        cenX[1] = pep_'bestI'_x
+        cenY[1] = pep_'bestI'_y
+
+        for kSeed from 2 to kClust
+            bestD = -1
+            bestI = 0
+            for iK from 0 to nPEvPts - 1
+                nearD = -1
+                for jK from 1 to kSeed - 1
+                    ddK = (pep_'iK'_x - cenX[jK])^2 + (pep_'iK'_y - cenY[jK])^2
+                    if nearD < 0 or ddK < nearD
+                        nearD = ddK
+                    endif
+                endfor
+                if nearD > bestD
+                    bestD = nearD
+                    bestI = iK
+                endif
+            endfor
+            cenX[kSeed] = pep_'bestI'_x
+            cenY[kSeed] = pep_'bestI'_y
+        endfor
+
+        for iterK from 1 to 20
+            for kK from 1 to kClust
+                sumKX[kK] = 0
+                sumKY[kK] = 0
+                cntK[kK]  = 0
+            endfor
+            for iK from 0 to nPEvPts - 1
+                nearD = -1
+                nearK = 1
+                for kK from 1 to kClust
+                    ddK = (pep_'iK'_x - cenX[kK])^2 + (pep_'iK'_y - cenY[kK])^2
+                    if nearD < 0 or ddK < nearD
+                        nearD = ddK
+                        nearK = kK
+                    endif
+                endfor
+                evClust[iK + 1] = nearK
+                sumKX[nearK] += pep_'iK'_x
+                sumKY[nearK] += pep_'iK'_y
+                cntK[nearK]  += 1
+            endfor
+            for kK from 1 to kClust
+                if cntK[kK] > 0
+                    cenX[kK] = sumKX[kK] / cntK[kK]
+                    cenY[kK] = sumKY[kK] / cntK[kK]
+                endif
+            endfor
+        endfor
+    endif
+
+    # The output waveform and the plan timeline share one x axis.  Ticks are
+    # drawn on both but NUMBERED only on the lower one — flush stacked panels
+    # that each number a shared axis collide three ways (upper numbers, lower
+    # caption, lower top-left tick label).
+    @niceTick: dur
+    tickIn = niceTick.t
+    @niceTick: durOut
+    tickOut = niceTick.t
+
+    clusCol1$ = "{0.16, 0.44, 0.86}"
+    clusCol2$ = "{0.09, 0.68, 0.57}"
+    clusCol3$ = "{0.94, 0.53, 0.13}"
+    trajCol$  = "{0.22, 0.26, 0.31}"
+    planCol$  = "{0.46, 0.20, 0.86}"
+
+    # === Title =======================================================
+    # A title strip must use Select INNER viewport: Axes maps to the
+    # inner viewport, so an outer-viewport strip is silently inset by the
+    # standard margins and the two lines collapse onto each other.
     Font size: 12
+    Select inner viewport: 0.6, 7.7, 0.04, 0.38
+    Axes: 0, 1, 0, 1
     Colour: "Black"
-    Text: 0.5, "centre", 0.72, "half", "##Phase-Space Composition##"
+    Text: 0.5, "centre", 0.80, "half", "##Phase-Space Composition##"
     Font size: 8
-    Colour: "{0.4, 0.4, 0.5}"
+    Select inner viewport: 0.6, 7.7, 0.04, 0.38
+    Axes: 0, 1, 0, 1
+    Colour: "{0.40, 0.40, 0.50}"
     Text: 0.5, "centre", 0.18, "half", soundName$ + " | " + attractorStr$ + " | " + stateDimStr$ + " | W=" + weightName$ + " | Vel=" + fixed$(velocity_weight, 2) + " | Cpl=" + fixed$(coupling, 2) + " | T=" + fixed$(temperature, 2) + " | Seed=" + string$(seed)
 
-    # === Input Waveform + Event Boundaries ===
-    Select outer viewport: 0, 8, 0.6, 1.5
-    Select inner viewport: 0.6, 7.7, 0.65, 1.45
+    # === Input Waveform + Event Boundaries ===========================
+    Font size: 7
+    Select outer viewport: 0, 8, 0.46, 1.26
+    Select inner viewport: 0.6, 7.7, 0.56, 1.16
     selectObject: sound
     if nChannels > 1
         Extract one channel: analysisChannel
@@ -699,27 +837,36 @@ if draw_visualization
     Draw: 0, 0, -1, 1, "no", "Curve"
     removeObject: tmpOrigWav
 
-    Colour: "{0.8, 0.25, 0.25}"
-    Line width: 1
+    Font size: 7
+    Select inner viewport: 0.6, 7.7, 0.56, 1.16
     Axes: 0, dur, -1, 1
+    Colour: "{0.80, 0.25, 0.25}"
+    Line width: 1
     for iEv from 1 to nEvents
         bS = evStart[iEv]
         if bS > 0
             Draw line: bS, -0.88, bS, 0.88
         endif
     endfor
-    Line width: 1
     Colour: "Black"
     Draw inner box
-    Select inner viewport: 0.6, 7.7, 0.65, 1.45
-    Axes: 0, dur, -1, 1
-    Font size: 7
-    Text left: "yes", "Original"
-    Text top: "no", string$(nEvents) + " events  | " + fixed$(dur, 2) + " s"
 
-    # === Output Waveform ===
-    Select outer viewport: 0, 8, 1.5, 2.4
-    Select inner viewport: 0.6, 7.7, 1.55, 2.35
+    Font size: 7
+    Select inner viewport: 0.6, 7.7, 0.56, 1.16
+    Axes: 0, dur, -1, 1
+    Marks bottom every: 1, tickIn, "yes", "yes", "no"
+    Text bottom: "yes", "Source time (s)"
+
+    Font size: 7
+    Select inner viewport: 0.6, 7.7, 0.56, 1.16
+    Axes: 0, 1, 0, 1
+    Text top: "no", string$(nEvents) + " segmented events  |  " + fixed$(dur, 2) + " s"
+    @railLabel: 0.6, 7.7, 0.56, 1.16, 7, "Original"
+
+    # === Output Waveform =============================================
+    Font size: 7
+    Select outer viewport: 0, 8, 1.62, 2.34
+    Select inner viewport: 0.6, 7.7, 1.68, 2.28
     selectObject: resultSound
     if outChans > 1
         visOutChannel = analysisChannel
@@ -728,82 +875,117 @@ if draw_visualization
         endif
         Extract one channel: visOutChannel
         tmpOutWav = selected("Sound")
-        Colour: "{0.2, 0.5, 0.75}"
+        Colour: "{0.20, 0.50, 0.75}"
         Draw: 0, 0, -1, 1, "no", "Curve"
         removeObject: tmpOutWav
     else
         selectObject: resultSound
-        Colour: "{0.2, 0.5, 0.75}"
+        Colour: "{0.20, 0.50, 0.75}"
         Draw: 0, 0, -1, 1, "no", "Curve"
     endif
     Colour: "Black"
     Draw inner box
-    Select inner viewport: 0.6, 7.7, 1.55, 2.35
-    Axes: 0, durOut, -1, 1
+
     Font size: 7
-    Text left: "yes", "Output"
-    Text bottom: "yes", "Time (s)"
+    Select inner viewport: 0.6, 7.7, 1.68, 2.28
+    Axes: 0, durOut, -1, 1
+    Marks bottom every: 1, tickOut, "no", "yes", "no"
+    @railLabel: 0.6, 7.7, 1.68, 2.28, 7, "Output"
 
-    # === Input Spectrogram ===
-    Select outer viewport: 0, 8, 2.5, 3.65
-    Select inner viewport: 0.6, 7.7, 2.55, 3.60
-    selectObject: sound
-    if nChannels > 1
-        Extract one channel: analysisChannel
-        tmpOrigSpec = selected("Sound")
-    else
-        Copy: "tmpOrigSpec"
-        tmpOrigSpec = selected("Sound")
-    endif
-    To Spectrogram: 0.03, 5000, 0.002, 20, "Gaussian"
-    specOrig = selected("Spectrogram")
-    Paint: 0, 0, 0, 5000, 100, "yes", 50, 6, 0, "no"
-    Colour: "Black"
-    Draw inner box
-    Select inner viewport: 0.6, 7.7, 2.55, 3.60
-    Axes: 0, dur, 0, 5000
+    # =================================================================
+    # === Plan Timeline ===============================================
+    #
+    # Source event index against OUTPUT time, one bar per plan step,
+    # coloured with the same cluster code as the phase-space panel.
+    # Horizontal runs = the attractor dwelling in one region of the
+    # corpus; vertical scatter = it sweeping across the corpus; a row
+    # that fires repeatedly is what Tabu_length and Temperature exist
+    # to control, and Rep in the summary box is that made visible.
+    # =================================================================
+    tlX1 = 0.6
+    tlX2 = 7.7
+    tlY1 = 2.52
+    tlY2 = 3.62
+
+    Select outer viewport: 0, 8, 2.36, 3.64
+
     Font size: 6
-    Text left: "yes", "Hz"
-    Text top: "no", "Original spectrogram"
-    removeObject: specOrig, tmpOrigSpec
+    Select inner viewport: tlX1, tlX2, tlY1, tlY2
+    Axes: 0, durOut, 0.5, nEvents + 0.5
+    Paint rectangle: "{0.975, 0.977, 0.985}", 0, durOut, 0.5, nEvents + 0.5
 
-    # === Output Spectrogram ===
-    Select outer viewport: 0, 8, 3.65, 4.8
-    Select inner viewport: 0.6, 7.7, 3.70, 4.75
-    selectObject: resultSound
-    if outChans > 1
-        visOutChannel = analysisChannel
-        if visOutChannel > outChans
-            visOutChannel = 1
+    # Step onset times: each step advances by its own duration minus the
+    # crossfade overlap, which is exactly what Concatenate with overlap does.
+    barH = 0.40
+    if nEvents > 120
+        barH = 0.50
+    endif
+
+    tCur = 0
+    for iStep from 1 to nPlanSteps
+        stepEv = planEvIdx[iStep]
+        stepDur = evDur[stepEv]
+        @clusterOfEvent: stepEv
+        if clusterOfEvent.k = 2
+            barCol$ = clusCol2$
+        elsif clusterOfEvent.k = 3
+            barCol$ = clusCol3$
+        else
+            barCol$ = clusCol1$
         endif
-        Extract one channel: visOutChannel
-        tmpOutSpec = selected("Sound")
-    else
-        Copy: "tmpOutSpec"
-        tmpOutSpec = selected("Sound")
-    endif
-    To Spectrogram: 0.03, 5000, 0.002, 20, "Gaussian"
-    specOut = selected("Spectrogram")
-    Paint: 0, 0, 0, 5000, 100, "yes", 50, 6, 0, "no"
-    Colour: "Black"
-    Draw inner box
-    Select inner viewport: 0.6, 7.7, 3.70, 4.75
-    Axes: 0, durOut, 0, 5000
-    Font size: 6
-    Text left: "yes", "Hz"
-    Text bottom: "yes", "Time (s)"
-    Text top: "no", "Output spectrogram (" + attractorStr$ + ")"
-    removeObject: specOut, tmpOutSpec
+        tEndBar = tCur + stepDur
+        if tEndBar > durOut
+            tEndBar = durOut
+        endif
+        Paint rectangle: barCol$, tCur, tEndBar, stepEv - barH, stepEv + barH
+        tCur = tCur + stepDur - xfEff
+        if tCur > durOut
+            tCur = durOut
+        endif
+    endfor
 
-    # === Phase-Space Attractor Trajectory ===
-    Select outer viewport: 0, 8, 4.85, 6.25
-    Select inner viewport: 0.6, 7.7, 4.90, 6.20
+    @niceTick: nEvents
+    tickEv = niceTick.t
+    if tickEv < 1
+        tickEv = 1
+    endif
+
+    Font size: 6
+    Select inner viewport: tlX1, tlX2, tlY1, tlY2
+    Axes: 0, durOut, 0.5, nEvents + 0.5
+    Colour: "Black"
+    Line width: 1
+    Draw inner box
+
+    Font size: 6
+    Select inner viewport: tlX1, tlX2, tlY1, tlY2
+    Axes: 0, durOut, 0.5, nEvents + 0.5
+    Marks bottom every: 1, tickOut, "yes", "yes", "no"
+    Marks left every: 1, tickEv, "yes", "yes", "no"
+    Text bottom: "yes", "Output time (s)"
+
+    Font size: 6
+    Select inner viewport: tlX1, tlX2, tlY1, tlY2
+    Axes: 0, 1, 0, 1
+    Text top: "no", "##Plan timeline##  —  which source event sounds when (colour = cluster, shared with the panel below)  |  " + string$(nPlanSteps) + " steps, " + uniqueUsedStat$ + " unique, Rep=" + repRateStat$
+    @railLabel: tlX1, tlX2, tlY1, tlY2, 6, "Source event index"
+
+    # =================================================================
+    # === Phase-Space Panel: trajectory-to-event mapping ==============
+    # =================================================================
+    psX1 = 0.6
+    psX2 = 7.7
+    psY1 = 4.22
+    psY2 = 7.52
+
+    Select outer viewport: 0, 8, 4.10, 7.62
 
     if nPTrajPts > 1 or nPEvPts > 0
-        axMinX = 0
-        axMaxX = 1
-        axMinY = 0
-        axMaxY = 1
+
+        # ---- data-derived bounds -------------------------------------
+        # Draw line does NOT clip to the panel, so the axis range has to
+        # contain every drawn point or the trajectory spills onto the
+        # summary box below.
         gotBounds = 0
         for iB from 0 to nPEvPts - 1
             bx = pep_'iB'_x
@@ -815,18 +997,10 @@ if draw_visualization
                 axMaxY = by
                 gotBounds = 1
             else
-                if bx < axMinX
-                    axMinX = bx
-                endif
-                if bx > axMaxX
-                    axMaxX = bx
-                endif
-                if by < axMinY
-                    axMinY = by
-                endif
-                if by > axMaxY
-                    axMaxY = by
-                endif
+                axMinX = min(axMinX, bx)
+                axMaxX = max(axMaxX, bx)
+                axMinY = min(axMinY, by)
+                axMaxY = max(axMaxY, by)
             endif
         endfor
         for iB from 0 to nPTrajPts - 1
@@ -839,18 +1013,10 @@ if draw_visualization
                 axMaxY = by
                 gotBounds = 1
             else
-                if bx < axMinX
-                    axMinX = bx
-                endif
-                if bx > axMaxX
-                    axMaxX = bx
-                endif
-                if by < axMinY
-                    axMinY = by
-                endif
-                if by > axMaxY
-                    axMaxY = by
-                endif
+                axMinX = min(axMinX, bx)
+                axMaxX = max(axMaxX, bx)
+                axMinY = min(axMinY, by)
+                axMaxY = max(axMaxY, by)
             endif
         endfor
         for iB from 0 to nPSelPts - 1
@@ -863,18 +1029,10 @@ if draw_visualization
                 axMaxY = by
                 gotBounds = 1
             else
-                if bx < axMinX
-                    axMinX = bx
-                endif
-                if bx > axMaxX
-                    axMaxX = bx
-                endif
-                if by < axMinY
-                    axMinY = by
-                endif
-                if by > axMaxY
-                    axMaxY = by
-                endif
+                axMinX = min(axMinX, bx)
+                axMaxX = max(axMaxX, bx)
+                axMinY = min(axMinY, by)
+                axMaxY = max(axMaxY, by)
             endif
         endfor
 
@@ -886,93 +1044,222 @@ if draw_visualization
         if rangeY < 0.01
             rangeY = 1
         endif
-        axMinX = axMinX - rangeX * 0.08
-        axMaxX = axMaxX + rangeX * 0.08
-        axMinY = axMinY - rangeY * 0.08
-        axMaxY = axMaxY + rangeY * 0.08
+        axMinX -= rangeX * 0.06
+        axMaxX += rangeX * 0.06
+        axMinY -= rangeY * 0.06
+        axMaxY += rangeY * 0.10
+        rangeX = axMaxX - axMinX
+        rangeY = axMaxY - axMinY
 
+        @niceStep: rangeX
+        stepX = niceStep.s
+        @niceStep: rangeY
+        stepY = niceStep.s
+
+        # ---- background + grid ---------------------------------------
+        Font size: 6
+        Select inner viewport: psX1, psX2, psY1, psY2
         Axes: axMinX, axMaxX, axMinY, axMaxY
-        Paint rectangle: "{0.97, 0.97, 0.99}", axMinX, axMaxX, axMinY, axMaxY
+        Paint rectangle: "{0.975, 0.977, 0.985}", axMinX, axMaxX, axMinY, axMaxY
 
-        for iEP from 0 to nPEvPts - 1
-            Paint circle (mm): "{0.75, 0.75, 0.75}", pep_'iEP'_x, pep_'iEP'_y, 1.2
-        endfor
+        Colour: "{0.88, 0.89, 0.93}"
+        Line width: 1
+        gK = ceiling(axMinX / stepX)
+        gV = gK * stepX
+        while gV < axMaxX
+            Draw line: gV, axMinY, gV, axMaxY
+            gK += 1
+            gV = gK * stepX
+        endwhile
+        gK = ceiling(axMinY / stepY)
+        gV = gK * stepY
+        while gV < axMaxY
+            Draw line: axMinX, gV, axMaxX, gV
+            gK += 1
+            gV = gK * stepY
+        endwhile
 
-        Select inner viewport: 0.6, 7.7, 4.90, 6.20
+        # ---- dynamical trajectory ------------------------------------
+        # Drawn UNDER the event cloud: with an erratic attractor
+        # (LogisticMap in 4D) an on-top trajectory buries the corpus
+        # completely.  On smooth attractors the two orders look the same.
+        Font size: 6
+        Select inner viewport: psX1, psX2, psY1, psY2
         Axes: axMinX, axMaxX, axMinY, axMaxY
-        Colour: "{0.25, 0.45, 0.75}"
+        Colour: trajCol$
         Line width: 1.5
         for iTP from 1 to nPTrajPts - 1
             iPrev = iTP - 1
             Draw line: ptp_'iPrev'_x, ptp_'iPrev'_y, ptp_'iTP'_x, ptp_'iTP'_y
         endfor
+
+        if nPTrajPts > 12
+            nArrows = 7
+            Arrow size: 0.55
+            for iA from 1 to nArrows
+                aI = round(iA * (nPTrajPts - 2) / (nArrows + 1))
+                if aI >= 1 and aI < nPTrajPts - 1
+                    aJ = aI + 1
+                    Draw arrow: ptp_'aI'_x, ptp_'aI'_y, ptp_'aJ'_x, ptp_'aJ'_y
+                endif
+            endfor
+            Arrow size: 1
+        endif
         Line width: 1
 
-        if nPTrajPts > 0
-            Paint circle (mm): "{0.2, 0.7, 0.3}", ptp_0_x, ptp_0_y, 2.0
-            iLast = nPTrajPts - 1
-            Paint circle (mm): "{0.8, 0.2, 0.2}", ptp_'iLast'_x, ptp_'iLast'_y, 2.0
-        endif
-
-        Select inner viewport: 0.6, 7.7, 4.90, 6.20
+        # ---- analyzed source events (hollow, cluster-coloured) -------
+        Font size: 6
+        Select inner viewport: psX1, psX2, psY1, psY2
         Axes: axMinX, axMaxX, axMinY, axMaxY
+        Line width: 1.2
+        for iEP from 0 to nPEvPts - 1
+            kK = evClust[iEP + 1]
+            if kK = 2
+                Colour: clusCol2$
+            elsif kK = 3
+                Colour: clusCol3$
+            else
+                Colour: clusCol1$
+            endif
+            Draw circle (mm): pep_'iEP'_x, pep_'iEP'_y, 1.45
+        endfor
 
-        # === Composed path: trajectory point -> selected event -> next selected event ===
-        # This is the sequence actually heard, in plan order — distinct from the
-        # attractor curve above (which is where the dynamics WANT to go) and the
-        # grey dots (which are just the available corpus). Drawing it is what makes
-        # the "compositional controller" claim visible rather than asserted.
-        if nPSelPts > 1
-            Colour: "{0.95, 0.55, 0.05}"
-            Line width: 1.3
-            for iSPL from 1 to nPSelPts - 1
-                iSPrev = iSPL - 1
-                Draw line: psel_'iSPrev'_x, psel_'iSPrev'_y, psel_'iSPL'_x, psel_'iSPL'_y
-            endfor
-            Line width: 1
-            Paint circle (mm): "{0.95, 0.75, 0.15}", psel_0_x, psel_0_y, 1.5
-            iSPLast = nPSelPts - 1
-            Paint circle (mm): "{0.6, 0.25, 0.6}", psel_'iSPLast'_x, psel_'iSPLast'_y, 1.5
+        # ---- selected event plan -------------------------------------
+        # Plan dot is deliberately SMALLER than the event ring, so a
+        # selected event still shows the cluster colour underneath it.
+        Font size: 6
+        Select inner viewport: psX1, psX2, psY1, psY2
+        Axes: axMinX, axMaxX, axMinY, axMaxY
+        for iSP from 0 to nPSelPts - 1
+            Paint circle (mm): planCol$, psel_'iSP'_x, psel_'iSP'_y, 1.10
+        endfor
+
+        # Numbered badges on the first plan steps, so the reader can see
+        # where the composition actually starts and in what order it moves.
+        nBadge = 5
+        if nPSelPts < nBadge
+            nBadge = nPSelPts
         endif
+        for iBd from 1 to nBadge
+            bI = iBd - 1
+            Font size: 6
+            Select inner viewport: psX1, psX2, psY1, psY2
+            Axes: axMinX, axMaxX, axMinY, axMaxY
+            Paint circle (mm): planCol$, psel_'bI'_x, psel_'bI'_y, 1.90
+            Font size: 5
+            Select inner viewport: psX1, psX2, psY1, psY2
+            Axes: axMinX, axMaxX, axMinY, axMaxY
+            Colour: "White"
+            Text: psel_'bI'_x, "centre", psel_'bI'_y, "half", "##" + string$(iBd) + "##"
+        endfor
 
-        Select inner viewport: 0.6, 7.7, 4.90, 6.20
+        # ---- legend --------------------------------------------------
+        Font size: 6
+        Select inner viewport: psX1, psX2, psY1, psY2
+        Axes: 0, 1, 0, 1
+
+        lgX1 = 0.742
+        lgX2 = 0.988
+        lgY1 = 0.812
+        lgY2 = 0.985
+        Paint rectangle: "White", lgX1, lgX2, lgY1, lgY2
+        Colour: "{0.70, 0.70, 0.75}"
+        Draw rectangle: lgX1, lgX2, lgY1, lgY2
+
+        lgSw = lgX1 + 0.026
+        lgTx = lgX1 + 0.055
+        lgR1 = lgY2 - 0.044
+        lgR2 = lgY2 - 0.090
+        lgR3 = lgY2 - 0.136
+
+        Colour: clusCol1$
+        Line width: 1.2
+        Draw circle (mm): lgSw, lgR1, 1.45
+        Colour: trajCol$
+        Line width: 1.5
+        Draw line: lgSw - 0.014, lgR2, lgSw + 0.014, lgR2
+        Line width: 1
+        Paint circle (mm): planCol$, lgSw, lgR3, 1.10
+
+        Colour: "{0.20, 0.20, 0.24}"
+        Text: lgTx, "left", lgR1, "half", "analyzed source events"
+        Text: lgTx, "left", lgR2, "half", "dynamical trajectory"
+        Text: lgTx, "left", lgR3, "half", "selected event plan"
+
+        # ---- callouts ------------------------------------------------
+        Font size: 6
+        Select inner viewport: psX1, psX2, psY1, psY2
+        Axes: 0, 1, 0, 1
+        Paint rectangle: "{0.905, 0.935, 1.0}", 0.012, 0.212, 0.872, 0.982
+        Colour: clusCol1$
+        Draw rectangle: 0.012, 0.212, 0.872, 0.982
+        Text: 0.024, "left", 0.955, "half", "clusters = segmented"
+        Text: 0.024, "left", 0.900, "half", "source fragments"
+
+        Font size: 6
+        Select inner viewport: psX1, psX2, psY1, psY2
+        Axes: 0, 1, 0, 1
+        Paint rectangle: "{0.935, 0.912, 1.0}", 0.716, 0.988, 0.022, 0.132
+        Colour: planCol$
+        Draw rectangle: 0.716, 0.988, 0.022, 0.132
+        Text: 0.728, "left", 0.105, "half", "selection: nearest event,"
+        Text: 0.728, "left", 0.050, "half", "tabu memory + temperature"
+
+        # ---- frame, marks, axis labels -------------------------------
+        Font size: 6
+        Select inner viewport: psX1, psX2, psY1, psY2
         Axes: axMinX, axMaxX, axMinY, axMaxY
         Colour: "Black"
+        Line width: 1
         Draw inner box
-        Select inner viewport: 0.6, 7.7, 4.90, 6.20
-        Axes: axMinX, axMaxX, axMinY, axMaxY
+
         Font size: 6
-        Text left: "yes", projAxis1$
-        Text bottom: "yes", projAxis0$
-        Text top: "no", attractorStr$ + " (" + stateDimStr$ + ") — weighted projection: " + projAxis0$ + " / " + projAxis1$ + " | grey=corpus blue=attractor ##orange=composed path##"
-    else
-        Axes: 0, 1, 0, 1
-        Paint rectangle: "{0.97, 0.97, 0.99}", 0, 1, 0, 1
+        Select inner viewport: psX1, psX2, psY1, psY2
+        Axes: axMinX, axMaxX, axMinY, axMaxY
+        Marks bottom every: 1, stepX, "yes", "yes", "no"
+        Marks left every: 1, stepY, "yes", "yes", "no"
+
+        projLab0$ = replace$(projAxis0$, "_", "-", 0)
+        projLab1$ = replace$(projAxis1$, "_", "-", 0)
+
         Font size: 7
-        Colour: "{0.5, 0.5, 0.5}"
+        Select inner viewport: psX1, psX2, psY1, psY2
+        Axes: axMinX, axMaxX, axMinY, axMaxY
+        Text bottom: "yes", "Normalized " + projLab0$
+        Text top: "no", "##Trajectory-to-event mapping##  —  " + attractorStr$ + " (" + stateDimStr$ + "): a dynamical-system path is mapped onto analyzed source events"
+        @railLabel: psX1, psX2, psY1, psY2, 7, "Normalized " + projLab1$
+
+    else
+        Font size: 7
+        Select inner viewport: psX1, psX2, psY1, psY2
+        Axes: 0, 1, 0, 1
+        Paint rectangle: "{0.975, 0.977, 0.985}", 0, 1, 0, 1
+        Colour: "{0.50, 0.50, 0.50}"
         Text: 0.5, "centre", 0.5, "half", "(trajectory data not available)"
         Colour: "Black"
+        Select inner viewport: psX1, psX2, psY1, psY2
+        Axes: 0, 1, 0, 1
         Draw rectangle: 0, 1, 0, 1
     endif
 
-    # === Summary Panel ===
-    Select outer viewport: 0, 8, 6.35, 7.85
-    Select inner viewport: 0.6, 7.7, 6.40, 7.80
-
-    Axes: 0, 1, 0, 1
-    Paint rectangle: "{0.95, 0.95, 0.95}", 0, 1, 0, 1
-
+    # === Summary Panel ===============================================
     Font size: 7
+    Select outer viewport: 0, 8, 8.04, 9.17
+    Select inner viewport: 0.6, 7.7, 8.10, 9.14
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+
     Colour: "Black"
-    Text: 0.02, "left", 0.90, "half", "Summary:"
+    Text: 0.02, "left", 0.88, "half", "##Summary##"
 
     Font size: 6
-    Colour: "{0.3, 0.3, 0.3}"
-    Text: 0.02, "left", 0.73, "half", attractorStat$ + " " + stateDimsStat$ + "D | Events=" + nSourceEvStat$ + "->" + string$(nPlanSteps) + " | Uniq=" + uniqueUsedStat$ + " Rep=" + repRateStat$ + " | Speed=" + trajSpeedStat$
-    Text: 0.02, "left", 0.53, "half", "Vel=" + velocityWeightStat$ + " Cpl=" + couplingStat$ + " W=" + weightPresetStat$ + " | Tabu=" + tabuStat$ + " T=" + tempStatVal$ + " | MapDist=" + meanMapDistStat$
-    Text: 0.02, "left", 0.33, "half", "RMS: " + fixed$(rms_orig, 4) + "->" + fixed$(rms_out, 4) + " | " + fixed$(dur, 2) + "s->" + fixed$(durOut, 2) + "s | Ch=" + string$(analysisChannel) + " | Xfade=" + fixed$(xfEff * 1000, 1) + "ms | Seed=" + string$(seed)
+    Select inner viewport: 0.6, 7.7, 8.10, 9.14
+    Axes: 0, 1, 0, 1
+    Colour: "{0.30, 0.30, 0.30}"
+    Text: 0.02, "left", 0.68, "half", attractorStat$ + " " + stateDimsStat$ + "D | Events=" + nSourceEvStat$ + "->" + string$(nPlanSteps) + " | Uniq=" + uniqueUsedStat$ + " Rep=" + repRateStat$ + " | Speed=" + trajSpeedStat$
+    Text: 0.02, "left", 0.50, "half", "Vel=" + velocityWeightStat$ + " Cpl=" + couplingStat$ + " W=" + weightPresetStat$ + " | Tabu=" + tabuStat$ + " T=" + tempStatVal$ + " | MapDist=" + meanMapDistStat$
+    Text: 0.02, "left", 0.32, "half", "RMS: " + fixed$(rms_orig, 4) + "->" + fixed$(rms_out, 4) + " | " + fixed$(dur, 2) + "s->" + fixed$(durOut, 2) + "s | Ch=" + string$(analysisChannel) + " | Xfade=" + fixed$(xfEff * 1000, 1) + "ms | Seed=" + string$(seed)
 
-    Colour: "{0.35, 0.35, 0.35}"
     if attractor_type = 1
         attDesc$ = "Hopf: limit cycle — repeating morphological loops"
     elsif attractor_type = 2
@@ -982,12 +1269,22 @@ if draw_visualization
     else
         attDesc$ = "Logistic: 1-D chaos — regime shifts + intermittency"
     endif
-    Text: 0.02, "left", 0.13, "half", attDesc$
+    Colour: "{0.35, 0.35, 0.35}"
+    Text: 0.02, "left", 0.14, "half", attDesc$
 
+    Font size: 6
+    Select inner viewport: 0.6, 7.7, 8.10, 9.14
+    Axes: 0, 1, 0, 1
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
-    Font size: 10
+
+    # Save as / Copy from the Picture window exports the CURRENT viewport
+    # selection, so the script must end on the whole canvas or the export
+    # comes out cropped to the last panel drawn.
     Colour: "Black"
+    Line width: 1
+    Font size: 10
+    Select outer viewport: 0, 8, 0, canvasH
 
 else
     appendInfoLine: "Visualization skipped."
@@ -1041,5 +1338,75 @@ procedure parseStatLine: .text$, .key$
         else
             .result$ = .rest$
         endif
+    endif
+endproc
+
+procedure niceStep: .range
+    if .range <= 0.30
+        .s = 0.05
+    elsif .range <= 0.60
+        .s = 0.1
+    elsif .range <= 1.50
+        .s = 0.2
+    elsif .range <= 3.50
+        .s = 0.5
+    else
+        .s = 1
+    endif
+endproc
+
+# Text left: / Text right: position a rotated panel label against whatever
+# drawing frame is current, which puts each panel's name at a different x.
+# Placing them by hand against one shared offset keeps the rail straight.
+# Vertical alignment must be "bottom", not "half": "half" anchors the glyph
+# bounding box, so a descender shifts that one label off the rail.
+procedure railLabel: .x1, .x2, .y1, .y2, .size, .label$
+    Font size: .size
+    Select inner viewport: .x1, .x2, .y1, .y2
+    Axes: 0, 1, 0, 1
+    Colour: "Black"
+    Text special: -0.035, "centre", 0.5, "bottom", "Helvetica", .size, "90", .label$
+endproc
+
+# Python samples the event cloud with linspace(0, nEvents-1, min(nEvents,200)),
+# so a source event's cluster is found by inverting that sampling.  When the
+# corpus is 200 events or fewer the mapping is the identity.
+procedure clusterOfEvent: .srcIdx
+    .k = 0
+    if nPEvPts > 0
+        if nPEvPts >= nEvents
+            .s = .srcIdx
+        else
+            .s = round((.srcIdx - 1) * (nPEvPts - 1) / max(nEvents - 1, 1)) + 1
+        endif
+        if .s < 1
+            .s = 1
+        endif
+        if .s > nPEvPts
+            .s = nPEvPts
+        endif
+        .k = evClust[.s]
+    endif
+endproc
+
+# Axis tick spacing: the largest 1/2/5 x 10^k step that still gives roughly
+# eight divisions across the span.
+procedure niceTick: .span
+    if .span <= 0
+        .t = 1
+    else
+        .raw  = .span / 8
+        .expo = floor(log10(.raw))
+        .base = .raw / 10 ^ .expo
+        if .base < 1.5
+            .m = 1
+        elsif .base < 3.5
+            .m = 2
+        elsif .base < 7.5
+            .m = 5
+        else
+            .m = 10
+        endif
+        .t = .m * 10 ^ .expo
     endif
 endproc

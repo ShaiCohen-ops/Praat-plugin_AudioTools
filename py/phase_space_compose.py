@@ -792,7 +792,7 @@ def write_stats(path, events, plan, attractor, state_dims,
 
         n_tr = len(tr_x)
         if n_tr > 0:
-            sampled = np.linspace(0, n_tr - 1, min(n_tr, 200), dtype=int).tolist()
+            sampled = np.linspace(0, n_tr - 1, min(n_tr, 800), dtype=int).tolist()
             sampled = list(dict.fromkeys(sampled))
         else:
             sampled = []
