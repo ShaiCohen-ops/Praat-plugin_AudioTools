@@ -286,32 +286,44 @@ p_off$ = start_Offset$
 p_flut = flutter_Amount_st
 
 if preset$ = "Classic Reich (Speech / Unison)"
-    p_min = 0.5; p_max = 1.0
-    p_v2$ = "Unison"; p_v3$ = "None"
+    p_min = 0.5
+    p_max = 1.0
+    p_v2$ = "Unison"
+    p_v3$ = "None"
     # v0.4.1 FIX: was 2.0, which meant the (also default-selected)
     # Classic Reich preset needed a 2-minute cycle to complete, but
     # Total_Duration_min defaults to 1.0 -- the default demo run
     # ended halfway through the first phase cycle. Matches the
     # 1-minute default duration so a full cycle completes.
-    p_cycle = 1.0; p_off$ = "0% (Unison Start)"
+    p_cycle = 1.0
+    p_off$ = "0% (Unison Start)"
     p_flut = 0.0
 
 elsif preset$ = "Deep Space (Sub-Bass Shadow)"
-    p_min = 2.0; p_max = 4.0
-    p_v2$ = "Unison"; p_v3$ = "Low Shadow (Octave Down Static)"
-    p_cycle = 5.0; p_off$ = "50% (Anti-Phase)"
+    p_min = 2.0
+    p_max = 4.0
+    p_v2$ = "Unison"
+    p_v3$ = "Low Shadow (Octave Down Static)"
+    p_cycle = 5.0
+    p_off$ = "50% (Anti-Phase)"
     p_flut = 0.1
 
 elsif preset$ = "Holy Trinity (5th + High Anchor)"
-    p_min = 0.8; p_max = 1.2
-    p_v2$ = "Perfect Fifth (+7st)"; p_v3$ = "High Shimmer (Octave Up Static)"
-    p_cycle = 3.0; p_off$ = "Random"
+    p_min = 0.8
+    p_max = 1.2
+    p_v2$ = "Perfect Fifth (+7st)"
+    p_v3$ = "High Shimmer (Octave Up Static)"
+    p_cycle = 3.0
+    p_off$ = "Random"
     p_flut = 0.02
 
 elsif preset$ = "Broken Tape (Flutter + Random Offset)"
-    p_min = 0.4; p_max = 0.9
-    p_v2$ = "Unison"; p_v3$ = "Center Anchor (Unison Static)"
-    p_cycle = 1.5; p_off$ = "Random"
+    p_min = 0.4
+    p_max = 0.9
+    p_v2$ = "Unison"
+    p_v3$ = "Center Anchor (Unison Static)"
+    p_cycle = 1.5
+    p_off$ = "Random"
     p_flut = 0.3
 endif
 # NOTE: p_v3_level (Voice 3's level relative to the loop) is
@@ -358,9 +370,54 @@ selectObject: source_id
 Extract part: source_xmin, source_xmax, "rectangular", 1, "no"
 Rename: "Reich_Source_Work"
 source_work = selected("Sound")
+
+# Cancellation-safe mono analysis. Preserve the normal channel average when it
+# is healthy; if opposite-polarity / phase-opposed channels nearly cancel in
+# the fold-down, analyse the strongest-RMS channel instead.
+selectObject: source_work
+source_channels = Get number of channels
+strongest_channel = 1
+strongest_rms = -1
+if source_channels > 1
+    for ch from 1 to source_channels
+        selectObject: source_work
+        tmp_channel = Extract one channel: ch
+        channel_rms = Get root-mean-square: 0, 0
+        if channel_rms > strongest_rms
+            strongest_rms = channel_rms
+            strongest_channel = ch
+        endif
+        removeObject: tmp_channel
+    endfor
+else
+    strongest_rms = Get root-mean-square: 0, 0
+endif
+
+selectObject: source_work
 Convert to mono
-Rename: "Reich_Source_Analysis"
-source_analysis = selected("Sound")
+Rename: "Reich_Source_Average"
+source_average = selected("Sound")
+selectObject: source_average
+average_rms = Get root-mean-square: 0, 0
+
+use_strongest_channel = 0
+if source_channels > 1 and strongest_rms > 1e-12 and average_rms < 0.10 * strongest_rms
+    use_strongest_channel = 1
+endif
+
+if use_strongest_channel
+    removeObject: source_average
+    selectObject: source_work
+    Extract one channel: strongest_channel
+    Rename: "Reich_Source_Analysis"
+    source_analysis = selected("Sound")
+    appendInfoLine: "Mono analysis: channel average nearly cancelled; using strongest channel " + string$(strongest_channel) + "."
+else
+    selectObject: source_average
+    Rename: "Reich_Source_Analysis"
+    source_analysis = selected("Sound")
+endif
+
 selectObject: source_work
 Remove
 source_work = 0
@@ -428,6 +485,11 @@ while found = 0 and attempts < 40
             z2 = .cd
         endif
         snapped = Extract part: z1, z2, "rectangular", 1, "no"
+        # Preserve the actual snapped boundaries for the Source visualization.
+        # st/ldur describe the random candidate; these are the loop bounds that
+        # the audio actually uses after zero-crossing correction.
+        snapped_loop_start = st + z1
+        snapped_loop_end = st + z2
         removeObject: check_id
         check_id = snapped
         found = 1
@@ -1135,8 +1197,8 @@ if create_polar_phase_wheel
     Select inner viewport: 0.55, 7.75, 4.90, 5.52
     Axes: source_xmin, source_xmax, -waveY, waveY
     Paint rectangle: "{0.97, 0.97, 0.97}", source_xmin, source_xmax, -waveY, waveY
-    loopVisStart = source_xmin + st
-    loopVisEnd = loopVisStart + ldur
+    loopVisStart = source_xmin + snapped_loop_start
+    loopVisEnd = source_xmin + snapped_loop_end
     Paint rectangle: "{1.00, 0.94, 0.84}", loopVisStart, loopVisEnd, -waveY, waveY
     Colour: "{0.84, 0.84, 0.84}"
     Draw line: source_xmin, 0, source_xmax, 0
@@ -1270,7 +1332,13 @@ if create_polar_phase_wheel
     Text: 0.02, "left", 0.80, "half", "##Summary##"
     Font size: 6
     Colour: "{0.28, 0.28, 0.28}"
-    Text: 0.02, "left", 0.49, "half", displayName$ + "  |  loop " + fixed$(dur_base,3) + " s  |  cycle " + fixed$(p_cycle,2) + " min  |  wraps " + string$(cycle_count) + "  |  start " + p_off$
+    p_off_display$ = p_off$
+    if p_off$ = "0% (Unison Start)"
+        p_off_display$ = "0 percent (Unison Start)"
+    elsif p_off$ = "50% (Anti-Phase)"
+        p_off_display$ = "50 percent (Half-cycle)"
+    endif
+    Text: 0.02, "left", 0.49, "half", displayName$ + "  |  loop " + fixed$(dur_base,3) + " s  |  cycle " + fixed$(p_cycle,2) + " min  |  wraps " + string$(cycle_count) + "  |  start " + p_off_display$
     Text: 0.02, "left", 0.18, "half", "V2 " + p_v2$ + "  |  V3 " + p_v3$ + "  |  flutter " + fixed$(p_flut,2) + " st  |  duration " + fixed$(actual_duration/60,2) + " min  |  L static / R drifting"
 
     Font size: 10
