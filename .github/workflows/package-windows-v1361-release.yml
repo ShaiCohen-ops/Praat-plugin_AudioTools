@@ -1,0 +1,77 @@
+name: Package Windows v1.36.1 release
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/package-windows-v1361-release.yml'
+      - 'Max-MSP/Praat_AudioTools.zip'
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Inspect and verify existing Windows package
+        shell: bash
+        run: |
+          set -euxo pipefail
+          SRC="$GITHUB_WORKSPACE/Max-MSP/Praat_AudioTools.zip"
+          test -f "$SRC"
+
+          WORK="$RUNNER_TEMP/windows-package"
+          rm -rf "$WORK"
+          mkdir -p "$WORK"
+          unzip -q "$SRC" -d "$WORK"
+
+          ROOT="$WORK/Praat_AudioTools"
+          test -d "$ROOT"
+          test -f "$ROOT/package-info.json"
+          test -f "$ROOT/patchers/praat.maxpat"
+          test -f "$ROOT/javascript/AudioTools.praat.library.js"
+          test -f "$ROOT/javascript/AudioTools.praat.ui.js"
+          test -f "$ROOT/javascript/AudioTools.praat.info.js"
+          test -f "$ROOT/externals/AudioTools.praat~.mxe64"
+          test -f "$ROOT/externals/Praat.exe"
+          test -d "$ROOT/misc/plugin_AudioTools"
+
+          python3 -m json.tool "$ROOT/package-info.json" >/dev/null
+
+          STRINGS_OUT="$RUNNER_TEMP/AudioTools.Windows.strings.txt"
+          strings "$ROOT/externals/AudioTools.praat~.mxe64" > "$STRINGS_OUT"
+          grep -F -q 'AudioTools.praat~ v1.36.1' "$STRINGS_OUT"
+          if grep -F -q 'v1.25-mac' "$STRINGS_OUT"; then
+            echo 'Unexpected old macOS test marker in Windows external'
+            exit 1
+          fi
+
+          SCRIPT_COUNT="$(find "$ROOT/misc/plugin_AudioTools" -type f -name '*.praat' | wc -l | tr -d ' ')"
+          echo "Bundled .praat files: $SCRIPT_COUNT"
+          test "$SCRIPT_COUNT" -gt 400
+
+          file "$ROOT/externals/AudioTools.praat~.mxe64"
+          file "$ROOT/externals/Praat.exe"
+
+      - name: Create clean Windows release filename
+        shell: bash
+        run: |
+          set -euxo pipefail
+          SRC="$GITHUB_WORKSPACE/Max-MSP/Praat_AudioTools.zip"
+          OUT="$GITHUB_WORKSPACE/Praat_AudioTools_1.0.0_Windows_x64.zip"
+          cp "$SRC" "$OUT"
+          sha256sum "$OUT" | tee "$GITHUB_WORKSPACE/Praat_AudioTools_1.0.0_Windows_x64.sha256"
+
+      - name: Upload Windows release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Praat_AudioTools-1.0.0-Windows-x64-v1.36.1
+          path: |
+            Praat_AudioTools_1.0.0_Windows_x64.zip
+            Praat_AudioTools_1.0.0_Windows_x64.sha256
+          if-no-files-found: error
+          retention-days: 90
