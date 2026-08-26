@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.5 (2026) - Suite-standard visualization
+# Version: 0.5.1 (2026) - Interface/documentation alignment
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -37,6 +37,16 @@
 #   Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
+# Changelog v0.5.1 (2026):
+#   - RENAMED preset labels to Target 0.95 / 0.80 / 1.00 so the
+#     form matches the target-based preset behavior and object names.
+#   - RENAMED Scale_peak -> Target_peak.
+#   - RENAMED Preserve source level -> Preserve shaped level.
+#   - RENAMED Conditional limiter -> Attenuate to target only if peak > target;
+#     DSP is unchanged (global peak scaling only when needed).
+#   - FIXED: Preserve mode no longer displays Target_peak as if active
+#     in the parameter panel or final Info report.
+#
 # Changelog v0.5 (2026):
 #   - VISUALIZATION STANDARDIZATION ONLY; audio/DSP, analysis,
 #     parameter mapping and rendering logic are unchanged.
@@ -49,7 +59,7 @@
 #     transformation rather than a generic replacement plot.
 #
 # Changelog v0.4b:
-#   - FIXED (ordering): Scale_peak was validated BEFORE the presets
+#   - FIXED (ordering): Target_peak was validated BEFORE the presets
 #     were applied, so a stale manual value of 1.5 aborted the
 #     script even when the chosen preset was about to replace it
 #     with 0.95. Validated after the presets, and only when a mode
@@ -68,7 +78,7 @@
 #     and Info text that v0.4 had just qualified. Both now name the
 #     symmetric-periodic condition.
 #   - RENAMED the presets again. v0.4's Standard / Reduced /
-#     Full-scale LEVEL promised an output level, but Scale_peak is
+#     Full-scale LEVEL promised an output level, but Target_peak is
 #     only consulted by the limiter and normalize modes: under
 #     Output_level = Preserve all three produce identical audio and
 #     differ only in the object name. They are now Target 0.95 /
@@ -95,7 +105,7 @@
 #     preserved the zoom panel was querying 0..0.02 s, a window
 #     holding none of its data. All axes and queries now use the
 #     real domain.
-#   - FIXED: the parameter panel showed Scale_peak, the TARGET,
+#   - FIXED: the parameter panel showed Target_peak, the TARGET,
 #     labelled "Peak". It now shows the measured output peak with
 #     the target alongside.
 #   - NEW Dc_handling. abs() makes every sample non-negative, so
@@ -108,7 +118,7 @@
 #     is now measured and reported either way.
 #   - Output_level replaces the unconditional Scale peak, with a
 #     silent-input guard. Normalize remains the default.
-#   - Scale_peak is capped at 1.0; as `positive` it accepted 1.5 or
+#   - Target_peak is capped at 1.0; as `positive` it accepted 1.5 or
 #     4.0 as normalization targets.
 #   - RENAMED the presets Default / Soft / Maximum ->
 #     Standard level / Reduced level / Full-scale level. They never
@@ -150,14 +160,14 @@
 #   - Added info output
 # ============================================================
 
-form Full-Wave Rectifier v0.5
+form Full-Wave Rectifier v0.5.1
     comment Select a Sound object first
     
     comment === Preset ===
     optionmenu Preset: 1
-        option Standard level (0.95 peak)
-        option Reduced level (0.8 peak)
-        option Full-scale level (1.0 peak)
+        option Target 0.95
+        option Target 0.80
+        option Target 1.00
         option Custom (use settings below)
     
     comment === DC handling ===
@@ -167,10 +177,10 @@ form Full-Wave Rectifier v0.5
     
     comment === Output ===
     optionmenu Output_level: 3
-        option Preserve source level
-        option Conditional limiter to target
+        option Preserve shaped level
+        option Attenuate to target only if peak > target
         option Normalize to target
-    positive Scale_peak 0.95
+    positive Target_peak 0.95
     boolean Show_spectrum 0
     comment (ON shows harmonic enrichment, but adds analysis time)
     optionmenu Spectrum_reference: 1
@@ -206,36 +216,36 @@ xmaxOrig = Get end time
 # y = |x|, and the only difference is the peak target, so "Soft" was not
 # a gentler rectifier but the same waveshaping at a lower level.
 # v0.4b: the v0.4 names (Standard / Reduced / Full-scale LEVEL) went too
-# far the other way - they promise an output level, but Scale_peak is
+# far the other way - they promise an output level, but Target_peak is
 # only consulted by the limiter and normalize modes. Under
 # Output_level = Preserve all three presets produce identical audio and
 # differ only in the object name. They are now named for the target they
 # set, and the script says when that target goes unused.
 if preset = 1
-    scale_peak = 0.95
+    target_peak = 0.95
     presetName$ = "Target095"
 elsif preset = 2
-    scale_peak = 0.8
+    target_peak = 0.8
     presetName$ = "Target080"
 elsif preset = 3
-    scale_peak = 1.0
+    target_peak = 1.0
     presetName$ = "Target100"
 else
     presetName$ = "Custom"
 endif
 
 # v0.4b (item 1): this ran BEFORE the presets, so a stale manual
-# Scale_peak of 1.5 aborted the script even when the chosen preset was
+# Target_peak of 1.5 aborted the script even when the chosen preset was
 # about to replace it with 0.95. Validated after the presets, and only
 # when a mode actually uses the value.
 if output_level <> 1
-    if scale_peak > 1
-        exitScript: "Scale_peak must not exceed 1.0 (it is a full-scale target)."
+    if target_peak > 1
+        exitScript: "Target_peak must not exceed 1.0 (it is a full-scale target)."
     endif
 endif
 
 # === Info ===
-writeInfoLine: "=== Full-Wave Rectifier v0.5 ==="
+writeInfoLine: "=== Full-Wave Rectifier v0.5.1 ==="
 appendInfoLine: "Source: ", originalName$, " (", fixed$(duration, 2), " s, ", input_n_channels, " ch, starts at ", fixed$(xminOrig, 3), " s)"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
@@ -309,23 +319,23 @@ levelScale = 1
 if output_level = 1
     levelDesc$ = "preserved"
     if preset < 4
-        appendInfoLine: "  NOTE: Output_level is Preserve, so the preset's target of ", fixed$(scale_peak, 2), " is not used - all three presets give identical audio in this mode."
+        appendInfoLine: "  NOTE: Output_level is Preserve, so the preset's target of ", fixed$(target_peak, 2), " is not used - all three presets give identical audio in this mode."
     endif
 elsif output_level = 2
-    if prePeak > scale_peak
+    if prePeak > target_peak
         selectObject: result
-        Scale peak: scale_peak
-        levelScale = scale_peak / prePeak
-        levelDesc$ = "limited to " + fixed$(scale_peak, 2)
+        Scale peak: target_peak
+        levelScale = target_peak / prePeak
+        levelDesc$ = "attenuated to " + fixed$(target_peak, 2)
     else
         levelDesc$ = "unchanged"
     endif
 else
     if prePeak > 0
         selectObject: result
-        Scale peak: scale_peak
-        levelScale = scale_peak / prePeak
-        levelDesc$ = "normalized to " + fixed$(scale_peak, 2)
+        Scale peak: target_peak
+        levelScale = target_peak / prePeak
+        levelDesc$ = "normalized to " + fixed$(target_peak, 2)
     else
         levelDesc$ = "silent input - peak scaling skipped"
     endif
@@ -472,7 +482,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##Full-Wave Rectifier v0.5##"
+    Text: 0.5, "centre", 0.68, "half", "##Full-Wave Rectifier v0.5.1##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
     Text: 0.5, "centre", 0.22, "half",
@@ -619,7 +629,11 @@ if draw_visualization
         
         Font size: 7
         Colour: "{0.30, 0.45, 0.78}"
-        Text: 0.10, "left", 0.54, "half", "Peak:    " + fixed$(finalPeak, 3) + " (target " + fixed$(scale_peak, 2) + ")"
+        if output_level = 1
+            Text: 0.10, "left", 0.54, "half", "Peak:    " + fixed$(finalPeak, 3)
+        else
+            Text: 0.10, "left", 0.54, "half", "Peak:    " + fixed$(finalPeak, 3) + " (target " + fixed$(target_peak, 2) + ")"
+        endif
         Text: 0.10, "left", 0.46, "half", "Channels: " + string$(nResultCh)
         Text: 0.10, "left", 0.38, "half", "Duration: " + fixed$(finalDur, 2) + " s"
         
@@ -845,7 +859,11 @@ appendInfoLine: ""
 appendInfoLine: "=== Done ==="
 appendInfoLine: "Created: ", selected$("Sound")
 appendInfoLine: "Duration: ", fixed$(finalDur, 2), " s"
-appendInfoLine: "Peak: ", fixed$(finalPeak, 4), " (target ", fixed$(scale_peak, 3), ")"
+if output_level = 1
+    appendInfoLine: "Peak: ", fixed$(finalPeak, 4)
+else
+    appendInfoLine: "Peak: ", fixed$(finalPeak, 4), " (target ", fixed$(target_peak, 3), ")"
+endif
 appendInfoLine: "Mean (DC): ", fixed$(finalMean, 4), "  [", dcDesc$, "]"
 
 if play_result
