@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.5 (2026) - Suite-standard visualization
+# Version: 0.5.1 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -38,6 +38,15 @@
 #   Cohen, S. (2025). Praat AudioTools: An Offline Analysis-Resynthesis
 #   Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v0.5.1 (2026):
+#   - FIXED visualization reference: Panel C now compares the actual mono
+#     processing source with the mono output, rather than Channel 1 of the
+#     original multichannel Sound.
+#   - FIXED envelope panel: negative zero-phase ringing is now visible when
+#     Clamp_envelope_to_zero is off; the Y axis includes envMin when needed.
+#   - RENAMED output mode "Conditional limiter to 0.95" to the accurate
+#     "Attenuate to 0.95 only if peak > 0.95". DSP is unchanged.
 #
 # Changelog v0.5 (2026):
 #   - VISUALIZATION STANDARDIZATION ONLY; audio/DSP, analysis,
@@ -166,7 +175,7 @@
 # ============================================================
 
 # === Form ===
-form Dynamic Distortion v0.5
+form Dynamic Distortion v0.5.1
     comment Select a Sound object first
     
     comment === Preset ===
@@ -196,7 +205,7 @@ form Dynamic Distortion v0.5
     real Output_Gain 0.9
     optionmenu Output_level: 3
         option Preserve shaped level
-        option Conditional limiter to 0.95
+        option Attenuate to 0.95 only if peak > 0.95
         option Normalize peak to 0.95
     
     comment === Visualization ===
@@ -297,7 +306,7 @@ else
 endif
 
 # === Info ===
-writeInfoLine: "=== Dynamic Distortion v0.5 ==="
+writeInfoLine: "=== Dynamic Distortion v0.5.1 ==="
 appendInfoLine: "Source: ", origName$, " (", fixed$(duration, 2), " s, ", input_n_channels, " ch, starts at ", fixed$(xminOrig, 3), " s)"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
@@ -451,7 +460,7 @@ elsif output_level = 2
         selectObject: result
         Scale peak: 0.95
         levelScale = 0.95 / prePeak
-        levelDesc$ = "limited to 0.95"
+        levelDesc$ = "attenuated to 0.95"
     else
         levelDesc$ = "unchanged"
     endif
@@ -532,7 +541,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##Dynamic Distortion v0.5##"
+    Text: 0.5, "centre", 0.68, "half", "##Dynamic Distortion v0.5.1##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
     Text: 0.5, "centre", 0.22, "half",
@@ -654,17 +663,25 @@ if draw_visualization
     Select inner viewport: 4.45, 7.70, 0.95, 2.55
     
     selectObject: envelopeID
+    envViz_min = 0
+    if envMin < 0
+        envViz_min = envMin * 1.15
+    endif
     envViz_max = envMax * 1.15
     if envViz_max < 0.001
         envViz_max = 0.001
     endif
     
-    Axes: xminOrig, xmaxOrig, 0, envViz_max
-    Paint rectangle: "{0.97, 0.97, 0.97}", xminOrig, xmaxOrig, 0, envViz_max
+    Axes: xminOrig, xmaxOrig, envViz_min, envViz_max
+    Paint rectangle: "{0.97, 0.97, 0.97}", xminOrig, xmaxOrig, envViz_min, envViz_max
+    if envViz_min < 0
+        Colour: "{0.82, 0.82, 0.82}"
+        Draw line: xminOrig, 0, xmaxOrig, 0
+    endif
     
     Colour: "{0.30, 0.65, 0.40}"
     Line width: 1.3
-    Draw: 0, 0, 0, envViz_max, "no", "Curve"
+    Draw: 0, 0, envViz_min, envViz_max, "no", "Curve"
     Line width: 1
     
     # Min/max reference lines
@@ -749,16 +766,16 @@ if draw_visualization
     Text: 6.10, "centre", 7.30, "half", "Envelope (upper) & computed drive (lower)"
     
     # ----------------------------------------------------------
-    # PANEL C: ORIGINAL VS RESULT (overlay)
+    # PANEL C: MONO PROCESSING SOURCE VS RESULT (overlay)
     # ----------------------------------------------------------
     Select outer viewport: 0, 8, 4.68, 5.55
     Select inner viewport: 0.60, 7.70, 4.75, 5.48
     
-    selectObject: original
-    origPeak = Get absolute extremum: 0, 0, "None"
+    selectObject: monoID
+    sourcePeak = Get absolute extremum: 0, 0, "None"
     selectObject: result
     resPeak = Get absolute extremum: 0, 0, "None"
-    cmpMax = origPeak
+    cmpMax = sourcePeak
     if resPeak > cmpMax
         cmpMax = resPeak
     endif
@@ -772,20 +789,11 @@ if draw_visualization
     Colour: "{0.82, 0.82, 0.82}"
     Draw line: xminOrig, 0, xmaxOrig, 0
     
-    # Original (gray, behind)
-    selectObject: original
-    if input_n_channels > 1
-        Extract one channel: 1
-        cOrig = selected("Sound")
-        Colour: "{0.65, 0.65, 0.65}"
-        Line width: 1
-        Draw: xminOrig, xmaxOrig, -cAmpViz, cAmpViz, "no", "Curve"
-        removeObject: cOrig
-    else
-        Colour: "{0.65, 0.65, 0.65}"
-        Line width: 1
-        Draw: xminOrig, xmaxOrig, -cAmpViz, cAmpViz, "no", "Curve"
-    endif
+    # Actual mono processing source (gray, behind)
+    selectObject: monoID
+    Colour: "{0.65, 0.65, 0.65}"
+    Line width: 1
+    Draw: xminOrig, xmaxOrig, -cAmpViz, cAmpViz, "no", "Curve"
     
     # Result (red, on top)
     selectObject: result
@@ -797,7 +805,7 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text top: "no", "Original (gray) vs Dynamic Distortion (red)"
+    Text top: "no", "Mono processing source (gray) vs Dynamic Distortion (red)"
     Text left: "yes", "Amp"
     Text bottom: "yes", "Time (s)"
     
