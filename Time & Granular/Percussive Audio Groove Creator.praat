@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.5 (2026)
+# Version: 0.5.1 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -11,6 +11,17 @@
 #   Percussive Audio Groove Creator - detects bass drums, hi-hats,
 #   and snares from audio using spectral classification, then
 #   creates new groove patterns in various styles.
+#
+# Changelog v0.5.1:
+#   - FIX: Onset_threshold_dB is now interpreted as a relative dB offset
+#     below the maximum Intensity of the current analysis file. The previous
+#     code compared the default -20 directly with Praat Intensity values in
+#     dB SPL, so the threshold was effectively inactive for normal digital audio.
+#   - The effective threshold is now:
+#         maxIntensity_dB + Onset_threshold_dB
+#     Thus -20 means 20 dB below the file's maximum Intensity.
+#   - Positive threshold offsets are rejected; the Info window reports the
+#     measured maximum Intensity and the resulting effective onset threshold.
 #
 # Changelog v0.5:
 #   - VISUALIZATION ONLY: rebuilt to the AudioTools library standard.
@@ -125,6 +136,9 @@ endif
 if shape_intensity <= 0
     exitScript: "Shape intensity must be > 0"
 endif
+if onset_threshold_dB > 0
+    exitScript: "Onset_threshold_dB must be <= 0 because it is a dB offset below the file maximum (for example -20)."
+endif
 
 # === Info ===
 writeInfoLine: "=== Percussive Groove Creator ==="
@@ -148,6 +162,17 @@ Shift times to: "start time", 0
 # === Create Intensity for Onset Detection ===
 selectObject: soundMono
 intensity = To Intensity: 70, 0, "yes"
+
+selectObject: intensity
+maxIntensity_dB = Get maximum: 0, 0, "Parabolic"
+if maxIntensity_dB = undefined
+    exitScript: "Could not determine a maximum Intensity for onset detection."
+endif
+effectiveOnsetThreshold_dB = maxIntensity_dB + onset_threshold_dB
+appendInfoLine: "Onset threshold: ", fixed$(onset_threshold_dB, 1),
+    ... " dB below file maximum (max ", fixed$(maxIntensity_dB, 1),
+    ... " dB; effective ", fixed$(effectiveOnsetThreshold_dB, 1), " dB)"
+appendInfoLine: ""
 
 selectObject: intensity
 intensityMatrix = Down to Matrix
@@ -180,7 +205,7 @@ for frame from 3 to numberOfFrames - 2
             
             # Detect sharp peak (onset)
             if currentValue > prevValue1 and currentValue > prevValue2 and currentValue > nextValue1
-                if currentValue > onset_threshold_dB
+                if currentValue > effectiveOnsetThreshold_dB
                     # Extract segment
                     segmentStart = max(0, time - 0.005)
                     segmentEnd = min(duration, time + max_segment_s)
