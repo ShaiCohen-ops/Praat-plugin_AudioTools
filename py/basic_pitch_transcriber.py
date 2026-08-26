@@ -310,6 +310,95 @@ def normalize_note_events(note_events, min_pitch=0, max_pitch=127):
 # Stage 2 — Note post-processing
 # ═══════════════════════════════════════════════════════════════════════════
 
+def model_window_hop_seconds():
+    """Seconds between successive Basic Pitch inference windows.
+
+    The model analyses ~2 s chunks with a 30-frame overlap and re-decides note
+    identity in each one, so a note still sounding at a chunk boundary is
+    re-attacked in the next chunk. Those spurious onsets land on an exactly
+    periodic grid. Derived from the installed package rather than hard-coded,
+    with the measured 0.4.0 value as the fallback:
+        (AUDIO_N_SAMPLES - n_overlapping_frames * FFT_HOP) / AUDIO_SAMPLE_RATE
+        = (43844 - 30 * 256) / 22050 = 1.6400907 s
+    """
+    fallback = 1.6400907029478458
+    try:
+        import re
+        import inspect
+        from basic_pitch import constants as C
+        import basic_pitch.inference as inf
+        match = re.search(r"n_overlapping_frames\s*=\s*(\d+)",
+                          inspect.getsource(inf))
+        n_overlap = int(match.group(1)) if match else 30
+        hop = (C.AUDIO_N_SAMPLES - n_overlap * C.FFT_HOP) / float(
+            C.AUDIO_SAMPLE_RATE)
+        return hop if hop > 0.1 else fallback
+    except Exception:                                       # noqa: BLE001
+        return fallback
+
+
+def merge_repeated_notes(notes, mode, gap_ms, tol_ms, hop):
+    """Rejoin a note that the model split into repeated onsets.
+
+    Two modes, because the safe one and the thorough one are different tools:
+
+    GRID (default when merging at all) only rejoins a repeat whose onset sits
+    on the model's window grid AND is contiguous with the previous note AND is
+    not louder than it. All three must hold. A genuinely re-articulated note
+    would have to land within tolerance of an exact multiple of 1.64 s and
+    arrive no louder than the note it follows - so real tremolo, ostinati and
+    repeated chords survive. This targets the artifact, not repetition.
+
+    Tolerance defaults to 30 ms, chosen by measurement rather than taste. On
+    a deliberately hostile test - 15 strikes of one pitch every 0.40 s, a rate
+    picked so strikes fall near the window grid - 45 ms and above swallowed a
+    real strike, while 30 ms and below kept all 15 and still caught every
+    artifact it catches at 60 ms. The artifacts sit ~10 ms off the grid; the
+    genuine strike sat ~40 ms off, so the gap between them is real but not
+    large. Widening this past 40 ms trades away the safety property.
+
+    GAP rejoins any same-pitch repeat separated by less than gap_ms. It is
+    thorough and it is NOT safe on repetitive material: a tremolo at a faster
+    rate than the threshold collapses into one long note. Offered because on
+    sustained material it removes residue the grid test cannot reach, but it
+    is never the default.
+    """
+    if mode == "off" or not notes:
+        return notes, 0
+
+    by_pitch = {}
+    for n in notes:
+        by_pitch.setdefault(n["pitch"], []).append(n)
+
+    out = []
+    merged = 0
+    for pitch in by_pitch:
+        group = sorted(by_pitch[pitch], key=lambda n: n["start"])
+        current = dict(group[0])
+        for nxt in group[1:]:
+            gap = nxt["start"] - current["end"]
+            if mode == "gap":
+                join = gap <= gap_ms / 1000.0
+            else:
+                k = int(round(nxt["start"] / hop))
+                on_grid = (k >= 1
+                           and abs(nxt["start"] - k * hop) <= tol_ms / 1000.0)
+                contiguous = gap <= tol_ms / 1000.0
+                not_louder = nxt["amp"] <= current["amp"] * 1.15
+                join = on_grid and contiguous and not_louder
+            if join:
+                current["end"] = max(current["end"], nxt["end"])
+                current["amp"] = max(current["amp"], nxt["amp"])
+                merged += 1
+            else:
+                out.append(current)
+                current = dict(nxt)
+        out.append(current)
+
+    out.sort(key=lambda n: (n["start"], -n["pitch"]))
+    return out, merged
+
+
 def allocate_voices(notes, max_voices=MAX_VOICES, tol=1e-6, key="voice"):
     """First-fit greedy allocation of notes to non-overlapping voice layers.
 
@@ -706,6 +795,9 @@ def write_stats(path, args, notes, duration, sample_rate, n_channels,
         f.write("minimum_note_length_ms=%.2f\n" % args.minimum_note_length_ms)
         f.write("minimum_frequency_hz=%.1f\n" % args.minimum_frequency_hz)
         f.write("maximum_frequency_hz=%.1f\n" % args.maximum_frequency_hz)
+        f.write("merge_mode=%s\n" % args.merge_mode)
+        f.write("merged_onsets=%d\n" % getattr(args, "_merged", 0))
+        f.write("window_hop_seconds=%.6f\n" % getattr(args, "_hop", 0.0))
         f.write("melodia_trick=%s\n" % ("yes" if args.melodia_trick else "no"))
         f.write("multiple_pitch_bends=%s\n"
                 % ("yes" if args.multiple_pitch_bends else "no"))
@@ -804,6 +896,10 @@ def main():
     parser.add_argument("--maximum_frequency_hz", type=float, default=0.0)
     parser.add_argument("--multiple_pitch_bends", type=int, default=0)
     parser.add_argument("--melodia_trick", type=int, default=1)
+    parser.add_argument("--merge_mode", type=str, default="off",
+                        choices=["off", "grid", "gap"])
+    parser.add_argument("--merge_gap_ms", type=float, default=120.0)
+    parser.add_argument("--merge_tolerance_ms", type=float, default=30.0)
 
     parser.add_argument("--tempo_bpm", type=float, default=120.0)
     parser.add_argument("--quantize_grid", type=str, default="1/16",
@@ -867,6 +963,17 @@ def main():
     log("      %d note events detected" % len(notes))
     if not notes:
         warnings.append("no notes detected - try lowering the thresholds")
+
+    hop = model_window_hop_seconds()
+    notes, n_merged = merge_repeated_notes(
+        notes, args.merge_mode, args.merge_gap_ms, args.merge_tolerance_ms,
+        hop)
+    if args.merge_mode != "off":
+        log("      merge (%s): %d repeat onset(s) rejoined -> %d notes"
+            % (args.merge_mode, n_merged, len(notes)))
+        if n_merged:
+            warnings.append("%d repeated onset(s) merged (%s mode)"
+                            % (n_merged, args.merge_mode))
 
     n_voices, unplaced = allocate_voices(notes)
     # The TextGrid cap exists because Praat tiers are a display/edit surface;
@@ -935,6 +1042,8 @@ def main():
     args.midi_out = midi_path if have_midi else ""
 
     args._notation_voices = n_notation_voices
+    args._merged = n_merged
+    args._hop = hop
     log("[4/4] Writing stats.txt and notes.csv...")
     if args.notes_csv:
         write_notes_csv(args.notes_csv, notes)

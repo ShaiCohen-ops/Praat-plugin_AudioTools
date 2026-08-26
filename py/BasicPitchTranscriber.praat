@@ -5,6 +5,27 @@
 # Email: shai.cohen@biu.ac.il
 # Version: 0.2 (2026)
 #
+# Changelog v0.4:
+#   - Merge_repeated_notes: rejoins notes the MODEL split into repeated
+#     onsets. Basic Pitch analyses ~2 s windows and re-decides note identity
+#     in each, so a sustained note is re-attacked every 1.6400907 s (hop is
+#     derived from the installed package, not hard-coded).
+#     "window artifacts only" is the default and merges ONLY a repeat that
+#     lands on that grid, is contiguous, and is no louder than the note
+#     before it - all three. Verified against 15 strikes of one pitch every
+#     0.40 s: all 15 survive. "any gap under N ms" collapsed that same test
+#     to 1 note, so it is offered but never the default.
+#   - FORM ARGUMENT ORDER CHANGED again: two new fields after Melodia_trick.
+#
+# Changelog v0.3:
+#   - The MusicXML is now also kept as a Praat Strings object named
+#     <Sound>_musicxml, so the score stays inside Praat and can be handed
+#     straight to OM_Score_Transformer with no file on disk in between.
+#     Raw file lines, so "Save as raw text file" reproduces the original.
+#   - FORM ARGUMENT ORDER CHANGED: Create_musicxml_Strings is a new field
+#     after Print_musicxml_to_info. Existing runScript calls need the extra
+#     argument.
+#
 # Changelog v0.2:
 #   - Engine v0.2 fixes over-full bars in the music21 backend; see the Python
 #     header. Nothing in the Praat protocol changed.
@@ -153,7 +174,7 @@ endproc
 @cleanUpTempFiles
 
 # ---- FORM ----
-form Basic Pitch Transcriber v0.2
+form Basic Pitch Transcriber v0.4
     comment Basic Pitch (ICASSP 2022) sensitivity - lower thresholds find more notes
     optionmenu Preset: 3
         option Custom
@@ -168,6 +189,12 @@ form Basic Pitch Transcriber v0.2
     real Minimum_frequency_Hz 0
     real Maximum_frequency_Hz 0
     boolean Melodia_trick 1
+    comment Rejoin notes the model split into repeated onsets
+    optionmenu Merge_repeated_notes: 2
+        option off
+        option window artifacts only (safe)
+        option any gap under N ms (destroys real repeats)
+    positive Merge_gap_ms 120
     comment Notation
     positive Score_tempo_BPM 120
     optionmenu Quantize_grid: 3
@@ -183,6 +210,7 @@ form Basic Pitch Transcriber v0.2
     boolean Save_musicxml_to_file 0
     sentence Output_file_path
     boolean Print_musicxml_to_info 1
+    boolean Create_musicxml_Strings 1
     boolean Create_note_TextGrid 1
     boolean Draw_visualization 1
     boolean Play_input_sound 0
@@ -220,6 +248,14 @@ elsif preset = 5
     presetName$ = "Sparse"
 else
     presetName$ = "Custom"
+endif
+
+if merge_repeated_notes = 1
+    mergeStr$ = "off"
+elsif merge_repeated_notes = 3
+    mergeStr$ = "gap"
+else
+    mergeStr$ = "grid"
 endif
 
 # ---- CLAMP VALUES ----
@@ -287,7 +323,7 @@ nChannels = Get number of channels
 
 # ---- INFO ----
 clearinfo
-writeInfoLine:  "=== Basic Pitch Transcriber v0.2 ==="
+writeInfoLine:  "=== Basic Pitch Transcriber v0.4 ==="
 appendInfoLine: "Input: ", soundName$
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
@@ -386,6 +422,8 @@ nocheck runSubprocess: pythonCmd$, pythonScript$,
     ... "--minimum_frequency_hz", fixed$(minimum_frequency_Hz, 2),
     ... "--maximum_frequency_hz", fixed$(maximum_frequency_Hz, 2),
     ... "--melodia_trick", string$(melodia_trick),
+    ... "--merge_mode", mergeStr$,
+    ... "--merge_gap_ms", fixed$(merge_gap_ms, 2),
     ... "--multiple_pitch_bends", "0",
     ... "--tempo_bpm", fixed$(score_tempo_BPM, 2),
     ... "--quantize_grid", gridStr$,
@@ -478,6 +516,8 @@ xmlBytes$ = parseStatLine.result$
 predictSec$ = parseStatLine.result$
 @parseStatLine: statsText$, "notate_seconds="
 notateSec$ = parseStatLine.result$
+@parseStatLine: statsText$, "merged_onsets="
+mergedOnsets$ = parseStatLine.result$
 @parseStatLine: statsText$, "warning="
 warningStat$ = parseStatLine.result$
 @parseStatLine: statsText$, "note_dump_truncated="
@@ -553,6 +593,23 @@ if save_musicxml_to_file
 endif
 
 # ===========================================================================
+# MusicXML as a Praat Strings object
+# ===========================================================================
+# Keeps the score inside Praat as a first-class object, so it can be fed
+# straight to OM_Score_Transformer without ever touching the disk. Raw file
+# LINES, not tag-per-line: this way "Save as raw text file" reproduces the
+# original score (Praat adds one trailing newline, which XML ignores), and
+# the transformer does its own tag splitting internally.
+xmlStrings = 0
+if create_musicxml_Strings
+    Read Strings from raw text file: tempScore$
+    xmlStrings = selected("Strings")
+    Rename: soundName$ + "_musicxml"
+    nXmlLines = Get number of strings
+    appendInfoLine: "  Strings object: ", nXmlLines, " lines"
+endif
+
+# ===========================================================================
 # Note TextGrid
 # ===========================================================================
 # One interval tier per allocated voice layer. Praat interval tiers cannot
@@ -617,7 +674,7 @@ if draw_visualization
     Select inner viewport: 0.6, 7.7, 0.05, 0.45
     Axes: 0, 1, 0, 1
     Colour: "{0.20, 0.20, 0.40}"
-    @picSafe: "Basic Pitch Transcriber v0.2 - " + soundName$
+    @picSafe: "Basic Pitch Transcriber v0.4 - " + soundName$
     Text: 0.5, "centre", 0.5, "half", picSafe.out$
     Colour: "Black"
 
@@ -956,6 +1013,7 @@ appendInfoLine: "=== COMPLETE ==="
 appendInfoLine: "Notes detected:  ", noteCount$
 appendInfoLine: "Pitch range:     ", pitchMinName$, " - ", pitchMaxName$,
     ... " (MIDI ", pitchMinMidi, "-", pitchMaxMidi, ")"
+appendInfoLine: "Merge mode:      ", mergeStr$, " (", mergedOnsets$, " onsets rejoined)"
 appendInfoLine: "Max polyphony:   ", polyMax$
 appendInfoLine: "Voice layers:    ", voicesUsed$
 if number(unplaced$) > 0
@@ -976,6 +1034,9 @@ if backendUsed$ = "builtin" and number(truncated$) > 0
     appendInfoLine: "                 install music21 for real voice engraving)"
 endif
 appendInfoLine: "MusicXML size:   ", xmlBytes$, " bytes"
+if xmlStrings > 0
+    appendInfoLine: "Strings object:  ", soundName$, "_musicxml (feed to OM Score Transformer)"
+endif
 appendInfoLine: "Saved to:        ", savedPath$
 appendInfoLine: "Inference time:  ", predictSec$, " s"
 appendInfoLine: "Notation time:   ", notateSec$, " s"
@@ -985,17 +1046,15 @@ if warningStat$ <> "?" and warningStat$ <> "" and warningStat$ <> "none"
 endif
 
 # ---- Final selection ----
-if textgrid > 0 and noteTable > 0
-    selectObject: sound
+selectObject: sound
+if textgrid > 0
     plusObject: textgrid
+endif
+if noteTable > 0
     plusObject: noteTable
-elsif textgrid > 0
-    selectObject: sound
-    plusObject: textgrid
-elsif noteTable > 0
-    selectObject: noteTable
-else
-    selectObject: sound
+endif
+if xmlStrings > 0
+    plusObject: xmlStrings
 endif
 
 if play_input_sound
