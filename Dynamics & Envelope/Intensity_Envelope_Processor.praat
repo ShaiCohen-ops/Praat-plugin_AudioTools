@@ -3,11 +3,26 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.5 (2026)
+# Version: 1.6 (2026)
 #
 # Description:
 #   Multi-mode intensity envelope processor with power shaping,
 #   tremolo, gating, time manipulation, and envelope inversion.
+#
+# Changelog v1.6 (2026):
+#   - FIX: Peak normalization now checks for a non-zero output peak before
+#     calling Scale peak; fully silent outputs are left unchanged and reported.
+#   - FIX: Gate_min/Gate_max are clamped to 0-1 after any min/max swap, and
+#     Gate_duty_percent is clamped to 0-100 so the UI and displayed envelope
+#     match the actual gain range.
+#   - FIX: Synthetic Tremolo/Gate rates are capped below audio Nyquist, and
+#     Tremolo/Gate/Random control-Sound construction now has explicit rate and
+#     sample-count safety limits instead of allowing arbitrarily huge objects.
+#   - FIX: Time Scaling's minimum-output-sample check now estimates samples in
+#     the final resampled output (new_duration * original_sample_rate), rather
+#     than a product that algebraically collapsed back to the source count.
+#   - FIX: Info-window header/reporting now uses appendInfoLine after the first
+#     writeInfoLine, so earlier lines are not erased by subsequent writes.
 #
 # Changelog v1.5 (2026):
 #   - VISUALIZATION / UI STANDARDIZATION ONLY. Audio analysis,
@@ -97,7 +112,7 @@
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 # ============================================================
 
-form Intensity Envelope Processor v1.5
+form Intensity Envelope Processor v1.6
     optionmenu Preset 1
         option Custom
         option Soft Compression
@@ -141,7 +156,7 @@ random_seed = 0
 max_gain = 20
 
 if advanced_settings
-    beginPause: "Intensity Envelope Processor v1.5 - Advanced settings"
+    beginPause: "Intensity Envelope Processor v1.6 - Advanced settings"
         comment: "=== Power shaping ==="
         real: "Exponent", "2.0"
         comment: "=== Tremolo ==="
@@ -264,6 +279,42 @@ if gate_max < gate_min
     paramNotes$ = paramNotes$ + "Note: Gate_max was below Gate_min; the two were swapped." + newline$
 endif
 
+# v1.6: gate levels are literal multiplicative gains and the visualization is
+# defined on a normalized 0-1 envelope range. Enforce that contract explicitly.
+origGateMin = gate_min
+origGateMax = gate_max
+origGateDuty = gate_duty_percent
+gate_min = min(max(gate_min, 0), 1)
+gate_max = min(max(gate_max, 0), 1)
+gate_duty_percent = min(max(gate_duty_percent, 0), 100)
+if gate_min <> origGateMin or gate_max <> origGateMax
+    paramNotes$ = paramNotes$ + "Note: Gate_min/Gate_max clamped to the 0-1 range." + newline$
+endif
+if gate_duty_percent <> origGateDuty
+    paramNotes$ = paramNotes$ + "Note: Gate_duty_percent clamped to the 0-100 range." + newline$
+endif
+
+# v1.6: Tremolo and Gate are periodic audio-rate gain controls. Frequencies at
+# or above Nyquist cannot be represented in the final audio, so clamp them.
+modNyquist = orig_sr / 2 - 1
+if modNyquist <= 0
+    exitScript: "Sampling frequency is too low for synthetic modulation."
+endif
+maxSyntheticRate = 5000
+periodicRateCap = min(modNyquist, maxSyntheticRate)
+if tremolo_rate_Hz > periodicRateCap
+    tremolo_rate_Hz = periodicRateCap
+    paramNotes$ = paramNotes$ + "Note: Tremolo_rate_Hz clamped to " + fixed$(periodicRateCap, 1) + " Hz (synthetic-control/Nyquist safety limit)." + newline$
+endif
+if gate_rate_Hz > periodicRateCap
+    gate_rate_Hz = periodicRateCap
+    paramNotes$ = paramNotes$ + "Note: Gate_rate_Hz clamped to " + fixed$(periodicRateCap, 1) + " Hz (synthetic-control/Nyquist safety limit)." + newline$
+endif
+if random_rate_Hz > maxSyntheticRate
+    random_rate_Hz = maxSyntheticRate
+    paramNotes$ = paramNotes$ + "Note: Random_rate_Hz clamped to " + fixed$(maxSyntheticRate, 0) + " Hz by the synthetic-control safety limit." + newline$
+endif
+
 origRandomDepth = random_depth
 random_depth = min(max(random_depth, 0), 1)
 if random_depth <> origRandomDepth
@@ -290,17 +341,17 @@ endif
 # === INFO HEADER ===
 clearinfo
 writeInfoLine: "=============================================="
-writeInfoLine: "  INTENSITY ENVELOPE PROCESSOR v1.5"
-writeInfoLine: "=============================================="
-writeInfoLine: ""
-writeInfoLine: "Input: ", source_name$, " (", fixed$(dur, 3), "s, starts at ", fixed$(sourceStart, 3), "s)"
-writeInfoLine: "Preset: ", presetName$
-writeInfoLine: "Mode: ", modeName$
+appendInfoLine: "  INTENSITY ENVELOPE PROCESSOR v1.6"
+appendInfoLine: "=============================================="
+appendInfoLine: ""
+appendInfoLine: "Input: ", source_name$, " (", fixed$(dur, 3), "s, starts at ", fixed$(sourceStart, 3), "s)"
+appendInfoLine: "Preset: ", presetName$
+appendInfoLine: "Mode: ", modeName$
 if paramNotes$ <> ""
-    writeInfoLine: ""
-    writeInfoLine: paramNotes$
+    appendInfoLine: ""
+    appendInfoLine: paramNotes$
 endif
-writeInfoLine: ""
+appendInfoLine: ""
 
 # ============================================================
 # CREATE MODULATOR
@@ -337,7 +388,23 @@ elsif mode = 2 or mode = 3 or mode = 7
     else
         reqRate = random_rate_Hz
     endif
-    modulatorRate = max(2000, ceiling(reqRate * 20))
+
+    # v1.6: keep the normal fine grid, but bound both rate and total sample
+    # count. If a very long file makes the 2 kHz baseline excessive, relax the
+    # baseline only as far as needed while still keeping >=20 samples per
+    # requested control cycle and at least 200 Hz control resolution.
+    desiredModulatorRate = max(2000, ceiling(reqRate * 20))
+    maxModulatorRate = 100000
+    maxModulatorSamples = 5000000
+    minAdequateRate = max(200, ceiling(reqRate * 20))
+    maxRateByLength = floor(maxModulatorSamples / dur)
+    if maxRateByLength < minAdequateRate
+        exitScript: modeName$ + " at " + fixed$(reqRate, 3) + " Hz over " + fixed$(dur, 3) + " s would require more than " + string$(maxModulatorSamples) + " control samples. Lower the rate or process a shorter Sound."
+    endif
+    modulatorRate = min(desiredModulatorRate, min(maxModulatorRate, maxRateByLength))
+    if modulatorRate < desiredModulatorRate
+        appendInfoLine: "  Note: synthetic modulator grid reduced from ", desiredModulatorRate, " to ", modulatorRate, " Hz by safety limits."
+    endif
 
     modulator_id = Create Sound from formula: "modulator", 1, sourceStart, sourceEnd, modulatorRate, "1"
 endif
@@ -581,7 +648,7 @@ elsif mode = 5
     min_resulting_sr = 100
     max_resulting_sr = 500000
     min_output_samples = 10
-    estimatedSamples = round(new_dur * resultingSR)
+    estimatedSamples = round(new_dur * orig_sr)
 
     if resultingSR < min_resulting_sr
         exitScript: "Scale_factor ", fixed$(scale_factor, 6), " would drop the sampling frequency to ", fixed$(resultingSR, 1), " Hz (below ", min_resulting_sr, " Hz). Choose a smaller Scale_factor."
@@ -590,7 +657,7 @@ elsif mode = 5
     elsif new_dur > max_output_duration_s
         exitScript: "Scale_factor ", fixed$(scale_factor, 6), " would produce ", fixed$(new_dur, 1), " s of audio (over the ", max_output_duration_s, " s safety limit). Choose a smaller Scale_factor."
     elsif estimatedSamples < min_output_samples
-        exitScript: "Scale_factor ", fixed$(scale_factor, 6), " would produce only about ", estimatedSamples, " output samples. Choose a Scale_factor closer to 1."
+        exitScript: "Scale_factor ", fixed$(scale_factor, 6), " would produce only about ", estimatedSamples, " samples in the final output. Choose a Scale_factor closer to 1."
     endif
 
     selectObject: source_id
@@ -622,9 +689,16 @@ else
 endif
 
 # === NORMALIZE ===
+normalizationApplied = 0
 if normalize
     selectObject: result_id
-    Scale peak: 0.95
+    preNormalizePeak = Get absolute extremum: 0, 0, "Sinc70"
+    if preNormalizePeak > 0
+        Scale peak: 0.95
+        normalizationApplied = 1
+    else
+        appendInfoLine: "Output is silent; normalization skipped."
+    endif
 endif
 
 # ============================================================
@@ -644,7 +718,7 @@ if visualize
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##Intensity Envelope Processor v1.5##"
+    Text: 0.5, "centre", 0.68, "half", "##Intensity Envelope Processor v1.6##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.50}"
     Text: 0.5, "centre", 0.22, "half", vizName$ + " | " + modeName$ + " | " + presetName$
@@ -741,7 +815,11 @@ if visualize
     resultVizPeak = Get absolute extremum: 0, 0, "None"
 
     if normalize
-        normalizeViz$ = "on"
+        if normalizationApplied
+            normalizeViz$ = "on (0.95 peak)"
+        else
+            normalizeViz$ = "requested; skipped (silent output)"
+        endif
     else
         normalizeViz$ = "off"
     endif

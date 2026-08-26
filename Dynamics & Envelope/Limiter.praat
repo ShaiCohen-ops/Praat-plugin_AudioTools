@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 3.3 (2026)
+# Version: 3.4 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -14,6 +14,19 @@
 #   and Sinc70 True Peak Safety Ceiling.
 # ============================================================
 
+# Changelog v3.4 (2026):
+#   - FIX: Peak_normalize_to_ceiling now operates on every non-silent result;
+#     the old 0.001 amplitude cutoff incorrectly skipped very quiet material.
+#   - FIX: final-stage reporting now distinguishes signed global gain from
+#     attenuation. Peak-normalization attenuation is included in Total Peak
+#     Attenuation, while positive normalization gain is not misreported as loss.
+#   - FIX: Input/Output waveform panels and their Threshold/Ceiling reference
+#     lines now use one explicit shared amplitude scale instead of mixing
+#     autoscaled waveform drawing with fixed -1..1 reference-line axes.
+#   - SAFETY: 4x+ oversampled sidechain construction now checks the estimated
+#     total number of oversampled sample values before Resample and exits with a
+#     clear message if the temporary Sound would exceed the configured limit.
+#
 # Changelog v3.3 (2026):
 #   - VISUALIZATION / UI STANDARDIZATION ONLY. Audio analysis,
 #     DSP, scheduling and rendering are unchanged from the
@@ -24,7 +37,7 @@
 #   - Preserved the script-specific diagnostic / transformation
 #     views rather than replacing them with generic plots.
 #
-form Dynamic True-Peak Limiter v3.3
+form Dynamic True-Peak Limiter v3.4
     optionmenu Preset 1
         option Custom
         option -1 dBTP Transparent Limiter
@@ -140,7 +153,7 @@ lookahead_sec = lookahead_ms / 1000
 # === INFO HEADER ===
 clearinfo
 appendInfoLine: "=============================================="
-appendInfoLine: "  DYNAMIC TRUE-PEAK LIMITER v3.3"
+appendInfoLine: "  DYNAMIC TRUE-PEAK LIMITER v3.4"
 appendInfoLine: "=============================================="
 appendInfoLine: ""
 appendInfoLine: "Input: ", sound_name$, " (", fixed$(dur, 2), "s, ", nChannels, " ch)"
@@ -169,6 +182,16 @@ appendInfoLine: "Building 4x+ oversampled True-Peak sidechain..."
 
 # 1. Oversampled True-Peak Sidechain (Guaranteed 4x+ Oversampling for ISPs)
 target_sr = max(sr * 4, 176400)
+# v3.4 safety guard: estimate total sample VALUES (frames x channels) in the
+# temporary oversampled Sound before allocating it. This preserves the 4x+
+# requirement rather than silently lowering the oversampling factor.
+maxOversampledValues = 20000000
+estimatedOversampledFrames = ceiling(dur * target_sr)
+estimatedOversampledValues = estimatedOversampledFrames * nChannels
+if estimatedOversampledValues > maxOversampledValues
+    exitScript: "Oversampled true-peak sidechain would require about " + string$(estimatedOversampledValues) + " sample values at " + fixed$(target_sr, 0) + " Hz (safety limit " + string$(maxOversampledValues) + "). Process a shorter Sound or reduce the source sampling rate."
+endif
+appendInfoLine: "Oversampled sidechain: ", fixed$(target_sr, 0), " Hz; estimated ", estimatedOversampledValues, " sample values"
 selectObject: sound
 sound_oversampled = Resample: target_sr, 50
 sound_os_id = sound_oversampled
@@ -249,19 +272,30 @@ currentPeakNeg = Get minimum: start_time, end_time, "Sinc70"
 currentPeakAbs = max(abs(currentPeak), abs(currentPeakNeg))
 
 safety_attenuation_dB = 0.0
+final_global_gain_dB = 0.0
+final_global_attenuation_dB = 0.0
 
 if peak_normalize_to_ceiling
-    if currentPeakAbs > 0.001
+    # Normalize every genuinely non-silent result. The former 0.001 threshold
+    # (~-60 dBFS) incorrectly skipped quiet but valid signals.
+    if currentPeakAbs > 1e-12
         gainRatio = ceiling / currentPeakAbs
         Formula: ~ self * gainRatio
-        norm_gain_dB = 20 * log10(gainRatio)
-        appendInfoLine: "  Peak Normalization applied: ", fixed$(norm_gain_dB, 2), " dB gain"
+        final_global_gain_dB = 20 * log10(gainRatio)
+        if final_global_gain_dB < 0
+            final_global_attenuation_dB = -final_global_gain_dB
+        endif
+        appendInfoLine: "  Peak Normalization applied: ", fixed$(final_global_gain_dB, 2), " dB global gain"
+    else
+        appendInfoLine: "  Peak Normalization requested but output is silent; no gain applied."
     endif
 else
     if currentPeakAbs > ceiling
         gainRatio = ceiling / currentPeakAbs
         Formula: ~ self * gainRatio
         safety_attenuation_dB = -20 * log10(gainRatio)
+        final_global_gain_dB = -safety_attenuation_dB
+        final_global_attenuation_dB = safety_attenuation_dB
         appendInfoLine: "  Final safety ceiling adjustment: -", fixed$(safety_attenuation_dB, 2), " dB"
     else
         appendInfoLine: "  Signal within ceiling limit - no global safety adjustment required."
@@ -278,12 +312,17 @@ outPeak_dB = 20 * log10(outPeakAbs + 1e-10)
 selectObject: gain_envelope
 minGain = Get minimum: start_time, end_time, "None"
 maxDynamicGR_dB = -20 * log10(minGain + 1e-10)
-totalMaxAttenuation_dB = maxDynamicGR_dB + safety_attenuation_dB
+totalMaxAttenuation_dB = maxDynamicGR_dB + final_global_attenuation_dB
 
 appendInfoLine: ""
 appendInfoLine: "Output True Peak: ", fixed$(outPeak_dB, 2), " dBTP (Sinc70)"
 appendInfoLine: "Max Dynamic Gain Reduction: ", fixed$(maxDynamicGR_dB, 2), " dB"
-appendInfoLine: "Final Safety Ceiling Attenuation: ", fixed$(safety_attenuation_dB, 2), " dB"
+appendInfoLine: "Final Global Gain: ", fixed$(final_global_gain_dB, 2), " dB"
+if peak_normalize_to_ceiling
+    appendInfoLine: "Peak-Normalization Attenuation: ", fixed$(final_global_attenuation_dB, 2), " dB"
+else
+    appendInfoLine: "Final Safety Ceiling Attenuation: ", fixed$(safety_attenuation_dB, 2), " dB"
+endif
 appendInfoLine: "Total Peak Attenuation: ", fixed$(totalMaxAttenuation_dB, 2), " dB"
 appendInfoLine: "Peak Level Change: ", fixed$(outPeak_dB - inPeak_dB, 2), " dB"
 
@@ -304,20 +343,35 @@ if visualize
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##Dynamic True-Peak Limiter v3.3##"
+    Text: 0.5, "centre", 0.68, "half", "##Dynamic True-Peak Limiter v3.4##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.50}"
     Text: 0.5, "centre", 0.22, "half", vizName$ + " | " + presetName$ + " | ceiling " + fixed$(ceiling_dBTP, 1) + " dBTP"
+
+    # Explicit shared vertical range for Input and Output. This keeps the
+    # waveforms and their Threshold/Ceiling reference lines in the same
+    # coordinate system and also makes before/after amplitude comparable.
+    waveAmp = max(inPeakAbs, outPeakAbs)
+    if threshold > waveAmp
+        waveAmp = threshold
+    endif
+    if ceiling > waveAmp
+        waveAmp = ceiling
+    endif
+    if waveAmp < 0.001
+        waveAmp = 0.001
+    endif
+    waveAmp = waveAmp * 1.10
 
     # Input Waveform
     Select outer viewport: 0, 8, 0.4, 1.9
     Select inner viewport: 0.8, 7.6, 0.5, 1.8
     selectObject: sound
     Colour: "{0.5, 0.5, 0.5}"
-    Draw: start_time, end_time, 0, 0, "no", "Curve"
+    Draw: start_time, end_time, -waveAmp, waveAmp, "no", "Curve"
     
     # Threshold Lines
-    Axes: start_time, end_time, -1, 1
+    Axes: start_time, end_time, -waveAmp, waveAmp
     Colour: "{0.9, 0.3, 0.3}"
     Dashed line
     Draw line: start_time, threshold, end_time, threshold
@@ -335,10 +389,10 @@ if visualize
     Select inner viewport: 0.8, 7.6, 2.1, 3.4
     selectObject: result
     Colour: "{0.2, 0.5, 0.3}"
-    Draw: start_time, end_time, 0, 0, "no", "Curve"
+    Draw: start_time, end_time, -waveAmp, waveAmp, "no", "Curve"
     
     # Ceiling Lines
-    Axes: start_time, end_time, -1, 1
+    Axes: start_time, end_time, -waveAmp, waveAmp
     Colour: "{0.3, 0.3, 0.8}"
     Dashed line
     Draw line: start_time, ceiling, end_time, ceiling
@@ -384,8 +438,15 @@ if visualize
     Text: 0.80, "left", 0.60, "half", fixed$(outPeak_dB, 2) + " dBTP"
     Text: 0.05, "left", 0.45, "half", "Max Dynamic Gain Reduction:"
     Text: 0.80, "left", 0.45, "half", fixed$(maxDynamicGR_dB, 2) + " dB"
-    Text: 0.05, "left", 0.30, "half", "Safety Ceiling Attenuation:"
-    Text: 0.80, "left", 0.30, "half", fixed$(safety_attenuation_dB, 2) + " dB"
+    if peak_normalize_to_ceiling
+        finalStageLabel$ = "Peak Normalize Global Gain:"
+        finalStageValue$ = fixed$(final_global_gain_dB, 2) + " dB"
+    else
+        finalStageLabel$ = "Safety Ceiling Attenuation:"
+        finalStageValue$ = fixed$(safety_attenuation_dB, 2) + " dB"
+    endif
+    Text: 0.05, "left", 0.30, "half", finalStageLabel$
+    Text: 0.80, "left", 0.30, "half", finalStageValue$
     Text: 0.05, "left", 0.15, "half", "Total Peak Attenuation:"
     Text: 0.80, "left", 0.15, "half", fixed$(totalMaxAttenuation_dB, 2) + " dB"
     

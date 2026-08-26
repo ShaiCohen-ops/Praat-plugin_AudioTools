@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.4 (2026)
+# Version: 1.5 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -16,6 +16,15 @@
 #   "Earthquake Tremor", "Heartbeat Pulse") rather than for a
 #   distinct underlying physical system - all presets run the same
 #   fall-and-bounce equations with different parameters.
+#
+# Changelog v1.5 (2026):
+#   - FIX: Info-window reporting now uses appendInfoLine after the first
+#     writeInfoLine, so the header and parameter report are no longer erased.
+#   - FIX: Peak normalization now checks for a non-zero output peak before
+#     calling Scale peak; fully silent outputs are left unchanged and reported.
+#   - SAFETY: Max_bounces is capped at the largest rebound count that can be
+#     meaningful within the fixed 30 s / 1 ms physics engine, preventing huge
+#     unnecessary bounceTime[] initialization loops from extreme custom values.
 #
 # Changelog v1.4 (2026):
 #   - VISUALIZATION / UI STANDARDIZATION ONLY. Audio analysis,
@@ -157,7 +166,7 @@
 #     has coarsened below 2 ms.
 # ============================================================
 
-form Kinematic Physics Envelope v1.4
+form Kinematic Physics Envelope v1.5
     optionmenu Preset 1
         option Custom
         option Bouncy Rubber Ball
@@ -359,7 +368,16 @@ endif
 # drag_coefficient near or above 1/physDt flips the sign of that
 # factor and produces oscillation/instability instead of damping.
 physDt = 0.001
+physTimeCap = 30.0
 maxSafeDrag = 0.5 / physDt
+# At one ground crossing at most per 1 ms integration step, no run can usefully
+# reflect more often than the number of steps available inside the physics cap.
+maxMeaningfulBounces = floor(physTimeCap / physDt)
+maxBouncesWasClamped = 0
+if max_bounces > maxMeaningfulBounces
+    max_bounces = maxMeaningfulBounces
+    maxBouncesWasClamped = 1
+endif
 
 # === PARAMETER VALIDATION (final, post-preset values) ===
 if initial_height_m < 0
@@ -410,22 +428,25 @@ endif
 # === INFO HEADER ===
 clearinfo
 writeInfoLine: "=============================================="
-writeInfoLine: "  KINEMATIC PHYSICS ENVELOPE v1.4"
-writeInfoLine: "=============================================="
-writeInfoLine: ""
-writeInfoLine: "Input: ", sound_name$, " (", fixed$(duration, 3), "s)"
-writeInfoLine: "Preset: ", presetName$
-writeInfoLine: ""
-writeInfoLine: "=== Physics Parameters ==="
-writeInfoLine: "  Initial height: ", fixed$(initial_height_m, 2), " m"
-writeInfoLine: "  Initial velocity: ", fixed$(initial_velocity_m_s, 2), " m/s"
-writeInfoLine: "  Gravity: ", fixed$(gravity_m_s2, 2), " m/s²"
-writeInfoLine: "  Bounce coefficient: ", fixed$(bounce_coefficient, 2)
-writeInfoLine: "  Drag coefficient: ", fixed$(drag_coefficient, 2)
-writeInfoLine: "  Max bounces: ", max_bounces
-writeInfoLine: "  Mapping: ", mappingName$
-writeInfoLine: "  Time mapping: ", timeMapName$
-writeInfoLine: ""
+appendInfoLine: "  KINEMATIC PHYSICS ENVELOPE v1.5"
+appendInfoLine: "=============================================="
+appendInfoLine: ""
+appendInfoLine: "Input: ", sound_name$, " (", fixed$(duration, 3), "s)"
+appendInfoLine: "Preset: ", presetName$
+appendInfoLine: ""
+appendInfoLine: "=== Physics Parameters ==="
+appendInfoLine: "  Initial height: ", fixed$(initial_height_m, 2), " m"
+appendInfoLine: "  Initial velocity: ", fixed$(initial_velocity_m_s, 2), " m/s"
+appendInfoLine: "  Gravity: ", fixed$(gravity_m_s2, 2), " m/s²"
+appendInfoLine: "  Bounce coefficient: ", fixed$(bounce_coefficient, 2)
+appendInfoLine: "  Drag coefficient: ", fixed$(drag_coefficient, 2)
+appendInfoLine: "  Max bounces: ", max_bounces
+appendInfoLine: "  Mapping: ", mappingName$
+appendInfoLine: "  Time mapping: ", timeMapName$
+if maxBouncesWasClamped
+    appendInfoLine: "  NOTE: Max_bounces exceeded the 30 s / 1 ms engine limit and was clamped to ", maxMeaningfulBounces, "."
+endif
+appendInfoLine: ""
 
 # ============================================================
 # PHYSICS SIMULATION (real-time, fixed 1 ms dt, sub-step bounce
@@ -440,7 +461,6 @@ writeInfoLine: ""
 
 appendInfoLine: "Simulating physics in real time..."
 
-physTimeCap = 30.0
 maxPhysSamples = round(physTimeCap / physDt) + 10
 restThresholdV = 0.01
 
@@ -878,10 +898,18 @@ selectObject: result
 Formula: "self * Sound_" + envName$ + " (x)"
 
 # Normalize (now a single, explicit pass - not stacked on top of
-# a Multiply command that already rescaled the peak)
+# a Multiply command that already rescaled the peak). Guard a fully silent
+# result because Scale peak has no meaningful gain to compute at peak = 0.
+normalizationApplied = 0
 if normalize
     selectObject: result
-    Scale peak: 0.95
+    preNormalizePeak = Get absolute extremum: 0, 0, "Sinc70"
+    if preNormalizePeak > 0
+        Scale peak: 0.95
+        normalizationApplied = 1
+    else
+        appendInfoLine: "Output is silent; normalization skipped."
+    endif
 endif
 
 appendInfoLine: ""
@@ -904,7 +932,7 @@ if visualize
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##Kinematic Physics Envelope v1.4##"
+    Text: 0.5, "centre", 0.68, "half", "##Kinematic Physics Envelope v1.5##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.50}"
     Text: 0.5, "centre", 0.22, "half", vizName$ + " | " + presetName$ + " | " + mappingName$ + " | " + timeMapName$

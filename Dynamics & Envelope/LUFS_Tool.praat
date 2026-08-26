@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 4.2 (2026) - Bugfix Release for Parselmouth/Praat Formula Scope
+# Version: 4.3 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -14,6 +14,16 @@
 #   Safe Target Gain, Dynamic Peak Limiting with Iterative Convergence, and Post-Processing Re-measurement.
 # ============================================================
 
+# Changelog v4.3 (2026):
+#   - FIX: LRA trailing-silence concatenation now restores the original Sound
+#     start time before short-term windows are measured, so files with xmin != 0
+#     retain correct absolute-time alignment.
+#   - SAFETY: both true-peak measurement and the internal dynamic limiter now
+#     estimate oversampled sample-value count before Resample and refuse extreme
+#     temporary allocations above 200,000,000 sample values.
+#   - STANDARD ALIGNMENT: integrated-loudness and LRA gates now use strict
+#     greater-than comparisons at the absolute and relative thresholds.
+#
 # Changelog v4.2 (2026):
 #   - VISUALIZATION / UI STANDARDIZATION ONLY. Audio analysis,
 #     DSP, scheduling and rendering are unchanged from the
@@ -24,7 +34,7 @@
 #   - Preserved the script-specific diagnostic / transformation
 #     views rather than replacing them with generic plots.
 #
-form LUFS Tool v4.2
+form LUFS Tool v4.3
     optionmenu Preset 1
         option Custom
         option Spotify (-14 LUFS / -1 dBTP)
@@ -144,7 +154,7 @@ endif
 # === INFO HEADER ===
 clearinfo
 appendInfoLine: "=============================================="
-appendInfoLine: "  LUFS TOOL v4.2 (BS.1770-5 / EBU R128)"
+appendInfoLine: "  LUFS TOOL v4.3 (BS.1770-5 / EBU R128)"
 appendInfoLine: "=============================================="
 appendInfoLine: ""
 appendInfoLine: "Input: ", input$, " (", fixed$(duration, 2), "s, ", sr, " Hz, ", nChannels, " ch)"
@@ -161,7 +171,19 @@ appendInfoLine: ""
 procedure measureTruePeak: .soundObj, .pStart, .pEnd
     selectObject: .soundObj
     .sr_orig = Get sampling frequency
-    .os = Resample: max(.sr_orig * 4, 176400), 50
+    .nCh_orig = Get number of channels
+    .dur_orig = .pEnd - .pStart
+    .target_sr = max(.sr_orig * 4, 176400)
+    # Safety guard: preserve the 4x+ measurement rate rather than silently
+    # reducing it. 200M sample values is a high ceiling intended to admit
+    # normal multi-minute programme material while rejecting extreme allocations.
+    .maxOversampledValues = 200000000
+    .estimatedOversampledFrames = ceiling(.dur_orig * .target_sr)
+    .estimatedOversampledValues = .estimatedOversampledFrames * .nCh_orig
+    if .estimatedOversampledValues > .maxOversampledValues
+        exitScript: "True-peak measurement would require about " + string$(.estimatedOversampledValues) + " oversampled sample values at " + fixed$(.target_sr, 0) + " Hz (safety limit " + string$(.maxOversampledValues) + "). Process a shorter Sound or reduce the source sampling rate."
+    endif
+    .os = Resample: .target_sr, 50
     selectObject: .os
     .maxVal = Get maximum: .pStart, .pEnd, "Sinc70"
     .minVal = Get minimum: .pStart, .pEnd, "Sinc70"
@@ -187,6 +209,13 @@ endproc
 procedure applyLimiter: .snd, .pStart, .pEnd, .srVal, .nCh, .ceiling_dB
     .ceilingLinear = 10 ^ (.ceiling_dB / 20)
     .target_sr = max(.srVal * 4, 176400)
+    .durVal = .pEnd - .pStart
+    .maxOversampledValues = 200000000
+    .estimatedOversampledFrames = ceiling(.durVal * .target_sr)
+    .estimatedOversampledValues = .estimatedOversampledFrames * .nCh
+    if .estimatedOversampledValues > .maxOversampledValues
+        exitScript: "Dynamic limiter sidechain would require about " + string$(.estimatedOversampledValues) + " oversampled sample values at " + fixed$(.target_sr, 0) + " Hz (safety limit " + string$(.maxOversampledValues) + "). Process a shorter Sound or reduce the source sampling rate."
+    endif
     selectObject: .snd
     .os_sound = Resample: .target_sr, 50
     
@@ -307,7 +336,7 @@ procedure analyzeLoudness: .soundObj, .pStart, .pEnd, .srVal, .nCh
             .blockL[.bk] = -100
         endif
 
-        if .blockL[.bk] >= -70
+        if .blockL[.bk] > -70
             .sumMS_abs = .sumMS_abs + .ms_b
             .countAbs = .countAbs + 1
         endif
@@ -322,7 +351,7 @@ procedure analyzeLoudness: .soundObj, .pStart, .pEnd, .srVal, .nCh
     .sumMS_rel = 0
     .countRel = 0
     for .bk from 1 to .nBlocks
-        if .blockL[.bk] >= -70 and .blockL[.bk] >= .relGate
+        if .blockL[.bk] > -70 and .blockL[.bk] > .relGate
             .sumMS_rel = .sumMS_rel + .blockMS[.bk]
             .countRel = .countRel + 1
         endif
@@ -350,6 +379,10 @@ procedure analyzeLoudness: .soundObj, .pStart, .pEnd, .srVal, .nCh
         selectObject: .k_weighted
         plusObject: .pad
         .k_padded = Concatenate
+        # Concatenate creates a Sound starting at 0. Restore the original
+        # absolute start time so the .pStart-based LRA windows remain aligned.
+        selectObject: .k_padded
+        Shift times to: "start time", .pStart
         removeObject: .pad
         
         .paddedDur = .durVal + 1.5
@@ -391,7 +424,7 @@ procedure analyzeLoudness: .soundObj, .pStart, .pEnd, .srVal, .nCh
             if .lufs_s > .maxShortTerm
                 .maxShortTerm = .lufs_s
             endif
-            if .lufs_s >= -70
+            if .lufs_s > -70
                 .stSumMS = .stSumMS + .ms_s
                 .stCount = .stCount + 1
             endif
@@ -405,7 +438,7 @@ procedure analyzeLoudness: .soundObj, .pStart, .pEnd, .srVal, .nCh
 
         .nLRA = 0
         for .w from 1 to .numWindows
-            if .shortTermLUFS[.w] >= -70 and .shortTermLUFS[.w] >= .stRelGate
+            if .shortTermLUFS[.w] > -70 and .shortTermLUFS[.w] > .stRelGate
                 .nLRA = .nLRA + 1
                 .lraVals[.nLRA] = .shortTermLUFS[.w]
             endif
@@ -640,7 +673,7 @@ if visualize
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##LUFS Tool v4.2##"
+    Text: 0.5, "centre", 0.68, "half", "##LUFS Tool v4.3##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.50}"
     Text: 0.5, "centre", 0.22, "half", vizName$ + " | " + presetName$ + " | target " + fixed$(target_LUFS, 1) + " LUFS"

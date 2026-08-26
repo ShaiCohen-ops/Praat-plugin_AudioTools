@@ -3,13 +3,32 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.3 (2026)
+# Version: 1.5 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
 #   Advanced Envelope Application with multiple envelope types,
 #   curve shapes, modifiers, and comprehensive visualization.
+#
+# Changelog v1.5 (2026):
+#   - FIX: Negative Curve_amount values are now clamped to 0 and reported;
+#     0 is the explicit linear-limit case for the normalized exponential shape.
+#   - FIX: ADSR visualization stage backgrounds/labels now follow Mirror. With
+#     Mirror on, the displayed stages run R -> S -> D -> A in their actual
+#     time-reversed positions. Any zero-level remainder outside explicitly
+#     requested ADSR stage times is left neutral rather than mislabeled as R.
+#
+# Changelog v1.4 (2026):
+#   - FIX: Peak normalization now checks for a non-zero output peak before
+#     calling Scale peak; fully silent outputs are left unchanged and reported.
+#   - FIX: Tremolo_depth is constrained to the documented 0-1 range, with
+#     out-of-range custom values clamped and reported.
+#   - FIX: Tremolo_rate_Hz must be positive and below the Sound's Nyquist
+#     frequency; invalid rates now stop with a clear message instead of
+#     producing an invalid/aliased control envelope.
+#   - REPORTING: visualization distinguishes normalization requested/applied
+#     from normalization skipped because the output was silent.
 #
 # Changelog v1.3 (2026):
 #   - VISUALIZATION / UI STANDARDIZATION ONLY. Audio analysis,
@@ -157,7 +176,7 @@
 #   - Enhanced visualization with stage labels
 # ============================================================
 
-form Envelope Application v1.3
+form Envelope Application v1.5
     optionmenu Preset 1
         option Custom
         option Fade In
@@ -341,6 +360,35 @@ if release < 0
     settingsWarning$ = settingsWarning$ + "  - Release was negative and has been clamped to 0." + newline$
 endif
 
+# v1.5: Curve_amount is the non-negative curvature constant used by the
+# normalized exponential shape. Zero is its linear-limit fallback; negative
+# values previously fell through to Linear silently, so clamp and report them.
+if curve_amount < 0
+    curve_amount = 0
+    settingsWarning$ = settingsWarning$ + "  - Curve_amount was negative and has been clamped to 0 (linear limit)." + newline$
+endif
+
+# v1.4: Tremolo-specific validation. Depth is a normalized 0-1 amount;
+# rate is a physical frequency and must be representable at this sample rate.
+if envelope_type = 11
+    if tremolo_depth < 0
+        tremolo_depth = 0
+        settingsWarning$ = settingsWarning$ + "  - Tremolo_depth was below 0 and has been clamped to 0." + newline$
+    elsif tremolo_depth > 1
+        tremolo_depth = 1
+        settingsWarning$ = settingsWarning$ + "  - Tremolo_depth was above 1 and has been clamped to 1." + newline$
+    endif
+
+    if tremolo_rate_Hz <= 0
+        exitScript: "Tremolo_rate_Hz must be greater than 0 Hz."
+    endif
+
+    tremoloNyquist = sr / 2
+    if tremolo_rate_Hz >= tremoloNyquist
+        exitScript: "Tremolo_rate_Hz must be below Nyquist (" + fixed$(tremoloNyquist, 1) + " Hz for this Sound)."
+    endif
+endif
+
 # === FIT STAGE TIMES TO SOUND DURATION ===
 # v1.2: for the stage-based envelope types, proportionally compress
 # Attack/Decay/Release (and an explicitly-requested, non-auto,
@@ -396,7 +444,7 @@ endif
 # v1.1: writeInfoLine clears the Info window on EVERY call --
 # the old header (eight writeInfoLine calls) erased itself.
 writeInfoLine: "=============================================="
-appendInfoLine: "  ENVELOPE APPLICATION v1.3"
+appendInfoLine: "  ENVELOPE APPLICATION v1.5"
 appendInfoLine: "=============================================="
 appendInfoLine: ""
 appendInfoLine: "Input: ", sound_name$, " (", fixed$(duration, 3), "s)"
@@ -804,9 +852,16 @@ selectObject: sound
 result = Copy: sound_name$ + "_" + envName$
 Formula: ~ self * object[envId, min(col, envNx)]
 
+peakNormalizationApplied = 0
 if peak_normalize_output
     selectObject: result
-    Scale peak: 0.95
+    preNormalizePeak = Get absolute extremum: 0, 0, "Sinc70"
+    if preNormalizePeak > 0
+        Scale peak: 0.95
+        peakNormalizationApplied = 1
+    else
+        appendInfoLine: "Output is silent; peak normalization skipped."
+    endif
 endif
 
 # ============================================================
@@ -825,7 +880,7 @@ if visualize
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##Envelope Application v1.3##"
+    Text: 0.5, "centre", 0.68, "half", "##Envelope Application v1.5##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.50}"
     Text: 0.5, "centre", 0.22, "half", vizName$ + " | " + envName$ + " | " + presetName$
@@ -849,10 +904,9 @@ if visualize
     Axes: 0, duration, 0, 1.1
     
     if envelope_type = 10
-        # ADSR stage markers
-        # v1.2: renamed from the script-level `.sus` (a dotted,
-        # procedure-local-style name used outside any procedure) to
-        # a plain global, visualSustain.
+        # ADSR stage markers. v1.5: the stage map follows Mirror as well as
+        # the envelope itself. Also leave any post-envelope zero remainder
+        # neutral instead of stretching the R background to the file end.
         visualSustain = sustain
         if visualSustain < epsilon
             visualSustain = duration - attack - decay - release
@@ -860,21 +914,83 @@ if visualize
                 visualSustain = 0
             endif
         endif
-        
-        Paint rectangle: "{0.85, 0.95, 0.85}", 0, attack, 0, 1.1
-        Paint rectangle: "{0.95, 0.95, 0.85}", attack, attack + decay, 0, 1.1
-        Paint rectangle: "{0.85, 0.85, 0.95}", attack + decay, attack + decay + visualSustain, 0, 1.1
-        Paint rectangle: "{0.95, 0.85, 0.85}", attack + decay + visualSustain, duration, 0, 1.1
-        
+
+        visualStageTotal = attack + decay + visualSustain + release
+        if visualStageTotal > duration
+            visualStageTotal = duration
+        endif
+        visualIdle = duration - visualStageTotal
+        if visualIdle < 0
+            visualIdle = 0
+        endif
+
+        # Neutral base also represents any explicit zero-level remainder.
+        Paint rectangle: "{0.97, 0.97, 0.97}", 0, duration, 0, 1.1
+
         Font size: 6
-        Colour: "{0.3, 0.6, 0.3}"
-        Text: attack / 2, "centre", 1.05, "half", "A"
-        Colour: "{0.6, 0.6, 0.3}"
-        Text: attack + decay / 2, "centre", 1.05, "half", "D"
-        Colour: "{0.3, 0.3, 0.6}"
-        Text: attack + decay + visualSustain / 2, "centre", 1.05, "half", "S"
-        Colour: "{0.6, 0.3, 0.3}"
-        Text: attack + decay + visualSustain + release / 2, "centre", 1.05, "half", "R"
+        if mirror = 0
+            visualA0 = 0
+            visualA1 = min(duration, attack)
+            visualD0 = visualA1
+            visualD1 = min(duration, attack + decay)
+            visualS0 = visualD1
+            visualS1 = min(duration, attack + decay + visualSustain)
+            visualR0 = visualS1
+            visualR1 = min(duration, visualStageTotal)
+
+            if visualA1 > visualA0
+                Paint rectangle: "{0.85, 0.95, 0.85}", visualA0, visualA1, 0, 1.1
+                Colour: "{0.3, 0.6, 0.3}"
+                Text: (visualA0 + visualA1) / 2, "centre", 1.05, "half", "A"
+            endif
+            if visualD1 > visualD0
+                Paint rectangle: "{0.95, 0.95, 0.85}", visualD0, visualD1, 0, 1.1
+                Colour: "{0.6, 0.6, 0.3}"
+                Text: (visualD0 + visualD1) / 2, "centre", 1.05, "half", "D"
+            endif
+            if visualS1 > visualS0
+                Paint rectangle: "{0.85, 0.85, 0.95}", visualS0, visualS1, 0, 1.1
+                Colour: "{0.3, 0.3, 0.6}"
+                Text: (visualS0 + visualS1) / 2, "centre", 1.05, "half", "S"
+            endif
+            if visualR1 > visualR0
+                Paint rectangle: "{0.95, 0.85, 0.85}", visualR0, visualR1, 0, 1.1
+                Colour: "{0.6, 0.3, 0.3}"
+                Text: (visualR0 + visualR1) / 2, "centre", 1.05, "half", "R"
+            endif
+        else
+            # Time reversal of the base ADSR: any unused zero tail becomes a
+            # leading neutral interval, followed by R -> S -> D -> A.
+            visualR0 = visualIdle
+            visualR1 = min(duration, visualR0 + release)
+            visualS0 = visualR1
+            visualS1 = min(duration, visualS0 + visualSustain)
+            visualD0 = visualS1
+            visualD1 = min(duration, visualD0 + decay)
+            visualA0 = visualD1
+            visualA1 = min(duration, visualA0 + attack)
+
+            if visualR1 > visualR0
+                Paint rectangle: "{0.95, 0.85, 0.85}", visualR0, visualR1, 0, 1.1
+                Colour: "{0.6, 0.3, 0.3}"
+                Text: (visualR0 + visualR1) / 2, "centre", 1.05, "half", "R"
+            endif
+            if visualS1 > visualS0
+                Paint rectangle: "{0.85, 0.85, 0.95}", visualS0, visualS1, 0, 1.1
+                Colour: "{0.3, 0.3, 0.6}"
+                Text: (visualS0 + visualS1) / 2, "centre", 1.05, "half", "S"
+            endif
+            if visualD1 > visualD0
+                Paint rectangle: "{0.95, 0.95, 0.85}", visualD0, visualD1, 0, 1.1
+                Colour: "{0.6, 0.6, 0.3}"
+                Text: (visualD0 + visualD1) / 2, "centre", 1.05, "half", "D"
+            endif
+            if visualA1 > visualA0
+                Paint rectangle: "{0.85, 0.95, 0.85}", visualA0, visualA1, 0, 1.1
+                Colour: "{0.3, 0.6, 0.3}"
+                Text: (visualA0 + visualA1) / 2, "centre", 1.05, "half", "A"
+            endif
+        endif
     else
         Paint rectangle: "{0.97, 0.97, 0.97}", 0, duration, 0, 1.1
     endif
@@ -908,7 +1024,11 @@ if visualize
     selectObject: result
     outPeakViz = Get absolute extremum: 0, 0, "None"
     if peak_normalize_output
-        normViz$ = "on (0.95 peak)"
+        if peakNormalizationApplied
+            normViz$ = "on (0.95 peak)"
+        else
+            normViz$ = "requested; skipped (silent output)"
+        endif
     else
         normViz$ = "off"
     endif

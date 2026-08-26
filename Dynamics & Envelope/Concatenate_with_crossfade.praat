@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.3 (2026)
+# Version: 1.4 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -19,6 +19,18 @@
 # Citation:
 #   Cohen, S. (2026). Praat AudioTools.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v1.4 (2026):
+#   - FIX: normalized the Exponential crossfade so fade-in is exactly
+#     0 -> 1 and fade-out exactly 1 -> 0 over the overlap. The previous
+#     exp(-4u) form stopped at approximately 0.0183 / 0.9817 and could
+#     introduce a small boundary discontinuity when the crossfade ended.
+#   - FIX: final Scale peak is now skipped for a fully silent output.
+#   - FIX: Panel C now renders Random-per-segment / Terraced dynamics by
+#     passing unit control signals carrying segAmp[] through the exact same
+#     crossfade/overlap-add engine as the audio. The displayed curve therefore
+#     includes the real crossfade blending in overlap regions instead of a
+#     hard step chosen from whichever segment happened to be visited last.
 #
 # Changelog v1.3 (2026):
 #   - VISUALIZATION / UI STANDARDIZATION ONLY. Audio analysis,
@@ -231,7 +243,7 @@
 #     dynamic envelopes, variable overlap, visualization, presets
 # ============================================================
 
-form Advanced Concatenate with Crossfade v1.3
+form Advanced Concatenate with Crossfade v1.4
     optionmenu Preset: 1
         option Custom (use settings below)
         option Simple Crossfade (25%)
@@ -467,7 +479,7 @@ endif
 # appendInfoLine. v1.0 called writeInfoLine 7 times in this block and
 # 6 more in the settings block, with each call clearing the info window,
 # wiping the header before the user could see it.
-writeInfoLine: "=== ADVANCED CONCATENATE WITH CROSSFADE v1.3 ==="
+writeInfoLine: "=== ADVANCED CONCATENATE WITH CROSSFADE v1.4 ==="
 appendInfoLine: ""
 appendInfoLine: "Input sounds:    ", n
 appendInfoLine: "Preset:          ", presetName$
@@ -603,11 +615,16 @@ procedure applyCrossfade: .sound, .fadeType, .duration, .direction$
             endif
 
         elsif .fadeType = 4
-            # Exponential (fast start for fade-in, fast end for fade-out)
+            # Exponential, normalized to exact endpoints. Let u run from 0 to 1:
+            #   fadeIn  = (1-exp(-4u)) / (1-exp(-4))
+            #   fadeOut = 1-fadeIn
+            # This keeps the requested fast-start curvature while guaranteeing
+            # 0/1 at the overlap boundaries (v1.4).
+            .expEnd = exp(-4)
             if .direction$ = "in"
-                Formula (part): .startTime, .endTime, 1, .channels, ~ self * (1 - exp(-4 * (x - .startTime) / .fadeDur))
+                Formula (part): .startTime, .endTime, 1, .channels, ~ self * ((1 - exp(-4 * (x - .startTime) / .fadeDur)) / (1 - .expEnd))
             else
-                Formula (part): .startTime, .endTime, 1, .channels, ~ self * exp(-4 * (x - .startTime) / .fadeDur)
+                Formula (part): .startTime, .endTime, 1, .channels, ~ self * ((exp(-4 * (x - .startTime) / .fadeDur) - .expEnd) / (1 - .expEnd))
             endif
 
         else
@@ -885,9 +902,18 @@ firstIdx = chunkOrder[1]
 selectObject: chunk[firstIdx]
 result = Copy: "crossfaded_temp"
 
+dynamicsViz = 0
 if dynamics_mode = 7 or dynamics_mode = 8
     selectObject: result
     Formula: ~ self * segAmp[1]
+
+    if draw_visualization
+        # v1.4: build a one-channel control signal in parallel with the audio.
+        # Each chunk contributes its segAmp[] value and is merged with the exact
+        # same crossfade type / overlap as the real sound, so Panel C can show the
+        # actual combined gain coefficients through overlap regions.
+        dynamicsViz = Create Sound from formula: "dynamics_viz", 1, 0, chunkDur[firstIdx], sr, string$(segAmp[1])
+    endif
 endif
 
 # Track segment positions for dynamics / visualization
@@ -929,6 +955,15 @@ for i from 2 to totalChunks
     # fade + `Concatenate with overlap`.
     @mixWithCrossfade: result, incoming, overlapTime, crossfade_type
     new_result = mixWithCrossfade.result
+
+    if (dynamics_mode = 7 or dynamics_mode = 8) and draw_visualization
+        dynIncoming = Create Sound from formula: "dynamics_incoming", 1, 0, currentDur, sr, string$(segAmp[i])
+        @mixWithCrossfade: dynamicsViz, dynIncoming, overlapTime, crossfade_type
+        newDynamicsViz = mixWithCrossfade.result
+        removeObject: dynamicsViz, dynIncoming
+        dynamicsViz = newDynamicsViz
+        Rename: "dynamics_viz"
+    endif
 
     # Track segment position
     segmentStart[i] = result_duration - overlapTime
@@ -1003,7 +1038,12 @@ endif
 # ============================================================
 
 selectObject: result
-Scale peak: scale_peak
+preScalePeak = Get absolute extremum: 0, 0, "Sinc70"
+if preScalePeak > 0
+    Scale peak: scale_peak
+else
+    appendInfoLine: "Output is silent; final peak scaling skipped."
+endif
 compositeName$ = "concat_crossfade_" + presetName$
 Rename: compositeName$
 
@@ -1033,7 +1073,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##Concatenate with Crossfade v1.3##"
+    Text: 0.5, "centre", 0.68, "half", "##Concatenate with Crossfade v1.4##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.50}"
     Text: 0.5, "centre", 0.22, "half", presetName$ + " | " + string$(n) + " files | " + string$(totalChunks) + " chunks | " + crossfadeTypeName$ + " | " + dynamicsName$
@@ -1115,8 +1155,17 @@ if draw_visualization
     Select outer viewport: 0, 8, 4.18, 5.30
     Select inner viewport: 0.55, 7.72, 4.30, 5.20
 
-    Axes: 0, finalDuration, 0, 1.3
-    Paint rectangle: "{0.97, 0.97, 0.97}", 0, finalDuration, 0, 1.3
+    dynYmax = 1.3
+    if dynamics_mode = 7 or dynamics_mode = 8
+        selectObject: dynamicsViz
+        dynVizMax = Get maximum: 0, 0, "None"
+        if dynVizMax * 1.08 > dynYmax
+            dynYmax = dynVizMax * 1.08
+        endif
+    endif
+
+    Axes: 0, finalDuration, 0, dynYmax
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, finalDuration, 0, dynYmax
 
     # Unity reference dashed
     Colour: "{0.65, 0.65, 0.70}"
@@ -1125,8 +1174,20 @@ if draw_visualization
     Draw line: 0, 1, finalDuration, 1
     Solid line
 
-    if dynamics_mode > 1
-        # Draw the curve
+    if dynamics_mode = 7 or dynamics_mode = 8
+        # v1.4: this control signal was assembled with the same overlap-add
+        # crossfades as the audio, so transitions show the real blended gain
+        # coefficients rather than hard segment steps. Equal-power fades may
+        # legitimately rise above 1 because the two amplitude weights sum to
+        # more than unity in the overlap.
+        selectObject: dynamicsViz
+        Colour: "{0.80, 0.42, 0.22}"
+        Line width: 2
+        Draw: 0, finalDuration, 0, dynYmax, "no", "Curve"
+        envelopeLabel$ = dynamicsName$ + "  (crossfade-blended; depth: " + fixed$(dynamics_depth_percent, 0) + "%)"
+
+    elsif dynamics_mode > 1
+        # Continuous whole-output dynamics modes.
         Colour: "{0.80, 0.42, 0.22}"
         Line width: 2
 
@@ -1145,8 +1206,6 @@ if draw_visualization
             prevY = 1
         elsif dynamics_mode = 6
             prevY = minAmp
-        elsif dynamics_mode = 7 or dynamics_mode = 8
-            prevY = segAmp[1]
         else
             prevY = 1
         endif
@@ -1164,14 +1223,6 @@ if draw_visualization
                 y = 1 - (1 - minAmp) * (1 - abs(2 * x / finalDuration - 1))
             elsif dynamics_mode = 6
                 y = minAmp + (1 - minAmp) * (0.5 + 0.5 * sin(2 * pi * wave_cycles * x / finalDuration - pi/2))
-            elsif dynamics_mode = 7 or dynamics_mode = 8
-                # Find which segment this point falls into
-                y = 1
-                for seg to totalChunks
-                    if x >= segmentStart[seg] and x <= segmentEnd[seg]
-                        y = segAmp[seg]
-                    endif
-                endfor
             else
                 y = 1
             endif
@@ -1299,6 +1350,10 @@ endif
 for i to totalChunks
     removeObject: chunk[i]
 endfor
+
+if dynamicsViz <> 0
+    removeObject: dynamicsViz
+endif
 
 selectObject: result
 

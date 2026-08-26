@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.1 (2025)
+# Version: 1.2 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -36,11 +36,25 @@ srcName$ = selected$("Sound")
 selectObject: srcSound
 srcDur = Get total duration
 srcSr  = Get sampling frequency
+srcStart = Get start time
+srcEnd = Get end time
 
 # ============================================================
 # FORM
 # ============================================================
 
+# Changelog v1.2 (2026):
+#   - FIX: All fade boundaries, formulas, reporting, and visualization now use
+#     the Sound's actual start/end time instead of assuming xmin = 0.
+#   - FIX: Curve_base = 1 is handled as the exact linear limiting case for
+#     Exponential/Logarithmic curves, avoiding division by zero; 0 < base < 1
+#     remains supported and is drawn with the same formula used for DSP.
+#   - FIX: Info reporting now uses appendInfoLine after the first writeInfoLine.
+#   - FIX: Visualization uses gain = 1.0 outside the fade region (not 1.1).
+#   - CHANGE: Removed forced peak normalization. Normalize_output is now an
+#     explicit option, off by default, so attenuation remains musically real.
+#     When enabled, non-silent output is scaled to 0.99 peak.
+#
 # Changelog v1.1 (2026):
 #   - VISUALIZATION / UI STANDARDIZATION ONLY. Audio analysis,
 #     DSP, scheduling and rendering are unchanged from the
@@ -51,7 +65,7 @@ srcSr  = Get sampling frequency
 #   - Preserved the script-specific diagnostic / transformation
 #     views rather than replacing them with generic plots.
 #
-form Fade-In v1.1
+form Fade-In v1.2
     comment === Preset ===
     optionmenu Preset: 1
         option Custom
@@ -79,6 +93,7 @@ form Fade-In v1.1
     real Attenuation_dB -6.0
     comment (negative = quieter, e.g. -6 dB = half amplitude)
     comment === Output ===
+    boolean Normalize_output 0
     boolean Draw_visualization 1
     boolean Play_result 1
 endform
@@ -93,6 +108,7 @@ fullDur     = full_duration
 fadeSecs    = fade_seconds
 doAtten     = apply_attenuation
 attenDb     = attenuation_dB
+normalizeOut = normalize_output
 
 # ============================================================
 # PRESETS
@@ -137,6 +153,12 @@ elsif preset = 7
     attenDb    = -6.0
 endif
 
+# Preserve the documented curve character: bases below 1 reverse the named
+# Exponential/Logarithmic curvature. Base = 1 is allowed as the linear limit.
+if (curveShape = 2 or curveShape = 3) and curveBase < 1
+    exitScript: "Curve_base must be >= 1.0 for Exponential/Logarithmic curves (1.0 gives the linear limiting case)."
+endif
+
 # Curve name for display
 if curveShape = 1
     curveName$ = "Linear"
@@ -150,18 +172,23 @@ else
     curveName$ = "Quarter-sine"
 endif
 
-# Fade region end time
+# Fade region in the Sound's actual time domain
 if fullDur = 1
-    fadeEnd = srcDur
+    fadeLen = srcDur
 else
-    fadeEnd = fadeSecs
-    if fadeEnd > srcDur
-        fadeEnd = srcDur
+    fadeLen = fadeSecs
+    if fadeLen > srcDur
+        fadeLen = srcDur
     endif
-    if fadeEnd < 0.001
-        fadeEnd = 0.001
+    if fadeLen < 0.001
+        fadeLen = min(0.001, srcDur)
     endif
 endif
+fadeStart = srcStart
+fadeEnd = srcStart + fadeLen
+
+# Exponential/Logarithmic base = 1 is the exact linear limiting case.
+baseIsLinearLimit = abs(curveBase - 1) < 1e-9
 
 # Attenuation linear factor
 attenFactor = 10 ^ (attenDb / 20)
@@ -179,51 +206,70 @@ if doAtten = 1
     Formula: "self * " + string$(attenFactor)
 endif
 
-# Apply fade-in curve over [0, fadeEnd]
-# phi = position within fade region [0,1]
-# For samples beyond fadeEnd: envelope = 1.0 (no change)
+# Apply fade-in curve over [fadeStart, fadeEnd]
+# phi = (x - fadeStart) / fadeLen within the fade region [0,1]
+# For samples beyond fadeEnd: envelope = 1.0 (no further change).
 
 selectObject: workSound
+fsStr$ = string$(fadeStart)
+feStr$ = string$(fadeEnd)
+flStr$ = string$(fadeLen)
 
 if curveShape = 1
     # Linear: phi
-    Formula: "if x <= " + string$(fadeEnd) +
-        ... " then self * ((x - xmin) / " + string$(fadeEnd) + ")" +
+    Formula: "if x <= " + feStr$ +
+        ... " then self * ((x - " + fsStr$ + ") / " + flStr$ + ")" +
         ... " else self endif"
 
 elsif curveShape = 2
-    # Exponential: (base^phi - 1) / (base - 1)
-    bStr$ = string$(curveBase)
-    fStr$ = string$(fadeEnd)
-    Formula: "if x <= " + fStr$ +
-        ... " then self * ((" + bStr$ + "^((x-xmin)/" + fStr$ + ") - 1) / (" + bStr$ + " - 1))" +
-        ... " else self endif"
+    # Exponential: (base^phi - 1) / (base - 1); base -> 1 gives linear.
+    if baseIsLinearLimit
+        Formula: "if x <= " + feStr$ +
+            ... " then self * ((x - " + fsStr$ + ") / " + flStr$ + ")" +
+            ... " else self endif"
+    else
+        bStr$ = string$(curveBase)
+        Formula: "if x <= " + feStr$ +
+            ... " then self * ((" + bStr$ + "^((x-" + fsStr$ + ")/" + flStr$ + ") - 1) / (" + bStr$ + " - 1))" +
+            ... " else self endif"
+    endif
 
 elsif curveShape = 3
-    # Logarithmic: log(1 + phi*(base-1)) / log(base)
-    bStr$ = string$(curveBase)
-    fStr$ = string$(fadeEnd)
-    Formula: "if x <= " + fStr$ +
-        ... " then self * (ln(1 + ((x-xmin)/" + fStr$ + ")*(" + bStr$ + "-1)) / ln(" + bStr$ + "))" +
-        ... " else self endif"
+    # Logarithmic: ln(1 + phi*(base-1)) / ln(base); base -> 1 gives linear.
+    if baseIsLinearLimit
+        Formula: "if x <= " + feStr$ +
+            ... " then self * ((x - " + fsStr$ + ") / " + flStr$ + ")" +
+            ... " else self endif"
+    else
+        bStr$ = string$(curveBase)
+        Formula: "if x <= " + feStr$ +
+            ... " then self * (ln(1 + ((x-" + fsStr$ + ")/" + flStr$ + ")*(" + bStr$ + "-1)) / ln(" + bStr$ + "))" +
+            ... " else self endif"
+    endif
 
 elsif curveShape = 4
     # S-Curve: (1 - cos(phi*pi)) / 2
-    fStr$ = string$(fadeEnd)
-    Formula: "if x <= " + fStr$ +
-        ... " then self * ((1 - cos(((x-xmin)/" + fStr$ + ") * pi)) / 2)" +
+    Formula: "if x <= " + feStr$ +
+        ... " then self * ((1 - cos(((x-" + fsStr$ + ")/" + flStr$ + ") * pi)) / 2)" +
         ... " else self endif"
 
 else
     # Quarter-sine: sin(phi * pi/2)
-    fStr$ = string$(fadeEnd)
-    Formula: "if x <= " + fStr$ +
-        ... " then self * sin(((x-xmin)/" + fStr$ + ") * (pi/2))" +
+    Formula: "if x <= " + feStr$ +
+        ... " then self * sin(((x-" + fsStr$ + ")/" + flStr$ + ") * (pi/2))" +
         ... " else self endif"
 endif
 
+# Optional, explicit normalization. Off by default so attenuation is preserved.
+normalizationApplied = 0
 selectObject: workSound
-Scale peak: 0.99
+preNormalizePeak = Get absolute extremum: 0, 0, "None"
+if normalizeOut = 1
+    if preNormalizePeak > 0
+        Scale peak: 0.99
+        normalizationApplied = 1
+    endif
+endif
 
 # ============================================================
 # INFO
@@ -231,24 +277,34 @@ Scale peak: 0.99
 
 clearinfo
 writeInfoLine:  "=================================================="
-writeInfoLine:  "  Fade-In v1.1"
-writeInfoLine:  "=================================================="
+appendInfoLine: "  Fade-In v1.2"
+appendInfoLine: "=================================================="
 appendInfoLine: ""
 appendInfoLine: "Preset   : ", presetName$
-appendInfoLine: "Source   : ", srcName$, " (", fixed$(srcDur, 3), " s)"
+appendInfoLine: "Source   : ", srcName$, " (", fixed$(srcDur, 3), " s; time ", fixed$(srcStart, 3), " -> ", fixed$(srcEnd, 3), " s)"
 appendInfoLine: "Curve    : ", curveName$
 if fullDur = 1
     fadeEndLabel$ = "  (full duration)"
 else
     fadeEndLabel$ = "  (partial)"
 endif
-appendInfoLine: "Fade end : ", fixed$(fadeEnd, 3), " s", fadeEndLabel$
+appendInfoLine: "Fade     : ", fixed$(fadeStart, 3), " -> ", fixed$(fadeEnd, 3), " s  (", fixed$(fadeLen, 3), " s)", fadeEndLabel$
 if doAtten = 1
     attenLabel$ = string$(attenDb) + " dB  (x" + fixed$(attenFactor, 4) + ")"
 else
     attenLabel$ = "off"
 endif
 appendInfoLine: "Atten    : ", attenLabel$
+if normalizeOut = 1
+    if normalizationApplied
+        normLabel$ = "on (peak 0.99)"
+    else
+        normLabel$ = "requested; skipped (silent output)"
+    endif
+else
+    normLabel$ = "off"
+endif
+appendInfoLine: "Normalize: ", normLabel$
 appendInfoLine: "Output   : ", srcName$, "_fadeIn"
 
 # ============================================================
@@ -279,21 +335,21 @@ if draw_visualization = 1
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##Fade-In v1.1##"
+    Text: 0.5, "centre", 0.68, "half", "##Fade-In v1.2##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.50}"
-    Text: 0.5, "centre", 0.22, "half", vizName$ + " | " + presetName$ + " | " + curveName$ + " | fade 0 -> " + fixed$(fadeEnd, 2) + " s"
+    Text: 0.5, "centre", 0.22, "half", vizName$ + " | " + presetName$ + " | " + curveName$ + " | fade " + fixed$(fadeStart, 2) + " -> " + fixed$(fadeEnd, 2) + " s"
 
     # --- PANEL 1: Original waveform ---
     Select outer viewport: 0, 8, 0.55, 1.55
     Select inner viewport: 0.75, 7.6, 0.60, 1.50
-    Axes: 0, srcDur, -ampMax, ampMax
-    Paint rectangle: "{0.97, 0.97, 0.97}", 0, srcDur, -ampMax, ampMax
+    Axes: srcStart, srcEnd, -ampMax, ampMax
+    Paint rectangle: "{0.97, 0.97, 0.97}", srcStart, srcEnd, -ampMax, ampMax
     Colour: "{0.85, 0.85, 0.85}"
-    Draw line: 0, 0, srcDur, 0
+    Draw line: srcStart, 0, srcEnd, 0
     selectObject: srcSound
     Colour: "{0.55, 0.55, 0.60}"
-    Draw: 0, 0, -ampMax, ampMax, "no", "Curve"
+    Draw: srcStart, srcEnd, -ampMax, ampMax, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 7
@@ -303,14 +359,14 @@ if draw_visualization = 1
     # --- PANEL 2: Envelope curve ---
     Select outer viewport: 0, 8, 1.60, 2.40
     Select inner viewport: 0.75, 7.6, 1.65, 2.35
-    Axes: 0, srcDur, -0.05, 1.15
-    Paint rectangle: "{0.97, 0.97, 0.97}", 0, srcDur, -0.05, 1.15
+    Axes: srcStart, srcEnd, -0.05, 1.15
+    Paint rectangle: "{0.97, 0.97, 0.97}", srcStart, srcEnd, -0.05, 1.15
     Colour: "{0.88, 0.88, 0.88}"
-    Draw line: 0, 0, srcDur, 0
-    Draw line: 0, 1, srcDur, 1
+    Draw line: srcStart, 0, srcEnd, 0
+    Draw line: srcStart, 1, srcEnd, 1
 
     # Fade region background
-    Paint rectangle: "{0.90, 0.94, 0.99}", 0, fadeEnd, -0.05, 1.15
+    Paint rectangle: "{0.90, 0.94, 0.99}", fadeStart, fadeEnd, -0.05, 1.15
 
     # Draw envelope curve with 300 points
     nPts = 300
@@ -319,22 +375,22 @@ if draw_visualization = 1
     for p from 1 to nPts - 1
         phi1 = (p - 1) / nPts
         phi2 = p / nPts
-        t1 = phi1 * srcDur
-        t2 = phi2 * srcDur
+        t1 = srcStart + phi1 * srcDur
+        t2 = srcStart + phi2 * srcDur
 
         # Compute envelope value at phi1
         if t1 <= fadeEnd
-            pp1 = (t1) / fadeEnd
+            pp1 = (t1 - fadeStart) / fadeLen
             if curveShape = 1
                 e1 = pp1
             elsif curveShape = 2
-                if curveBase > 1
+                if not baseIsLinearLimit
                     e1 = (curveBase^pp1 - 1) / (curveBase - 1)
                 else
                     e1 = pp1
                 endif
             elsif curveShape = 3
-                if curveBase > 1
+                if not baseIsLinearLimit
                     e1 = ln(1 + pp1*(curveBase-1)) / ln(curveBase)
                 else
                     e1 = pp1
@@ -345,21 +401,21 @@ if draw_visualization = 1
                 e1 = sin(pp1 * (pi/2))
             endif
         else
-            e1 = 1.1
+            e1 = 1.0
         endif
 
         if t2 <= fadeEnd
-            pp2 = (t2) / fadeEnd
+            pp2 = (t2 - fadeStart) / fadeLen
             if curveShape = 1
                 e2 = pp2
             elsif curveShape = 2
-                if curveBase > 1
+                if not baseIsLinearLimit
                     e2 = (curveBase^pp2 - 1) / (curveBase - 1)
                 else
                     e2 = pp2
                 endif
             elsif curveShape = 3
-                if curveBase > 1
+                if not baseIsLinearLimit
                     e2 = ln(1 + pp2*(curveBase-1)) / ln(curveBase)
                 else
                     e2 = pp2
@@ -370,7 +426,7 @@ if draw_visualization = 1
                 e2 = sin(pp2 * (pi/2))
             endif
         else
-            e2 = 1.1
+            e2 = 1.0
         endif
 
         Draw line: t1, e1, t2, e2
@@ -394,13 +450,13 @@ if draw_visualization = 1
     # --- PANEL 3: Processed waveform ---
     Select outer viewport: 0, 8, 2.45, 3.45
     Select inner viewport: 0.75, 7.6, 2.50, 3.40
-    Axes: 0, srcDur, -ampMax, ampMax
-    Paint rectangle: "{0.97, 0.97, 0.97}", 0, srcDur, -ampMax, ampMax
+    Axes: srcStart, srcEnd, -ampMax, ampMax
+    Paint rectangle: "{0.97, 0.97, 0.97}", srcStart, srcEnd, -ampMax, ampMax
     Colour: "{0.85, 0.85, 0.85}"
-    Draw line: 0, 0, srcDur, 0
+    Draw line: srcStart, 0, srcEnd, 0
     selectObject: workSound
     Colour: "{0.20, 0.50, 0.85}"
-    Draw: 0, 0, -ampMax, ampMax, "no", "Curve"
+    Draw: srcStart, srcEnd, -ampMax, ampMax, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 7
@@ -415,20 +471,28 @@ if draw_visualization = 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
     Font size: 7
     Colour: "Black"
-    Text: 0.02, "left", 0.85, "half", "##Summary##  Fade-In v1.1##"
+    Text: 0.02, "left", 0.85, "half", "##Summary##  Fade-In v1.2##"
     Font size: 6
     Colour: "{0.35, 0.35, 0.40}"
     Text: 0.02, "left", 0.62, "half",
         ... "Source: " + srcName$ + "  (" + fixed$(srcDur, 3) + " s  |  " + string$(srcSr) + " Hz)"
     Text: 0.02, "left", 0.40, "half",
         ... "Curve: " + curveName$
-        ... + "  |  Fade region: 0 -> " + fixed$(fadeEnd, 3) + " s"
+        ... + "  |  Fade: " + fixed$(fadeStart, 3) + " -> " + fixed$(fadeEnd, 3) + " s"
     attenLine$ = "Attenuation: off"
     if doAtten = 1
         attenLine$ = "Attenuation: " + string$(attenDb) + " dB  (x" + fixed$(attenFactor, 4) + ")"
     endif
+    normLine$ = "Normalize: off"
+    if normalizeOut = 1
+        if normalizationApplied
+            normLine$ = "Normalize: peak 0.99"
+        else
+            normLine$ = "Normalize: skipped (silent)"
+        endif
+    endif
     Text: 0.02, "left", 0.18, "half",
-        ... attenLine$ + "  |  Output peak: " + fixed$(outPeak, 4) + "  |  Preset: " + presetName$
+        ... attenLine$ + "  |  " + normLine$ + "  |  Output peak: " + fixed$(outPeak, 4) + "  |  Preset: " + presetName$
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
 

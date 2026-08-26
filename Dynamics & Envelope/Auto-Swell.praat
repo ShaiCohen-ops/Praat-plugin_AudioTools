@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.2 (2025)
+# Version: 1.3 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -11,6 +11,16 @@
 #   Stereo Amplitude Modulator / Dynamic Tremolo
 #   Applies periodic or envelope-shaped amplitude modulations
 #   with flexible stereo modes for spatial movement.
+#
+# Changelog v1.3 (2026):
+#   - FIX: input is now explicitly limited to mono or stereo; multichannel
+#     Sounds (>2 channels) are rejected instead of silently discarding channels.
+#   - FIX: Depth_percent and Pulse_width_percent now accept 0 and are validated
+#     to the documented 0-100% range before conversion.
+#   - FIX: phase-offset and different-rate stereo modes reject non-periodic /
+#     stochastic shapes whose envelopes cannot meaningfully obey those modes.
+#   - Renamed "Random walk" to "Smoothed random" to match the implemented
+#     Gaussian-noise + smoothing + normalization algorithm.
 #
 # Changelog v1.2 (2026):
 #   - VISUALIZATION / UI STANDARDIZATION ONLY. Audio analysis,
@@ -47,7 +57,7 @@
 #   - Play is now optional
 # ============================================================
 
-form Stereo Amplitude Modulator v1.2
+form Stereo Amplitude Modulator v1.3
     comment === Preset ===
     optionmenu Preset 1
         option Custom (use settings below)
@@ -70,13 +80,13 @@ form Stereo Amplitude Modulator v1.2
         option Exponential fall
         option S-curve (ease in-out)
         option Double peak (two swells per cycle)
-        option Random walk (organic)
+        option Smoothed random (organic)
         option Pulse gate (rhythmic)
         option Rise-fall envelope (single arc)
     
     comment === Timing ===
     positive Swell_rate_Hz 0.5
-    positive Depth_percent 80
+    real Depth_percent 80
     
     comment === Stereo Mode ===
     optionmenu Stereo_mode 2
@@ -98,7 +108,7 @@ form Stereo Amplitude Modulator v1.2
         option Exponential fall
         option S-curve
         option Double peak
-        option Random walk
+        option Smoothed random
         option Pulse gate
         option Rise-fall envelope
     
@@ -108,7 +118,7 @@ form Stereo Amplitude Modulator v1.2
         option Start at maximum (fade out)
         option Start at middle (half amplitude)
     
-    positive Pulse_width_percent 50
+    real Pulse_width_percent 50
     positive Random_smoothness 10
     
     comment === Output ===
@@ -129,6 +139,14 @@ selectObject: originalSound
 dur = Get total duration
 sr = Get sampling frequency
 nChannels = Get number of channels
+
+# The processor always produces stereo. Mono is duplicated to L/R; stereo is
+# processed channel-wise. Reject wider inputs rather than silently dropping
+# channels 3+ when the script extracts only channels 1 and 2.
+if nChannels > 2
+    exitScript: "Auto-Swell accepts mono or stereo Sound objects only." + newline$ + newline$ +
+        ... "The selected Sound has " + string$(nChannels) + " channels."
+endif
 
 # === Apply Presets ===
 if preset = 2
@@ -187,6 +205,36 @@ else
     presetName$ = "Custom"
 endif
 
+# === Validate User/Preset Parameters ===
+# These are percentages, not open-ended positive values. Values outside the
+# documented range would otherwise produce polarity inversion (>100% depth) or
+# an always-on pulse gate (>100% width).
+if depth_percent < 0 or depth_percent > 100
+    exitScript: "Depth percent must be between 0 and 100."
+endif
+if pulse_width_percent < 0 or pulse_width_percent > 100
+    exitScript: "Pulse width percent must be between 0 and 100."
+endif
+
+# Phase-offset and different-rate modes require an envelope whose temporal
+# position/rate is actually defined by phase/rate. Smoothed random is stochastic
+# rather than phase-addressable, and Rise-fall is one non-periodic arc over the
+# whole file (its rate and phase parameters are intentionally ignored).
+if (stereo_mode = 2 or stereo_mode = 3) and (swell_shape = 10 or swell_shape = 12)
+    if swell_shape = 10
+        badShape$ = "Smoothed random"
+    else
+        badShape$ = "Rise-fall envelope"
+    endif
+    if stereo_mode = 2
+        badMode$ = "Phase offset"
+    else
+        badMode$ = "Different rates"
+    endif
+    exitScript: badMode$ + " stereo mode is not defined for " + badShape$ + "." + newline$ + newline$ +
+        ... "Use Mono, Different shapes, or choose a periodic swell shape."
+endif
+
 # === Convert Parameters ===
 depth = depth_percent / 100
 swellPeriod = 1 / swell_rate_Hz
@@ -213,7 +261,7 @@ elsif swell_shape = 8
 elsif swell_shape = 9
     shapeName$ = "DoublePeak"
 elsif swell_shape = 10
-    shapeName$ = "RandomWalk"
+    shapeName$ = "SmoothedRandom"
 elsif swell_shape = 11
     shapeName$ = "PulseGate"
 else
@@ -232,7 +280,7 @@ endif
 
 # === Info Output (single writeInfoLine, then appendInfoLine) ===
 writeInfoLine: "=============================================="
-appendInfoLine: "  STEREO AMPLITUDE MODULATOR v1.2"
+appendInfoLine: "  STEREO AMPLITUDE MODULATOR v1.3"
 appendInfoLine: "=============================================="
 appendInfoLine: ""
 appendInfoLine: "Input: ", soundName$, " (", fixed$(dur, 2), " s, ", nChannels, " ch)"
@@ -343,7 +391,7 @@ procedure generateModulation: .shape, .phaseStart, .rate, .pulseW, .smoothness, 
         Formula: ~ abs(sin(2 * pi * .rate * x + .phaseOffset))
         
     elsif .shape = 10
-        # Random walk (smoothed noise)
+        # Smoothed random (Gaussian noise, smoothed and normalized)
         Formula: ~ randomGauss(0.5, 0.2)
         
         # Smooth with moving average
@@ -474,7 +522,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##Stereo Amplitude Modulator v1.2##"
+    Text: 0.5, "centre", 0.68, "half", "##Stereo Amplitude Modulator v1.3##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.50}"
     Text: 0.5, "centre", 0.22, "half", vizName$ + " | " + presetName$ + " | " + shapeName$ + " | " + stereoName$

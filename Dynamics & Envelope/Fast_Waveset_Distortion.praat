@@ -5,7 +5,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.10 (2026)
+# Version: 1.11 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -38,6 +38,22 @@
 #   - Assembly now selects the full ordered chunk/repeat sequence
 #     once and calls Concatenate (with overlap) a single time,
 #     which is O(N) rather than the old per-chunk Concatenate loop.
+#
+# Changelog v1.11 (2026):
+#   - FIX: Peak normalization now checks for a non-zero output peak before
+#     calling Scale peak; fully silent outputs are left unchanged and reported.
+#   - FIX: The visualization/info chunk count now mirrors the engine rule that
+#     merges a trailing remainder shorter than half a base chunk into the
+#     previous chunk, so displayed boundaries and counts match processing.
+#   - FIX: Time Stretch no longer silently becomes a no-op when its requested
+#     intermediate resampling rate would exceed 192 kHz. The effective Amount
+#     is clamped to the largest supported stretch factor and reported; if even
+#     the minimum 1.1x factor is unsupported at the input sample rate, the
+#     script exits with a clear message.
+#   - FIX: Stereo_spread is constrained to the practical range -0.95..1.0 and
+#     out-of-range custom values are clamped and reported.
+#   - REPORTING: pre-header parameter adjustments are accumulated and printed
+#     after the Info header instead of being erased by writeInfoLine.
 #
 # Changelog v1.10 (2026):
 #   - VISUALIZATION / UI STANDARDIZATION ONLY. Audio analysis,
@@ -208,7 +224,7 @@
 #   Select a Sound object and run this script.
 # ============================================================
 
-form Fast Chunk Distortion v1.10
+form Fast Chunk Distortion v1.11
     optionmenu Preset: 1
         option Custom
         option Glitch Stutter
@@ -346,7 +362,6 @@ xmin_orig = Get start time
 if xmin_orig <> 0
     original = Copy: name$ + "_t0"
     Shift times to: "start time", 0
-    appendInfoLine: "Note: input start time was ", fixed$(xmin_orig, 4), " s, not 0 - shifted internally for processing."
 else
     original = original_raw
 endif
@@ -354,19 +369,53 @@ endif
 selectObject: original
 dur = Get total duration
 
+# Accumulate parameter adjustments here. Some older notes were appended before
+# writeInfoLine below and were therefore immediately erased when the Info
+# window was initialized. v1.11 reports all such adjustments after the header.
+settingsWarning$ = ""
+if xmin_orig <> 0
+    settingsWarning$ = settingsWarning$ + "  - Input start time was " + fixed$(xmin_orig, 4) + " s; shifted internally to 0 for processing." + newline$
+endif
+
 # --- Clamp parameters that had no validation ---
 if mix < 0
     mix = 0
+    settingsWarning$ = settingsWarning$ + "  - Mix was below 0 and has been clamped to 0." + newline$
 elsif mix > 1
     mix = 1
+    settingsWarning$ = settingsWarning$ + "  - Mix was above 1 and has been clamped to 1." + newline$
 endif
 
 if fade_ms < 0
     fade_ms = 0
+    settingsWarning$ = settingsWarning$ + "  - Fade_ms was negative and has been clamped to 0." + newline$
 endif
 
-if stereo_spread <= -0.95
+# v1.11: Stereo_spread is a bounded width control, not an unbounded gain/delay
+# multiplier. Keep the established negative floor and add a practical +1 cap.
+if stereo_spread < -0.95
     stereo_spread = -0.95
+    settingsWarning$ = settingsWarning$ + "  - Stereo_spread was below -0.95 and has been clamped to -0.95." + newline$
+elsif stereo_spread > 1
+    stereo_spread = 1
+    settingsWarning$ = settingsWarning$ + "  - Stereo_spread was above 1 and has been clamped to 1." + newline$
+endif
+
+# v1.11: Stretch uses an intermediate resampling rate sr*factor and the engine
+# intentionally caps that rate at 192 kHz. Previously requests beyond that
+# ceiling simply skipped the stretch for every chunk while the UI still claimed
+# the requested factor. Clamp the effective Amount so the requested operation is
+# always performed, or stop if even the minimum 1.1x factor is impossible.
+if mode = 5
+    stretchFactorRequested = max(1.1, amount / 2)
+    stretchFactorMax = 192000 / sr
+    if stretchFactorMax < 1.1
+        exitScript: "Time Stretch is unavailable at this sampling frequency: the minimum 1.1x factor would require an intermediate rate above 192 kHz."
+    endif
+    if stretchFactorRequested > stretchFactorMax
+        amount = 2 * stretchFactorMax
+        settingsWarning$ = settingsWarning$ + "  - Time Stretch Amount exceeded the 192 kHz intermediate-rate limit; effective factor clamped to " + fixed$(stretchFactorMax, 3) + "x (Amount " + fixed$(amount, 3) + ")." + newline$
+    endif
 endif
 
 # Floor chunk size to at least 2 samples, and if the resulting chunk
@@ -390,19 +439,30 @@ max_chunks_allowed = 20000
 max_source_chunks_allowed = max(1, floor(max_chunks_allowed / stutter_multiplier))
 if dur / (chunk_ms / 1000) > max_source_chunks_allowed
     chunk_ms = 1000 * dur / max_source_chunks_allowed
-    appendInfoLine: "Note: Chunk_ms was too small for this file's length (and mode); raised to ", fixed$(chunk_ms, 3), " ms to keep the total object count reasonable."
+    settingsWarning$ = settingsWarning$ + "  - Chunk_ms was too small for this file length/mode; raised to " + fixed$(chunk_ms, 3) + " ms to keep the total object count reasonable." + newline$
 endif
 
 # Ensure fade doesn't exceed half chunk
+fadeBeforeFit = fade_ms
 fade_ms = min(fade_ms, chunk_ms / 2 - 1)
 if fade_ms < 0
     fade_ms = 0
 endif
+if abs(fade_ms - fadeBeforeFit) > 0.000001
+    settingsWarning$ = settingsWarning$ + "  - Fade_ms was reduced to " + fixed$(fade_ms, 3) + " ms to fit the effective chunk size." + newline$
+endif
 fade_sec = fade_ms / 1000
 
-# Pre-compute chunk grid for display
+# Pre-compute the ACTUAL source-chunk grid for display. processAudio merges a
+# trailing remainder shorter than half a base chunk into the previous chunk;
+# mirror that exact rule here so the grid/count shown in the visualization is
+# not one chunk/boundary too large.
 chunk_sec_disp = chunk_ms / 1000
 n_chunks_disp = ceiling(dur / chunk_sec_disp)
+last_chunk_sec_disp = dur - (n_chunks_disp - 1) * chunk_sec_disp
+if n_chunks_disp > 1 and last_chunk_sec_disp < chunk_sec_disp * 0.5
+    n_chunks_disp = n_chunks_disp - 1
+endif
 
 # Resolve short mode name for visualization
 if mode = 1
@@ -437,13 +497,18 @@ elsif mode = 10
     modeDesc$ = "Per-chunk tremolo at 2 + amount*3 Hz, depth min(0.9, amount*0.15)"
 endif
 
-writeInfoLine: "=== Fast Chunk Distortion v1.10 ==="
+writeInfoLine: "=== Fast Chunk Distortion v1.11 ==="
 appendInfoLine: "Input: ", name$, " | ", fixed$(dur, 2), "s | ", n_channels, " ch"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Mode: ", mode$
 appendInfoLine: "Amount: ", amount, " | Chunk: ", chunk_ms, "ms | Fade: ", fade_ms, "ms"
 appendInfoLine: "Stereo spread: ", stereo_spread, " | Mix: ", fixed$(mix, 2)
-appendInfoLine: "Chunks: ", n_chunks_disp, " (", fixed$(chunk_sec_disp * 1000, 1), " ms each)"
+appendInfoLine: "Chunks: ", n_chunks_disp, " (base chunk ", fixed$(chunk_sec_disp * 1000, 1), " ms; final chunk may include a merged remainder)"
+if settingsWarning$ <> ""
+    appendInfoLine: ""
+    appendInfoLine: "Settings adjusted:"
+    appendInfoLine: settingsWarning$
+endif
 appendInfoLine: ""
 
 # === PREPARE L/R SOURCES ===
@@ -706,8 +771,15 @@ endif
 
 # === NORMALIZE ===
 selectObject: stereo_result
+normalizationApplied = 0
 if normalize_output
-    Scale peak: 0.95
+    preNormalizePeak = Get absolute extremum: 0, 0, "Sinc70"
+    if preNormalizePeak > 0
+        Scale peak: 0.95
+        normalizationApplied = 1
+    else
+        appendInfoLine: "Output is silent; normalization skipped."
+    endif
 endif
 
 # stereo_result may carry an intermediate name (e.g. "wet_padded" or
@@ -735,7 +807,7 @@ if show_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##Fast Chunk Distortion v1.10##"
+    Text: 0.5, "centre", 0.68, "half", "##Fast Chunk Distortion v1.11##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.50}"
     Text: 0.5, "centre", 0.22, "half", vizName$ + " | " + presetName$ + " | " + modeShort$ + " | " + string$(n_chunks_disp) + " chunks | amount " + fixed$(amount, 1)
@@ -820,7 +892,7 @@ if show_visualization
     Font size: 10
     Colour: "{0.70, 0.45, 0.20}"
     Text: 0.10, "left", 0.59, "half", string$(n_chunks_disp) + " chunks"
-    Text: 0.10, "left", 0.52, "half", "Size: " + fixed$(chunk_ms, 0) + " ms (" + fixed$(chunk_sec_disp * 1000, 1) + " ms)"
+    Text: 0.10, "left", 0.52, "half", "Base size: " + fixed$(chunk_ms, 1) + " ms"
     Text: 0.10, "left", 0.45, "half", "Fade: " + fixed$(fade_ms, 1) + " ms (raised-cosine)"
     
     Font size: 9
@@ -835,8 +907,13 @@ if show_visualization
     
     Font size: 7
     if normalize_output
-        Colour: "{0.20, 0.55, 0.30}"
-        Text: 0.10, "left", 0.06, "half", "Normalized (peak 0.95)"
+        if normalizationApplied
+            Colour: "{0.20, 0.55, 0.30}"
+            Text: 0.10, "left", 0.06, "half", "Normalized (peak 0.95)"
+        else
+            Colour: "{0.55, 0.30, 0.20}"
+            Text: 0.10, "left", 0.06, "half", "Normalization skipped (silent output)"
+        endif
     else
         Colour: "{0.55, 0.30, 0.20}"
         Text: 0.10, "left", 0.06, "half", "Not normalized"
@@ -1001,7 +1078,11 @@ if show_visualization
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
     
     if normalize_output
-        normStr$ = "norm 0.95"
+        if normalizationApplied
+            normStr$ = "norm 0.95"
+        else
+            normStr$ = "norm skipped (silent)"
+        endif
     else
         normStr$ = "no norm"
     endif
@@ -1012,7 +1093,7 @@ if show_visualization
         ... "##" + presetName$ + "##"
         ... + "  " + name$
         ... + "  |  Mode: " + modeShort$ + "  (" + mode$ + ")"
-        ... + "  |  Chunks: " + string$(n_chunks_disp) + " x " + fixed$(chunk_ms, 0) + " ms"
+        ... + "  |  Chunks: " + string$(n_chunks_disp) + " | base " + fixed$(chunk_ms, 1) + " ms"
         ... + "  |  Fade: " + fixed$(fade_ms, 1) + " ms"
     
     Text: 0.02, "left", 0.28, "half",
@@ -1244,15 +1325,16 @@ procedure processAudio: .source, .mode, .amount, .chunk_ms, .fade_sec, .tag$, .p
                 selectObject: chunk[c]
                 .chunk_sr = Get sampling frequency
                 .new_sr = .chunk_sr * .factor
-                if .new_sr <= 192000
-                    Resample: .new_sr, 50
-                    .new_chunk = selected("Sound")
-                    removeObject: chunk[c]
-                    selectObject: .new_chunk
-                    Override sampling frequency: .chunk_sr
-                    chunk[c] = .new_chunk
-                    Rename: "chunk_" + .tag$ + "_" + string$(c)
-                endif
+                # v1.11 validates/clamps Amount before processAudio, so this
+                # intermediate rate is guaranteed to be <= 192 kHz. Do not
+                # silently skip the effect here.
+                Resample: .new_sr, 50
+                .new_chunk = selected("Sound")
+                removeObject: chunk[c]
+                selectObject: .new_chunk
+                Override sampling frequency: .chunk_sr
+                chunk[c] = .new_chunk
+                Rename: "chunk_" + .tag$ + "_" + string$(c)
                 .n_seq = .n_seq + 1
                 seq[.n_seq] = chunk[c]
             endif

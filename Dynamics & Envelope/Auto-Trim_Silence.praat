@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.6 (2026)
+# Version: 0.7 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -12,6 +12,12 @@
 #   Finds the first-to-last "sounding" span of a Sound and extracts it,
 #   with safe padding, outward-only quiet-point alignment, and short
 #   edge fades.
+#
+# Changelog v0.7 (2026):
+#   - FIX: Full-band sounding/silence run scans no longer rely on boolean
+#     short-circuiting; array bounds are checked before reading sounding#[j].
+#   - UI: Renamed Zero_crossing_search_ms to Quiet_point_search_ms to match
+#     the implemented outward-only quiet-point search.
 #
 # Changelog v0.6 (2026):
 #   - VISUALIZATION / UI STANDARDIZATION ONLY. Audio analysis,
@@ -28,7 +34,7 @@
 #     could move a cut point INWARD and clip already-detected audio).
 #     It now searches strictly OUTWARD from each padded boundary, for
 #     the quietest point across all channels, bounded by a configurable
-#     maximum search distance (Zero_crossing_search_ms). If nothing
+#     maximum search distance (Quiet_point_search_ms). If nothing
 #     quieter is found, the padded boundary is kept as-is and the edge
 #     fade provides the click protection. This is also multichannel-safe
 #     (it looks at the loudest of all channels at each candidate time,
@@ -46,7 +52,7 @@
 #     algorithm: short sounding bursts are removed FIRST, and short
 #     silent gaps are bridged AFTER, not the other way around.
 #   - Added input validation: negative threshold, padding, fade, or
-#     zero-crossing search values are rejected with a clear message
+#     quiet-point search values are rejected with a clear message
 #     instead of silently producing wrong results.
 #   - The report now shows the fade actually applied (0 if skipped
 #     because the output was too short, or because Edge_fade_ms was 0),
@@ -57,7 +63,7 @@
 # Changelog vs 0.3: see v0.4 header history in the project repository.
 # ============================================================
 
-form Auto-Trim Silence v0.6
+form Auto-Trim Silence v0.7
     optionmenu Detection_mode: 2
         option Speech-band (Praat built-in)
         option Full-band RMS (music-safe)
@@ -69,7 +75,7 @@ form Auto-Trim Silence v0.6
     real Leading_padding_ms 30
     real Trailing_padding_ms 100
     real Edge_fade_ms 5
-    real Zero_crossing_search_ms 10
+    real Quiet_point_search_ms 10
     boolean Draw_visualization 1
     boolean Play_result 0
 endform
@@ -93,8 +99,8 @@ if edge_fade_ms < 0
     exitScript: "Edge fade cannot be negative."
 endif
 
-if zero_crossing_search_ms < 0
-    exitScript: "Zero-crossing search distance cannot be negative."
+if quiet_point_search_ms < 0
+    exitScript: "Quiet-point search distance cannot be negative."
 endif
 
 originalSound = selected("Sound")
@@ -187,8 +193,15 @@ else
     while i <= nWindows
         if sounding#[i] = 1
             j = i
-            while j <= nWindows and sounding#[j] = 1
-                j = j + 1
+            runContinues = 1
+            while runContinues = 1
+                if j > nWindows
+                    runContinues = 0
+                elsif sounding#[j] = 1
+                    j = j + 1
+                else
+                    runContinues = 0
+                endif
             endwhile
             runCount = j - i
             runDuration = windowLen + (runCount - 1) * stepLen
@@ -209,8 +222,15 @@ else
     while i <= nWindows
         if sounding#[i] = 0
             j = i
-            while j <= nWindows and sounding#[j] = 0
-                j = j + 1
+            runContinues = 1
+            while runContinues = 1
+                if j > nWindows
+                    runContinues = 0
+                elsif sounding#[j] = 0
+                    j = j + 1
+                else
+                    runContinues = 0
+                endif
             endwhile
             gapCount = j - i
             gapDuration = windowLen + (gapCount - 1) * stepLen
@@ -299,14 +319,14 @@ procedure findQuietPoint: .startT, .direction, .maxShift
     endwhile
 endproc
 
-zeroCrossSearchSec = zero_crossing_search_ms / 1000
-if zeroCrossSearchSec > 0
+quietPointSearchSec = quiet_point_search_ms / 1000
+if quietPointSearchSec > 0
     selectObject: originalSound
-    @findQuietPoint: trimStart, -1, zeroCrossSearchSec
+    @findQuietPoint: trimStart, -1, quietPointSearchSec
     trimStart = findQuietPoint.bestTime
 
     selectObject: originalSound
-    @findQuietPoint: trimEnd, 1, zeroCrossSearchSec
+    @findQuietPoint: trimEnd, 1, quietPointSearchSec
     trimEnd = findQuietPoint.bestTime
 endif
 
@@ -350,14 +370,14 @@ endif
 # ------------------------------------------------------------
 # Report
 # ------------------------------------------------------------
-writeInfoLine: "=== Auto-Trim Silence v0.6 Report ==="
+writeInfoLine: "=== Auto-Trim Silence v0.7 Report ==="
 appendInfoLine: "Detection mode: ", detection_mode$
 appendInfoLine: "Threshold: ", threshold_dB_below_peak, " dB below analysis peak"
 appendInfoLine: "Original duration: ", fixed$(originalDuration, 3), " s"
 appendInfoLine: "Detected first sounding time: ", fixed$(startTime, 3), " s"
 appendInfoLine: "Detected last sounding time: ", fixed$(endTime, 3), " s"
 appendInfoLine: "Padding requested (lead/trail): ", leading_padding_ms, " / ", trailing_padding_ms, " ms"
-appendInfoLine: "Zero-crossing search distance: ", zero_crossing_search_ms, " ms (outward only)"
+appendInfoLine: "Quiet-point search distance: ", quiet_point_search_ms, " ms (outward only)"
 appendInfoLine: "Final trim points (after padding + quiet-point search): ", fixed$(trimStart, 4), " s -> ", fixed$(trimEnd, 4), " s"
 appendInfoLine: "Leading duration removed: ", fixed$(trimStart - soundXmin, 3), " s"
 appendInfoLine: "Trailing duration removed: ", fixed$(soundXmax - trimEnd, 3), " s"
@@ -404,7 +424,7 @@ if draw_visualization = 1
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##Auto-Trim Silence v0.6##"
+    Text: 0.5, "centre", 0.68, "half", "##Auto-Trim Silence v0.7##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.50}"
     Text: 0.5, "centre", 0.22, "half", vizName$ + " | " + detection_mode$ + " | threshold " + fixed$(threshold_dB_below_peak, 1) + " dB below analysis peak"
@@ -473,7 +493,7 @@ if draw_visualization = 1
     Font size: 6
     Colour: "{0.25, 0.25, 0.35}"
     Text: 0.02, "left", 0.78, "half", "##Detection##  first sounding " + fixed$(startTime, 3) + " s | last sounding " + fixed$(endTime, 3) + " s | minimum silence " + fixed$(min_silence_duration_sec, 3) + " s | minimum sounding " + fixed$(min_sounding_duration_sec, 3) + " s"
-    Text: 0.02, "left", 0.50, "half", "##Boundary rule##  padding " + fixed$(leading_padding_ms, 1) + "/" + fixed$(trailing_padding_ms, 1) + " ms | outward quiet-point search <= " + fixed$(zero_crossing_search_ms, 1) + " ms | final " + fixed$(trimStart, 4) + " -> " + fixed$(trimEnd, 4) + " s"
+    Text: 0.02, "left", 0.50, "half", "##Boundary rule##  padding " + fixed$(leading_padding_ms, 1) + "/" + fixed$(trailing_padding_ms, 1) + " ms | outward quiet-point search <= " + fixed$(quiet_point_search_ms, 1) + " ms | final " + fixed$(trimStart, 4) + " -> " + fixed$(trimEnd, 4) + " s"
     Text: 0.02, "left", 0.22, "half", "##Output##  " + fixed$(originalDuration, 3) + " s -> " + fixed$(outDur, 3) + " s | removed lead " + fixed$(trimStart - soundXmin, 3) + " s | removed tail " + fixed$(soundXmax - trimEnd, 3) + " s | peak " + fixed$(outPeakViz, 3)
     Colour: "Black"
     Draw inner box
