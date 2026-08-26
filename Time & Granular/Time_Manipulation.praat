@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.9 (2026)
+# Version: 0.9.1 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -12,6 +12,11 @@
 #   and stereo width effect. Uses pitch-preserving PSOLA for
 #   natural time stretching, cascaded lowpass for ambient blur,
 #   and delay/filtering for fake stereo width.
+#
+# Changelog v0.9.1:
+#   - FIX: corrected DurationTier direction in the Slow Motion and Time Lapse
+#     presets. Slow Motion now uses 1.5x (longer/slower); Time Lapse uses
+#     0.75x (shorter/faster). Public preset labels updated accordingly.
 #
 # Changelog v0.9:
 #   - API compatibility: public form is byte-for-byte unchanged.
@@ -36,8 +41,8 @@ form Time Manipulation + Spectral Blur + Stereo Width
     optionmenu Preset 1
         option Custom (use settings below)
         option Normal Speed (1.0x, no blur)
-        option Slow Motion (0.75x, subtle blur)
-        option Time Lapse (1.5x, no blur)
+        option Slow Motion (1.5x, subtle blur)
+        option Time Lapse (0.75x, no blur)
         option Ambient Stretch (2.0x, moderate blur)
         option Paulstretch-like (4.0x, heavy blur)
         option Extreme Drone (8.0x, maximum blur)
@@ -75,12 +80,12 @@ elsif preset = 2
     create_stereo_width = 0
 elsif preset = 3
     # Slow Motion
-    duration_factor = 0.75
+    duration_factor = 1.5
     blur_amount = 1
     lowpass_frequency = 10000
 elsif preset = 4
     # Time Lapse
-    duration_factor = 1.5
+    duration_factor = 0.75
     blur_amount = 0
     create_stereo_width = 0
 elsif preset = 5
