@@ -3,7 +3,20 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.2 (2026)
+# Version: 0.4 (2026)
+#
+# Changelog v0.4:
+#   - FIX: MusicXML metronome tempo now respects <beat-unit> and
+#     <beat-unit-dot>; <sound tempo> is interpreted as quarter-note BPM and
+#     takes precedence when present. Multiple tempo changes are detected and
+#     reported because this renderer intentionally uses one tempo globally.
+#   - FIX: validation/clamps now run for both File and Selected Strings input.
+#   - FIX: notes whose fundamental is at/above Nyquist are skipped instead of
+#     aliasing; upper harmonics continue to be truncated per note.
+#   - FIX: pitch processing now follows the documented order: transpose first,
+#     then inversion. Mean-pitch inversion computes its axis after transpose.
+#   - Corrected stale version text and removed the nonexistent amplitude
+#     threshold from the FILTER description.
 #
 # Changelog v0.3:
 #   - Accepts a Praat Strings OBJECT as the score, not only a file path.
@@ -61,7 +74,7 @@
 #   per note directly into the output buffer.
 #
 # OPERATION ORDER (fixed, and it matters):
-#     1. FILTER  - duration, register and amplitude thresholds
+#     1. FILTER  - duration and register thresholds
 #     2. PITCH   - transpose, then inversion about an axis
 #     3. CHORD   - thin / arpeggiate / voice-lead, on simultaneity groups
 #     4. ORDER   - retrograde or rotation of onset groups
@@ -148,7 +161,7 @@ endproc
 @cleanUpTempFiles
 
 # ---- FORM ----
-form OM Score Transformer v0.3
+form OM Score Transformer v0.4
     comment === Score ===
     optionmenu Score_source: 1
         option File on disk
@@ -299,22 +312,26 @@ else
             ... + "  MuseScore:  File > Export > MusicXML, uncompressed" + newline$
             ... + "  Finale/Sibelius: choose .musicxml rather than .mxl"
     endif
-    if lowest_midi > highest_midi
-        exitScript: "Lowest MIDI (" + string$(lowest_midi) + ") is above highest MIDI ("
-            ... + string$(highest_midi) + ")."
-    endif
-    if harmonics < 1
-        harmonics = 1
-    endif
-    if harmonics > 24
-        harmonics = 24
-    endif
-    if sampling_rate < 8000
-        sampling_rate = 8000
-    endif
-    if peak_ceiling <= 0 or peak_ceiling > 1
-        peak_ceiling = 0.95
-    endif
+endif
+
+# Validation belongs outside the source branch: File and Selected Strings must
+# obey exactly the same musical/synthesis limits.
+if lowest_midi > highest_midi
+    @cleanUpTempFiles
+    exitScript: "Lowest MIDI (" + string$(lowest_midi) + ") is above highest MIDI ("
+        ... + string$(highest_midi) + ")."
+endif
+if harmonics < 1
+    harmonics = 1
+endif
+if harmonics > 24
+    harmonics = 24
+endif
+if sampling_rate < 8000
+    sampling_rate = 8000
+endif
+if peak_ceiling <= 0 or peak_ceiling > 1
+    peak_ceiling = 0.95
 endif
 
 if useStrings = 1
@@ -334,7 +351,7 @@ if min_note_duration_s > 0 or lowest_midi > 0 or highest_midi < 127
 endif
 pitchStr$ = "no pitch op"
 if transpose_semitones <> 0 and invert_mode > 1
-    pitchStr$ = "invert+transpose"
+    pitchStr$ = "transpose+invert"
 elsif transpose_semitones <> 0
     pitchStr$ = "transpose " + string$(transpose_semitones)
 elsif invert_mode > 1
@@ -368,7 +385,7 @@ timeStr$ = "time x" + fixed$(time_scale, 2) + " len x" + fixed$(note_length_scal
 
 # ---- INFO ----
 clearinfo
-writeInfoLine:  "=== OM Score Transformer v0.3 ==="
+writeInfoLine:  "=== OM Score Transformer v0.4 ==="
 appendInfoLine: "Score: ", scoreName$
 appendInfoLine: ""
 
@@ -451,9 +468,19 @@ if nFiltered > 0
 endif
 
 # ---- 2. PITCH ----
+# Documented order: transpose FIRST, then inversion. Octave folding into the
+# legal MIDI range happens only after the complete pitch operation.
 nClamped = 0
+if transpose_semitones <> 0
+    for i from 1 to nN
+        tp_'i' = tp_'i' + transpose_semitones
+    endfor
+    appendInfoLine: "  transpose: ", transpose_semitones, " semitones"
+endif
+
 if invert_mode > 1
     if invert_mode = 3
+        # Mean-pitch axis belongs to the already-transposed material.
         pSum = 0
         for i from 1 to nN
             pSum = pSum + tp_'i'
@@ -462,16 +489,16 @@ if invert_mode > 1
     else
         axis = invert_axis_midi
     endif
+    for i from 1 to nN
+        tp_'i' = 2 * axis - tp_'i'
+    endfor
+    appendInfoLine: "  invert:    about MIDI ", axis
 else
     axis = invert_axis_midi
 endif
 
 for i from 1 to nN
     p = tp_'i'
-    if invert_mode > 1
-        p = 2 * axis - p
-    endif
-    p = p + transpose_semitones
     if p < 0
         p = p + 12 * ceiling((0 - p) / 12)
         nClamped = nClamped + 1
@@ -482,12 +509,6 @@ for i from 1 to nN
     endif
     tp_'i' = p
 endfor
-if invert_mode > 1
-    appendInfoLine: "  invert:    about MIDI ", axis
-endif
-if transpose_semitones <> 0
-    appendInfoLine: "  transpose: ", transpose_semitones, " semitones"
-endif
 if nClamped > 0
     appendInfoLine: "  NOTE:      ", nClamped, " note(s) octave-folded back into 0-127"
 endif
@@ -590,6 +611,7 @@ result = Create Sound from formula: scoreName$ + "_OM", 1, 0, outDur,
 
 atk = attack_ms / 1000
 rel = release_ms / 1000
+nyquistSkipped = 0
 
 for i from 1 to nN
     nStart = t0_'i'
@@ -598,27 +620,36 @@ for i from 1 to nN
         nEnd = outDur
     endif
     freq = 440 * 2 ^ ((tp_'i' - 69) / 12)
-    # Above Nyquist a harmonic aliases straight back down as a spurious low
-    # tone, so the bank is truncated per note rather than per score.
-    kMax = harmonics
-    while kMax > 1 and kMax * freq >= sampling_rate / 2
-        kMax = kMax - 1
-    endwhile
 
-    @bankFormula: freq, kMax, spectral_tilt, nStart
-    amp = ta_'i'
+    # Anti-aliasing is per note. If even the fundamental is at/above Nyquist,
+    # there is no legal sinusoid to synthesize, so skip that note rather than
+    # folding it back as an alias. Otherwise truncate only the upper partials.
+    if freq >= sampling_rate / 2
+        nyquistSkipped = nyquistSkipped + 1
+    else
+        kMax = harmonics
+        while kMax * freq >= sampling_rate / 2
+            kMax = kMax - 1
+        endwhile
 
-    # Trapezoidal attack/release plus exponential decay, all written as a
-    # function of (x - start) so no branching is needed: Formula (part) only
-    # ever evaluates inside the note's own window.
-    env$ = "min(1,(x-" + fixed$(nStart, 6) + ")/" + fixed$(atk, 6) + ")"
-        ... + "*min(1,(" + fixed$(nEnd, 6) + "-x)/" + fixed$(rel, 6) + ")"
-        ... + "*exp(-" + fixed$(decay_per_second, 6) + "*(x-" + fixed$(nStart, 6) + "))"
+        @bankFormula: freq, kMax, spectral_tilt, nStart
+        amp = ta_'i'
 
-    selectObject: result
-    Formula (part): nStart, nEnd, 1, 1,
-        ... "self + " + fixed$(amp, 6) + "*" + env$ + "*(" + bankFormula.out$ + ")"
+        # Trapezoidal attack/release plus exponential decay, all written as a
+        # function of (x - start) so no branching is needed: Formula (part) only
+        # ever evaluates inside the note's own window.
+        env$ = "min(1,(x-" + fixed$(nStart, 6) + ")/" + fixed$(atk, 6) + ")"
+            ... + "*min(1,(" + fixed$(nEnd, 6) + "-x)/" + fixed$(rel, 6) + ")"
+            ... + "*exp(-" + fixed$(decay_per_second, 6) + "*(x-" + fixed$(nStart, 6) + "))"
+
+        selectObject: result
+        Formula (part): nStart, nEnd, 1, 1,
+            ... "self + " + fixed$(amp, 6) + "*" + env$ + "*(" + bankFormula.out$ + ")"
+    endif
 endfor
+if nyquistSkipped > 0
+    appendInfoLine: "  NOTE:      ", nyquistSkipped, " note(s) skipped: fundamental at/above Nyquist"
+endif
 
 # ---- Attenuate-only peak ceiling ----
 # Scale peak would AMPLIFY a quiet render up to the ceiling, erasing the
@@ -685,7 +716,7 @@ if draw_visualization
     Select inner viewport: 0.6, 7.7, 0.05, 0.45
     Axes: 0, 1, 0, 1
     Colour: "{0.20, 0.20, 0.40}"
-    @picSafe: "OM Score Transformer v0.3 - " + scoreName$
+    @picSafe: "OM Score Transformer v0.4 - " + scoreName$
     Text: 0.5, "centre", 0.5, "half", picSafe.out$
     Colour: "Black"
 
@@ -1264,6 +1295,43 @@ procedure midiName: .midi
     .out$ = .n$ + string$(.oct)
 endproc
 
+# Convert a MusicXML beat-unit to quarter-note units.
+procedure beatUnitToQuarter: .unit$
+    .known = 1
+    if .unit$ = "maxima"
+        .out = 32
+    elsif .unit$ = "long"
+        .out = 16
+    elsif .unit$ = "breve"
+        .out = 8
+    elsif .unit$ = "whole"
+        .out = 4
+    elsif .unit$ = "half"
+        .out = 2
+    elsif .unit$ = "quarter"
+        .out = 1
+    elsif .unit$ = "eighth"
+        .out = 0.5
+    elsif .unit$ = "16th"
+        .out = 0.25
+    elsif .unit$ = "32nd"
+        .out = 0.125
+    elsif .unit$ = "64th"
+        .out = 0.0625
+    elsif .unit$ = "128th"
+        .out = 0.03125
+    elsif .unit$ = "256th"
+        .out = 0.015625
+    elsif .unit$ = "512th"
+        .out = 0.0078125
+    elsif .unit$ = "1024th"
+        .out = 0.00390625
+    else
+        .out = 1
+        .known = 0
+    endif
+endproc
+
 procedure parseMusicXML: .file$, .tempoOverride
     .raw$ = readFile$(.file$)
     # Praat has no index() with a start offset, so a scan of the raw string
@@ -1282,6 +1350,16 @@ procedure parseMusicXML: .file$, .tempoOverride
     pxWarn$ = "none"
     pxTempoSrc$ = "score"
     pxOpen = 0
+
+    # Tempo candidates are kept separately. MusicXML <sound tempo> is already
+    # quarter notes/minute; <per-minute> must be converted from its beat-unit.
+    firstSoundTempo = 0
+    firstMetroTempo = 0
+    soundTempoChanges = 0
+    metroTempoChanges = 0
+    metroUnitUnknown = 0
+    metBeatQ = 1
+    metDotCount = 0
 
     divisions = 1
     cursor = 0
@@ -1319,16 +1397,50 @@ procedure parseMusicXML: .file$, .tempoOverride
                     divisions = 1
                 endif
 
+            elsif left$(line$, 10) = "<metronome"
+                # A metronome mark can use quarter, eighth, dotted quarter, etc.
+                # Reset the unit state for each mark; per-minute is converted to
+                # quarter-note BPM when encountered.
+                metBeatQ = 1
+                metDotCount = 0
+
+            elsif left$(line$, 11) = "<beat-unit>"
+                beatUnit$ = extractWord$(line$, ">")
+                @beatUnitToQuarter: beatUnit$
+                metBeatQ = beatUnitToQuarter.out
+                if beatUnitToQuarter.known = 0
+                    metroUnitUnknown = 1
+                endif
+
+            elsif left$(line$, 14) = "<beat-unit-dot"
+                metDotCount = metDotCount + 1
+
             elsif left$(line$, 12) = "<per-minute>"
-                if pxTempo <= 0
-                    pxTempo = extractNumber(line$, ">")
+                cand = extractNumber(line$, ">")
+                if cand <> undefined and cand > 0
+                    dotFactor = 1
+                    dotAdd = 0.5
+                    for md from 1 to metDotCount
+                        dotFactor = dotFactor + dotAdd
+                        dotAdd = dotAdd / 2
+                    endfor
+                    candQ = cand * metBeatQ * dotFactor
+                    if firstMetroTempo <= 0
+                        firstMetroTempo = candQ
+                    elsif abs(candQ - firstMetroTempo) > 1e-9
+                        metroTempoChanges = metroTempoChanges + 1
+                    endif
                 endif
 
             elsif left$(line$, 7) = "<sound "
                 clean$ = replace$(line$, """", " ", 0)
                 cand = extractNumber(clean$, "tempo=")
-                if cand <> undefined and cand > 0 and pxTempo <= 0
-                    pxTempo = cand
+                if cand <> undefined and cand > 0
+                    if firstSoundTempo <= 0
+                        firstSoundTempo = cand
+                    elsif abs(cand - firstSoundTempo) > 1e-9
+                        soundTempoChanges = soundTempoChanges + 1
+                    endif
                 endif
 
             elsif left$(line$, 7) = "<backup"
@@ -1419,22 +1531,47 @@ procedure parseMusicXML: .file$, .tempoOverride
     if .tempoOverride > 0
         pxTempo = .tempoOverride
         pxTempoSrc$ = "form override"
-    endif
-    if pxTempo <= 0
+    elsif firstSoundTempo > 0
+        # MusicXML defines sound/@tempo directly in quarter notes per minute.
+        pxTempo = firstSoundTempo
+        pxTempoSrc$ = "score sound tempo"
+        if soundTempoChanges > 0
+            pxWarn$ = "tempo changes present; using first sound tempo throughout"
+        endif
+    elsif firstMetroTempo > 0
+        # per-minute has already been converted from beat-unit to quarter BPM.
+        pxTempo = firstMetroTempo
+        pxTempoSrc$ = "score metronome"
+        if metroTempoChanges > 0
+            pxWarn$ = "tempo changes present; using first metronome tempo throughout"
+        endif
+        if metroUnitUnknown = 1
+            if pxWarn$ = "none"
+                pxWarn$ = "unknown metronome beat-unit; treated as quarter note"
+            else
+                pxWarn$ = pxWarn$ + "; unknown beat-unit treated as quarter note"
+            endif
+        endif
+    else
         pxTempo = 120
         pxTempoSrc$ = "default 120"
         pxWarn$ = "no tempo in score; assumed 120 BPM"
     endif
 
-    # divisions -> seconds, applied after the whole file is read so a tempo
-    # mark appearing late still governs the whole score
+    # This renderer intentionally uses one global tempo. Divisions are stored
+    # as quarter-note units during parsing, then converted here to seconds.
     secPerQuarter = 60 / pxTempo
     for i from 1 to pxN
         px0_'i' = px0_'i' * secPerQuarter
         px1_'i' = px1_'i' * secPerQuarter
     endfor
     if pxOpen > 0
-        pxWarn$ = string$(pxOpen) + " unmatched tie(s); treated as separate notes"
+        tieWarn$ = string$(pxOpen) + " unmatched tie(s); treated as separate notes"
+        if pxWarn$ = "none"
+            pxWarn$ = tieWarn$
+        else
+            pxWarn$ = pxWarn$ + "; " + tieWarn$
+        endif
     endif
 endproc
 
