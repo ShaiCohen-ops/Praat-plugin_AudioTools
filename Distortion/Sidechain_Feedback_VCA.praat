@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.6 (2026) - musical rework of the iteration core + change-graph figure
+# Version: 0.6.1 (2026) - tracking/spatial/visualization correctness fixes
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -30,6 +30,22 @@
 #     absolute level BETWEEN files.
 #
 # ============================================================
+# Changelog v0.6.1 (2026):
+#   - FIX: pitch-tracked resonance now builds an explicit offset/clamped
+#     resonance trajectory and limits per-iteration drift so carrier +
+#     heterodyne low-pass bandwidth stays below Nyquist.
+#   - FIX: tracking visualization now plots the actual resonance trajectory
+#     (including Frequency_Offset_Hz) and iteration drift statistics include
+#     that same trajectory rather than the raw mean F0.
+#   - FIX: Drive = 0 is a true linear saturator bypass. All Drive values > 0
+#     retain the v0.6 arctan mapping.
+#   - FIX: Rotating spatial mode now downmixes the wet path to one mono
+#     source and derives a true constant-power stereo pan from it. Pan phase
+#     is relative to the Sound start time, not Praat's absolute x origin.
+#   - SAFETY: Stereo_spread_percent is capped at 95%, with detuned centres
+#     and filter edges constrained to the available 20 Hz..Nyquist region.
+#   - VIS: the result overlay now draws the actual RMS envelope (not RMS*sqrt(2)).
+#
 # Changelog v0.6 (2026) - WHY THE OUTPUT SOUNDED BAD, AND WHAT CHANGED
 #
 #   Measured on a 4 s controller (five notes, 145/194/167/264/129 Hz,
@@ -153,7 +169,7 @@
 #     "Unstable Burst".
 #   - Output mode 3 renamed "Preserve rendered level".
 #
-# Changelog v0.4b / v0.4c (retained in v0.6):
+# Changelog v0.4b / v0.4c (retained in v0.6.1):
 #   - Absolute silence threshold at -150 dB holds the envelope at 0.
 #   - "Use the first two channels" policy no longer crashes.
 #   - Second settings dialog uses beginPause (Praat allows one form).
@@ -172,7 +188,7 @@
 # 16 High_Freq_Add
 # -------------------------------------------------------------
 
-form Sidechain Feedback VCA v0.6 (1/2) - Circuit & Resonance
+form Sidechain Feedback VCA v0.6.1 (1/2) - Circuit & Resonance
     comment Select a Sound object - it CONTROLS the iterative resonant process
 
     comment === Preset ===
@@ -203,7 +219,7 @@ form Sidechain Feedback VCA v0.6 (1/2) - Circuit & Resonance
     positive Damping_Factor 0.92
     natural Iterations 24
     real Drive 0.45
-    comment (0 = clean, 1 = hard soft-clip; the loop is re-levelled each pass)
+    comment (0 = clean linear bypass, 1 = hard soft-clip; the loop is re-levelled each pass)
 
     comment === Resonance ===
     real Frequency_Offset_Hz 0.0
@@ -235,7 +251,7 @@ original = selected("Sound")
 input_Name$ = selected$("Sound")
 
 # === Second dialog (Spatial, Output & Debug) ===
-beginPause: "Sidechain Feedback VCA v0.6 (2/2) - Spatial, Output & Debug"
+beginPause: "Sidechain Feedback VCA v0.6.1 (2/2) - Spatial, Output & Debug"
     comment: "=== Spatial Mode ==="
     optionmenu: "Spatial_Mode", 2
         option: "Mono"
@@ -292,6 +308,14 @@ if preset = 1 and analog_Instability < 0
 endif
 if preset = 1 and (drive < 0 or drive > 1)
     exitScript: "Drive must be between 0 and 1 (got " + fixed$(drive, 3) + ")."
+endif
+
+# Stereo Wide is a detuned twin-resonance effect. Beyond 95% the lower
+# centre approaches/ crosses DC and no longer behaves as a useful detune.
+stereoSpreadWasClamped = 0
+if stereo_spread_percent > 95
+    stereo_spread_percent = 95
+    stereoSpreadWasClamped = 1
 endif
 
 # To Intensity at a 100 Hz minimum pitch needs 6.4/100 = 64 ms of signal;
@@ -481,10 +505,13 @@ if drive > 1
     drive = 1
 endif
 
-writeInfoLine: "=== Sidechain Feedback VCA v0.6 ==="
+writeInfoLine: "=== Sidechain Feedback VCA v0.6.1 ==="
 appendInfoLine: "Controller: ", input_Name$, " (", fixed$(duration, 2), " s)"
 appendInfoLine: "Preset: ", presetName$, "  |  Excitation: ", excitation_Source$
 appendInfoLine: "Resonance: ", resonance_Tracking$
+if stereoSpreadWasClamped
+    appendInfoLine: "NOTE: Stereo_spread_percent was capped at 95% for a valid detuned-twin resonance."
+endif
 appendInfoLine: ""
 
 # ============================================================
@@ -496,6 +523,7 @@ appendInfoLine: "Extracting control features..."
 # --- A. Pitch: centre frequency, spread, and (optionally) contour ---
 f0Sound = 0
 phaseSound = 0
+trackingFreqSound = 0
 pitchSpreadLow = 0
 pitchSpreadHigh = 0
 
@@ -708,25 +736,39 @@ if resonance_Tracking = 2 and tracking = 0
     appendInfoLine: "  NOTE: pitch tracking requested but no usable contour - falling back to a fixed band."
 endif
 
-# Instantaneous phase of the pitch contour, for the heterodyne filter.
-# phi(t) = 2*pi*integral(f0). The prefix sum is in place, which is exactly
-# what a running integral wants; col 1 has no predecessor, hence the guard.
+# Build the ACTUAL tracked resonance trajectory before integrating phase.
+# This trajectory includes Frequency_Offset_Hz and is clamped below Nyquist.
+# Per-iteration drift receives an additional bandwidth-aware cap below.
 if tracking
     selectObject: f0Sound
-    Copy: "phase_track"
-    phaseSound = selected("Sound")
+    Copy: "resonance_track"
+    trackingFreqSound = selected("Sound")
     if frequency_Offset_Hz <> 0
         Formula: "self + " + string$(frequency_Offset_Hz)
-        Formula: "if self < 30 then 30 else self fi"
     endif
+    trackingBaseCap = nyquist - 20
+    if trackingBaseCap < 30
+        trackingBaseCap = nyquist * 0.8
+    endif
+    Formula: "if self < 30 then 30 else (if self > " + string$(trackingBaseCap) + " then " + string$(trackingBaseCap) + " else self fi) fi"
+    trackingBaseMin = Get minimum: 0, 0, "None"
+    trackingBaseMax = Get maximum: 0, 0, "None"
+    trackingBaseMean = Get mean: "All", 0, 0
+    if trackingBaseMean = undefined
+        trackingBaseMean = resonance_Center
+    endif
+
+    selectObject: trackingFreqSound
+    Copy: "phase_track"
+    phaseSound = selected("Sound")
     Formula: "self / " + string$(sr)
     Formula: "self + if col > 1 then self[col-1] else 0 fi"
     Formula: "2 * pi * self"
 endif
 
 if tracking
-    appendInfoLine: "Resonance: following the pitch contour (", fixed$(pitchSpreadLow, 1), " - ",
-        ... fixed$(pitchSpreadHigh, 1), " Hz), band width ", fixed$(bandwidth_Hz, 0), " Hz"
+    appendInfoLine: "Resonance: following pitch contour after offset/clamp (", fixed$(trackingBaseMin, 1), " - ",
+        ... fixed$(trackingBaseMax, 1), " Hz), band width ", fixed$(bandwidth_Hz, 0), " Hz"
 else
     appendInfoLine: "Resonance: fixed at ", fixed$(resonance_Center, 1), " Hz, band width ",
         ... fixed$(bandwidth_Hz, 0), " Hz"
@@ -743,15 +785,14 @@ endif
 appendInfoLine: "Building excitation (", excitation_Source$, ")..."
 
 # Seed band, used for the noise excitation and reported either way.
-seedLow = resonance_Center - bandwidth_Hz
-seedHigh = resonance_Center + bandwidth_Hz
+# In tracking mode use the same offset/clamped resonance trajectory that
+# drives the heterodyne filter, not the raw controller pitch quantiles.
 if tracking
-    if pitchSpreadLow - bandwidth_Hz < seedLow
-        seedLow = pitchSpreadLow - bandwidth_Hz
-    endif
-    if pitchSpreadHigh + bandwidth_Hz > seedHigh
-        seedHigh = pitchSpreadHigh + bandwidth_Hz
-    endif
+    seedLow = trackingBaseMin - bandwidth_Hz
+    seedHigh = trackingBaseMax + bandwidth_Hz
+else
+    seedLow = resonance_Center - bandwidth_Hz
+    seedHigh = resonance_Center + bandwidth_Hz
 endif
 if seedLow < 20
     seedLow = 20
@@ -848,7 +889,8 @@ endif
 # ============================================================
 # v0.6 gain structure:
 #   u  = loop*damping + band(loop)*feedback*loopVca(t)
-#   y  = arctan(g*u)/g            unity slope at 0, ceiling pi/(2g)
+#   y  = u                       when Drive = 0 (true linear bypass)
+#      or arctan(g*u)/g           when Drive > 0, unity slope at 0
 #   y  = re-levelled to loopTarget
 # The re-levelling is the whole point: without it the in-band gain was
 # ~1.9 per pass and the character was an exponential in Iterations.
@@ -861,8 +903,13 @@ fb$ = string$(base_Feedback)
 lv$ = string$(loopVca)
 
 appendInfoLine: ""
-appendInfoLine: "Running ", iterations, " iterations (drive ", fixed$(drive, 2),
-    ... ", soft-clip ceiling ", fixed$(pi / (2 * gShape), 3), ")..."
+trackingDriftClampCount = 0
+if drive = 0
+    appendInfoLine: "Running ", iterations, " iterations (drive 0.00, linear saturator bypass)..."
+else
+    appendInfoLine: "Running ", iterations, " iterations (drive ", fixed$(drive, 2),
+        ... ", soft-clip ceiling ", fixed$(pi / (2 * gShape), 3), ")..."
+endif
 
 for i from 1 to iterations
     if i mod 10 = 0
@@ -884,9 +931,30 @@ for i from 1 to iterations
         if driftFac > 2.0
             driftFac = 2.0
         endif
-        @trackBP: stereoLoop, driftFac, current_width / 2
+
+        # trackBP low-passes the down-mixed signal before moving it back up.
+        # Keep the highest tracked carrier plus that low-pass width below
+        # Nyquist, otherwise a high F0/offset/drift combination can fold.
+        trackCut = current_width / 2
+        if trackCut < 8
+            trackCut = 8
+        endif
+        if trackCut > nyquist * 0.4
+            trackCut = nyquist * 0.4
+        endif
+        maxTrackedCarrier = nyquist - trackCut - 1
+        maxSafeDriftFac = maxTrackedCarrier / trackingBaseMax
+        if maxSafeDriftFac < 0.5
+            maxSafeDriftFac = 0.5
+        endif
+        if driftFac > maxSafeDriftFac
+            driftFac = maxSafeDriftFac
+            trackingDriftClampCount = trackingDriftClampCount + 1
+        endif
+
+        @trackBP: stereoLoop, driftFac, trackCut
         filteredSignal = trackBP.out
-        bandCentre_'i' = mean_Pitch * driftFac
+        bandCentre_'i' = trackingBaseMean * driftFac
     else
         drift_hz = resonance_Center * analog_Instability
         current_freq = resonance_Center + randomGauss(0, drift_hz)
@@ -910,11 +978,16 @@ for i from 1 to iterations
         bandCentre_'i' = current_freq
     endif
 
-    # --- mix, soft clip, re-level -------------------------
+    # --- mix, optional soft clip, re-level ----------------
     selectObject: stereoLoop
     f$ = string$(filteredSignal)
-    Formula: "arctan(" + g$ + " * ((self * " + damp$ + ") + (object[" + f$
-        ... + ", row, col] * " + fb$ + " * object[" + lv$ + ", row, col]))) / " + g$
+    if drive = 0
+        Formula: "(self * " + damp$ + ") + (object[" + f$
+            ... + ", row, col] * " + fb$ + " * object[" + lv$ + ", row, col])"
+    else
+        Formula: "arctan(" + g$ + " * ((self * " + damp$ + ") + (object[" + f$
+            ... + ", row, col] * " + fb$ + " * object[" + lv$ + ", row, col]))) / " + g$
+    endif
     removeObject: filteredSignal
 
     selectObject: stereoLoop
@@ -987,6 +1060,18 @@ else
         det = stereo_spread_percent / 100
         lc = resonance_Center * (1 - det)
         rc = resonance_Center * (1 + det)
+        if lc < 20
+            lc = 20
+        endif
+        if rc < 20
+            rc = 20
+        endif
+        if lc > nyquist - 1
+            lc = nyquist - 1
+        endif
+        if rc > nyquist - 1
+            rc = nyquist - 1
+        endif
         halfW = bandwidth_Hz
         lLo = lc - halfW
         lHi = lc + halfW
@@ -1024,20 +1109,27 @@ else
         removeObject: rRes
 
     elsif spatial_Mode$ = "Rotating"
-        # v0.6: constant-power pan. The old pair (0.6 + 0.4*cos) and
-        # (0.6 + 0.4*sin) does not sum to constant power, so it read as
-        # level pumping rather than movement.
+        # v0.6.1: derive both pan channels from ONE mono wet source. Only
+        # then does cos^2(theta)+sin^2(theta)=1 describe constant power.
+        # Use time relative to xmin so the same samples rotate identically
+        # even when the Praat Sound has a non-zero absolute start time.
         rotation_rate = 0.2
         rot$ = string$(rotation_rate)
-        selectObject: chL
+        x0$ = string$(xminOrig)
+        selectObject: stereoLoop
+        Convert to mono
+        rotMono = selected("Sound")
+
+        selectObject: rotMono
         Copy: "temp_chL_rot"
         chL_filtered = selected("Sound")
-        Formula: "self * cos(pi/4 + (pi/4) * sin(2*pi*" + rot$ + "*x))"
+        Formula: "self * cos(pi/4 + (pi/4) * sin(2*pi*" + rot$ + "*(x - " + x0$ + ")))"
 
-        selectObject: chR
+        selectObject: rotMono
         Copy: "temp_chR_rot"
         chR_filtered = selected("Sound")
-        Formula: "self * sin(pi/4 + (pi/4) * sin(2*pi*" + rot$ + "*x))"
+        Formula: "self * sin(pi/4 + (pi/4) * sin(2*pi*" + rot$ + "*(x - " + x0$ + ")))"
+        removeObject: rotMono
 
     elsif spatial_Mode$ = "Pseudo-Binaural (Delay/Filter)"
         binLTop = 3000
@@ -1265,13 +1357,17 @@ appendInfoLine: "In-loop depth: ", fixed$(loopDepthDb, 1), " dB accumulated (",
     ... fixed$(perIterDb, 3), " dB per iteration)"
 appendInfoLine: "Sidechain depth: ", fixed$(sidechain_depth_dB, 1), " dB (post-loop VCA)"
 appendInfoLine: "Resonance: ", fixed$(resonance_Center, 1), " Hz  |  Bandwidth: ", fixed$(bandwidth_Hz, 1), " Hz"
+if tracking
+    appendInfoLine: "Tracked resonance base range: ", fixed$(trackingBaseMin, 1), " - ", fixed$(trackingBaseMax, 1),
+        ... " Hz  |  Nyquist drift clamps: ", trackingDriftClampCount
+endif
 appendInfoLine: "Analog instability: ", fixed$(analog_Instability, 3), " (drift between iterations)"
 appendInfoLine: "Dry/Wet: ", fixed$(dry_Wet, 3), "  |  High freq add: ", fixed$(high_Freq_Add, 3),
     ... "  |  Exciter: ", exciterDesc$
 appendInfoLine: "Spatial mode: ", spatial_Mode$
 if spatial_Mode$ = "Stereo Wide"
-    appendInfoLine: "  Detune: ", fixed$(stereo_spread_percent, 2), "% (", fixed$(resonance_Center * (1 - stereo_spread_percent/100), 1),
-        ... " / ", fixed$(resonance_Center * (1 + stereo_spread_percent/100), 1), " Hz)"
+    appendInfoLine: "  Detune: ", fixed$(stereo_spread_percent, 2), "% (effective centres ", fixed$(lc, 1),
+        ... " / ", fixed$(rc, 1), " Hz)"
 endif
 if spatial_Mode$ = "Pseudo-Binaural (Delay/Filter)"
     appendInfoLine: "  Interaural delay: ", fixed$(interaural_delay_ms, 3), " ms (",
@@ -1382,14 +1478,16 @@ if draw_visualization
             v = 0
         endif
         vcaEnvV_'k' = v
-        if f0Sound <> 0
-            selectObject: f0Sound
+        if tracking and trackingFreqSound <> 0
+            selectObject: trackingFreqSound
             v = Get value at time: 1, tMid_'k', "Linear"
             if v = undefined
-                v = mean_Pitch
+                v = trackingBaseMean
             endif
         else
-            v = mean_Pitch
+            # In fixed mode the actual resonance trajectory is constant; do
+            # not plot the raw controller F0 as though the filter followed it.
+            v = resonance_Center
         endif
         f0V_'k' = v
     endfor
@@ -1546,7 +1644,7 @@ if draw_visualization
     Select inner viewport: vpL, vpR, 0.02, 0.44
     Axes: 0, 1, 0, 1
     Colour: "Black"
-    Text: 0.5, "centre", 0.72, "half", "##Sidechain Feedback VCA v0.6##"
+    Text: 0.5, "centre", 0.72, "half", "##Sidechain Feedback VCA v0.6.1##"
     Font size: 7
     Select inner viewport: vpL, vpR, 0.02, 0.44
     Axes: 0, 1, 0, 1
@@ -1607,8 +1705,8 @@ if draw_visualization
     Line width: 2
     for k from 2 to nEnv
         kp = k - 1
-        Draw line: tMid_'kp', outEnvV_'kp' * 1.414, tMid_'k', outEnvV_'k' * 1.414
-        Draw line: tMid_'kp', -outEnvV_'kp' * 1.414, tMid_'k', -outEnvV_'k' * 1.414
+        Draw line: tMid_'kp', outEnvV_'kp', tMid_'k', outEnvV_'k'
+        Draw line: tMid_'kp', -outEnvV_'kp', tMid_'k', -outEnvV_'k'
     endfor
 
     Line width: 1
@@ -1718,9 +1816,9 @@ if draw_visualization
     Font size: 6
     Colour: "{0.15, 0.55, 0.35}"
     if tracking
-        Text: 0.012, "left", 0.93, "half", "resonance follows F0 (band shaded)"
+        Text: 0.012, "left", 0.93, "half", "base resonance = F0 + offset; iteration drift below"
     else
-        Text: 0.012, "left", 0.93, "half", "resonance fixed at mean F0 (band shaded)"
+        Text: 0.012, "left", 0.93, "half", "fixed resonance = mean F0 + offset (band shaded)"
     endif
     Colour: "Black"
     Select inner viewport: vpL, vpR, 2.44, 3.34
@@ -1918,6 +2016,9 @@ endif
 # ============================================================
 
 removeObject: envSound
+if trackingFreqSound <> 0
+    removeObject: trackingFreqSound
+endif
 if f0Sound <> 0
     removeObject: f0Sound
 endif
