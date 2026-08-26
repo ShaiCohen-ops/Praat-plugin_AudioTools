@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.5 (2026) - Suite-standard visualization
+# Version: 0.5.1 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -24,6 +24,19 @@
 #   Cohen, S. (2025). Praat AudioTools: An Offline Analysis-Resynthesis
 #   Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v0.5.1 (2026):
+#   - Output level terminology: the conditional peak stage is global
+#     attenuation, not a limiter; renamed accordingly.
+#   - Normalize-to-0.9 now skips safely when the rendered peak is zero.
+#   - Processing-chain visualization now places the Noise stage at its
+#     selected position instead of always drawing it last.
+#   - Transfer plot now marks the first-fold INPUT thresholds at
+#     +/-Fold_threshold/Drive, rather than horizontal output lines.
+#   - Multichannel waveform labels use Ch 1 / Ch 2 and state when
+#     additional preserved channels are not drawn.
+#   - Bit-depth form note no longer equates the legacy unbounded-step
+#     quantizer with conventional PCM bit depth.
 #
 # Changelog v0.5 (2026):
 #   - VISUALIZATION STANDARDIZATION ONLY; audio/DSP, analysis,
@@ -114,7 +127,7 @@
 #     band-limited - it did not sound as though it had been through
 #     the same device. Default reproduces v0.3.
 #   - Output_level replaces the Normalize boolean (preserve /
-#     conditional limiter / normalize), with a peak warning on
+#     conditional attenuation / normalize), with a peak warning on
 #     preserve. Normalize remains the default.
 #   - Fold_threshold is now a form field. It was hardcoded to 0.7
 #     while the header promised full manual control.
@@ -151,7 +164,7 @@
 #         — preserved from v0.2 because it shows quantization
 #         steps and aliasing artifacts that are invisible in the
 #         full-file waveform view
-#       Panel D: output waveform with L/R channels distinguished
+#       Panel D: output waveform with first channels distinguished
 #       Panel E: summary stats bar
 # Changelog v0.2:
 #   - Fixed resampling bug (orphan objects)
@@ -160,7 +173,7 @@
 #   - Added info output
 # ============================================================
 
-form Chaos Distortion v0.5
+form Chaos Distortion v0.5.1
     comment Select a Sound object first
     
     comment === Preset ===
@@ -183,7 +196,7 @@ form Chaos Distortion v0.5
     
     comment === Bit Crushing ===
     natural Bit_crush 6
-    comment (16 = CD quality, 4 = extreme)
+    comment (higher = finer quantization; exact mapping depends on Quantizer)
     optionmenu Quantizer: 1
         option Step 1/2^N, unbounded (v0.2/v0.3)
         option True 2^N levels over -1..+1
@@ -208,7 +221,7 @@ form Chaos Distortion v0.5
     comment === Output ===
     optionmenu Output_level: 3
         option Preserve
-        option Conditional limiter to 0.9
+        option Attenuate to 0.9 only if peak > 0.9
         option Normalize to 0.9
     boolean Draw_visualization 1
     boolean Play_result 1
@@ -405,7 +418,7 @@ if add_noise
 endif
 
 # === Info ===
-writeInfoLine: "=== Chaos Distortion v0.5 ==="
+writeInfoLine: "=== Chaos Distortion v0.5.1 ==="
 if rateWarning$ <> ""
     appendInfoLine: rateWarning$
 endif
@@ -600,14 +613,19 @@ elsif output_level = 2
     if prePeak > 0.9
         selectObject: result
         Scale peak: 0.9
-        levelDesc$ = "limited to 0.9"
+        levelDesc$ = "attenuated to 0.9"
     else
         levelDesc$ = "unchanged"
     endif
 else
-    selectObject: result
-    Scale peak: 0.9
-    levelDesc$ = "normalized to 0.9"
+    if prePeak > 0
+        selectObject: result
+        Scale peak: 0.9
+        levelDesc$ = "normalized to 0.9"
+    else
+        levelDesc$ = "silent; normalization skipped"
+        appendInfoLine: "  NOTE: output peak is zero - normalization skipped."
+    endif
 endif
 appendInfoLine: "  Output level: ", levelDesc$
 
@@ -644,7 +662,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##Chaos Distortion v0.5##"
+    Text: 0.5, "centre", 0.68, "half", "##Chaos Distortion v0.5.1##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
     Text: 0.5, "centre", 0.22, "half",
@@ -711,15 +729,20 @@ if draw_visualization
     Draw line: -1.2, -1.2, 1.2, 1.2
     Solid line
     
-    # Fold threshold lines
-    Colour: "{0.55, 0.78, 0.55}"
-    Dotted line
-    Draw line: -1.2, fold_threshold, 1.2, fold_threshold
-    Draw line: -1.2, -fold_threshold, 1.2, -fold_threshold
-    Solid line
-    Font size: 6
-    Colour: "{0.30, 0.55, 0.30}"
-    Text: -1.15, "left", fold_threshold, "bottom", " ±" + fixed$(fold_threshold, 2) + " fold"
+    # First-fold input thresholds. Folding is tested AFTER Drive, so the
+    # corresponding source amplitudes are +/-Fold_threshold/Drive.
+    foldInputThreshold = fold_threshold / drive
+    if fold_count > 0 and foldInputThreshold <= 1.2
+        Colour: "{0.55, 0.78, 0.55}"
+        Dotted line
+        Draw line: foldInputThreshold, -yLim, foldInputThreshold, yLim
+        Draw line: -foldInputThreshold, -yLim, -foldInputThreshold, yLim
+        Solid line
+        Font size: 6
+        Colour: "{0.30, 0.55, 0.30}"
+        Text: foldInputThreshold, "left", -yLim * 0.93, "half", " fold begins"
+        Text: -foldInputThreshold, "right", -yLim * 0.93, "half", "fold begins "
+    endif
     
     # Draw transfer function
     # v0.4 (item 3): the curve used two independent `if` folds - the v0.2
@@ -796,8 +819,7 @@ if draw_visualization
     
     # ----------------------------------------------------------
     # PANEL B: PROCESSING CHAIN DIAGRAM  (right, headline-height)
-    # The five-stage pipeline shown explicitly with current values.
-    # Preserved from v0.2 — it's the script's most distinctive viz.
+    # The five-stage pipeline shown in the order actually rendered.
     # ----------------------------------------------------------
     Select outer viewport: 4, 8, 0.75, 4.60
     Select inner viewport: 4.45, 7.70, 0.95, 4.40
@@ -805,106 +827,98 @@ if draw_visualization
     Axes: 0, 1, 0, 6
     Paint rectangle: "{0.97, 0.97, 0.97}", 0, 1, 0, 6
     
-    # Five vertical boxes representing the pipeline stages
-    # Each at y range [stage*1.0, stage*1.0+0.7] for stages 5..1 (top to bottom)
-    
-    # Stage 1: Drive
-    yTop = 5.6
-    yBot = 5.0
-    Paint rectangle: "{0.85, 0.70, 0.55}", 0.10, 0.90, yBot, yTop
-    Colour: "Black"
-    Font size: 7
-    Text: 0.50, "centre", (yTop + yBot) / 2 + 0.10, "half", "1. DRIVE"
-    Font size: 7
-    Colour: "{0.30, 0.20, 0.10}"
-    Text: 0.50, "centre", (yTop + yBot) / 2 - 0.13, "half", fixed$(drive, 2) + " x"
-    
-    # Arrow down
-    Colour: "{0.45, 0.45, 0.45}"
-    Draw arrow: 0.50, 5.0, 0.50, 4.7
-    
-    # Stage 2: Fold
-    yTop = 4.6
-    yBot = 4.0
-    if fold_count > 0
-        Paint rectangle: "{0.70, 0.85, 0.60}", 0.10, 0.90, yBot, yTop
-    else
-        Paint rectangle: "{0.85, 0.85, 0.88}", 0.10, 0.90, yBot, yTop
-    endif
-    Colour: "Black"
-    Font size: 7
-    Text: 0.50, "centre", (yTop + yBot) / 2 + 0.10, "half", "2. FOLD"
-    Font size: 7
-    if fold_count > 0
-        Colour: "{0.20, 0.40, 0.15}"
-        Text: 0.50, "centre", (yTop + yBot) / 2 - 0.13, "half", string$(fold_count) + " x"
-    else
-        Colour: "{0.55, 0.55, 0.55}"
-        Text: 0.50, "centre", (yTop + yBot) / 2 - 0.13, "half", "off"
-    endif
-    
-    # Arrow down
-    Colour: "{0.45, 0.45, 0.45}"
-    Draw arrow: 0.50, 4.0, 0.50, 3.7
-    
-    # Stage 3: Crush
-    yTop = 3.6
-    yBot = 3.0
-    Paint rectangle: "{0.60, 0.70, 0.85}", 0.10, 0.90, yBot, yTop
-    Colour: "Black"
-    Font size: 7
-    Text: 0.50, "centre", (yTop + yBot) / 2 + 0.10, "half", "3. CRUSH"
-    Font size: 7
-    Colour: "{0.10, 0.20, 0.40}"
-    Text: 0.50, "centre", (yTop + yBot) / 2 - 0.13, "half", string$(bit_crush) + " bits"
-    
-    # Arrow down
-    Colour: "{0.45, 0.45, 0.45}"
-    Draw arrow: 0.50, 3.0, 0.50, 2.7
-    
-    # Stage 4: SR
-    yTop = 2.6
-    yBot = 2.0
-    if srReduce
-        Paint rectangle: "{0.60, 0.85, 0.75}", 0.10, 0.90, yBot, yTop
-    else
-        Paint rectangle: "{0.85, 0.85, 0.88}", 0.10, 0.90, yBot, yTop
-    endif
-    Colour: "Black"
-    Font size: 7
-    Text: 0.50, "centre", (yTop + yBot) / 2 + 0.10, "half", "4. SR REDUCE"
-    Font size: 7
-    if srReduce
-        Colour: "{0.10, 0.40, 0.30}"
-        Text: 0.50, "centre", (yTop + yBot) / 2 - 0.13, "half", fixed$(effectivePercent, 0) + "%"
-    else
-        Colour: "{0.55, 0.55, 0.55}"
-        Text: 0.50, "centre", (yTop + yBot) / 2 - 0.13, "half", "off"
-    endif
-    
-    # Arrow down
-    Colour: "{0.45, 0.45, 0.45}"
-    Draw arrow: 0.50, 2.0, 0.50, 1.7
-    
-    # Stage 5: Noise
-    yTop = 1.6
-    yBot = 1.0
-    if add_noise
-        Paint rectangle: "{0.85, 0.65, 0.60}", 0.10, 0.90, yBot, yTop
-    else
-        Paint rectangle: "{0.85, 0.85, 0.88}", 0.10, 0.90, yBot, yTop
-    endif
-    Colour: "Black"
-    Font size: 7
-    Text: 0.50, "centre", (yTop + yBot) / 2 + 0.10, "half", "5. NOISE"
-    Font size: 7
-    if add_noise
-        Colour: "{0.40, 0.15, 0.10}"
-        Text: 0.50, "centre", (yTop + yBot) / 2 - 0.13, "half", "+/- " + fixed$(noise_amount, 3)
-    else
-        Colour: "{0.55, 0.55, 0.55}"
-        Text: 0.50, "centre", (yTop + yBot) / 2 - 0.13, "half", "off"
-    endif
+    # Stage kinds: 1=Drive, 2=Fold, 3=Crush, 4=SR, 5=Noise.
+    # Noise_position changes its actual place in the chain.
+    for slot from 1 to 5
+        if slot = 1
+            stageKind = 1
+        elsif slot = 2
+            stageKind = 2
+        elsif noise_position = 1
+            if slot = 3
+                stageKind = 5
+            elsif slot = 4
+                stageKind = 3
+            else
+                stageKind = 4
+            endif
+        elsif noise_position = 2
+            if slot = 3
+                stageKind = 3
+            elsif slot = 4
+                stageKind = 5
+            else
+                stageKind = 4
+            endif
+        else
+            if slot = 3
+                stageKind = 3
+            elsif slot = 4
+                stageKind = 4
+            else
+                stageKind = 5
+            endif
+        endif
+        
+        if stageKind = 1
+            stageName$ = "DRIVE"
+            stageValue$ = fixed$(drive, 2) + " x"
+            stageColour$ = "{0.85, 0.70, 0.55}"
+            stageTextColour$ = "{0.30, 0.20, 0.10}"
+        elsif stageKind = 2
+            stageName$ = "FOLD"
+            if fold_count > 0
+                stageValue$ = string$(fold_count) + " x"
+                stageColour$ = "{0.70, 0.85, 0.60}"
+                stageTextColour$ = "{0.20, 0.40, 0.15}"
+            else
+                stageValue$ = "off"
+                stageColour$ = "{0.85, 0.85, 0.88}"
+                stageTextColour$ = "{0.55, 0.55, 0.55}"
+            endif
+        elsif stageKind = 3
+            stageName$ = "CRUSH"
+            stageValue$ = string$(bit_crush) + " bits"
+            stageColour$ = "{0.60, 0.70, 0.85}"
+            stageTextColour$ = "{0.10, 0.20, 0.40}"
+        elsif stageKind = 4
+            stageName$ = "SR REDUCE"
+            if srReduce
+                stageValue$ = fixed$(effectivePercent, 0) + "%"
+                stageColour$ = "{0.60, 0.85, 0.75}"
+                stageTextColour$ = "{0.10, 0.40, 0.30}"
+            else
+                stageValue$ = "off"
+                stageColour$ = "{0.85, 0.85, 0.88}"
+                stageTextColour$ = "{0.55, 0.55, 0.55}"
+            endif
+        else
+            stageName$ = "NOISE"
+            if add_noise
+                stageValue$ = "+/- " + fixed$(noise_amount, 3)
+                stageColour$ = "{0.85, 0.65, 0.60}"
+                stageTextColour$ = "{0.40, 0.15, 0.10}"
+            else
+                stageValue$ = "off"
+                stageColour$ = "{0.85, 0.85, 0.88}"
+                stageTextColour$ = "{0.55, 0.55, 0.55}"
+            endif
+        endif
+        
+        yTop = 6.6 - slot
+        yBot = 6.0 - slot
+        Paint rectangle: stageColour$, 0.10, 0.90, yBot, yTop
+        Colour: "Black"
+        Font size: 7
+        Text: 0.50, "centre", (yTop + yBot) / 2 + 0.10, "half", string$(slot) + ". " + stageName$
+        Colour: stageTextColour$
+        Text: 0.50, "centre", (yTop + yBot) / 2 - 0.13, "half", stageValue$
+        
+        if slot < 5
+            Colour: "{0.45, 0.45, 0.45}"
+            Draw arrow: 0.50, yBot, 0.50, yBot - 0.30
+        endif
+    endfor
     
     Colour: "Black"
     Draw inner box
@@ -1036,8 +1050,10 @@ if draw_visualization
     Line width: 1
     Draw inner box
     Font size: 7
-    if nResultCh > 1
-        Text top: "no", "Output (full file)  (blue=L  orange=R)"
+    if nResultCh = 2
+        Text top: "no", "Output (full file)  (blue=Ch 1  orange=Ch 2)"
+    elsif nResultCh > 2
+        Text top: "no", "Output (full file)  (showing Ch 1-2 of " + string$(nResultCh) + "; all channels preserved)"
     else
         Text top: "no", "Output (full file, mono)"
     endif

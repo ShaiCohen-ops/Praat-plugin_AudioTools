@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4 (2026) - Suite-standard visualization
+# Version: 0.5.1 (2026) - Formula syntax correction
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -13,6 +13,16 @@
 #   threshold, creating rich harmonics. Features asymmetric
 #   thresholds, multiple iterations, bipolar/unipolar modes,
 #   and smoothing. Classic Buchla/Serge synthesizer effect.
+#
+# Changelog v0.5.1 (2026):
+#   - FIX: Replaced unsupported `elsif` inside Praat Formula with a
+#     nested mutually exclusive `if ... else (if ...) fi` expression.
+#
+# Changelog v0.5 (2026):
+#   - FIX: bipolar folding now uses mutually exclusive positive/negative
+#     branches, preventing double-folding within one iteration.
+#   - FIX: smoothing is now continuous at its activation threshold.
+#   - Updated transfer-function visualization to match both DSP fixes.
 #
 # Changelog v0.4 (2026):
 #   - VISUALIZATION STANDARDIZATION ONLY; audio/DSP, analysis,
@@ -39,7 +49,7 @@
 #   - Added info output
 # ============================================================
 
-form Wavefolder (Foldback) v0.4
+form Wavefolder (Foldback) v0.5.1
     comment Select a Sound object first
     
     comment === Preset ===
@@ -192,7 +202,7 @@ else
 endif
 
 # === Info ===
-writeInfoLine: "=== Wavefolder (Foldback) v0.4 ==="
+writeInfoLine: "=== Wavefolder (Foldback) v0.5.1 ==="
 appendInfoLine: "Source: ", name$, " (", fixed$(duration, 2), " s)"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
@@ -234,24 +244,25 @@ for iteration from 1 to fold_iterations
     selectObject: result
     
     if bipolar_folding
-        # Bipolar folding: fold positive and negative independently
-        # Positive folding
-        Formula: "if self > " + threshPos_str$ + " then " + threshPos_str$ + " - (self - " + threshPos_str$ + ") * " + depth_str$ + " else self fi"
-        # Negative folding
-        Formula: "if self < -" + threshNeg_str$ + " then -" + threshNeg_str$ + " + (abs(self) - " + threshNeg_str$ + ") * " + depth_str$ + " else self fi"
+        # Bipolar folding: mutually exclusive positive/negative branches.
+        # This prevents a strongly folded positive sample from being folded
+        # again by the negative branch within the same iteration.
+        Formula: "if self > " + threshPos_str$ + " then " + threshPos_str$ + " - (self - " + threshPos_str$ + ") * " + depth_str$ + " else (if self < -" + threshNeg_str$ + " then -" + threshNeg_str$ + " + (abs(self) - " + threshNeg_str$ + ") * " + depth_str$ + " else self fi) fi"
     else
         # Unipolar folding
         Formula: "if abs(self) > " + thresh_str$ + " then (if self > 0 then " + thresh_str$ + " - (self - " + thresh_str$ + ") * " + depth_str$ + " else -" + thresh_str$ + " + (abs(self) - " + thresh_str$ + ") * " + depth_str$ + " fi) else self fi"
     endif
 endfor
 
-# Apply smoothing (soft clipping)
+# Apply smoothing (continuous soft saturation above a threshold)
 if smoothing > 0
     appendInfoLine: "  Applying smoothing..."
     smooth_amount = smoothing * 2
-    smooth_str$ = string$(smooth_amount)
+    smooth_start = max(0, 1 - smooth_amount)
+    smooth_amt_str$ = string$(smooth_amount)
+    smooth_start_str$ = string$(smooth_start)
     selectObject: result
-    Formula: "if abs(self) > (1 - " + smooth_str$ + ") then self / (1 + abs(self) * " + smooth_str$ + ") else self fi"
+    Formula: "if abs(self) > " + smooth_start_str$ + " then (if self > 0 then " + smooth_start_str$ + " + (self - " + smooth_start_str$ + ") / (1 + (self - " + smooth_start_str$ + ") * " + smooth_amt_str$ + ") else -" + smooth_start_str$ + " - (abs(self) - " + smooth_start_str$ + ") / (1 + (abs(self) - " + smooth_start_str$ + ") * " + smooth_amt_str$ + ") fi) else self fi"
 endif
 
 # Apply output gain
@@ -295,7 +306,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##Wavefolder (Foldback) v0.4##"
+    Text: 0.5, "centre", 0.68, "half", "##Wavefolder (Foldback) v0.5.1##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.50}"
     Text: 0.5, "centre", 0.22, "half", vizName$ + " | " + presetName$ + " | threshold " + fixed$(threshold, 2) + " | " + string$(fold_iterations) + " folds | input gain " + fixed$(input_gain_dB, 1) + " dB"
@@ -362,8 +373,7 @@ if draw_visualization
             if bipolar_folding
                 if ty > threshold_pos
                     ty = threshold_pos - (ty - threshold_pos) * fold_depth
-                endif
-                if ty < -threshold_neg
+                elsif ty < -threshold_neg
                     ty = -threshold_neg + (abs(ty) - threshold_neg) * fold_depth
                 endif
             else
@@ -378,8 +388,13 @@ if draw_visualization
         endfor
         if smoothing > 0
             smooth_amount_viz = smoothing * 2
-            if abs(ty) > (1 - smooth_amount_viz)
-                ty = ty / (1 + abs(ty) * smooth_amount_viz)
+            smooth_start_viz = max(0, 1 - smooth_amount_viz)
+            if abs(ty) > smooth_start_viz
+                if ty > 0
+                    ty = smooth_start_viz + (ty - smooth_start_viz) / (1 + (ty - smooth_start_viz) * smooth_amount_viz)
+                else
+                    ty = -smooth_start_viz - (abs(ty) - smooth_start_viz) / (1 + (abs(ty) - smooth_start_viz) * smooth_amount_viz)
+                endif
             endif
         endif
         ty = ty * output_gain_linear
@@ -433,14 +448,12 @@ if draw_visualization
                 # Bipolar: independent pos/neg thresholds (asymmetric)
                 if y1 > threshold_pos
                     y1 = threshold_pos - (y1 - threshold_pos) * fold_depth
-                endif
-                if y1 < -threshold_neg
+                elsif y1 < -threshold_neg
                     y1 = -threshold_neg + (abs(y1) - threshold_neg) * fold_depth
                 endif
                 if y2 > threshold_pos
                     y2 = threshold_pos - (y2 - threshold_pos) * fold_depth
-                endif
-                if y2 < -threshold_neg
+                elsif y2 < -threshold_neg
                     y2 = -threshold_neg + (abs(y2) - threshold_neg) * fold_depth
                 endif
             else
@@ -465,11 +478,20 @@ if draw_visualization
         # Apply smoothing exactly as in the audio path.
         if smoothing > 0
             smooth_amount_viz = smoothing * 2
-            if abs(y1) > (1 - smooth_amount_viz)
-                y1 = y1 / (1 + abs(y1) * smooth_amount_viz)
+            smooth_start_viz = max(0, 1 - smooth_amount_viz)
+            if abs(y1) > smooth_start_viz
+                if y1 > 0
+                    y1 = smooth_start_viz + (y1 - smooth_start_viz) / (1 + (y1 - smooth_start_viz) * smooth_amount_viz)
+                else
+                    y1 = -smooth_start_viz - (abs(y1) - smooth_start_viz) / (1 + (abs(y1) - smooth_start_viz) * smooth_amount_viz)
+                endif
             endif
-            if abs(y2) > (1 - smooth_amount_viz)
-                y2 = y2 / (1 + abs(y2) * smooth_amount_viz)
+            if abs(y2) > smooth_start_viz
+                if y2 > 0
+                    y2 = smooth_start_viz + (y2 - smooth_start_viz) / (1 + (y2 - smooth_start_viz) * smooth_amount_viz)
+                else
+                    y2 = -smooth_start_viz - (abs(y2) - smooth_start_viz) / (1 + (abs(y2) - smooth_start_viz) * smooth_amount_viz)
+                endif
             endif
         endif
 

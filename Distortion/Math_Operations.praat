@@ -3,16 +3,17 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.5 (2026) - Suite-standard visualization
+# Version: 0.5.1 (2026) - QA terminology/reporting fixes
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
 #   Math Operations Between Two Sounds — combines two audio
 #   files using mathematical operations. Includes basic math
-#   (add, multiply/ring mod, etc.), modulation (AM, FM),
-#   nonlinear processing (wavefold, bitcrush), and advanced
-#   transforms (vector morph, chaos, phase vocoder sim).
+#   (add, multiply/ring mod, etc.), modulation and sample-wise
+#   waveshaping, nonlinear processing (wavefold, quantization),
+#   and advanced transforms (vector morph, logistic-style shaping,
+#   cross-phase waveshaping, random amplitude scatter).
 #   Select exactly 2 Sound objects before running.
 #
 #   The two inputs must share the same sample rate. Different
@@ -46,6 +47,25 @@
 #   Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
+#
+# Changelog v0.5.1 (2026):
+#   - QA/TERMINOLOGY/REPORTING ONLY; DSP formulas and preset numeric
+#     values are unchanged.
+#   - Renamed several presets/operations so labels describe the actual
+#     sample-wise math: Double Sine Waveshaping, Quantized Lo-Fi,
+#     Pseudo-Sync, Logistic-Style Shaping, and the two magnitude-product
+#     variants.
+#   - Magnitude-product reports now state whether Sound 1 polarity is
+#     restored or the result is unsigned.
+#   - Clarified that Sound 1 / Sound 2 follow Praat Objects-list order
+#     (top to bottom), which matters for non-commutative operations.
+#   - Renamed the output guard to "Attenuate to 0.95 only if peak >
+#     0.95 (after scaling)"; it is global peak scaling, not a limiter.
+#   - Visualization parameter report and summary now show the controls
+#     actually used by the selected operation (Divide epsilon, fold
+#     passes, geometric polarity, random seed, channel policy, etc.)
+#     rather than always showing Mod depth / Intensity.
+#
 # Changelog v0.5 (2026):
 #   - VISUALIZATION STANDARDIZATION ONLY; audio/DSP, analysis,
 #     parameter mapping and rendering logic are unchanged.
@@ -66,7 +86,7 @@
 #     reinstated part of the problem they were added to fix.
 #     Presets select the operation; output level stays global.
 #   - FIXED: the intensity-in-use report tested only
-#     advanced_operation = 3, so Geometric magnitude product (= 2)
+#     advanced_operation = 3, so Geometric product (sqrt magnitudes) (= 2)
 #     showed "[in use]" while ignoring the control. Both magnitude
 #     products are now reported correctly, and the count is FIVE
 #     operations newly connected, not six - the form comment and
@@ -230,8 +250,9 @@
 #   - Added info output
 # ============================================================
 
-form Math Operations Between Sounds v0.5
+form Math Operations Between Sounds v0.5.1
     comment Select exactly 2 Sound objects first
+    comment Sound 1 / Sound 2 = Praat Objects-list order (top to bottom), not click order
     
     comment === Preset ===
     optionmenu Preset: 1
@@ -241,16 +262,16 @@ form Math Operations Between Sounds v0.5
         option Tremolo Effect
         option Crunch Mod (Arctan)
         option FM-like Waveshaping
-        option Double FM
+        option Double Sine Waveshaping
         option Wavefold Distortion
-        option Bitcrush Lo-Fi
+        option Quantized Lo-Fi
         option Cosine Cross-Waveshaper
-        option Hard Sync
-        option Chaotic Mix
+        option Pseudo-Sync
+        option Logistic-Style Shaping
         option Soft Normalized Mix
         option Cross-Phase Waveshaper
         option Random Amplitude Scatter
-        option Geometric Magnitude Product
+        option Geometric Product (sqrt magnitudes)
         option Vector Morph
         option Rectify Distortion
     
@@ -273,7 +294,7 @@ form Math Operations Between Sounds v0.5
         option AM (unipolar): S1 * (0.5 + 0.5*cos(S2))
         option FM-like: sin(Sound1) * Sound2
         option FM-like: cos(Sound1) * Sound2
-        option Double FM: sin(S1) * sin(S2)
+        option Double sine waveshaping: sin(S1) * sin(S2)
         option Soft clip: arctan(S1 * S2)
         option Power mod (exponent floored at 0.05)
         option Tremolo: S1 * (1 + S2*depth) [bipolar if depth>1]
@@ -292,8 +313,8 @@ form Math Operations Between Sounds v0.5
     comment === Advanced ===
     optionmenu Advanced_operation: 1
         option None
-        option Geometric magnitude product
-        option Absolute product (= |S1| * |S2|)
+        option Geometric product (sqrt magnitudes)
+        option Magnitude product (= |S1| * |S2|)
         option Vector morph
         option Logistic-style (non-recursive)
         option Rectify and mix
@@ -311,7 +332,7 @@ form Math Operations Between Sounds v0.5
     optionmenu Geometric_polarity: 1
         option Restore sign of Sound 1
         option Unsigned magnitude product (v0.2/v0.3)
-    comment (Sqrt / Exp domain only)
+    comment (the two magnitude-product operations only)
     integer Random_seed 0
     comment (Random scatter only; 0 = unpredictable)
     
@@ -325,7 +346,7 @@ form Math Operations Between Sounds v0.5
     optionmenu Output_mode: 1
         option Normalize to 0.95 (v0.2/v0.3; scaling inert)
         option Normalize to 0.95, then apply scaling
-        option Conditional peak normalization after scaling
+        option Attenuate to 0.95 only if peak > 0.95 (after scaling)
         option Preserve (scaling only)
     positive Output_scaling 1.0
     boolean Draw_visualization 1
@@ -373,7 +394,7 @@ if preset > 1
     elsif preset = 7
         modulation_operation = 6
         modulation_depth = 1.5
-        presetName$ = "DoubleFM"
+        presetName$ = "DoubleSine"
     elsif preset = 8
         nonlinear_operation = 4
         nonlinear_intensity = 0.8
@@ -381,7 +402,7 @@ if preset > 1
     elsif preset = 9
         nonlinear_operation = 6
         nonlinear_intensity = 0.5
-        presetName$ = "Bitcrush"
+        presetName$ = "QuantizedLoFi"
     elsif preset = 10
         nonlinear_operation = 2
         nonlinear_intensity = 1.2
@@ -389,11 +410,11 @@ if preset > 1
     elsif preset = 11
         nonlinear_operation = 5
         nonlinear_intensity = 0.9
-        presetName$ = "HardSync"
+        presetName$ = "PseudoSync"
     elsif preset = 12
         advanced_operation = 5
         nonlinear_intensity = 0.5
-        presetName$ = "Chaos"
+        presetName$ = "LogisticStyle"
     elsif preset = 13
         nonlinear_operation = 8
         nonlinear_intensity = 0.8
@@ -411,7 +432,7 @@ if preset > 1
     elsif preset = 16
         advanced_operation = 2
         nonlinear_intensity = 0.5
-        presetName$ = "GeoMagProduct"
+        presetName$ = "GeoProduct"
     elsif preset = 17
         advanced_operation = 4
         nonlinear_intensity = 0.5
@@ -502,7 +523,7 @@ if advanced_operation = 8
 endif
 
 # === Info ===
-writeInfoLine: "=== Math Operations v0.5 ==="
+writeInfoLine: "=== Math Operations v0.5.1 ==="
 appendInfoLine: "Sound 1: ", name1$, " (", fixed$(dur1, 2), " s, ", n_ch_1, " ch)"
 appendInfoLine: "Sound 2: ", name2$, " (", fixed$(dur2, 2), " s, ", n_ch_2, " ch)"
 appendInfoLine: "Using duration: ", fixed$(min_dur, 2), " s"
@@ -569,8 +590,7 @@ if advanced_operation > 1
     depth_str$ = string$(nonlinear_intensity)
     
     if advanced_operation = 2
-        ranLabel$ = "Geometric magnitude product"
-        appendInfoLine: "Applying: ", ranLabel$
+        ranLabel$ = "Geometric product (sqrt magnitudes)"
         # v0.4 (item 4): the 1e-10 floors were unnecessary - sqrt(0) is
         # perfectly defined - and they were harmful: on two silent inputs
         # the formula returned a small CONSTANT (1e-9), which the
@@ -582,13 +602,15 @@ if advanced_operation > 1
         # sign of S1 is restored to keep it bipolar; set
         # Geometric_polarity to "unsigned" for the v0.3 shape.
         if geometric_polarity = 1
+            ranLabel$ = ranLabel$ + " [signed by S1]"
             Formula: ~ ((self>0) - (self<0)) * sqrt(abs(self)) * sqrt(abs(object[sound2_part]))
         else
+            ranLabel$ = ranLabel$ + " [unsigned]"
             Formula: ~ sqrt(abs(self)) * sqrt(abs(object[sound2_part]))
         endif
-    elsif advanced_operation = 3
-        ranLabel$ = "Absolute product (|S1| * |S2|)"
         appendInfoLine: "Applying: ", ranLabel$
+    elsif advanced_operation = 3
+        ranLabel$ = "Magnitude product (|S1| * |S2|)"
         # v0.4 (items 4 and 10): exp(ln a + ln b) is identically a*b, so
         # this was never an "exp domain" transform - it is the product of
         # the two magnitudes, verified exactly. Written directly, which
@@ -596,10 +618,13 @@ if advanced_operation > 1
         # produce a constant 1e-21 that `Scale peak` then lifted to
         # 0.95 DC.
         if geometric_polarity = 1
+            ranLabel$ = ranLabel$ + " [signed by S1]"
             Formula: ~ ((self>0) - (self<0)) * abs(self) * abs(object[sound2_part])
         else
+            ranLabel$ = ranLabel$ + " [unsigned]"
             Formula: ~ abs(self) * abs(object[sound2_part])
         endif
+        appendInfoLine: "Applying: ", ranLabel$
     elsif advanced_operation = 4
         # v0.4 (item 12): this is a linear crossfade only for intensity in
         # 0..1. Nonlinear_intensity is `positive` with no ceiling, so above
@@ -738,7 +763,7 @@ elsif modulation_operation > 1
         appendInfoLine: "Applying: ", ranLabel$
         Formula: "cos(self * pi * 5 * " + mod_str$ + ") * object[" + s2_str$ + "]"
     elsif modulation_operation = 6
-        ranLabel$ = "Double FM"
+        ranLabel$ = "Double sine waveshaping"
         appendInfoLine: "Applying: ", ranLabel$
         Formula: "sin(self * pi * 5 * " + mod_str$ + ") * sin(object[" + s2_str$ + "] * pi * 5 * " + mod_str$ + ")"
     elsif modulation_operation = 7
@@ -834,7 +859,7 @@ selectObject: result
 # parameter was in the form, in the report, and connected to nothing.
 # Output_mode makes the order explicit: Normalize (v0.3 default, and it
 # says outright that the scaling is inert), Normalize-then-gain (so the
-# scaling survives), Conditional limiter, or Preserve.
+# scaling survives), conditional attenuation, or Preserve.
 if output_mode = 4
     if output_scaling <> 1.0
         scale_str$ = string$(output_scaling)
@@ -852,7 +877,7 @@ elsif output_mode = 3
         # v0.4b: this is not a limiter in the DSP sense - `Scale peak`
         # attenuates the WHOLE signal when any single sample exceeds the
         # target, rather than acting only on the peaks.
-        normStr$ = "peak-normalized to 0.95 (scaling " + fixed$(output_scaling, 3) + " applied first)"
+        normStr$ = "attenuated to 0.95 (scaling " + fixed$(output_scaling, 3) + " applied first)"
     else
         normStr$ = "unchanged, below 0.95 (scaling " + fixed$(output_scaling, 3) + " applied)"
     endif
@@ -885,9 +910,9 @@ endif
 
 # v0.4 (item 7): Nonlinear_intensity was displayed in the form and in
 # the parameter report for every run, but seven operations never read it
-# - Sqrt domain, Exp domain, Logistic-style, Rectify and mix, Pseudo
-# phase-vocoder, Random scatter and Bitcrush. Six of those now use it
-# (see above); Absolute product is a plain magnitude product with
+# - the two magnitude products, Logistic-style, Rectify and mix, cross-
+# phase waveshaping, Random scatter and quantization. Five of those now use it
+# (see above); Magnitude product is a plain magnitude product with
 # nothing for it to scale. The report states which, so the panel never
 # implies a live control that is inert.
 # v0.4b: this tested only advanced_operation = 3, so Geometric
@@ -898,6 +923,48 @@ if advanced_operation = 2 or advanced_operation = 3
     intensityUsed$ = "not used by this operation"
 else
     intensityUsed$ = "in use"
+endif
+
+# v0.5.1: report controls that actually affect the selected operation.
+# Keep this compact so the visualization explains the running transform
+# rather than listing inactive form fields.
+activeParam1$ = "(none)"
+activeParam2$ = ""
+activeParam3$ = "Channel policy: " + chanDesc$
+
+if ranTier$ = "Modulation"
+    activeParam1$ = "Mod depth: " + fixed$(modulation_depth, 3)
+elsif ranTier$ = "Nonlinear"
+    activeParam1$ = "Intensity: " + fixed$(nonlinear_intensity, 3)
+    if nonlinear_operation = 4
+        activeParam2$ = "Fold passes: " + string$(fold_passes)
+    endif
+elsif ranTier$ = "Advanced"
+    if advanced_operation = 2 or advanced_operation = 3
+        if geometric_polarity = 1
+            activeParam1$ = "Polarity: sign of Sound 1"
+        else
+            activeParam1$ = "Polarity: unsigned magnitude"
+        endif
+    else
+        activeParam1$ = "Intensity: " + fixed$(nonlinear_intensity, 3)
+        if advanced_operation = 8
+            if random_seed > 0
+                activeParam2$ = "Random seed: " + string$(random_seed)
+            else
+                activeParam2$ = "Random seed: unpredictable"
+            endif
+        endif
+    endif
+else
+    if operation = 4
+        activeParam1$ = "Divide epsilon: " + fixed$(divide_epsilon, 6)
+    endif
+endif
+
+activeSummary$ = activeParam1$
+if activeParam2$ <> ""
+    activeSummary$ = activeSummary$ + "; " + activeParam2$
 endif
 
 # === Final stats ===
@@ -954,7 +1021,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##Math Operations Between Sounds v0.5##"
+    Text: 0.5, "centre", 0.68, "half", "##Math Operations Between Sounds v0.5.1##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
     Text: 0.5, "centre", 0.22, "half",
@@ -1056,35 +1123,32 @@ if draw_visualization
     Colour: "{0.45, 0.45, 0.45}"
     Text: 0.10, "left", 0.76, "half", ranLabel$
     
-    # Section: Parameters (relevant to this tier)
+    # Section: Parameters (only controls active for this operation)
     Font size: 7
     Colour: "{0.30, 0.30, 0.30}"
-    Text: 0.05, "left", 0.65, "half", "Parameters:"
+    Text: 0.05, "left", 0.65, "half", "Active parameters:"
     
     Font size: 7
     Colour: "{0.30, 0.45, 0.78}"
-    if ranTier$ = "Modulation"
-        Text: 0.10, "left", 0.57, "half", "Mod depth:    " + fixed$(modulation_depth, 2)
-    elsif ranTier$ = "Nonlinear" or ranTier$ = "Advanced"
-        Text: 0.10, "left", 0.57, "half", "Intensity:    " + fixed$(nonlinear_intensity, 2) + "  [" + intensityUsed$ + "]"
-    else
-        Text: 0.10, "left", 0.57, "half", "(no tier-specific param)"
+    Text: 0.10, "left", 0.57, "half", activeParam1$
+    if activeParam2$ <> ""
+        Text: 0.10, "left", 0.50, "half", activeParam2$
     endif
-    Text: 0.10, "left", 0.49, "half", "Output scale: " + fixed$(output_scaling, 2)
-    Text: 0.10, "left", 0.41, "half", "Normalize:    " + normStr$
+    Text: 0.10, "left", 0.43, "half", "Output scale: " + fixed$(output_scaling, 2)
+    Text: 0.10, "left", 0.36, "half", "Output mode: " + normStr$
+    Text: 0.10, "left", 0.29, "half", activeParam3$
     
-    # Section: Duration / Channels
+    # Section: Duration / channel counts
     Font size: 7
     Colour: "{0.30, 0.30, 0.30}"
-    Text: 0.05, "left", 0.30, "half", "Duration alignment:"
+    Text: 0.05, "left", 0.20, "half", "Duration alignment:"
     
     Font size: 7
     Colour: "{0.55, 0.55, 0.55}"
-    Text: 0.10, "left", 0.22, "half", "S1: " + fixed$(dur1, 2) + " s, " + string$(n_ch_1) + " ch"
-    Text: 0.10, "left", 0.14, "half", "S2: " + fixed$(dur2, 2) + " s, " + string$(n_ch_2) + " ch"
+    Text: 0.10, "left", 0.13, "half", "S1: " + fixed$(dur1, 2) + " s / " + string$(n_ch_1) + " ch   S2: " + fixed$(dur2, 2) + " s / " + string$(n_ch_2) + " ch"
     Font size: 7
     Colour: "{0.40, 0.40, 0.40}"
-    Text: 0.10, "left", 0.05, "half", "Used: min(S1, S2) = " + fixed$(min_dur, 2) + " s"
+    Text: 0.10, "left", 0.05, "half", "Used: " + fixed$(min_dur, 2) + " s from each object's own start"
     
     Colour: "Black"
     Draw inner box
@@ -1229,10 +1293,9 @@ if draw_visualization
         ... + "  |  Op: " + ranLabel$
     
     Text: 0.02, "left", 0.28, "half",
-        ... "Mod depth: " + fixed$(modulation_depth, 2)
-        ... + "  |  Intensity: " + fixed$(nonlinear_intensity, 2)
+        ... activeSummary$
         ... + "  |  Out scale: " + fixed$(output_scaling, 2)
-        ... + "  |  Normalize: " + normStr$
+        ... + "  |  " + normStr$
         ... + "  |  Output: " + fixed$(finalDur, 2) + " s, peak " + fixed$(finalPeak, 3)
     
     Colour: "Black"

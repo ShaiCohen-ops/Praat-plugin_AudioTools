@@ -3,14 +3,14 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.5 (2026) - Suite-standard visualization
+# Version: 0.5.1 (2026) - terminology/default/reporting refinement
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
 #   Van der Pol Tube Distortion - a parameterized cubic fold
 #   waveshaper inspired by the Lienard form associated with the
-#   Van der Pol oscillator, with an optional monotonic peak-hold
+#   Van der Pol oscillator, with an optional monotonic cubic peak-hold
 #   mode and a final hard clamp.
 #
 #   WHAT IT IS (v0.4 correction). v0.3 stated that
@@ -66,9 +66,9 @@
 #
 #   The cubic peaks at |x*Drive| = 1/sqrt(cubicEff), then FOLDS
 #   BACK, crosses zero at |x*Drive| = sqrt(3/cubicEff), and INVERTS.
-#   Two presets stay monotonic at full-scale input (Subtle, Gentle
-#   Warmth); the other three are WAVEFOLDERS in authentic mode.
-#   Classic Saturation inverts above input 0.69 and nearly
+#   Two presets stay monotonic for |input| <= 1 (Subtle, Gentle
+#   Cubic Warmth); the other three are WAVEFOLDERS in authentic mode.
+#   Classic Cubic Drive inverts above input 0.69 and nearly
 #   annihilates the fundamental of a hot sine - so its name
 #   describes the monotonic Character, not the default one.
 #
@@ -82,6 +82,22 @@
 #   Cohen, S. (2025). Praat AudioTools: An Offline Analysis-Resynthesis
 #   Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v0.5.1 (2026):
+#   - Audio formulas, oversampling, clamp architecture and all preset numeric
+#     values are unchanged.
+#   - Limiter now defaults to hard-clamp-only while preserving the legacy tanh
+#     fallback as option 1 for compatibility. The legacy branch is discontinuous
+#     at |cubic| = 3 (3 -> 3*tanh(3) ~= 2.985) and is masked by the hard clamp
+#     in all five named presets.
+#   - Character labels are now "authentic cubic fold" and "monotonic peak-hold";
+#     the latter is a constructed cubic plateau, not a physical tube model.
+#   - Presets renamed Gentle Cubic Warmth and Classic Cubic Drive; numeric values
+#     are unchanged.
+#   - Visualization names the transfer plot as the waveshaper transfer and, when
+#     oversampling is active, states that it precedes anti-alias filtering.
+#   - Summary shows the legacy threshold only when that branch is actually active;
+#     neutral curve-character wording replaces "warm" / "full scale" shorthand.
 #
 # Changelog v0.5 (2026):
 #   - VISUALIZATION STANDARDIZATION ONLY; audio/DSP, analysis,
@@ -202,19 +218,19 @@
 #     native mono/stereo handling via per-channel Formula.
 # ============================================================
 
-form Van der Pol Tube Distortion v0.5
+form Van der Pol Tube Distortion v0.5.1
     comment Select a Preset (overrides sliders below)
     optionmenu Preset: 1
         option Manual (Use settings below)
         option Subtle Coloration
-        option Gentle Tube Warmth
-        option Classic Tube Saturation
+        option Gentle Cubic Warmth
+        option Classic Cubic Drive
         option Aggressive Drive
         option Fold-back Extreme
 
     optionmenu Character: 1
-        option authentic fold (the original curve)
-        option monotonic tube (peak-hold soft clip)
+        option authentic cubic fold
+        option monotonic peak-hold (cubic soft clip)
     optionmenu Characteristic: 1
         option Cubic: z - amount*z^3/3 (v0.2/v0.3)
         option Van der Pol scaled: amount*(z - z^3/3)
@@ -228,10 +244,10 @@ form Van der Pol Tube Distortion v0.5
     comment (1 = off; the fold and clamp alias badly without it. 2 is disabled)
 
     comment Output
-    optionmenu Limiter: 1
-        option tanh soft limit above 3, then hard clamp (v0.2/v0.3)
-        option hard clamp only
-    comment (Limiter applies to the fold Character only)
+    optionmenu Limiter: 2
+        option Legacy tanh fallback above 3, then hard clamp (v0.2/v0.3)
+        option hard clamp only (default)
+    comment (Limiter applies to the authentic cubic fold Character only)
     boolean Draw_visualization 1
     boolean Play_result 1
 endform
@@ -268,12 +284,12 @@ if preset = 2
     cubic_amount = 0.2
     output_Gain = 0.98
 elsif preset = 3
-    presetName$ = "GentleWarmth"
+    presetName$ = "GentleCubic"
     drive = 1.2
     cubic_amount = 0.5
     output_Gain = 0.95
 elsif preset = 4
-    presetName$ = "ClassicSaturation"
+    presetName$ = "ClassicCubic"
     drive = 2.5
     cubic_amount = 1.0
     output_Gain = 0.85
@@ -346,8 +362,8 @@ else
 endif
 
 # v0.4: Cubic_amount <= 0 was accepted and behaved inconsistently. In
-# authentic fold a negative value gives an EXPANSIVE monotonic curve with no
-# fold at all; in monotonic tube the branch was skipped entirely so 0, -0.1
+# authentic cubic fold a negative value gives an EXPANSIVE monotonic curve with no
+# fold at all; in monotonic peak-hold the branch was skipped entirely so 0, -0.1
 # and -1 all produced identical LINEAR output - while the report still said
 # "pure cubic below full scale", which was simply false.
 # v0.4b: v0.4 refused only NEGATIVE values while the summary claimed <= 0 was
@@ -362,19 +378,19 @@ if cubic_amount <= 0
 endif
 
 # === Info ===
-writeInfoLine: "=== Van der Pol Tube Distortion v0.5 ==="
+writeInfoLine: "=== Van der Pol Tube Distortion v0.5.1 ==="
 appendInfoLine: "Source: ", originalName$, " (", fixed$(inputDur, 2), " s, ", inputCh, " ch)"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Sample rate: ", fixed$(sr, 0), " Hz  |  Oversampling: ", oversample, "x"
 appendInfoLine: "Drive: ", fixed$(drive, 2), " | Cubic_amount: ", fixed$(cubic_amount, 2), " | Output_Gain: ", fixed$(output_Gain, 2)
 appendInfoLine: "Characteristic: ", charDesc$
 if character = 2
-    appendInfoLine: "Character: monotonic tube (peak-hold). Limiter has no effect here - the tanh branch is not in this formula."
+    appendInfoLine: "Character: monotonic peak-hold (cubic soft clip). Limiter has no effect here - the legacy tanh branch is not in this formula."
 else
     if limiter = 1
-        appendInfoLine: "Character: authentic fold. Limiter: tanh above ", fixed$(safetyThreshold, 1), ", then clamp (masked by the clamp at any Output_Gain above about 0.335)"
+        appendInfoLine: "Character: authentic cubic fold. Limiter: LEGACY tanh fallback above ", fixed$(safetyThreshold, 1), ", then hard clamp (masked by the clamp at any Output_Gain above about 0.335)"
     else
-        appendInfoLine: "Character: authentic fold. Limiter: hard clamp only"
+        appendInfoLine: "Character: authentic cubic fold. Limiter: hard clamp only"
     endif
 endif
 appendInfoLine: "Source peak: ", fixed$(srcPeak, 4)
@@ -415,7 +431,7 @@ cub$ = string$(curveCub)
 
 selectObject: result
 if character = 1
-    # authentic fold: the v0.2 curve, generalized to the selected
+    # authentic cubic fold: the v0.2 curve, generalized to the selected
     # characteristic (identical to v0.3 when Characteristic = 1)
     if limiter = 1
         Formula: "if abs(" + lin$ + "*(self*drive) - " + cub$ + "*((self*drive)^3)/3) > " + string$(safetyThreshold)
@@ -425,7 +441,7 @@ if character = 1
         Formula: "" + lin$ + "*(self*drive) - " + cub$ + "*((self*drive)^3)/3"
     endif
 else
-    # monotonic tube: hold the cubic's peak beyond |x*drive| = 1/sqrt(cubicEff)
+    # monotonic peak-hold: hold the cubic's peak beyond |x*drive| = 1/sqrt(cubicEff)
     if cubicEff > 0
         foldPoint = 1 / sqrt(cubicEff)
         peakHold = curveLin * (2/3) / sqrt(cubicEff)
@@ -561,13 +577,13 @@ else
 endif
 if character = 2
     if foldOnset >= 1
-        character$ = "monotonic tube: pure cubic below full scale"
+        character$ = "monotonic peak-hold: no plateau for |input| <= 1"
     else
-        character$ = "monotonic tube: peak-hold above x = " + fixed$(foldOnset, 2)
+        character$ = "monotonic peak-hold above |input| = " + fixed$(foldOnset, 2)
     endif
 else
     if foldOnset >= 1
-        character$ = "warm: no folding below full scale"
+        character$ = "no folding for |input| <= 1"
     elsif invOnset >= 1
         character$ = "folds above x = " + fixed$(foldOnset, 2) + " (no inversion below full scale)"
     else
@@ -598,7 +614,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##Van der Pol Tube Distortion v0.5##"
+    Text: 0.5, "centre", 0.68, "half", "##Van der Pol Tube Distortion v0.5.1##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
     Text: 0.5, "centre", 0.26, "half",
@@ -662,9 +678,9 @@ if draw_visualization
         Text: -1.45, "left", -safetyY, "top", " -tanh safety"
     endif
 
-    # Draw the actual transfer function (matches the audio Formula
-    # chain exactly: cubic + tanh fallback, then output gain, then
-    # hard clamp).
+    # Draw the memoryless waveshaper transfer before any downsampling:
+    # cubic / peak-hold + optional legacy tanh fallback, then output gain,
+    # then the shaping hard clamp.
     Colour: "{0.80, 0.40, 0.40}"
     Line width: 2
     nPoints = 200
@@ -759,7 +775,7 @@ if draw_visualization
     Font size: 7
     Colour: "{0.40, 0.55, 0.78}"
     if limiter = 1 and character = 1
-        Text: 0.10, "left", 0.56, "half", "tanh above " + fixed$(safetyThreshold, 1) + ", then clamp"
+        Text: 0.10, "left", 0.56, "half", "legacy tanh above " + fixed$(safetyThreshold, 1) + ", then clamp"
     else
         Text: 0.10, "left", 0.56, "half", "hard clamp only"
     endif
@@ -793,7 +809,12 @@ if draw_visualization
 
     Font size: 7
     Colour: "Black"
-    Text: 2.10, "centre", 7.30, "half", "Transfer function (input -> output)"
+    if oversample > 1
+        transferTitle$ = "Waveshaper transfer (before anti-alias filtering)"
+    else
+        transferTitle$ = "Waveshaper transfer"
+    endif
+    Text: 2.10, "centre", 7.30, "half", transferTitle$
     Text: 6.10, "centre", 7.30, "half", "Parameter report"
 
     # ----------------------------------------------------------
@@ -866,8 +887,13 @@ if draw_visualization
         ... + "  |  Cubic: " + fixed$(cubic_amount, 2)
         ... + "  |  Out gain: " + fixed$(output_Gain, 2)
 
+    if limiter = 1 and character = 1
+        limiterSummary$ = "legacy tanh >" + fixed$(safetyThreshold, 1) + " + hard clamp"
+    else
+        limiterSummary$ = "hard clamp only"
+    endif
     Text: 0.02, "left", 0.28, "half",
-        ... "Safety threshold: " + fixed$(safetyThreshold, 1)
+        ... limiterSummary$
         ... + "  |  " + character$
         ... + "  |  Output: " + fixed$(finalDur, 2) + " s, peak " + fixed$(finalPeak, 3)
 

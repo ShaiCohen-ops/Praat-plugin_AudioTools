@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.5 (2026) - Suite-standard visualization
+# Version: 0.5.1 (2026) - UI/reporting and visualization precision
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -39,6 +39,23 @@
 #   4.4%, 0.5 gives 28.9%, 1.0 gives 37.2%, and all of them come out
 #   at the same peak. Input_reference 2 normalizes first so the
 #   drive setting means the same thing across sources.
+#
+# Changelog v0.5.1 (2026):
+#   - UI/reporting/visualization only; the tanh DSP, oversampling,
+#     input-reference processing, dry/wet mix and preset numeric values
+#     are unchanged from v0.5.
+#   - Output mode 3 is named accurately as conditional ATTENUATION: it
+#     scales the whole rendered signal down only when the peak exceeds
+#     the target, and never raises a quieter signal.
+#   - Scale_peak is now a real field and is validated only in the two
+#     output modes that actually use it. Preserve rendered level mode no longer rejects
+#     an otherwise irrelevant target value.
+#   - Preserve rendered level mode is named "Preserve rendered level" because it acts
+#     after waveshaping, wet level, input reference and dry/wet mixing.
+#   - Preset labels/comments now state that each named preset sets BOTH
+#     Drive_amount and Wet_level; the DSP values themselves are unchanged.
+#   - Drive Comparison title and legend moved into dedicated bands outside
+#     the data rectangle so they cannot clip or cover the tanh curves.
 #
 # Changelog v0.5 (2026):
 #   - VISUALIZATION STANDARDIZATION ONLY; audio/DSP, analysis,
@@ -94,7 +111,7 @@
 #     so the marked point is not half-slope of the audible result
 #     (about 55.4% at Dry_Wet 0.5).
 #   - The Dry_Wet form comment notes that 0 returns the dry path at
-#     the ORIGINAL level only in Preserve mode.
+#     the ORIGINAL level only in Preserve rendered level mode.
 #   - "input is silent" reworded - a peak of 1e-9 is not silence.
 #   - Removed a duplicated input-selection check.
 #
@@ -159,16 +176,16 @@
 #   - Added info output
 # ============================================================
 
-form Tanh Soft Clipping v0.5
+form Tanh Soft Clipping v0.5.1
     comment Select a Sound object first
 
     comment === Preset ===
     optionmenu Preset: 1
-        option Gentle (drive 2.5)
-        option Medium (drive 4)
-        option Strong (drive 6)
-        option Very strong (drive 8)
-        option Heavy (drive 12)
+        option Gentle (drive 2.5, wet 0.85)
+        option Medium (drive 4, wet 0.80)
+        option Strong (drive 6, wet 0.75)
+        option Very strong (drive 8, wet 0.70)
+        option Heavy (drive 12, wet 0.60)
         option Custom (use settings below)
 
     comment === Saturation ===
@@ -185,24 +202,25 @@ form Tanh Soft Clipping v0.5
     comment === Output ===
     optionmenu Output_mode: 1
         option Normalize to target (v0.2/v0.3)
-        option Preserve formula level
-        option Normalize only if above target
-    positive Scale_peak 0.95
+        option Preserve rendered level
+        option Attenuate to target only if peak > target
+    real Scale_peak 0.95
     positive Output_gain 1.0
     positive Silence_floor 1e-9
     comment (numerical guard: peaks at or below this are not normalized)
     real Dry_Wet 1.0
-    comment (1 = all processed; 0 = dry path, at the original LEVEL only in Preserve mode)
+    comment (1 = all processed; 0 = dry path, at the original LEVEL only in Preserve rendered level mode)
     boolean Draw_visualization 1
     boolean Play_result 1
 endform
 
-# v0.4 (item 10): Scale_peak and Output_level are `positive` with no ceiling,
-# so a Scale_peak of 2 produced a final peak of 2.0 - fine inside Praat, but
-# it clips on export or playback. The target is capped; Output_level stays
-# free (it is a makeup gain) and the final peak is reported and warned about.
-if scale_peak > 1
-    exitScript: "Scale_peak must not exceed 1.0 (it is a full-scale target). Use Output_gain for makeup gain."
+# v0.5.1: Scale_peak is relevant only to output modes 1 and 3. Preserve
+# rendered level does not read it, so an inactive target must not block a run.
+# In target-using modes, require a positive digital full-scale target <= 1.0.
+if output_mode <> 2
+    if scale_peak <= 0 or scale_peak > 1
+        exitScript: "Scale_peak must be above 0 and at most 1.0 when the selected Output_mode uses a target. Use Output_gain for post-policy makeup gain."
+    endif
 endif
 if dry_Wet < 0 or dry_Wet > 1
     exitScript: "Dry_Wet must be between 0 and 1 (got " + fixed$(dry_Wet, 3) + ")."
@@ -250,14 +268,13 @@ xmaxOrig = Get end time
 srcPeak = Get absolute extremum: 0, 0, "None"
 
 # === Apply Presets ===
-# v0.4 (items 4 and 5): the old names promised character ("balanced",
-# "Warm Saturation", "Tape Style") but every preset differs ONLY in drive -
-# the algorithm is the same memoryless tanh curve throughout - and their
-# output_level values are cancelled entirely whenever normalization is on,
-# which was the default. Measured THD on a 0.2-amplitude sine: drive 2 gives
-# 1.2%, 4 gives 4.4%, 8 gives 12.7%, 15 gives 24%. Calling drive 8
-# "balanced/moderate" was well off. The presets are now named for the drive
-# they set, and output_level is kept (it matters in Preserve mode).
+# v0.5.1 clarification: every named preset uses the same memoryless tanh
+# algorithm, but it sets TWO shaping/mix parameters: Drive_amount and
+# Wet_level. The labels show both values. Wet_level matters directly in
+# Preserve rendered level and also changes the wet/dry branch ratio whenever
+# Dry_Wet < 1; final normalization cannot undo that ratio change.
+# Measured THD on a 0.2-amplitude sine: drive 2 gives 1.2%, 4 gives 4.4%,
+# 8 gives 12.7%, 15 gives 24%.
 if preset = 1
     drive_amount = 2.5
     wet_level = 0.85
@@ -283,7 +300,7 @@ else
 endif
 
 # === Info ===
-writeInfoLine: "=== Tanh Soft Clipping v0.5 ==="
+writeInfoLine: "=== Tanh Soft Clipping v0.5.1 ==="
 appendInfoLine: "Source: ", originalName$, " (", fixed$(duration, 2), " s, ", nChannels, " ch, ", fixed$(xminOrig, 3), "-", fixed$(xmaxOrig, 3), " s, peak ", fixed$(srcPeak, 4), ")"
 appendInfoLine: "Sample rate: ", fixed$(sr, 0), " Hz (Nyquist ", fixed$(sr / 2, 1), " Hz)"
 appendInfoLine: "Preset: ", presetName$
@@ -399,14 +416,14 @@ prePeak = Get absolute extremum: 0, 0, "None"
 
 normFactor = 1
 if output_mode = 2
-    outDesc$ = "preserved (drive + wet_level set the level)"
+    outDesc$ = "rendered level preserved (no target scaling)"
 elsif output_mode = 3
     if prePeak > scale_peak
         Scale peak: scale_peak
         normFactor = scale_peak / prePeak
-        outDesc$ = "normalized to " + fixed$(scale_peak, 2) + " (was " + fixed$(prePeak, 4) + ")"
+        outDesc$ = "attenuated to " + fixed$(scale_peak, 2) + " (peak was " + fixed$(prePeak, 4) + ")"
     else
-        outDesc$ = "unchanged, already below " + fixed$(scale_peak, 2)
+        outDesc$ = "unchanged (peak already at or below " + fixed$(scale_peak, 2) + ")"
     endif
 else
     # v0.4b: the threshold is a NUMERICAL-ZERO guard, not a musical
@@ -414,7 +431,7 @@ else
     # through untouched while 1.0001e-9 is lifted to the target. That is a
     # jump of nearly a billion at the boundary. It is exposed and reported
     # rather than hidden at 1e-9 in the code; raise it if you want an
-    # audible-level guard, and note that "Normalize only if above target" has
+    # audible-level guard, and note that "Attenuate to target only if peak > target" has
     # no such edge at all.
     if prePeak > silence_floor
         Scale peak: scale_peak
@@ -448,14 +465,14 @@ appendInfoLine: "Peak after waveshaping: ", fixed$(postShapePeak, 4)
 appendInfoLine: "Peak before output stage: ", fixed$(prePeak, 4)
 appendInfoLine: "Output stage: ", outDesc$
 if normFactor <> 1
-    appendInfoLine: "  Normalization factor applied: ", fixed$(normFactor, 4)
+    appendInfoLine: "  Global peak scale factor applied: ", fixed$(normFactor, 4)
 endif
 appendInfoLine: "Final peak: ", fixed$(finalPeak, 4)
 if finalPeak > 1.0
     appendInfoLine: "  WARNING: final peak is ", fixed$(finalPeak, 3), " - above 1.0 it will clip on playback or export."
 endif
 if nChannels > 1
-    appendInfoLine: "Note: peak normalization uses one peak for the whole object (linked across channels), preserving the stereo balance."
+    appendInfoLine: "Note: any global peak scaling uses one peak for the whole object (linked across channels), preserving the channel balance."
 endif
 appendInfoLine: ""
 
@@ -473,9 +490,9 @@ if draw_visualization
     if output_mode = 1
         outputModeDesc$ = "normalize to target"
     elsif output_mode = 2
-        outputModeDesc$ = "preserve formula level"
+        outputModeDesc$ = "preserve rendered level"
     else
-        outputModeDesc$ = "normalize only above target"
+        outputModeDesc$ = "attenuate only above target"
     endif
 
     # What the nominal curve does NOT include, stated on the panel itself.
@@ -529,7 +546,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##Tanh Soft Clipping v0.5##"
+    Text: 0.5, "centre", 0.68, "half", "##Tanh Soft Clipping v0.5.1##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.50}"
     Text: 0.5, "centre", 0.22, "half", vizName$ + " | " + presetName$ + " | drive " + fixed$(drive_amount, 2) + " | dry/wet " + fixed$(dry_Wet, 2) + " | oversample " + string$(oversample) + "x"
@@ -666,8 +683,11 @@ if draw_visualization
     Colour: "Black"
 
     # Drive comparison
+    # v0.5.1: reserve dedicated title and legend bands outside the data area.
+    # The previous title sat at y=1.35 with axes ending at 1.2 and could clip;
+    # the legend sat on top of the lower-left portions of the curves.
     Select outer viewport: 4, 8, 4.0, 5.4
-    Select inner viewport: 4.45, 7.70, 4.1, 5.3
+    Select inner viewport: 4.45, 7.70, 4.22, 5.16
     
     Axes: -1.2, 1.2, -1.2, 1.2
     Paint rectangle: "{0.97, 0.97, 0.97}", -1.2, 1.2, -1.2, 1.2
@@ -722,16 +742,24 @@ if draw_visualization
     Font size: 6
     Text left: "yes", "Output"
     Text bottom: "yes", "Input"
-    Text: 0, "centre", 1.35, "half", "Drive Comparison (bare tanh; no level controls)"
-    
-    # Legend
+
+    # Title band (outside data region)
+    Select inner viewport: 4.45, 7.70, 5.18, 5.36
+    Axes: 0, 1, 0, 1
+    Font size: 6
+    Colour: "Black"
+    Text: 0.5, "centre", 0.5, "half", "Drive Comparison (bare tanh; no level controls)"
+
+    # Legend band (outside data region)
+    Select inner viewport: 4.45, 7.70, 4.01, 4.18
+    Axes: 0, 1, 0, 1
     Font size: 6
     Colour: "{0.6, 0.8, 0.6}"
-    Text: -1.0, "left", -0.9, "half", "Drive 2"
+    Text: 0.08, "left", 0.5, "half", "Drive 2"
     Colour: "{0.6, 0.6, 0.8}"
-    Text: -1.0, "left", -1.05, "half", "Drive 8"
+    Text: 0.40, "left", 0.5, "half", "Drive 8"
     Colour: "{0.8, 0.6, 0.6}"
-    Text: -1.0, "left", -1.2, "half", "Drive 15"
+    Text: 0.72, "left", 0.5, "half", "Drive 15"
     
     Font size: 7
     Colour: "Black"

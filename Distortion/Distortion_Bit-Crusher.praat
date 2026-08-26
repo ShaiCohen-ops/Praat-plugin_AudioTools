@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.5 (2026) - Suite-standard visualization
+# Version: 0.5.1 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -34,6 +34,16 @@
 #   Cohen, S. (2025). Praat AudioTools: An Offline Analysis-Resynthesis
 #   Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v0.5.1 (2026):
+#   - Validation is now mode-aware throughout: Harsh-only gate and AM
+#     parameters are checked only in Harsh Distortion mode, and the
+#     output target is checked only when an output-scaling mode uses it.
+#   - Base_amplitude and Mod_amplitude are now real fields so 0 is a
+#     valid Custom value; negative values are rejected in Harsh mode.
+#   - Scale_peak renamed Target_peak. The former "Conditional limiter"
+#     is now labelled "Attenuate to target only if peak > target"; the
+#     DSP remains a single global peak-scaling operation, not a limiter.
 #
 # Changelog v0.5 (2026):
 #   - VISUALIZATION STANDARDIZATION ONLY; audio/DSP, analysis,
@@ -168,7 +178,7 @@
 #   - Added detailed info output
 # ============================================================
 
-form Distortion and Bit-Crusher Suite v0.5
+form Distortion and Bit-Crusher Suite v0.5.1
     comment Select a Sound object first
     
     comment === Preset ===
@@ -196,8 +206,8 @@ form Distortion and Bit-Crusher Suite v0.5
         option True N levels over -1..+1
     
     comment === Harsh Distortion Parameters ===
-    positive Base_amplitude 0.5
-    positive Mod_amplitude 0.3
+    real Base_amplitude 0.5
+    real Mod_amplitude 0.3
     positive Mod_frequency_Hz 100
     positive Gate_period_s 0.05
     real Gate_duty_cycle_s 0.025
@@ -212,9 +222,9 @@ form Distortion and Bit-Crusher Suite v0.5
     comment === Output ===
     optionmenu Output_level: 3
         option Preserve
-        option Conditional limiter
+        option Attenuate to target only if peak > target
         option Normalize to target
-    positive Scale_peak 0.95
+    positive Target_peak 0.95
     boolean Draw_visualization 1
     boolean Play_result 1
 endform
@@ -312,11 +322,10 @@ if effect_type = 1
     endif
 endif
 
-# v0.4b (minor): Scale_peak was `positive` with no ceiling, so a value
-# above 1 made the conditional limiter leave peaks above full scale and
-# made normalization aim deliberately past it.
-if scale_peak > 1
-    exitScript: "Scale_peak must be 1.0 or below (it is a full-scale target)."
+# v0.5.1: Target_peak is used only by the two scaling modes. Preserve
+# does not consult it, so a stale form value must not block that mode.
+if output_level <> 1 and target_peak > 1
+    exitScript: "Target peak must be 1.0 or below (it is a full-scale target)."
 endif
 
 if input_n_channels = 1
@@ -361,14 +370,22 @@ endif
 # gate (duty 0) could not be requested at all; it is now `real` with an
 # explicit range.
 dutyNote$ = ""
-if gate_duty_cycle_s < 0
-    exitScript: "Gate duty cycle cannot be negative."
-endif
-if gate_duty_cycle_s > gate_period_s
-    dutyNote$ = "  NOTE: duty (" + fixed$(gate_duty_cycle_s * 1000, 1)
-        ... + " ms) exceeded the period (" + fixed$(gate_period_s * 1000, 1)
-        ... + " ms) - the gate would never close. Clamped to the period."
-    gate_duty_cycle_s = gate_period_s
+if effect_type = 2
+    if base_amplitude < 0
+        exitScript: "Base amplitude cannot be negative."
+    endif
+    if mod_amplitude < 0
+        exitScript: "Mod amplitude cannot be negative."
+    endif
+    if gate_duty_cycle_s < 0
+        exitScript: "Gate duty cycle cannot be negative."
+    endif
+    if gate_duty_cycle_s > gate_period_s
+        dutyNote$ = "  NOTE: duty (" + fixed$(gate_duty_cycle_s * 1000, 1)
+            ... + " ms) exceeded the period (" + fixed$(gate_period_s * 1000, 1)
+            ... + " ms) - the gate would never close. Clamped to the period."
+        gate_duty_cycle_s = gate_period_s
+    endif
 endif
 
 # v0.4 (item 8): the AM envelope is base + mod*sin(wt). When
@@ -398,7 +415,7 @@ else
 endif
 
 # === Info ===
-writeInfoLine: "=== Distortion & Bit-Crusher Suite v0.5 ==="
+writeInfoLine: "=== Distortion & Bit-Crusher Suite v0.5.1 ==="
 appendInfoLine: "Source: ", original_name$, " (", fixed$(duration, 2), " s, ", input_n_channels, " ch, starts at ", fixed$(xminOrig, 3), " s)"
 appendInfoLine: "Mode: ", modeNameDisplay$
 appendInfoLine: "Preset: ", presetName$
@@ -516,7 +533,7 @@ else
 endif
 
 # Output level
-# v0.4 (items 3 and 4): v0.3 always applied `Scale peak: scale_peak`.
+# v0.4 (items 3 and 4): v0.3 always applied peak scaling.
 # That is normalization, not a ceiling: a quiet source was lifted to the
 # target, a loud one pulled down, and the ABSOLUTE scale of
 # Base_amplitude and Mod_amplitude stopped mattering - scaling both by
@@ -534,11 +551,11 @@ if output_level = 1
         appendInfoLine: "  WARNING: peak is ", fixed$(prePeak, 3), " - above 1.0 it will clip on playback or export."
     endif
 elsif output_level = 2
-    if prePeak > scale_peak
+    if prePeak > target_peak
         selectObject: result
-        Scale peak: scale_peak
-        levelScale = scale_peak / prePeak
-        levelDesc$ = "limited to " + fixed$(scale_peak, 2)
+        Scale peak: target_peak
+        levelScale = target_peak / prePeak
+        levelDesc$ = "attenuated to " + fixed$(target_peak, 2)
     else
         levelDesc$ = "unchanged"
     endif
@@ -551,9 +568,9 @@ else
     # real path, not a theoretical one.
     if prePeak > 0
         selectObject: result
-        Scale peak: scale_peak
-        levelScale = scale_peak / prePeak
-        levelDesc$ = "normalized to " + fixed$(scale_peak, 2)
+        Scale peak: target_peak
+        levelScale = target_peak / prePeak
+        levelDesc$ = "normalized to " + fixed$(target_peak, 2)
     else
         levelDesc$ = "silent output - normalization skipped"
     endif
@@ -586,7 +603,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##Distortion & Bit-Crusher Suite v0.5##"
+    Text: 0.5, "centre", 0.68, "half", "##Distortion & Bit-Crusher Suite v0.5.1##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
     if effect_type = 1

@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.5 (2026) - Suite-standard visualization
+# Version: 0.5.1 (2026) - QA fixes and terminology cleanup
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -45,8 +45,22 @@
 #     more feedback" is.
 #   - Analog_Instability drifts the band BETWEEN iterations, not over
 #     time, so it produces spectral spread across the iteration axis
-#     rather than analog wander during playback. "Slow Evolution" does
-#     not move the resonance slowly along the time axis.
+#     rather than analog wander during playback. The Deep Iteration preset
+#     increases buffer iterations; it does not move resonance slowly in audio time.
+#
+# Changelog v0.5.1 (2026):
+#   - Analog_Instability now accepts 0 (fully deterministic spectral centre/width
+#     apart from the noise seed); negative values are refused explicitly.
+#   - Output mode 1 now normalizes again immediately after a wet-path exciter,
+#     so "Normalize each stage" is true even at Dry_Wet = 0.
+#   - Spatial mode "Binaural" renamed "Pseudo-Binaural (Delay/Filter)" because
+#     it is interaural delay plus asymmetric filtering, not HRTF rendering.
+#   - "Slow Evolution" / "Chaotic Burst" renamed "Deep Iteration" /
+#     "Unstable Burst"; their numeric preset values are unchanged.
+#   - Output mode 3 renamed "Preserve rendered level" because the signal may
+#     already include spatial processing, dry blend, and exciter.
+#   - Visualization now depicts whole-buffer iteration rather than a
+#     time-domain feedback loop, and labels the controller pitch as Mean F0.
 #
 # Changelog v0.5 (2026):
 #   - VISUALIZATION STANDARDIZATION ONLY; audio/DSP, analysis,
@@ -139,8 +153,8 @@
 #     iteration counts, where a broadband seed has not yet been filtered out).
 # ============================================================
 
-form Sidechain Feedback VCA v0.5 (1/2) - Circuit & Resonance
-    comment Select a Sound object - it CONTROLS the feedback circuit
+form Sidechain Feedback VCA v0.5.1 (1/2) - Circuit & Resonance
+    comment Select a Sound object - it CONTROLS the iterative resonant process
     comment (use Dry/Wet below to blend the original sound back in)
 
     comment === Preset ===
@@ -148,13 +162,13 @@ form Sidechain Feedback VCA v0.5 (1/2) - Circuit & Resonance
         option Custom (use settings below)
         option Gentle Resonance
         option Aggressive Feedback
-        option Slow Evolution
-        option Chaotic Burst
+        option Deep Iteration
+        option Unstable Burst
 
     comment === Circuit Behavior ===
     positive Base_Feedback 0.8
     real Input_Sensitivity 0.5
-    comment (envelope adds this much on top of Base_Feedback)
+    comment (positive adds VCA with loudness; negative reduces it)
     positive Envelope_range_dB 40
     comment (dB below the loudest moment that maps to 0)
     boolean Allow_negative_VCA 0
@@ -164,9 +178,9 @@ form Sidechain Feedback VCA v0.5 (1/2) - Circuit & Resonance
     comment === Resonance ===
     real Frequency_Offset_Hz 0.0
     positive Bandwidth_Hz 150
-    positive Analog_Instability 0.05
+    real Analog_Instability 0.05
 
-    comment === Dry / Wet (0 = pure feedback, 1 = dry path only) ===
+    comment === Dry / Wet (0 = generated iteration path, 1 = dry path only) ===
     comment (exact bypass at 1 needs Exciter_position 2 + Output_mode Preserve)
     real Dry_Wet 0.3
     optionmenu Exciter_position: 1
@@ -192,15 +206,15 @@ original = selected("Sound")
 input_Name$ = selected$("Sound")
 
 # === Second dialog (Spatial, Output & Debug) ===
-beginPause: "Sidechain Feedback VCA v0.5 (2/2) - Spatial, Output & Debug"
+beginPause: "Sidechain Feedback VCA v0.5.1 (2/2) - Spatial, Output & Debug"
     comment: "=== Spatial Mode ==="
     optionmenu: "Spatial_Mode", 2
         option: "Mono"
         option: "Stereo Wide"
         option: "Rotating"
-        option: "Binaural"
+        option: "Pseudo-Binaural (Delay/Filter)"
     positive: "Interaural_delay_ms", "0.68"
-    comment: "(Binaural mode; v0.3 used a fixed 30 samples)"
+    comment: "(Pseudo-Binaural mode; interaural delay + asymmetric filtering, no HRTF)"
     optionmenu: "Multichannel_policy", 1
         option: "Downmix to mono, then duplicate"
         option: "Use the first two channels"
@@ -209,7 +223,7 @@ beginPause: "Sidechain Feedback VCA v0.5 (2/2) - Spatial, Output & Debug"
     optionmenu: "Output_mode", 1
         option: "Normalize each stage to 0.95 (v0.2/v0.3)"
         option: "Normalize only at the end"
-        option: "Preserve loop level (output gain only)"
+        option: "Preserve rendered level (output gain only)"
     positive: "Output_Gain", "1.0"
     integer: "Random_seed", "0"
     comment: "(0 or below = unpredictable; positive = reproducible)"
@@ -245,6 +259,12 @@ endif
 # printed "-50% feedback / 150% original".
 if dry_Wet < 0 or dry_Wet > 1
     exitScript: "Dry_Wet must be between 0 and 1 (got " + fixed$(dry_Wet, 3) + ")."
+endif
+
+# v0.5.1: zero means no per-iteration drift; negative spread is unsupported.
+# Named presets overwrite this field later, so validate only the Custom value.
+if preset = 1 and analog_Instability < 0
+    exitScript: "Analog_Instability must be 0 or above (got " + fixed$(analog_Instability, 4) + ")."
 endif
 
 # v0.4 (item 6): v0.3 ran To Pitch and To Intensity with no length check, so
@@ -349,29 +369,29 @@ elsif preset = 3
     analog_Instability = 0.08
     presetName$ = "Aggressive"
 elsif preset = 4
-    # Slow Evolution
+    # Deep Iteration
     base_Feedback = 0.75
     input_Sensitivity = 0.4
     damping_Factor = 0.96
     iterations = 60
     bandwidth_Hz = 250
     analog_Instability = 0.02
-    presetName$ = "SlowEvolve"
+    presetName$ = "DeepIteration"
 elsif preset = 5
-    # Chaotic Burst
+    # Unstable Burst
     base_Feedback = 0.95
     input_Sensitivity = 0.9
     damping_Factor = 0.85
     iterations = 40
     bandwidth_Hz = 80
     analog_Instability = 0.15
-    presetName$ = "Chaotic"
+    presetName$ = "UnstableBurst"
 else
     presetName$ = "Custom"
 endif
 
 # === Info ===
-writeInfoLine: "=== Sidechain Feedback VCA v0.5 ==="
+writeInfoLine: "=== Sidechain Feedback VCA v0.5.1 ==="
 appendInfoLine: "Controller: ", input_Name$, " (", fixed$(duration, 2), " s)"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
@@ -534,7 +554,7 @@ endif
 # INITIALIZE CIRCUIT
 # ============================================================
 
-appendInfoLine: "Initializing feedback loop..."
+appendInfoLine: "Initializing buffer-iteration process..."
 
 # Create ONE coherent noise seed and copy it to both channels, so the feedback
 # core stays phase-coherent (independent L/R seeds produced decorrelated noise).
@@ -613,7 +633,7 @@ selectObject: stereoLoop
 @dbg: "stereoLoop seed (band-limited to clean the floor)"
 
 # ============================================================
-# THE FEEDBACK LOOP
+# BUFFER ITERATION CORE
 # ============================================================
 
 appendInfoLine: "Running ", iterations, " iterations..."
@@ -763,7 +783,7 @@ else
         chR_filtered = selected("Sound")
         Formula: "self * (0.6 + sin(2*pi*" + rot_str$ + "*x) * 0.4)"
         
-    elsif spatial_Mode$ = "Binaural"
+    elsif spatial_Mode$ = "Pseudo-Binaural (Delay/Filter)"
         # v0.4 (item 13): clamp the binaural bands to Nyquist as well.
         binLTop = 3000
         if binLTop > nyquist
@@ -784,8 +804,8 @@ else
         # gave 3.75 ms at 8 kHz, 0.68 ms at 44.1 kHz and 0.31 ms at 96 kHz -
         # a different spatial impression for every file. Specified in
         # milliseconds and converted here. (Also note this is an interaural
-        # delay with band filtering, i.e. a Haas-style effect, not HRTF-based
-        # binaural rendering.)
+        # delay with band filtering, i.e. a Haas-style spatial effect, not
+        # HRTF-based binaural rendering.)
         delaySamples = round(interaural_delay_ms / 1000 * sr)
         if delaySamples < 1
             delaySamples = 1
@@ -830,10 +850,20 @@ endif
 if high_Freq_Add > 0 and exciter_position = 2
     @exciter: result
     appendInfoLine: "Added synthetic highs to the wet path (", exciterDesc$, ")"
+    # v0.5.1: in mode 1 every processing stage is normalized. Previously the
+    # wet-path exciter could exceed 0.95 when Dry_Wet = 0 because no later mix
+    # stage existed to trigger another normalization.
+    if output_mode = 1
+        selectObject: result
+        wetExcPk = Get absolute extremum: 0, 0, "None"
+        if wetExcPk > 1e-9
+            Scale peak: 0.95
+        endif
+    endif
 endif
 
 # === Dry / Wet Mix ===
-# The feedback signal alone is self-generated resonance with no original sound.
+# The generated iteration path contains no direct controller sound.
 # Blending the dry controller back in restores the direct sound.
 #
 # v0.4 (item 11): "1 = original sound" was not accurate. The dry path is
@@ -946,7 +976,7 @@ if output_mode = 2
         outDesc$ = "silent - normalization skipped"
     endif
 elsif output_mode = 3
-    outDesc$ = "loop level preserved"
+    outDesc$ = "rendered level preserved"
 else
     outDesc$ = "normalized at each stage (v0.3)"
 endif
@@ -978,7 +1008,7 @@ appendInfoLine: "Resonance: ", fixed$(resonance_Center, 1), " Hz  |  Bandwidth: 
 appendInfoLine: "Analog instability: ", fixed$(analog_Instability, 3), " (drift BETWEEN iterations, not over time)"
 appendInfoLine: "Dry/Wet: ", fixed$(dry_Wet, 3), "  |  High freq add: ", fixed$(high_Freq_Add, 3)
 appendInfoLine: "Spatial mode: ", spatial_Mode$
-if spatial_Mode$ = "Binaural"
+if spatial_Mode$ = "Pseudo-Binaural (Delay/Filter)"
     appendInfoLine: "  Interaural delay: ", fixed$(interaural_delay_ms, 3), " ms (", round(interaural_delay_ms / 1000 * sr), " samples at this rate)"
 endif
 if n_channels > 2
@@ -1023,7 +1053,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##Sidechain Feedback VCA v0.5##"
+    Text: 0.5, "centre", 0.68, "half", "##Sidechain Feedback VCA v0.5.1##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.50}"
     Text: 0.5, "centre", 0.22, "half", vizName$ + " | " + presetName$ + " | feedback " + fixed$(base_Feedback, 2) + " | iterations " + string$(iterations) + " | dry/wet " + fixed$(dry_Wet, 2)
@@ -1047,7 +1077,7 @@ if draw_visualization
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
-    Text left: "yes", "Feedback Out"
+    Text left: "yes", "Result"
     Text bottom: "yes", "Time (s)"
     
     # Signal flow diagram
@@ -1069,7 +1099,7 @@ if draw_visualization
     
     # Pitch extraction
     Paint rectangle: "{0.7, 0.8, 0.7}", 2.2, 3.2, 3.2, 3.8
-    Text: 2.7, "centre", 3.5, "half", "Pitch"
+    Text: 2.7, "centre", 3.5, "half", "Mean F0"
     Text: 2.7, "centre", 3.1, "half", fixed$(mean_Pitch, 0) + "Hz"
     
     # Intensity extraction
@@ -1079,7 +1109,7 @@ if draw_visualization
     # Feedback loop box
     Paint rectangle: "{0.8, 0.8, 0.9}", 4, 8.5, 1.2, 3.8
     Colour: "{0.5, 0.5, 0.6}"
-    Text: 6.25, "centre", 3.6, "half", "FEEDBACK LOOP"
+    Text: 6.25, "centre", 3.6, "half", "BUFFER ITERATION"
     
     # Loop components
     Colour: "Black"
@@ -1096,18 +1126,20 @@ if draw_visualization
     Paint rectangle: "{0.6, 0.6, 0.7}", 6.9, 7.9, 2.2, 2.8
     Text: 7.4, "centre", 2.5, "half", "Clip"
     
-    # Feedback arrow
+    # Whole-buffer iteration arrow (not time-domain sample feedback)
     Colour: "{0.5, 0.5, 0.6}"
     Draw arrow: 7.9, 2.5, 8.2, 2.5
     Draw line: 8.2, 2.5, 8.2, 1.6
     Draw line: 8.2, 1.6, 4.1, 1.6
     Draw arrow: 4.1, 1.6, 4.1, 2.2
+    Font size: 6
+    Text: 6.15, "centre", 1.38, "half", "repeat whole buffer"
     
     # Control arrows
     Colour: "{0.5, 0.7, 0.5}"
     Draw arrow: 3.2, 3.5, 4.8, 3.0
     Font size: 6
-    Text: 4.0, "centre", 3.4, "half", "freq"
+    Text: 4.0, "centre", 3.4, "half", "mean F0 + offset + iter drift"
     
     Colour: "{0.7, 0.5, 0.5}"
     Draw arrow: 3.2, 2.85, 6.1, 3.0

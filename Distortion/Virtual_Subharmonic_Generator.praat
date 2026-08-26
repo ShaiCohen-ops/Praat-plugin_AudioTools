@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.6 (2026) - Compact main form
+# Version: 0.6.1 (2026) - Output/reporting precision fixes
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -51,6 +51,23 @@
 #   Cohen, S. (2025). Praat AudioTools: An Offline Analysis-Resynthesis
 #   Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v0.6.1 (2026):
+#   - UI/REPORTING/VISUALIZATION precision fixes only; the audio DSP,
+#     valid-range parameter mapping and preset numeric values are unchanged.
+#   - Output mode 1 renamed to Preserve rendered level (safety attenuation
+#     only); mode 3 renamed to Attenuate to target only if peak > target.
+#   - Normalize_target is validated only in the two modes that use it, and
+#     must satisfy 0 < target <= 1.
+#   - Near-silence reporting is now mode-aware: Preserve no longer claims
+#     that normalization was skipped when no normalization was requested.
+#   - Advanced dialog now states which fields named presets overwrite.
+#   - Preset 5 renamed Bass-Centered Narrowing; its numeric values are
+#     unchanged. The Side low-cut centers low-frequency stereo difference;
+#     it is not a general mono-compatibility switch.
+#   - Side low-cut status now reports inactive when M/S processing is off.
+#   - Visualization now reports Bass_reference_mode and Output_mode, and
+#     only draws the Side low-cut badge when that processing is active.
 #
 # Changelog v0.6 (2026):
 #   - FORM COMPACTION ONLY; audio/DSP, presets, parameter mapping,
@@ -198,7 +215,7 @@
 #   - Added visualization
 # ============================================================
 
-form Virtual Subharmonic Generator v0.6
+form Virtual Subharmonic Generator v0.6.1
     comment Select a Sound object first
 
     comment === Preset ===
@@ -207,7 +224,7 @@ form Virtual Subharmonic Generator v0.6
         option Subtle Enhancement
         option Moderate Effect
         option Aggressive MaxxBass
-        option Mono-Safe Narrowing
+        option Bass-Centered Narrowing
         option Wide Stereo
 
     comment === Phantom Bass ===
@@ -254,7 +271,9 @@ near_silence_dB = -80
 # Praat permits only one form...endform block. Optional secondary controls
 # therefore use beginPause/endPause and appear only when requested.
 if advanced_settings
-    beginPause: "Virtual Subharmonic Generator v0.6 - Advanced settings"
+    beginPause: "Virtual Subharmonic Generator v0.6.1 - Advanced settings"
+        comment: "Named presets overwrite Highpass, Harmonic LP and Side low-cut below."
+        comment: "Bass reference and Output settings remain active with presets."
         comment: "=== Harmonic branch filtering ==="
         positive: "Highpass_freq", "100"
         positive: "Harmonic_lowpass", "800"
@@ -271,9 +290,9 @@ if advanced_settings
 
         comment: "=== Output level ==="
         optionmenu: "Output_mode", 2
-            option: "Preserve input level"
+            option: "Preserve rendered level (safety attenuation only)"
             option: "Normalize to target"
-            option: "Normalize only if it exceeds target"
+            option: "Attenuate to target only if peak > target"
             option: "Legacy (always normalize to 0.95)"
         real: "Normalize_target", "0.95"
         real: "Near_silence_dB", "-80"
@@ -325,7 +344,7 @@ elsif preset = 4
     mono_bass_side_lowcut = 0
     presetName$ = "Aggressive"
 elsif preset = 5
-    # Mono-Safe Narrowing
+    # Bass-Centered Narrowing
     bass_low_freq = 30
     bass_high_freq = 110
     drive = 2.5
@@ -335,7 +354,7 @@ elsif preset = 5
     apply_MS_widening = 1
     stereo_width = 0.4
     mono_bass_side_lowcut = 1
-    presetName$ = "MonoSafe"
+    presetName$ = "BassCentered"
 elsif preset = 6
     # Wide Stereo
     # v0.3 used stereo_width=0.8, which narrows the image by 20%
@@ -374,6 +393,14 @@ if bass_high_freq >= nyquist
     exitScript: "Bass_high_freq (", bass_high_freq, " Hz) must be below the Nyquist frequency (", nyquist, " Hz)."
 endif
 
+# Output target is meaningful only in modes 2 and 3. Preserve uses a fixed
+# 0.999 safety ceiling; Legacy uses its fixed 0.95 target.
+if output_mode = 2 or output_mode = 3
+    if normalize_target <= 0 or normalize_target > 1
+        exitScript: "Normalize_target must be greater than 0 and at most 1 in this Output_mode (got " + fixed$(normalize_target, 4) + ")."
+    endif
+endif
+
 # Pre-compute status strings (replaces v0.2 inline ternary)
 if apply_MS_widening
     msStr$ = "ON (width " + fixed$(stereo_width, 2) + ")"
@@ -381,22 +408,40 @@ else
     msStr$ = "OFF"
 endif
 
-if mono_bass_side_lowcut
-    monoStr$ = "ON"
+if apply_MS_widening = 0
+    monoStr$ = "inactive (M/S off)"
+elsif mono_bass_side_lowcut
+    monoStr$ = "ON (200 Hz)"
 else
     monoStr$ = "OFF"
 endif
 
 if bass_reference_mode = 2
     bassRefStr$ = "ON (target peak " + fixed$(bass_reference_peak, 2) + ")"
+    bassRefShort$ = "normalize to " + fixed$(bass_reference_peak, 2)
 else
-    bassRefStr$ = "OFF"
+    bassRefStr$ = "OFF (level-dependent Drive)"
+    bassRefShort$ = "level-dependent"
+endif
+
+if output_mode = 1
+    outputModeStr$ = "Preserve rendered level (safety attenuation only)"
+    outputModeShort$ = "Preserve + safety"
+elsif output_mode = 2
+    outputModeStr$ = "Normalize to target " + fixed$(normalize_target, 3)
+    outputModeShort$ = "Normalize " + fixed$(normalize_target, 2)
+elsif output_mode = 3
+    outputModeStr$ = "Attenuate to target only if peak > " + fixed$(normalize_target, 3)
+    outputModeShort$ = "Attenuate > " + fixed$(normalize_target, 2)
+else
+    outputModeStr$ = "Legacy: normalize to 0.95"
+    outputModeShort$ = "Legacy norm 0.95"
 endif
 
 nearSilenceLin = 10 ^ (near_silence_dB / 20)
 
 # === Info ===
-writeInfoLine: "=== Virtual Subharmonic Generator v0.6 ==="
+writeInfoLine: "=== Virtual Subharmonic Generator v0.6.1 ==="
 appendInfoLine: "Source: ", originalName$, " (", fixed$(duration, 2), " s, ", numChannels, " ch, starts at ", fixed$(xminOrig, 3), " s)"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Output is always stereo, regardless of input channel count."
@@ -417,7 +462,8 @@ appendInfoLine: "M/S widening: ", msStr$
 if apply_MS_widening and stereo_width < 0
     appendInfoLine: "    Note: negative width -- Side polarity is inverted (L/R exchange character)."
 endif
-appendInfoLine: "Mono bass side low-cut: ", monoStr$
+appendInfoLine: "Bass-centered Side low-cut: ", monoStr$
+appendInfoLine: "Output mode: ", outputModeStr$
 appendInfoLine: ""
 
 # ============================================================
@@ -642,29 +688,45 @@ preOutputPeak = Get absolute extremum: 0, 0, "None"
 isNearSilent = preOutputPeak < nearSilenceLin
 normFactor = 1
 
-if isNearSilent
-    appendInfoLine: "Output is near-silent (peak ", fixed$(preOutputPeak, 6), ", below ", fixed$(near_silence_dB, 0), " dB) -- normalization skipped."
-elsif output_mode = 1
-    # Preserve input level: no scaling, just a hard safety ceiling
-    # so an unusual parameter combination can't overflow.
+if output_mode = 1
+    # Preserve the rendered level. Only an over-full-scale result is
+    # attenuated to the fixed 0.999 safety ceiling.
     if preOutputPeak > 0.999
         normFactor = 0.999 / preOutputPeak
         Formula: "self * " + string$(normFactor)
+        outputActionDesc$ = "preserved rendered level; safety-attenuated to 0.999"
+    else
+        outputActionDesc$ = "preserved rendered level; no output scaling"
     endif
 elsif output_mode = 2
-    # Normalize to target
-    normFactor = normalize_target / preOutputPeak
-    Scale peak: normalize_target
-elsif output_mode = 3
-    # Normalize only if it exceeds target
-    if preOutputPeak > normalize_target
+    # Normalize to target, except numerical/near silence.
+    if isNearSilent
+        outputActionDesc$ = "near-silent; normalization skipped"
+    else
         normFactor = normalize_target / preOutputPeak
         Scale peak: normalize_target
+        outputActionDesc$ = "normalized to " + fixed$(normalize_target, 3)
     endif
-elsif output_mode = 4
-    # Legacy: always normalize to 0.95 (near-silence guard above still applies)
-    normFactor = 0.95 / preOutputPeak
-    Scale peak: 0.95
+elsif output_mode = 3
+    # Conditional attenuation: never raises a quieter signal.
+    if isNearSilent
+        outputActionDesc$ = "near-silent; attenuation not needed"
+    elsif preOutputPeak > normalize_target
+        normFactor = normalize_target / preOutputPeak
+        Scale peak: normalize_target
+        outputActionDesc$ = "attenuated to " + fixed$(normalize_target, 3)
+    else
+        outputActionDesc$ = "below target; no attenuation"
+    endif
+else
+    # Legacy: normalize to fixed 0.95, except numerical/near silence.
+    if isNearSilent
+        outputActionDesc$ = "near-silent; legacy normalization skipped"
+    else
+        normFactor = 0.95 / preOutputPeak
+        Scale peak: 0.95
+        outputActionDesc$ = "legacy normalized to 0.95"
+    endif
 endif
 
 # === Final stats ===
@@ -693,7 +755,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##Virtual Subharmonic Generator v0.6##"
+    Text: 0.5, "centre", 0.68, "half", "##Virtual Subharmonic Generator v0.6.1##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
     Text: 0.5, "centre", 0.22, "half",
@@ -703,7 +765,7 @@ if draw_visualization
         ... + "  |  Drive: " + fixed$(drive, 2)
         ... + "  |  Harm gain: " + fixed$(harmonic_level, 2)
         ... + "  |  M/S: " + msStr$
-        ... + "  |  Mono: " + monoStr$
+        ... + "  |  Side HP: " + monoStr$
     
     # ----------------------------------------------------------
     # PANEL A: PROCESSING CHAIN  (left, headline)
@@ -799,7 +861,7 @@ if draw_visualization
     Text: 0.50, "centre", (yTop + yBot) / 2 - 0.13, "half", "(enhanced stereo)"
     
     # Side low-cut badge
-    if mono_bass_side_lowcut
+    if apply_MS_widening and mono_bass_side_lowcut
         Font size: 6
         Colour: "{0.55, 0.30, 0.30}"
         Text: 0.50, "centre", 0.50, "half", "[side HP @ 200 Hz]"
@@ -813,65 +875,51 @@ if draw_visualization
     # ----------------------------------------------------------
     Select outer viewport: 4, 8, 0.75, 4.60
     Select inner viewport: 4.45, 7.70, 0.95, 4.40
-    
+
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.97, 0.97, 0.97}", 0, 1, 0, 1
-    
-    Font size: 7
+
+    Font size: 6
     Colour: "{0.30, 0.30, 0.30}"
     Text: 0.05, "left", 0.95, "half", "Phantom Bass:"
-    
-    Font size: 7
+
     Colour: "{0.85, 0.55, 0.20}"
-    Text: 0.10, "left", 0.87, "half", "Bass:    " + fixed$(bass_low_freq, 0) + "-" + fixed$(bass_high_freq, 0) + " Hz"
-    Text: 0.10, "left", 0.79, "half", "Drive:   " + fixed$(drive, 2)
-    Text: 0.10, "left", 0.71, "half", "Harm gain: " + fixed$(harmonic_level, 2)
-    
-    Font size: 7
+    Text: 0.10, "left", 0.87, "half", "Bass: " + fixed$(bass_low_freq, 0) + "-" + fixed$(bass_high_freq, 0) + " Hz"
+    Text: 0.10, "left", 0.79, "half", "Drive " + fixed$(drive, 2) + " | Harm gain " + fixed$(harmonic_level, 2)
+    Text: 0.10, "left", 0.71, "half", "Bass ref: " + bassRefShort$
+
     Colour: "{0.30, 0.30, 0.30}"
     Text: 0.05, "left", 0.61, "half", "Filtering:"
-    
-    Font size: 7
     Colour: "{0.30, 0.55, 0.30}"
-    Text: 0.10, "left", 0.53, "half", "HP cut:  " + fixed$(highpass_freq, 0) + " Hz"
-    Text: 0.10, "left", 0.45, "half", "Harm LP: " + fixed$(harmonic_lowpass, 0) + " Hz"
-    
-    Font size: 7
+    Text: 0.10, "left", 0.53, "half", "HP " + fixed$(highpass_freq, 0) + " Hz | Harm LP " + fixed$(harmonic_lowpass, 0) + " Hz"
+
     Colour: "{0.30, 0.30, 0.30}"
-    Text: 0.05, "left", 0.34, "half", "Stereo:"
-    
-    Font size: 7
+    Text: 0.05, "left", 0.43, "half", "Stereo:"
     if apply_MS_widening
         Colour: "{0.30, 0.30, 0.78}"
-        Text: 0.10, "left", 0.26, "half", "M/S:     ON, S x " + fixed$(stereo_width, 2)
-        # Tell user what direction
-        Font size: 7
-        Colour: "{0.55, 0.55, 0.55}"
         if stereo_width < 1
-            widthDir$ = "(narrows)"
+            widthDir$ = "narrows"
         elsif stereo_width > 1
-            widthDir$ = "(widens)"
+            widthDir$ = "widens"
         else
-            widthDir$ = "(identity)"
+            widthDir$ = "identity"
         endif
-        Text: 0.10, "left", 0.18, "half", "         " + widthDir$
+        Text: 0.10, "left", 0.35, "half", "M/S ON | S x " + fixed$(stereo_width, 2) + " (" + widthDir$ + ")"
     else
         Colour: "{0.55, 0.55, 0.55}"
-        Text: 0.10, "left", 0.26, "half", "M/S:     OFF"
+        Text: 0.10, "left", 0.35, "half", "M/S OFF"
     endif
-    
-    Font size: 7
-    if mono_bass_side_lowcut
-        Colour: "{0.55, 0.30, 0.30}"
-        Text: 0.10, "left", 0.08, "half", "Side low-cut: ON (200 Hz)"
-    else
-        Colour: "{0.55, 0.55, 0.55}"
-        Text: 0.10, "left", 0.08, "half", "Side low-cut: OFF"
-    endif
-    
+    Colour: "{0.55, 0.30, 0.30}"
+    Text: 0.10, "left", 0.27, "half", "Side low-cut: " + monoStr$
+
+    Colour: "{0.30, 0.30, 0.30}"
+    Text: 0.05, "left", 0.17, "half", "Output:"
+    Colour: "{0.30, 0.45, 0.68}"
+    Text: 0.10, "left", 0.09, "half", outputModeShort$
+
     Colour: "Black"
     Draw inner box
-    
+
     # ----------------------------------------------------------
     # ALIGNED PANEL TITLES
     # ----------------------------------------------------------
@@ -1015,18 +1063,22 @@ if draw_visualization
     
     Font size: 6
     Colour: "{0.28, 0.28, 0.28}"
-    Text: 0.02, "left", 0.75, "half",
+    Text: 0.02, "left", 0.78, "half",
         ... "##" + presetName$ + "##"
         ... + "  " + vizName$
-        ... + "  |  Bass: " + fixed$(bass_low_freq, 0) + "-" + fixed$(bass_high_freq, 0) + " Hz"
-        ... + "  |  Drive: " + fixed$(drive, 2)
-        ... + "  |  Harm gain: " + fixed$(harmonic_level, 2)
-        ... + "  |  HP: " + fixed$(highpass_freq, 0) + " Hz"
-    
-    Text: 0.02, "left", 0.28, "half",
-        ... "M/S: " + msStr$
+        ... + "  |  Bass " + fixed$(bass_low_freq, 0) + "-" + fixed$(bass_high_freq, 0) + " Hz"
+        ... + "  |  Drive " + fixed$(drive, 2)
+        ... + "  |  Harm " + fixed$(harmonic_level, 2)
+
+    Text: 0.02, "left", 0.50, "half",
+        ... "Bass ref: " + bassRefShort$
+        ... + "  |  M/S: " + msStr$
         ... + "  |  Side low-cut: " + monoStr$
-        ... + "  |  Output: " + fixed$(finalDur, 2) + " s, peak " + fixed$(finalPeak, 3)
+
+    Text: 0.02, "left", 0.22, "half",
+        ... "Output: " + outputModeShort$
+        ... + "  |  " + fixed$(finalDur, 2) + " s"
+        ... + "  |  peak " + fixed$(finalPeak, 3)
     
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
@@ -1051,11 +1103,8 @@ appendInfoLine: "=== Done ==="
 appendInfoLine: "Created: ", selected$("Sound")
 appendInfoLine: "Duration: ", fixed$(finalDur, 2), " s"
 appendInfoLine: "Pre-output peak: ", fixed$(preOutputPeak, 4)
-if isNearSilent
-    appendInfoLine: "Normalization: skipped (near-silent)"
-else
-    appendInfoLine: "Normalization factor applied: ", fixed$(normFactor, 4)
-endif
+appendInfoLine: "Output action: ", outputActionDesc$
+appendInfoLine: "Output scale factor applied: ", fixed$(normFactor, 4)
 appendInfoLine: "Final peak: ", fixed$(finalPeak, 4)
 
 if play_result

@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4 (2026) - Suite-standard visualization
+# Version: 0.5 (2026) - DC-safe Chebyshev, oversampled wet path, validation/reporting fixes
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -23,10 +23,25 @@
 #   6. Square Law (fuzzy)
 #   7. Chebyshev (harmonic control)
 #   8. Sigmoid (tube-like)
-#   9. Exponential Fold (chaotic)
+#   9. Exponential Saturator
 #   10. Bitcrush (lo-fi)
-#   11. Wave Wrap (circular)
+#   11. Single Wave Wrap
 #   12. Diode Ladder (analog asymmetric)
+#
+# Changelog v0.5 (2026):
+#   - Chebyshev shape is DC-safe: the weighted polynomial is shifted so
+#     f(0)=0 instead of turning silence into a -0.2 DC signal.
+#   - Added wet-path oversampling (4x default; 1=off; 2x refused; 3-8x
+#     supported) with band-limited downsampling before dry/wet mixing.
+#   - Mix_percent now accepts the full 0-100 range and rejects extrapolation.
+#   - Renamed Exponential Fold to Exponential Saturator and implemented the
+#     same transfer function in an overflow-resistant algebraic form.
+#   - Renamed Wave Wrap (circular) to Single Wave Wrap; the algorithm itself
+#     remains the original one-fold mapping.
+#   - Stereo Wide now refuses >2-channel input explicitly; mono still falls
+#     back to Standard, while the other modes preserve arbitrary channels.
+#   - Added silent-output normalization guard, final peak reporting/warning,
+#     shared waveform scales, and oversampling/final-peak visualization data.
 #
 # Changelog v0.4 (2026):
 #   - VISUALIZATION STANDARDIZATION ONLY; audio/DSP, analysis,
@@ -56,7 +71,7 @@
 #   - Added info output
 # ============================================================
 
-form Wave Shaper Distortion v0.4
+form Wave Shaper Distortion v0.5
     comment Select a Sound object first
     
     comment === Waveshaping Algorithm ===
@@ -69,14 +84,17 @@ form Wave Shaper Distortion v0.4
         option 6. Square Law (fuzzy)
         option 7. Chebyshev (harmonic)
         option 8. Sigmoid (tube-like)
-        option 9. Exponential Fold (chaotic)
+        option 9. Exponential Saturator
         option 10. Bitcrush (lo-fi)
-        option 11. Wave Wrap (circular)
+        option 11. Single Wave Wrap
         option 12. Diode Ladder (analog)
     
     comment === Parameters ===
     positive Drive 2.0
-    positive Mix_percent 80
+    real Mix_percent 80
+    
+    integer Oversample 4
+    comment (1 = off; 2 is disabled; 3-8 supported)
     
     comment === Processing Mode ===
     optionmenu Mode 1
@@ -103,7 +121,33 @@ original_name$ = selected$("Sound")
 selectObject: original
 duration = Get total duration
 sr = Get sampling frequency
+xminOrig = Get start time
+xmaxOrig = Get end time
+srcPeak = Get absolute extremum: 0, 0, "None"
 numChannels = Get number of channels
+if mix_percent < 0 or mix_percent > 100
+    exitScript: "Mix_percent must be between 0 and 100 (got " + fixed$(mix_percent, 2) + ")."
+endif
+
+oversampleReq = oversample
+if oversample < 1
+    oversample = 1
+endif
+if oversample > 8
+    oversample = 8
+endif
+osNote$ = ""
+if oversample <> oversampleReq
+    osNote$ = "Oversample " + string$(oversampleReq) + " is outside 1-8; running at " + string$(oversample) + "."
+endif
+if oversample = 2
+    exitScript: "Oversample = 2 is disabled - the 2x round trip shifts phase with frequency on Praat 6.1.38. Use 1 (off), or 3 and above; 4 is the default."
+endif
+
+if mode = 5 and numChannels > 2
+    exitScript: "Stereo Wide (M/S) requires mono or stereo input. This Sound has " + string$(numChannels) + " channels. Use another mode to preserve all channels."
+endif
+
 if numChannels = 2
     is_stereo = 1
 else
@@ -115,12 +159,16 @@ endif
 @getModeName: mode
 
 # === Info ===
-writeInfoLine: "=== Wave Shaper Distortion v0.4 ==="
+writeInfoLine: "=== Wave Shaper Distortion v0.5 ==="
 appendInfoLine: "Source: ", original_name$, " (", fixed$(duration, 2), " s)"
 appendInfoLine: "Shape: ", shape_name$
 appendInfoLine: "Mode: ", mode_name$
 appendInfoLine: "Drive: ", drive
 appendInfoLine: "Mix: ", mix_percent, "%"
+appendInfoLine: "Oversampling: ", oversample, "x"
+if osNote$ <> ""
+    appendInfoLine: "  NOTE: ", osNote$
+endif
 appendInfoLine: ""
 
 # ============================================================
@@ -132,6 +180,16 @@ appendInfoLine: "Processing..."
 selectObject: original
 Copy: "processing_temp"
 proc_sound = selected("Sound")
+
+# Oversample the wet path before nonlinear processing. The dry source remains
+# at the original rate and is mixed only after the processed path returns.
+if oversample > 1
+    selectObject: proc_sound
+    Resample: sr * oversample, 50
+    upsampled = selected("Sound")
+    removeObject: proc_sound
+    proc_sound = upsampled
+endif
 
 # Convert drive to string for formulas
 drive_str$ = string$(drive)
@@ -222,11 +280,26 @@ elsif mode = 5
         removeObject: proc_sound, mid_signal, side_signal, left_ch, right_ch
         proc_sound = new_stereo
     else
-        appendInfoLine: "    (Mono input - using Standard mode)"
+        appendInfoLine: "    (Mono input - Stereo Wide falls back to Standard)"
         selectObject: proc_sound
         Formula: "self * " + drive_str$
         @applyWaveShaping: proc_sound, shape
     endif
+endif
+
+# Return the wet path to the source sample rate before dry/wet mixing.
+if oversample > 1
+    selectObject: proc_sound
+    Resample: sr, 50
+    downsampled = selected("Sound")
+    removeObject: proc_sound
+    proc_sound = downsampled
+    # Restore the exact source time domain/length after the two rate conversions.
+    selectObject: proc_sound
+    Extract part: xminOrig, xmaxOrig, "rectangular", 1, "yes"
+    trimmed = selected("Sound")
+    removeObject: proc_sound
+    proc_sound = trimmed
 endif
 
 if mix_percent < 100
@@ -242,12 +315,21 @@ endif
 
 if normalize
     selectObject: proc_sound
-    Scale peak: 0.95
+    preNormPeak = Get absolute extremum: 0, 0, "None"
+    if preNormPeak > 1e-9
+        Scale peak: 0.95
+        normDesc$ = "normalized to 0.95"
+    else
+        normDesc$ = "near-silent; normalization skipped"
+    endif
+else
+    normDesc$ = "off"
 endif
 
 selectObject: proc_sound
 Rename: original_name$ + "_" + shape_name$ + "_" + mode_name$
 result = selected("Sound")
+finalPeak = Get absolute extremum: 0, 0, "None"
 
 # ============================================================
 # VISUALIZATION
@@ -272,17 +354,23 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##Wave Shaper Distortion v0.4##"
+    Text: 0.5, "centre", 0.68, "half", "##Wave Shaper Distortion v0.5##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.50}"
-    Text: 0.5, "centre", 0.22, "half", vizName$ + " | " + shape_name$ + " | " + mode_name$ + " | drive " + fixed$(drive, 2) + " | mix " + fixed$(mix_percent, 0) + "\% "
+    Text: 0.5, "centre", 0.22, "half", vizName$ + " | " + shape_name$ + " | " + mode_name$ + " | drive " + fixed$(drive, 2) + " | mix " + fixed$(mix_percent, 0) + "\% | OS " + string$(oversample) + "x"
     
+    # Original and result waveforms use one shared amplitude scale.
+    sharedAmp = max(srcPeak, finalPeak) * 1.10
+    if sharedAmp < 0.001
+        sharedAmp = 0.001
+    endif
+
     # Original waveform
     Select outer viewport: 0, 8, 0.6, 1.5
     Select inner viewport: 0.60, 7.70, 0.7, 1.4
     selectObject: original
     Colour: "{0.6, 0.6, 0.6}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
+    Draw: 0, 0, -sharedAmp, sharedAmp, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 7
@@ -293,18 +381,28 @@ if draw_visualization
     Select inner viewport: 0.60, 7.70, 1.7, 2.4
     selectObject: result
     Colour: "{0.6, 0.5, 0.7}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
+    Draw: 0, 0, -sharedAmp, sharedAmp, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Text left: "yes", "Shaped"
     Text bottom: "yes", "Time (s)"
     
     zoomDur = min(0.02, duration)
+    zoomStart = xminOrig
+    zoomEnd = xminOrig + zoomDur
+    selectObject: original
+    srcZoomPeak = Get absolute extremum: zoomStart, zoomEnd, "None"
+    selectObject: result
+    outZoomPeak = Get absolute extremum: zoomStart, zoomEnd, "None"
+    zoomAmp = max(srcZoomPeak, outZoomPeak) * 1.10
+    if zoomAmp < 0.001
+        zoomAmp = 0.001
+    endif
     Select outer viewport: 0, 4, 2.7, 3.8
     Select inner viewport: 0.60, 3.85, 2.8, 3.7
     selectObject: original
     Colour: "{0.6, 0.6, 0.6}"
-    Draw: 0, zoomDur, 0, 0, "no", "Curve"
+    Draw: zoomStart, zoomEnd, -zoomAmp, zoomAmp, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 6
@@ -313,7 +411,7 @@ if draw_visualization
     Select inner viewport: 4.45, 7.70, 2.8, 3.7
     selectObject: result
     Colour: "{0.6, 0.5, 0.7}"
-    Draw: 0, zoomDur, 0, 0, "no", "Curve"
+    Draw: zoomStart, zoomEnd, -zoomAmp, zoomAmp, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 6
@@ -325,8 +423,9 @@ if draw_visualization
 
     # This is the nominal memoryless waveshaper y=f(drive*x). Frequency
     # splitting, M/S routing, asymmetric post-gain, multi-stage routing,
-    # dry/wet mixing and normalization are mode/file dependent and are
-    # therefore stated explicitly rather than folded into a misleading curve.
+    # dry/wet mixing, oversampling/downsampling and normalization are mode/file
+    # dependent and are therefore stated explicitly rather than folded into a
+    # misleading curve.
     nPoints = 300
     transferYLim = 1.5
     for p from 1 to nPoints
@@ -366,7 +465,7 @@ if draw_visualization
     Font size: 6
     Text left: "yes", "Output (+/-" + fixed$(transferYLim, 2) + ")"
     Text bottom: "yes", "Input"
-    Text top: "no", "Nominal waveshaper y=f(drive*x) | mode routing / mix / normalize excluded"
+    Text top: "no", "Nominal waveshaper y=f(drive*x) | routing / OS / mix / normalize excluded"
     
     Select outer viewport: 4, 8, 4.0, 5.5
     Select inner viewport: 4.45, 7.70, 4.1, 5.4
@@ -381,9 +480,9 @@ if draw_visualization
     algorithms$[6] = "6. Square Law"
     algorithms$[7] = "7. Chebyshev"
     algorithms$[8] = "8. Sigmoid"
-    algorithms$[9] = "9. Exp Fold"
+    algorithms$[9] = "9. Exp Saturator"
     algorithms$[10] = "10. Bitcrush"
-    algorithms$[11] = "11. Wave Wrap"
+    algorithms$[11] = "11. Single Wrap"
     algorithms$[12] = "12. Diode"
     for i from 1 to 12
         yPos = 12 - i + 0.5
@@ -402,7 +501,7 @@ if draw_visualization
     Select outer viewport: 0, 8, 5.6, 6.0
     Font size: 7
     Colour: "{0.4, 0.4, 0.4}"
-    Text: 0.5, "centre", 0.5, "half", "Drive: " + fixed$(drive, 1) + " | Mix: " + fixed$(mix_percent, 0) + "% | Mode: " + mode_name$ + " | Normalize: " + if normalize then "ON" else "OFF" fi
+    Text: 0.5, "centre", 0.5, "half", "Drive: " + fixed$(drive, 1) + " | Mix: " + fixed$(mix_percent, 0) + "% | Mode: " + mode_name$ + " | OS: " + string$(oversample) + "x | Normalize: " + if normalize then "ON" else "OFF" fi
     Font size: 7
     Colour: "Black"
 
@@ -414,8 +513,8 @@ if draw_visualization
     Font size: 6
     Colour: "{0.25, 0.25, 0.35}"
     summary1$ = "##Input##  " + vizName$ + " | " + fixed$(duration, 2) + " s | " + string$(numChannels) + " ch | shape " + shape_name$
-    summary2$ = "##Shaping##  drive " + fixed$(drive, 2) + " | mode " + mode_name$ + " | wet mix " + fixed$(mix_percent, 0) + "\% | 12 transfer algorithms available"
-    summary3$ = "##Output##  normalize " + normalizeDesc$ + " | waveform and nominal transfer function shown"
+    summary2$ = "##Shaping##  drive " + fixed$(drive, 2) + " | mode " + mode_name$ + " | wet mix " + fixed$(mix_percent, 0) + "\% | oversample " + string$(oversample) + "x"
+    summary3$ = "##Output##  " + normDesc$ + " | final peak " + fixed$(finalPeak, 3) + " | waveform and nominal transfer shown"
     Text: 0.02, "left", 0.78, "half", summary1$
     Text: 0.02, "left", 0.50, "half", summary2$
     Text: 0.02, "left", 0.22, "half", summary3$
@@ -435,6 +534,11 @@ selectObject: result
 appendInfoLine: ""
 appendInfoLine: "=== Done ==="
 appendInfoLine: "Created: ", selected$("Sound")
+appendInfoLine: "Output: ", fixed$(duration, 3), " s, ", numChannels, " ch, peak ", fixed$(finalPeak, 4)
+appendInfoLine: "Output action: ", normDesc$
+if finalPeak > 1.0
+    appendInfoLine: "  WARNING: output peak is ", fixed$(finalPeak, 3), " - above 1.0 it may clip on playback or export."
+endif
 if play_result
     selectObject: result
     Play
@@ -460,11 +564,11 @@ procedure applyWaveShaping: .sound, .shape
     elsif .shape = 6
         Formula: ~ self * abs(self) * 0.8
     elsif .shape = 7
-        Formula: ~ self * 0.7 + (2 * self * self - 1) * 0.2 + (4 * self^3 - 3 * self) * 0.1
+        Formula: ~ self * 0.7 + (2 * self * self - 1) * 0.2 + (4 * self^3 - 3 * self) * 0.1 + 0.2
     elsif .shape = 8
         Formula: ~ (2 / (1 + exp(-self * 2))) - 1
     elsif .shape = 9
-        Formula: ~ (exp(self) - exp(-self)) / (exp(self) + exp(-self) + 0.1)
+        Formula: ~ if self >= 0 then (1 - exp(-2*self)) / (1 + exp(-2*self) + 0.1*exp(-self)) else -(1 - exp(2*self)) / (1 + exp(2*self) + 0.1*exp(self)) fi
     elsif .shape = 10
         Formula: ~ floor(self * 16 + 0.5) / 16
     elsif .shape = 11
@@ -488,11 +592,15 @@ procedure computeShape: .input, .shape
     elsif .shape = 6
         result_value = .input * abs(.input) * 0.8
     elsif .shape = 7
-        result_value = .input * 0.7 + (2 * .input * .input - 1) * 0.2 + (4 * .input^3 - 3 * .input) * 0.1
+        result_value = .input * 0.7 + (2 * .input * .input - 1) * 0.2 + (4 * .input^3 - 3 * .input) * 0.1 + 0.2
     elsif .shape = 8
         result_value = (2 / (1 + exp(-.input * 2))) - 1
     elsif .shape = 9
-        result_value = (exp(.input) - exp(-.input)) / (exp(.input) + exp(-.input) + 0.1)
+        if .input >= 0
+            result_value = (1 - exp(-2*.input)) / (1 + exp(-2*.input) + 0.1*exp(-.input))
+        else
+            result_value = -(1 - exp(2*.input)) / (1 + exp(2*.input) + 0.1*exp(.input))
+        endif
     elsif .shape = 10
         result_value = floor(.input * 16 + 0.5) / 16
     elsif .shape = 11
@@ -528,11 +636,11 @@ procedure getShapeName: .shape
     elsif .shape = 8
         shape_name$ = "Sigmoid"
     elsif .shape = 9
-        shape_name$ = "ExpFold"
+        shape_name$ = "ExpSaturator"
     elsif .shape = 10
         shape_name$ = "Bitcrush"
     elsif .shape = 11
-        shape_name$ = "WaveWrap"
+        shape_name$ = "SingleWaveWrap"
     elsif .shape = 12
         shape_name$ = "DiodeLadder"
     endif

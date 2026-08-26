@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4 (2026) - Suite-standard visualization
+# Version: 0.4.1 (2026) - QA corrections
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -34,6 +34,20 @@
 # Citation:
 #   Cohen, S. (2025). Praat AudioTools: An Offline Analysis–Resynthesis Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v0.4.1 (2026):
+#   - FIXED: Peak_target is validated only when the selected Output_level
+#     actually uses it; Preserve shaped level no longer depends on an
+#     inactive target.
+#   - RENAMED: "Conditional limiter to target" ->
+#     "Attenuate to target only if peak > target"; DSP is unchanged.
+#   - CORRECTED: Threshold > 1 warning now accounts for Drive, which can
+#     still push the signal into the knee or clip region.
+#   - RENAMED presets for algorithmic accuracy: "Brickwall Limiter" ->
+#     "Near-Hard Clip" and "Fuzz Face (Low Thresh)" ->
+#     "Low-Threshold Fuzz". Preset parameter values are unchanged.
+#   - FIXED: the visualization summary shows Peak_target only when the
+#     output stage actually uses it.
 #
 # Changelog v0.4 (2026):
 #   - VISUALIZATION STANDARDIZATION ONLY; clipping law, knee mapping,
@@ -101,15 +115,15 @@
 # ============================================================
 
 # === Form ===
-form Hard Clip (Variable Knee) v0.4
+form Hard Clip (Variable Knee) v0.4.1
     comment Select a Preset (overrides sliders below)
     optionmenu Preset: 1
         option Manual (Use settings below)
-        option Brickwall Limiter
+        option Near-Hard Clip
         option Soft Clipper
         option Hard Distortion
         option Subtle Glue
-        option Fuzz Face (Low Thresh)
+        option Low-Threshold Fuzz
 
     comment Parameters
     real Drive 1.0
@@ -124,9 +138,9 @@ form Hard Clip (Variable Knee) v0.4
     comment Output
     optionmenu Output_level: 1
         option Preserve shaped level (v0.2)
-        option Conditional limiter to target
+        option Attenuate to target only if peak > target
         option Normalize to target
-    positive Peak_target 0.95
+    real Peak_target 0.95
 
     comment Visualization
     boolean Draw_visualization 1
@@ -146,7 +160,7 @@ endif
 presetName$ = "Manual"
 
 if preset = 2
-    presetName$ = "Brickwall Limiter"
+    presetName$ = "Near-Hard Clip"
     drive = 1.2
     threshold = 0.8
     knee_half_width = 0.05
@@ -170,7 +184,7 @@ elsif preset = 5
     knee_half_width = 0.5
     output_Gain = 1.0
 elsif preset = 6
-    presetName$ = "Fuzz Face (Low Thresh)"
+    presetName$ = "Low-Threshold Fuzz"
     drive = 8.0
     threshold = 0.1
     knee_half_width = 0.1
@@ -188,7 +202,7 @@ if threshold < 0.01
     threshold = 0.01
 endif
 if threshold > 1
-    clampNotes$ = clampNotes$ + "  NOTE: Threshold of " + fixed$(threshold, 3) + " is above full scale; the clipper will not engage on normal material." + newline$
+    clampNotes$ = clampNotes$ + "  NOTE: Threshold of " + fixed$(threshold, 3) + " is above source full scale, but Drive may still push the signal into the knee or clip region." + newline$
 endif
 
 # v0.3 CRITICAL (item 1): nothing stopped Knee_half_width exceeding
@@ -250,8 +264,13 @@ else
     oversampleDesc$ = " (no oversampling - the clipper will alias)"
 endif
 
-if peak_target > 1
-    exitScript: "Peak_target must not exceed 1.0 (it is a full-scale target)."
+if output_level <> 1
+    if peak_target <= 0
+        exitScript: "Peak_target must be above 0 when attenuation or normalization is selected."
+    endif
+    if peak_target > 1
+        exitScript: "Peak_target must not exceed 1.0 (it is a full-scale target)."
+    endif
 endif
 
 # === Process Audio ===
@@ -354,7 +373,7 @@ elsif output_level = 2
         selectObject: result
         Scale peak: peak_target
         levelScale = peak_target / prePeak
-        levelDesc$ = "limited to " + fixed$(peak_target, 2)
+        levelDesc$ = "attenuated to " + fixed$(peak_target, 2)
     else
         levelDesc$ = "unchanged (below target)"
     endif
@@ -377,7 +396,7 @@ finalDur = Get total duration
 # v0.3 (item 9): v0.2's entire report was two lines - the file name and
 # the preset. For a distortion tool the numbers below are what let you
 # verify a preset or reproduce a result.
-writeInfoLine: "=== Hard Clip (Variable Knee) v0.4 ==="
+writeInfoLine: "=== Hard Clip (Variable Knee) v0.4.1 ==="
 appendInfoLine: "Source: ", origName$, " (", fixed$(xmax - xmin, 2), " s, ", inputChannels, " ch, peak ", fixed$(srcPeak, 4), ")"
 appendInfoLine: "Preset: ", presetName$
 if clampNotes$ <> ""
@@ -435,7 +454,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##Hard Clip (Variable Knee) v0.4##"
+    Text: 0.5, "centre", 0.68, "half", "##Hard Clip (Variable Knee) v0.4.1##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.50}"
     Text: 0.5, "centre", 0.22, "half", vizName$ + " | " + presetName$ + " | drive " + fixed$(drive, 2) + " | threshold " + fixed$(threshold, 3) + " | knee +/-" + fixed$(knee_half_width, 3)
@@ -668,7 +687,11 @@ if draw_visualization
     Colour: "{0.25, 0.25, 0.35}"
     summary1$ = "##Input##  " + vizName$ + " | " + fixed$(finalDur, 2) + " s | " + string$(inputChannels) + " ch | preset " + presetName$
     summary2$ = "##Shaping##  drive " + fixed$(drive, 2) + " | threshold " + fixed$(threshold, 3) + " | knee +/-" + fixed$(knee_half_width, 3) + " | output gain " + fixed$(output_Gain, 2) + " | oversample " + string$(oversample) + "x"
-    summary3$ = "##Output##  " + levelDesc$ + " | target " + fixed$(peak_target, 2) + " | measured peak " + fixed$(finalPeak, 3) + " | spectrum " + specRefLabel$
+    if output_level = 1
+        summary3$ = "##Output##  " + levelDesc$ + " | measured peak " + fixed$(finalPeak, 3) + " | spectrum " + specRefLabel$
+    else
+        summary3$ = "##Output##  " + levelDesc$ + " | target " + fixed$(peak_target, 2) + " | measured peak " + fixed$(finalPeak, 3) + " | spectrum " + specRefLabel$
+    endif
     Text: 0.02, "left", 0.78, "half", summary1$
     Text: 0.02, "left", 0.50, "half", summary2$
     Text: 0.02, "left", 0.22, "half", summary3$

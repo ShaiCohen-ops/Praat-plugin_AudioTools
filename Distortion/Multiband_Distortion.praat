@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.7 (2026) - Compact main form + advanced settings
+# Version: 0.7.1 (2026) - UI/report precision pass
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -32,6 +32,20 @@
 #   sine hard-clipped showed a strong alias near 14.1 kHz without it, and
 #   far below that at 4x), but "alias-reduced" is the accurate term - the
 #   processing is not alias-free.
+#
+# Changelog v0.7.1 (2026):
+#   - UI/reporting only; no DSP, preset values, crossover, oversampling,
+#     mix or output-processing formulas changed.
+#   - Drive_compensation now states that it requires Normalize_drive and
+#     compensates Drive's linear-region gain rather than guaranteeing a fixed
+#     band level after nonlinear shaping. The report marks it inactive when
+#     Normalize_drive is OFF.
+#   - Output mode 3 renamed to attenuation: after Output_Gain it scales the
+#     whole signal to 0.95 only when the measured peak exceeds 0.95.
+#   - Advanced settings now warn that named presets overwrite the three band
+#     gains, while technical/output controls remain active with presets.
+#   - Preset labels made more literal: Warm Bass / Gentle Highs,
+#     Frizz (High-Band Hard Clip), and Mid-Range Crunch.
 #
 # Changelog v0.7 (2026):
 #   - UI/FORM ONLY; audio/DSP, presets, crossover logic, oversampling,
@@ -197,16 +211,16 @@
 # ============================================================
 
 # === Form ===
-form Multiband Distortion v0.7
+form Multiband Distortion v0.7.1
     comment Select a Sound object first
 
     comment === Preset ===
     optionmenu Preset 1
         option Manual (use settings below)
-        option Warm Bass / Clean Highs
-        option Frizz (Distorted Highs Only)
+        option Warm Bass / Gentle Highs
+        option Frizz (High-Band Hard Clip)
         option V-Shape Destruction
-        option Mid-Range Crunch (Telephone)
+        option Mid-Range Crunch
         option Full Spectrum Fuzz
 
     comment === Crossovers ===
@@ -266,21 +280,22 @@ visualization_max_Hz = 8000
 # Praat permits only one form...endform block. Optional secondary controls
 # therefore use beginPause/endPause and appear only when requested.
 if advanced_settings
-    beginPause: "Multiband Distortion v0.7 - Advanced settings"
+    beginPause: "Multiband Distortion v0.7.1 - Advanced settings"
         comment: "=== Band level / drive behaviour ==="
+        comment: "(named presets overwrite Low/Mid/High Gain; technical/output settings remain active)"
         boolean: "Normalize_drive", 1
         comment: "(off = legacy level-dependent waveshaping)"
         real: "Low_Gain", "1.0"
         real: "Mid_Gain", "1.0"
         real: "High_Gain", "1.0"
         boolean: "Drive_compensation", 0
-        comment: "(on: drive changes shape only, not band level)"
+        comment: "(requires Normalize_drive; compensates Drive linear-region gain)"
 
         comment: "=== Output / anti-aliasing / display ==="
         optionmenu: "Output_mode", 1
             option: "Normalize to 0.95, then output gain (v0.3/v0.4)"
             option: "Preserve level (output gain only)"
-            option: "Output gain, normalize if peak exceeds 0.95"
+            option: "Output gain, then attenuate to 0.95 only if peak > 0.95"
         integer: "Oversample", "4"
         comment: "(1 = off; 2 is refused by this script)"
         positive: "Visualization_max_Hz", "8000"
@@ -302,7 +317,7 @@ endif
 if preset = 1
     presetName$ = "Manual"
 elsif preset = 2
-    presetName$ = "WarmBass"
+    presetName$ = "WarmBassGentleHighs"
     low_Split_Hz = 200
     high_Split_Hz = 2500
     low_Drive = 2.0
@@ -315,7 +330,7 @@ elsif preset = 2
     high_Type = 1
     high_Gain = 1.0
 elsif preset = 3
-    presetName$ = "Frizz"
+    presetName$ = "FrizzHighHardClip"
     low_Split_Hz = 200
     high_Split_Hz = 1500
     low_Drive = 1.0
@@ -341,7 +356,7 @@ elsif preset = 4
     high_Type = 2
     high_Gain = 1.0
 elsif preset = 5
-    presetName$ = "MidCrunch"
+    presetName$ = "MidRangeCrunch"
     low_Split_Hz = 400
     high_Split_Hz = 3000
     low_Drive = 0.6
@@ -469,7 +484,7 @@ selectObject: original
 srcPeak = Get absolute extremum: 0, 0, "None"
 inputChannels = Get number of channels
 
-writeInfoLine: "=== Multiband Distortion v0.7 ==="
+writeInfoLine: "=== Multiband Distortion v0.7.1 ==="
 appendInfoLine: "Source: ", origName$, " (", fixed$(duration, 2), " s, ", inputChannels, " ch, starts at ", fixed$(xmin, 3), " s, peak ", fixed$(srcPeak, 4), ")"
 appendInfoLine: "Preset: ", presetName$
 if osNote$ <> ""
@@ -498,9 +513,17 @@ else
     appendInfoLine: "Drive normalization: OFF (legacy level-dependent)"
 endif
 if drive_compensation
-    appendInfoLine: "Drive compensation: ON (drive changes shape only, not band level)"
+    if normalize_drive
+        appendInfoLine: "Drive compensation: ON - compensates Drive's linear-region gain; nonlinear shaping can still change band peak/RMS"
+    else
+        appendInfoLine: "Drive compensation: requested but INACTIVE because Normalize_drive is OFF"
+    endif
 else
-    appendInfoLine: "Drive compensation: OFF (drive also multiplies band level by drive x gain)"
+    if normalize_drive
+        appendInfoLine: "Drive compensation: OFF (Drive contributes linear-region gain as well as waveshaping depth)"
+    else
+        appendInfoLine: "Drive compensation: OFF (legacy level-dependent drive staging)"
+    endif
 endif
 if output_Gain < 0
     appendInfoLine: "  NOTE: negative Output_Gain inverts the polarity of the whole output."
@@ -660,9 +683,9 @@ elsif output_mode = 3
     midPeak = Get absolute extremum: 0, 0, "None"
     if midPeak > 0.95
         Scale peak: 0.95
-        outModeDesc$ = "output gain, then normalized (peak was " + fixed$(midPeak, 3) + ")"
+        outModeDesc$ = "output gain, then attenuated to 0.95 (peak was " + fixed$(midPeak, 3) + ")"
     else
-        outModeDesc$ = "output gain, no normalization needed (peak " + fixed$(midPeak, 3) + ")"
+        outModeDesc$ = "output gain, unchanged (below 0.95; peak " + fixed$(midPeak, 3) + ")"
     endif
 else
     # v0.5: near-silence guard. Below this the "peak" is numerical noise, and
@@ -713,7 +736,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 7
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##Multiband Distortion v0.7##"
+    Text: 0.5, "centre", 0.68, "half", "##Multiband Distortion v0.7.1##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.50}"
     Text: 0.5, "centre", 0.22, "half", vizName$ + " | " + presetName$ + " | splits " + fixed$(low_Split_Hz, 0) + "/" + fixed$(high_Split_Hz, 0) + " Hz | oversample " + string$(oversample) + "x"
@@ -943,7 +966,7 @@ procedure applyDistortion: .drive, .type, .gain
             # hard it hits the nonlinearity, and since each band has its own
             # drive the spectral balance moved too. v0.4's "restored on the
             # way out" was true of the peak scale but not of the drive.
-            # Compensation divides it back out so drive changes SHAPE only.
+            # Compensation removes Drive's linear-region gain; nonlinear shaping can still change band peak/RMS.
             if drive_compensation
                 .outScale = .gain * .pk / .drive
             else

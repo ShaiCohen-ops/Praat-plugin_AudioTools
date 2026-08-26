@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.5 (2026) - Suite-standard visualization
+# Version: 0.5.1 (2026) - QA corrections
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -38,7 +38,7 @@
 #   and even m = 0.99, the maximum the coefficient mode allows,
 #   gives only 2.26 ms. Use Memory_mode 2 to specify the time
 #   constant directly; it is sample-rate independent and reaches
-#   the range the preset names imply.
+#   musically useful lag times directly.
 #
 #   Implementation note: Praat's Formula iterates left-to-right
 #   modifying `self` in place. Inside one formula evaluation,
@@ -52,6 +52,27 @@
 #   Cohen, S. (2025). Praat AudioTools: An Offline Analysis-Resynthesis
 #   Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v0.5.1 (2026):
+#   - FIXED: coefficient-mode Hysteresis_Memory = 1.0 no longer
+#     attempts to compute -1/(fs*ln(1)) while building the warning
+#     text. Exactly 1 is reported as a non-decaying/infinite-time
+#     state; values above 1 are reported as outside the stable range;
+#     both are reduced to 0.99 as before.
+#   - CORRECTED: negative coefficient values are described as
+#     unsupported, not inherently unstable; the script still raises
+#     them to 0 to keep the intended non-negative memory model.
+#   - RENAMED the global peak-scaling mode from "Conditional limiter"
+#     to "Attenuate to 0.95 only if peak > 0.95"; DSP unchanged.
+#   - RENAMED physically suggestive presets to describe the actual
+#     algorithm: Warm Saturation, Dark Lag Saturation, Biased Lag
+#     Saturation, Sluggish Fuzz, Hard Saturation. Preset values are
+#     unchanged.
+#   - CLARIFIED preset scope: preset memory coefficients apply only in
+#     coefficient mode; Memory_time_ms remains the active manual control
+#     in time-constant mode.
+#   - CORRECTED spectrum wording: matched peak removes the global level
+#     difference; it does not isolate harmonics.
 #
 # Changelog v0.5 (2026):
 #   - VISUALIZATION STANDARDIZATION ONLY; audio/DSP, analysis,
@@ -160,17 +181,17 @@
 # ============================================================
 
 # === Form ===
-form Hysteresis Distortion v0.5
+form Hysteresis Distortion v0.5.1
     comment Select a Sound object first
     
     comment === Preset ===
     optionmenu Preset: 1
         option Manual (use settings below)
-        option Warm Tape Saturation
-        option Dark Transformer
-        option Offset Magnetics
+        option Warm Saturation
+        option Dark Lag Saturation
+        option Biased Lag Saturation
         option Sluggish Fuzz
-        option Hard Saturation Limiter
+        option Hard Saturation
 
     comment === Parameters ===
     real Drive 2.0
@@ -178,6 +199,7 @@ form Hysteresis Distortion v0.5
     optionmenu Memory_mode: 1
         option Per-sample coefficient (v0.2/v0.3)
         option Time constant in ms (sample-rate independent)
+    comment (preset memory values apply only in coefficient mode)
     real Hysteresis_Memory 0.3
     comment (coefficient mode; see the report for the time it really gives)
     real Memory_time_ms 5.0
@@ -189,12 +211,12 @@ form Hysteresis Distortion v0.5
     comment === Output ===
     optionmenu Output_level: 3
         option Preserve shaped level
-        option Conditional limiter to 0.95
+        option Attenuate to 0.95 only if peak > 0.95
         option Normalize to 0.95 (v0.2/v0.3)
     boolean Show_spectrum 0
-    comment (ON shows harmonic enrichment, but adds analysis time)
+    comment (ON shows spectral change, but adds analysis time)
     optionmenu Spectrum_reference: 1
-        option Matched peak (isolates harmonics)
+        option Matched peak (removes global level difference)
         option Absolute rendered levels
     boolean Draw_visualization 1
     positive Loop_test_frequency_Hz 220
@@ -227,19 +249,19 @@ xmaxOrig = Get end time
 if preset = 1
     presetName$ = "Manual"
 elsif preset = 2
-    presetName$ = "WarmTape"
+    presetName$ = "WarmSaturation"
     drive = 1.5
     hysteresis_Memory = 0.25
     asymmetry_Bias = 0.0
     output_Gain = 0.95
 elsif preset = 3
-    presetName$ = "DarkTransformer"
+    presetName$ = "DarkLagSaturation"
     drive = 2.5
     hysteresis_Memory = 0.75
     asymmetry_Bias = 0.0
     output_Gain = 0.8
 elsif preset = 4
-    presetName$ = "OffsetMagnetics"
+    presetName$ = "BiasedLagSaturation"
     drive = 3.0
     hysteresis_Memory = 0.4
     asymmetry_Bias = 0.2
@@ -258,7 +280,8 @@ elsif preset = 6
     # does is drive 20 into a near-binary tanh and normalize. Named for
     # that. Output object name changes from _hysteresis_InfiniteSustain
     # to _hysteresis_HardSatLimiter.
-    presetName$ = "HardSatLimiter"
+    # v0.5.1: current neutral name is Hard Saturation / HardSaturation.
+    presetName$ = "HardSaturation"
     drive = 20.0
     hysteresis_Memory = 0.1
     asymmetry_Bias = 0.0
@@ -270,10 +293,10 @@ endif
 # so the lag it produces is tau = -1 / (fs * ln(m)) - a quantity in
 # samples, not in musical time. At 44.1 kHz that makes the presets far
 # faster than their names suggest:
-#     m = 0.10 (Hard Sat Limiter) -> tau 0.0098 ms
-#     m = 0.25 (Warm Tape)        -> tau 0.0164 ms
+#     m = 0.10 (Hard Saturation)  -> tau 0.0098 ms
+#     m = 0.25 (Warm Saturation)  -> tau 0.0164 ms
 #     m = 0.30 (form default)     -> tau 0.0188 ms
-#     m = 0.75 (Dark Transformer) -> tau 0.0788 ms  (95% in 0.24 ms)
+#     m = 0.75 (Dark Lag Sat.)    -> tau 0.0788 ms  (95% in 0.24 ms)
 #     m = 0.90 (form's "heavy lag") -> tau 0.2152 ms
 #     m = 0.99 (the maximum allowed) -> tau 2.2562 ms
 # So "heavy lag" settles in under a millisecond, and even the ceiling
@@ -301,15 +324,18 @@ else
     # 227 ms to 2.26 ms - a hundredfold change, unannounced.
     if hysteresis_Memory >= 1.0
         hysteresis_Memory = 0.99
-        memNotes$ = memNotes$ + "  NOTE: Hysteresis_Memory of " + fixed$(memReq, 6)
-            ... + " was reduced to 0.99 for stability. That is a large change: "
-            ... + fixed$(memReq, 6) + " would give a time constant of "
-            ... + fixed$(-1 / (sr * ln(memReq)) * 1000, 2) + " ms, while 0.99 gives "
-            ... + fixed$(-1 / (sr * ln(0.99)) * 1000, 2) + " ms. Use Memory_mode 2 to set the time directly." + newline$
+        if memReq = 1.0
+            memNotes$ = memNotes$ + "  NOTE: Hysteresis_Memory = 1.0 is a non-decaying state (infinite time constant), so it was reduced to 0.99 for stability. 0.99 gives a time constant of "
+                ... + fixed$(-1 / (sr * ln(0.99)) * 1000, 2) + " ms at this sample rate. Use Memory_mode 2 to set the time directly." + newline$
+        else
+            memNotes$ = memNotes$ + "  NOTE: Hysteresis_Memory of " + fixed$(memReq, 6)
+                ... + " is outside the stable coefficient range (it must be below 1.0), so it was reduced to 0.99. 0.99 gives a time constant of "
+                ... + fixed$(-1 / (sr * ln(0.99)) * 1000, 2) + " ms at this sample rate. Use Memory_mode 2 to set the time directly." + newline$
+        endif
     endif
     if hysteresis_Memory < 0
         hysteresis_Memory = 0
-        memNotes$ = memNotes$ + "  NOTE: Hysteresis_Memory of " + fixed$(memReq, 4) + " was raised to 0 (negative memory is unstable)." + newline$
+        memNotes$ = memNotes$ + "  NOTE: Hysteresis_Memory of " + fixed$(memReq, 4) + " is unsupported by this non-negative memory model and was raised to 0." + newline$
     endif
     if hysteresis_Memory > 0
         memTau = -1 / (sr * ln(hysteresis_Memory)) * 1000
@@ -326,7 +352,7 @@ else
 endif
 
 # === Info ===
-writeInfoLine: "=== Hysteresis Distortion v0.5 ==="
+writeInfoLine: "=== Hysteresis Distortion v0.5.1 ==="
 appendInfoLine: "Source: ", origName$, " (", fixed$(duration, 2), " s, ", input_n_channels, " ch, starts at ", fixed$(xminOrig, 3), " s)"
 appendInfoLine: "Preset: ", presetName$
 if memNotes$ <> ""
@@ -399,8 +425,8 @@ Formula: ~ self * output_Gain
 # max|y| for every non-zero g - so gains of 0.4, 0.8 and 2.0 gave
 # identical output. The parameter was displayed and reported while
 # controlling nothing. Normalize stays the default so v0.3 renders
-# reproduce; the conditional limiter is the setting that makes
-# Output_Gain real.
+# reproduce; conditional attenuation is the setting that preserves
+# the magnitude effect of Output_Gain unless the peak exceeds 0.95.
 selectObject: result
 prePeak = Get absolute extremum: 0, 0, "None"
 
@@ -412,7 +438,7 @@ elsif output_level = 2
         selectObject: result
         Scale peak: 0.95
         levelScale = 0.95 / prePeak
-        levelDesc$ = "limited to 0.95"
+        levelDesc$ = "attenuated to 0.95"
     else
         levelDesc$ = "unchanged (below 0.95)"
     endif
@@ -489,8 +515,8 @@ if draw_visualization
         endif
         
         # v0.4 (item 3): v0.3 took the original at its own level and the
-        # result AFTER `Scale peak: 0.95`, so the panel labelled
-        # "harmonic enrichment" also carried the whole normalization
+        # result AFTER `Scale peak: 0.95`, so the old panel description
+        # also carried the whole normalization
         # gain. A source peaking at 0.1 is lifted nearly 9.5x - close to
         # 20 dB of difference that has nothing to do with saturation.
         # Both sides are matched by default.
@@ -505,7 +531,7 @@ if draw_visualization
             if rPk > 0
                 Scale peak: 0.95
             endif
-            specRefLabel$ = "matched peak"
+            specRefLabel$ = "matched peak; global level removed"
         else
             specRefLabel$ = "absolute levels"
         endif
@@ -533,7 +559,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##Hysteresis Distortion v0.5##"
+    Text: 0.5, "centre", 0.68, "half", "##Hysteresis Distortion v0.5.1##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
     Text: 0.5, "centre", 0.22, "half",
