@@ -5,6 +5,39 @@
 # Email: shai.cohen@biu.ac.il
 # Version: 0.2 (2026)
 #
+# Changelog v0.6:
+#   - Sustain to next onset (%): legato control. Extends each note toward the
+#     next onset IN ITS OWN VOICE LAYER - 0 leaves the score alone, 100 is
+#     fully legato - and never creates an overlap, because the ceiling is
+#     that next onset. Worth having because Basic Pitch ends a note when the
+#     frame activation drops under frame_threshold, which on decaying
+#     material happens well before the note is inaudible: note ends come out
+#     systematically early and the notated score fills with rests the ear
+#     does not hear.
+#     The ceiling is the earliest next onset across BOTH the notation layers
+#     and the (capped) TextGrid layers, which diverge once MAX_VOICES binds.
+#     A note with no next onset in its layer is left alone rather than run to
+#     the end of the piece.
+#     Verified: no overlap created in any TextGrid layer at 0/25/50/75/100%
+#     on both the 6-note and 19-note versions of the test score, and music21
+#     still notates with zero mis-filled measures at 100%.
+#   - FORM ARGUMENT ORDER CHANGED: one new field after Merge_gap_ms.
+#
+# Changelog v0.5:
+#   - Preset no longer silently discards typed values. It always did override
+#     Onset/Frame/Minimum note length, which made the script look UNSTABLE:
+#     the same typed settings give 4 notes or 19 depending on a menu the user
+#     may never have touched, and Praat remembers form values between runs.
+#     The form now says so, the default is Custom rather than a preset, and
+#     any override that actually changed a value is reported in the Info
+#     window with the before/after numbers.
+#   - FORM DEFAULT CHANGED: Preset now defaults to Custom, so the sensitivity
+#     fields are honoured unless a preset is deliberately chosen.
+#   - The Info window now prints WHICH basic_pitch_transcriber.py is running.
+#     The plugin copy takes precedence over the file beside the script, so a
+#     stale plugin_AudioTools/py/ copy silently shadows a fresh download and
+#     looks exactly like an edit having no effect.
+#
 # Changelog v0.4:
 #   - Merge_repeated_notes: rejoins notes the MODEL split into repeated
 #     onsets. Basic Pitch analyses ~2 s windows and re-decides note identity
@@ -174,10 +207,11 @@ endproc
 @cleanUpTempFiles
 
 # ---- FORM ----
-form Basic Pitch Transcriber v0.4
+form Basic Pitch Transcriber v0.6
     comment Basic Pitch (ICASSP 2022) sensitivity - lower thresholds find more notes
-    optionmenu Preset: 3
-        option Custom
+    comment A preset OVERRIDES the three fields below it. Pick Custom to use your own.
+    optionmenu Preset: 1
+        option Custom (use my values below)
         option Solo instrument (clean)
         option Polyphonic / piano
         option Sensitive (quiet or noisy)
@@ -195,6 +229,8 @@ form Basic Pitch Transcriber v0.4
         option window artifacts only (safe)
         option any gap under N ms (destroys real repeats)
     positive Merge_gap_ms 120
+    comment Legato: extend each note toward the next onset in its voice (0 = off)
+    real Sustain_to_next_onset_percent 0
     comment Notation
     positive Score_tempo_BPM 120
     optionmenu Quantize_grid: 3
@@ -217,6 +253,11 @@ form Basic Pitch Transcriber v0.4
 endform
 
 # ---- PRESET APPLICATION ----
+# Remember the typed values so the override can be reported honestly.
+form_onset = onset_threshold
+form_frame = frame_threshold
+form_minlen = minimum_note_length_ms
+
 if preset = 2
     # Solo instrument - a clean monophonic or near-monophonic line. Higher
     # thresholds, longer minimum note: suppresses the model's tendency to
@@ -248,6 +289,26 @@ elsif preset = 5
     presetName$ = "Sparse"
 else
     presetName$ = "Custom"
+endif
+
+# A preset REPLACES whatever is in the three sensitivity fields. Silently
+# discarding a typed value looks exactly like the script being unstable -
+# the same entries give 4 notes or 19 depending on a menu the user may never
+# have touched, and Praat remembers form values between runs. So the
+# override is reported whenever it actually changed something.
+presetOverrode = 0
+if preset > 1
+    if onset_threshold <> form_onset or frame_threshold <> form_frame
+        ... or minimum_note_length_ms <> form_minlen
+        presetOverrode = 1
+    endif
+endif
+
+if sustain_to_next_onset_percent < 0
+    sustain_to_next_onset_percent = 0
+endif
+if sustain_to_next_onset_percent > 100
+    sustain_to_next_onset_percent = 100
 endif
 
 if merge_repeated_notes = 1
@@ -323,9 +384,17 @@ nChannels = Get number of channels
 
 # ---- INFO ----
 clearinfo
-writeInfoLine:  "=== Basic Pitch Transcriber v0.4 ==="
+writeInfoLine:  "=== Basic Pitch Transcriber v0.6 ==="
 appendInfoLine: "Input: ", soundName$
 appendInfoLine: "Preset: ", presetName$
+if presetOverrode
+    appendInfoLine: ""
+    appendInfoLine: "  NOTE: preset ", presetName$, " REPLACED your typed values:"
+    appendInfoLine: "        onset ", fixed$(form_onset, 2), " -> ", fixed$(onset_threshold, 2),
+        ... " | frame ", fixed$(form_frame, 2), " -> ", fixed$(frame_threshold, 2),
+        ... " | min length ", fixed$(form_minlen, 0), " -> ", fixed$(minimum_note_length_ms, 0), " ms"
+    appendInfoLine: "        Set Preset to Custom to use your own values."
+endif
 appendInfoLine: ""
 appendInfoLine: "Duration:      ", fixed$(dur, 2), " s | SR: ", sr, " Hz | Channels: ", nChannels
 appendInfoLine: "Onset thr.:    ", fixed$(onset_threshold, 2)
@@ -374,6 +443,10 @@ if missingPkgs$ <> "ok" and missingPkgs$ <> "?"
 endif
 
 appendInfoLine: "  Python ", pyVersion$, " at ", pythonCmd$
+# The plugin copy WINS over the file next to this script. A stale
+# plugin_AudioTools/py/ copy is otherwise invisible and looks exactly like
+# "my edits had no effect", so the path actually in use is always printed.
+appendInfoLine: "  Engine: ", pythonScript$
 appendInfoLine: "  Optional modules present: ", optionalPkgs$
 if backendStr$ = "music21" and index(optionalPkgs$, "music21") = 0
     appendInfoLine: "  NOTE: music21 was requested but is not installed;"
@@ -424,6 +497,7 @@ nocheck runSubprocess: pythonCmd$, pythonScript$,
     ... "--melodia_trick", string$(melodia_trick),
     ... "--merge_mode", mergeStr$,
     ... "--merge_gap_ms", fixed$(merge_gap_ms, 2),
+    ... "--sustain_percent", fixed$(sustain_to_next_onset_percent, 2),
     ... "--multiple_pitch_bends", "0",
     ... "--tempo_bpm", fixed$(score_tempo_BPM, 2),
     ... "--quantize_grid", gridStr$,
@@ -516,6 +590,8 @@ xmlBytes$ = parseStatLine.result$
 predictSec$ = parseStatLine.result$
 @parseStatLine: statsText$, "notate_seconds="
 notateSec$ = parseStatLine.result$
+@parseStatLine: statsText$, "sustained_notes="
+sustainedNotes$ = parseStatLine.result$
 @parseStatLine: statsText$, "merged_onsets="
 mergedOnsets$ = parseStatLine.result$
 @parseStatLine: statsText$, "warning="
@@ -674,7 +750,7 @@ if draw_visualization
     Select inner viewport: 0.6, 7.7, 0.05, 0.45
     Axes: 0, 1, 0, 1
     Colour: "{0.20, 0.20, 0.40}"
-    @picSafe: "Basic Pitch Transcriber v0.4 - " + soundName$
+    @picSafe: "Basic Pitch Transcriber v0.6 - " + soundName$
     Text: 0.5, "centre", 0.5, "half", picSafe.out$
     Colour: "Black"
 
@@ -1014,6 +1090,10 @@ appendInfoLine: "Notes detected:  ", noteCount$
 appendInfoLine: "Pitch range:     ", pitchMinName$, " - ", pitchMaxName$,
     ... " (MIDI ", pitchMinMidi, "-", pitchMaxMidi, ")"
 appendInfoLine: "Merge mode:      ", mergeStr$, " (", mergedOnsets$, " onsets rejoined)"
+if sustain_to_next_onset_percent > 0
+    appendInfoLine: "Sustain:         ", fixed$(sustain_to_next_onset_percent, 0),
+        ... "% (", sustainedNotes$, " note ends extended)"
+endif
 appendInfoLine: "Max polyphony:   ", polyMax$
 appendInfoLine: "Voice layers:    ", voicesUsed$
 if number(unplaced$) > 0

@@ -459,6 +459,59 @@ def pitch_histogram(notes):
     return lo, hi, hist
 
 
+def sustain_to_next_onset(notes, percent, tol=1e-9):
+    """Extend each note toward the next onset in its own voice layer.
+
+    0 % leaves the score untouched; 100 % is fully legato. Never creates an
+    overlap, because each note's ceiling is the next onset in its layer.
+
+    Why this is worth having rather than cosmetic: Basic Pitch ends a note
+    when the frame activation falls under frame_threshold, which on decaying
+    material happens well before the note is inaudible. So note ends are
+    systematically early, and the notated score is full of rests the ear does
+    not hear.
+
+    The ceiling is the earliest next-onset across BOTH layer assignments -
+    the uncapped notation layers and the capped TextGrid layers. Those agree
+    until the MAX_VOICES cap binds; past it they diverge, and honouring only
+    one would let a note overlap its neighbour in the other, which would
+    corrupt the TextGrid boundaries or the notated voice.
+
+    A note with no next onset in its layer is LEFT ALONE rather than run out
+    to the end of the piece: "sustain to next onset" has no defined target
+    when there is no next onset, and stretching to the end would invent a
+    duration the model never suggested.
+    """
+    if percent <= 0 or not notes:
+        return notes, 0
+
+    frac = min(float(percent), 100.0) / 100.0
+    limit = [None] * len(notes)
+
+    for key in ("nvoice", "voice"):
+        layers = {}
+        for i, n in enumerate(notes):
+            v = n.get(key, -1)
+            if v is not None and v >= 0:
+                layers.setdefault(v, []).append(i)
+        for v in layers:
+            order = sorted(layers[v], key=lambda i: notes[i]["start"])
+            for a, b in zip(order, order[1:]):
+                nxt = notes[b]["start"]
+                if limit[a] is None or nxt < limit[a]:
+                    limit[a] = nxt
+
+    extended = 0
+    for i, n in enumerate(notes):
+        if limit[i] is None:
+            continue
+        room = limit[i] - n["end"]
+        if room > tol:
+            n["end"] = n["end"] + frac * room
+            extended += 1
+    return notes, extended
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Stage 3 — Notation
 # ═══════════════════════════════════════════════════════════════════════════
@@ -796,6 +849,8 @@ def write_stats(path, args, notes, duration, sample_rate, n_channels,
         f.write("minimum_frequency_hz=%.1f\n" % args.minimum_frequency_hz)
         f.write("maximum_frequency_hz=%.1f\n" % args.maximum_frequency_hz)
         f.write("merge_mode=%s\n" % args.merge_mode)
+        f.write("sustain_percent=%.1f\n" % args.sustain_percent)
+        f.write("sustained_notes=%d\n" % getattr(args, "_sustained", 0))
         f.write("merged_onsets=%d\n" % getattr(args, "_merged", 0))
         f.write("window_hop_seconds=%.6f\n" % getattr(args, "_hop", 0.0))
         f.write("melodia_trick=%s\n" % ("yes" if args.melodia_trick else "no"))
@@ -900,6 +955,7 @@ def main():
                         choices=["off", "grid", "gap"])
     parser.add_argument("--merge_gap_ms", type=float, default=120.0)
     parser.add_argument("--merge_tolerance_ms", type=float, default=30.0)
+    parser.add_argument("--sustain_percent", type=float, default=0.0)
 
     parser.add_argument("--tempo_bpm", type=float, default=120.0)
     parser.add_argument("--quantize_grid", type=str, default="1/16",
@@ -984,6 +1040,11 @@ def main():
     if unplaced:
         warnings.append("%d notes exceeded %d voice layers and are not in the "
                         "TextGrid" % (unplaced, MAX_VOICES))
+    notes, n_sustained = sustain_to_next_onset(notes, args.sustain_percent)
+    if args.sustain_percent > 0:
+        log("      sustain %.0f%%: %d note end(s) extended"
+            % (args.sustain_percent, n_sustained))
+
     poly_counts, poly_max = polyphony_curve(notes, duration)
     hist_lo, hist_hi, hist = pitch_histogram(notes)
 
@@ -1043,6 +1104,7 @@ def main():
 
     args._notation_voices = n_notation_voices
     args._merged = n_merged
+    args._sustained = n_sustained
     args._hop = hop
     log("[4/4] Writing stats.txt and notes.csv...")
     if args.notes_csv:
