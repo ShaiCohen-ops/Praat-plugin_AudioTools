@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.5 (2026) - Suite-standard visualization
+# Version: 0.5.1 (2026) - Suite-standard visualization
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -23,6 +23,14 @@
 #   - Medium shifts (50-300 Hz): metallic, bell-like, robotic
 #   - Large shifts (>500 Hz): alien, unintelligible speech
 #   - Negative shifts: darker, subharmonic content
+#
+# Changelog v0.5.1 (2026):
+#   - Pre_limit_to_avoid_aliasing now filters the WET source only. The
+#     dry path always comes from the untouched work copy, so 0% wet at
+#     Natural level is a true sample-for-sample bypass.
+#   - If an upward shift leaves <=100 Hz below Nyquist, the requested
+#     pre-limit is explicitly reported as unavailable instead of being
+#     displayed as if it had been applied.
 #
 # Changelog v0.5 (2026):
 #   - VISUALIZATION STANDARDIZATION ONLY; audio processing, analysis,
@@ -114,7 +122,7 @@
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 # ============================================================
 
-form Frequency Shifter v0.5
+form Frequency Shifter v0.5.1
     optionmenu Preset: 1
         option Custom
         option Subtle Detune (15 Hz)
@@ -237,7 +245,7 @@ endif
 omega = 2 * pi * shift_hz
 aliasEdge = nyquist - abs(shift_hz)
 
-writeInfoLine: "Frequency Shifter v0.5"
+writeInfoLine: "Frequency Shifter v0.5.1"
 appendInfoLine: "======================"
 appendInfoLine: "Input: ", originalName$, " (", fixed$(duration, 2), " s, ", numChannels,
     ... " ch, ", sampleRate, " Hz)"
@@ -245,15 +253,30 @@ appendInfoLine: "Shift: ", fixed$(shift_hz, 2), " Hz | Mix: ", fixed$(dry_wet_mi
 appendInfoLine: ""
 
 # Shifting up moves content past Nyquist, where it folds back.
+# The pre-limit, when available, belongs to the WET path only.
+preLimitApplied = 0
+preLimitUnavailable = 0
+if pre_limit_to_avoid_aliasing and shift_hz > 0
+    if aliasEdge > 100
+        preLimitApplied = 1
+    else
+        preLimitUnavailable = 1
+    endif
+endif
+
 if shift_hz > 0
     appendInfoLine: "NOTE: content above ", fixed$(aliasEdge, 0), " Hz will pass Nyquist and"
     appendInfoLine: "      alias back down. Measured on a corrected core: 7500 Hz at a"
     appendInfoLine: "      16 kHz rate shifted +1200 Hz returned 7300 Hz, not 8700 Hz."
-    if pre_limit_to_avoid_aliasing
-        appendInfoLine: "      Pre-limit is ON: the input is low-passed at ",
-            ... fixed$(aliasEdge, 0), " Hz first."
+    if preLimitApplied
+        appendInfoLine: "      Pre-limit is ON for the WET path: low-pass at ",
+            ... fixed$(aliasEdge, 0), " Hz before shifting."
+    elsif preLimitUnavailable
+        appendInfoLine: "      WARNING: pre-limit was requested, but only ",
+            ... fixed$(aliasEdge, 0), " Hz remains below Nyquist."
+        appendInfoLine: "      The anti-alias pre-filter is therefore not applied; aliasing can remain."
     else
-        appendInfoLine: "      Set Pre_limit_to_avoid_aliasing to remove it beforehand."
+        appendInfoLine: "      Set Pre_limit_to_avoid_aliasing to remove it from the wet path beforehand."
     endif
     appendInfoLine: ""
 endif
@@ -279,11 +302,15 @@ selectObject: sound
 workSound = Copy: "fs_work"
 Shift times to: "start time", 0
 
-if pre_limit_to_avoid_aliasing and shift_hz > 0 and aliasEdge > 100
-    selectObject: workSound
-    limited = Filter (pass Hann band): 0, aliasEdge, 100
-    removeObject: workSound
-    workSound = limited
+# Keep an untouched workSound for the dry path. Anti-alias limiting is
+# applied only to this separate wet source, never to the dry signal.
+selectObject: workSound
+wetSource = Copy: "fs_wet_source"
+if preLimitApplied
+    selectObject: wetSource
+    limitedWet = Filter (pass Hann band): 0, aliasEdge, 100
+    removeObject: wetSource
+    wetSource = limitedWet
 endif
 
 # ============================================================
@@ -487,16 +514,23 @@ endproc
 appendInfoLine: "Processing ", numChannels, " channel(s)..."
 
 for ch from 1 to numChannels
+    # Dry always comes from the untouched work copy. The shifted source
+    # comes from wetSource, which may have been pre-limited.
     if numChannels = 1
         selectObject: workSound
         chDry[ch] = Copy: "fs_dry"
+        selectObject: wetSource
+        chShiftIn = Copy: "fs_shift_in"
     else
         selectObject: workSound
         chDry[ch] = Extract one channel: ch
+        selectObject: wetSource
+        chShiftIn = Extract one channel: ch
     endif
 
-    @shiftChannel: chDry[ch]
+    @shiftChannel: chShiftIn
     chWet[ch] = selected("Sound")
+    removeObject: chShiftIn
 
     if dry_wet_mix < 1
         selectObject: chWet[ch]
@@ -628,7 +662,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##Frequency Shifter v0.5##"
+    Text: 0.5, "centre", 0.68, "half", "##Frequency Shifter v0.5.1##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.50}"
     Text: 0.5, "centre", 0.22, "half", suiteVizName$ + " | " + preset$
@@ -664,12 +698,14 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
 
-    if pre_limit_to_avoid_aliasing and shift_hz > 0
-        aliasStr$ = "pre-limited at " + fixed$(aliasEdge, 0) + " Hz"
+    if preLimitApplied
+        aliasStr$ = "wet pre-limited at " + fixed$(aliasEdge, 0) + " Hz"
+    elsif preLimitUnavailable
+        aliasStr$ = "pre-limit unavailable; aliasing can remain"
     elsif shift_hz > 0
         aliasStr$ = "content above " + fixed$(aliasEdge, 0) + " Hz aliases"
     else
-        aliasStr$ = "downward shift, no aliasing"
+        aliasStr$ = "downward shift, no Nyquist aliasing"
     endif
 
     Font size: 7
@@ -718,7 +754,7 @@ endif
 finalOutput = selected("Sound")
 finalName$ = selected$("Sound")
 
-removeObject: workSound
+removeObject: wetSource, workSound
 
 appendInfoLine: ""
 appendInfoLine: "======================"

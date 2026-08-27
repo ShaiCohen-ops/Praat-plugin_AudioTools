@@ -3,9 +3,14 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.3 (2026) - Suite-standard visualization
+# Version: 1.3.1 (2026) - zero-lag indexing fix
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v1.3.1 (2026):
+#   - Fixed zero-lag sample detection in the extracted autocorrelation IR.
+#   - The center sample at lag 0 is now removed as intended before spectral peak normalization.
+#   - All other audio processing and visualization behavior is unchanged.
 #
 # Changelog v1.3 (2026):
 #   - VISUALIZATION STANDARDIZATION ONLY; audio processing, analysis,
@@ -28,7 +33,7 @@ endif
 sound = selected("Sound")
 originalName$ = selected$("Sound")
 
-form Autocorrelation-Based Self-Filtering v1.3
+form Autocorrelation-Based Self-Filtering v1.3.1
     optionmenu Preset: 1
         option Manual
         option Tight/Metallic
@@ -99,7 +104,7 @@ endif
 # Setup & Parameter Validation
 # ============================================================
 clearinfo
-writeInfoLine: "=== Autocorrelation Self-Filtering v1.3 (Stereo Spatialization) ==="
+writeInfoLine: "=== Autocorrelation Self-Filtering v1.3.1 (Stereo Spatialization) ==="
 appendInfoLine: "Preset:          ", presetName$
 appendInfoLine: "Input:           ", originalName$
 appendInfoLine: ""
@@ -202,7 +207,7 @@ procedure processSingleChannel: .chanSound, .outChanName$, .lagVal
         
         # A. Find exact discrete zero-lag sample index
         selectObject: .irSound
-        .exactSample = Get sample number from time: .lagVal
+        .exactSample = Get sample number from time: 0
         .zeroLagSample = round(.exactSample)
         
         # B. Zero out center sample to isolate pure color tail
@@ -431,7 +436,7 @@ procedure drawVisualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##Autocorrelation-Based Self-Filtering v1.3##"
+    Text: 0.5, "centre", 0.68, "half", "##Autocorrelation-Based Self-Filtering v1.3.1##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.50}"
     Text: 0.5, "centre", 0.22, "half", suiteVizName$ + " | " + presetName$

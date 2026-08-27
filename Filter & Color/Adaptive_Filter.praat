@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.3 (2026) - Suite-standard visualization
+# Version: 1.4 (2026) - Visualization correctness + response panel
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -32,6 +32,46 @@
 #   Cohen, S. (2025). Praat AudioTools: An Offline Analysis-Resynthesis
 #   Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v1.4 (2026):
+#   - VISUALIZATION ONLY; audio processing, analysis, synthesis,
+#     object-management and output behaviour are byte-for-byte unchanged.
+#   - Drawing-frame fix. Praat derives a panel's inner margins from the
+#     CURRENT font size, so "Font size" issued AFTER "Select inner
+#     viewport" silently re-derives a wider frame. v1.3 did this in the
+#     title strip and in the plot, so the shading, the cutoff line and
+#     the left-hand ticks were all drawn to a frame about 0.37 in wider
+#     than the axis box that was drawn around them: the plot sat outside
+#     its own border. Every panel now sets the font first and re-issues
+#     "Select inner viewport" + "Axes" between drawing groups.
+#   - The time axis exists. v1.3 labelled the x axis "Time (s)" and drew
+#     no bottom marks at all, so no point in the sweep could be read off
+#     the picture. Marks are drawn on both axes with a step snapped to
+#     1/2/5 x 10^k, and frequency ticks are written with own labels so
+#     12000 reads "12k" instead of Praat's "1.2*10^4".
+#   - Endpoint labels land on their line ends. v1.3 wrote them after
+#     "Draw inner box" and "Marks left", which leave the drawing frame on
+#     the outer viewport, displacing the labels ~0.1 in.
+#   - The display range follows the sweep. v1.3 capped the axis at
+#     12 kHz; "Draw line" does not clip, so any sweep above that drew its
+#     cutoff across the panels below. The range is taken from the frame
+#     table (including the emphasis skirt) and every plotted value is
+#     clamped as well.
+#   - The summary border encloses the summary. It was drawn on a stale
+#     frame, ~0.06 in wide of the grey strip on every side.
+#   - NEW: the trajectory is drawn over a spectrogram of the input, so
+#     the sweep can be read against the material it sweeps over.
+#   - NEW: a response panel showing the actual gain curve at the start,
+#     middle and end of the sweep, with the gain AT the cutoff marked.
+#     The transition width, and whether the Gaussian emphasis is a peak
+#     or a dip below the passband, are invisible in a trajectory plot;
+#     this is the panel where Resonance_mode can be seen to do anything.
+#     @resp mirrors @filterSpectrum branch for branch - a change to one
+#     has to be made in the other.
+#   - Object names are escaped before drawing: _ ^ # % are markup in
+#     Picture text, so a Sound called "take_2" lost its underscore.
+#   - The page is filled. v1.3 declared an 8.00 in page and stopped
+#     drawing at 4.75 in, exporting 40% of the sheet blank.
 #
 # Changelog v1.3 (2026):
 #   - VISUALIZATION STANDARDIZATION ONLY; audio processing, analysis,
@@ -144,7 +184,7 @@ endif
 sound = selected("Sound")
 originalName$ = selected$("Sound")
 
-form Adaptive Filter v1.3
+form Adaptive Filter v1.4
     optionmenu Preset: 1
         option Custom
         option Rising Lowpass (dark to bright)
@@ -349,7 +389,7 @@ endif
 # SETUP
 # ============================================================
 clearinfo
-writeInfoLine: "=== Adaptive Filter v1.3 ==="
+writeInfoLine: "=== Adaptive Filter v1.4 ==="
 appendInfoLine: "Preset: ", preset$
 appendInfoLine: "Filter: ", filterType$, " | Curve: ", curve$, " | Window: ", quality$
 
@@ -580,6 +620,143 @@ endif
 appendInfoLine: ""
 
 # ============================================================
+# VISUALIZATION HELPERS
+# ============================================================
+# A tick step of span/N prints labels like 657 / 1314 / 1971.
+# Snap it to 1, 2 or 5 x 10^k so an axis reads in round numbers.
+procedure niceStep: .span, .target
+    .raw = .span / .target
+    if .raw <= 0
+        .step = 1
+    else
+        .mag = 10 ^ floor(log10(.raw))
+        .n = .raw / .mag
+        if .n < 1.5
+            .step = .mag
+        elsif .n < 3.5
+            .step = 2 * .mag
+        elsif .n < 7.5
+            .step = 5 * .mag
+        else
+            .step = 10 * .mag
+        endif
+    endif
+endproc
+
+# Praat writes 12000 as 1.2*10^4 on an axis. Own labels avoid that.
+procedure hzLabel: .v
+    if .v >= 1000
+        .out$ = fixed$(.v / 1000, 1)
+        .out$ = replace$(.out$, ".0", "", 0) + "k"
+    else
+        .out$ = fixed$(.v, 0)
+    endif
+endproc
+
+# _ ^ # % are markup in Picture text and are SWALLOWED, so an object
+# name like "take_2" loses its underscore and everything after "#" goes
+# bold. Escape them before any name reaches a Text command.
+procedure sanitize: .s$
+    .out$ = replace$(.s$, "_", "\_ ", 0)
+    .out$ = replace$(.out$, "#", "\# ", 0)
+    .out$ = replace$(.out$, "%", "\% ", 0)
+    .out$ = replace$(.out$, "^", "\^ ", 0)
+endproc
+
+# The filter response at one frequency, for one frame. This mirrors
+# @filterSpectrum branch for branch: the response panel has to be the
+# curve the audio is actually multiplied by, not an idealised drawing
+# of one. Any future change to @filterSpectrum has to be made here too.
+procedure resp: .k, .f
+    .cut = fCut[.k]
+    .low = fLow[.k]
+    .high = fHigh[.k]
+    .g = 0
+    if resonance > 0
+        .g = exp(-((.f - .cut) / resonance_bandwidth) ^ 2)
+    endif
+    .emph = 1 + resonance * .g
+    .peak = 1 + resonance
+
+    if filter_type = 1
+        .roll = 0.5 * (1 + cos(pi * (.f - .low) / (.high - .low)))
+        if resonance <= 0
+            if .f < .low
+                .out = 1
+            elsif .f > .high
+                .out = 0
+            else
+                .out = .roll
+            endif
+        elsif resonance_mode = 1
+            if .f > .high
+                .out = 0
+            elsif .f < .low
+                .out = .emph
+            else
+                .out = .emph * .roll
+            endif
+        else
+            if .f < .low
+                .out = .emph
+            elsif .f > .high
+                .out = .peak * .g
+            else
+                .out = .roll + (.peak - .roll) * .g
+            endif
+        endif
+
+    elsif filter_type = 2
+        .roll = 0.5 * (1 - cos(pi * (.f - .low) / (.high - .low)))
+        if resonance <= 0
+            if .f > .high
+                .out = 1
+            elsif .f < .low
+                .out = 0
+            else
+                .out = .roll
+            endif
+        elsif resonance_mode = 1
+            if .f < .low
+                .out = 0
+            elsif .f > .high
+                .out = .emph
+            else
+                .out = .emph * .roll
+            endif
+        else
+            if .f > .high
+                .out = .emph
+            elsif .f < .low
+                .out = .peak * .g
+            else
+                .out = .roll + (.peak - .roll) * .g
+            endif
+        endif
+
+    else
+        .bpLow = fBpLow[.k]
+        .bpHigh = fBpHigh[.k]
+        .loW = max(fLoWidth[.k], 1e-9)
+        .hiW = max(fHiWidth[.k], 1e-9)
+        .loRoll = 0.5 * (1 - cos(pi * (.f - .low) / .loW))
+        .hiRoll = 0.5 * (1 + cos(pi * (.f - .bpHigh) / .hiW))
+        if .f < .low or .f > .high
+            .out = 0
+        elsif .f < .bpLow
+            .out = .loRoll
+        elsif .f > .bpHigh
+            .out = .hiRoll
+        else
+            .out = 1
+        endif
+        if resonance > 0
+            .out = .out * .emph
+        endif
+    endif
+endproc
+
+# ============================================================
 # VISUALIZATION
 # ============================================================
 if draw_visualization
@@ -587,90 +764,122 @@ if draw_visualization
     pageHeight = 8.00
     Select outer viewport: 0, 8, 0, pageHeight
 
+    # --- Display range, derived from the frames that will actually run.
+    # v1.3 hard-capped the axis at 12 kHz, and "Draw line" does not clip,
+    # so a sweep above that drew its cutoff straight across the summary
+    # panel. The range follows the data now and every plotted value is
+    # clamped into it as well.
+    minFreqDisplay = 0
+    topEdge = 0
+    for k from 1 to nSegs
+        if fHigh[k] > topEdge
+            topEdge = fHigh[k]
+        endif
+        if resonance > 0
+            resTop = fCut[k] + 2.5 * resonance_bandwidth
+            if resTop > topEdge
+                topEdge = resTop
+            endif
+        endif
+    endfor
+    maxFreqDisplay = min(nyquist, topEdge * 1.15)
+    maxFreqDisplay = max(maxFreqDisplay, 500)
+
+    # Frames whose window overlaps the file at all
+    kFirst = 0
+    kLast = 1
+    for k from 1 to nSegs
+        vSegStart = (k - 1) * hopDur - padDur
+        if vSegStart + window_size_s > 0 and vSegStart < duration
+            if kFirst = 0
+                kFirst = k
+            endif
+            kLast = k
+        endif
+    endfor
+    if kFirst = 0
+        kFirst = 1
+    endif
+    kMid = round((kFirst + kLast) / 2)
+
+    @sanitize: originalName$
+    vizName$ = sanitize.out$
+    @sanitize: preset$
+    vizPreset$ = sanitize.out$
+
+    # --- Spectrogram of the input, as the backdrop for the trajectory.
+    # A swept cutoff only means something against the material it is
+    # sweeping over: this is what tells the user whether the filter
+    # crosses their partials or misses them entirely.
+    selectObject: sound
+    vizMono = Copy: "af_vizmono"
+    if numChannels > 1
+        Convert to mono
+        vizMonoTmp = selected("Sound")
+        removeObject: vizMono
+        vizMono = vizMonoTmp
+    endif
+    selectObject: vizMono
+    Shift times to: "start time", 0
+    vizWin = min(0.03, duration / 4)
+    vizWin = max(vizWin, 0.005)
+    vizStep = max(duration / 900, 0.0005)
+    vizSpec = To Spectrogram: vizWin, maxFreqDisplay, vizStep, 20, "Gaussian"
+
     # === TITLE ===
-    suiteVizName$ = replace$(originalName$, "_", "\_ ", 0)
+    # Font size BEFORE the viewport selection. Praat derives the inner
+    # viewport margins from the CURRENT font, so a font change made after
+    # the selection silently re-derives a wider frame and shifts every
+    # following Text and Draw outward - which is what pushed the v1.3
+    # plot outside its own axis box.
+    Font size: 12
     Select outer viewport: 0, 8, 0, 0.52
     Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
-    Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##Adaptive Filter v1.3##"
+    Text: 0.5, "centre", 0.68, "half", "##Adaptive Filter v1.4##"
+
     Font size: 7
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
+    Axes: 0, 1, 0, 1
     Colour: "{0.35, 0.35, 0.50}"
-    Text: 0.5, "centre", 0.22, "half", suiteVizName$ + " | " + preset$
+    Text: 0.5, "centre", 0.22, "half", vizName$ + " | " + vizPreset$ +
+    ... " | " + filterType$ + " | " + curve$
 
-    Select outer viewport: 0, 8, 0.6, 3.9
-    Select inner viewport: 0.6, 7.7, 0.7, 3.7
-
-    minFreqDisplay = 20
-    maxFreqDisplay = min(nyquist, 12000)
-
+    # ============================================================
+    # PANEL 1 - filter trajectory over the input spectrogram
+    # ============================================================
+    Font size: 7
+    Select outer viewport: 0, 8, 0.60, 3.70
+    Select inner viewport: 0.60, 7.70, 0.85, 3.40
     Axes: 0, duration, minFreqDisplay, maxFreqDisplay
-    Paint rectangle: "{0.97, 0.97, 0.98}", 0, duration, minFreqDisplay, maxFreqDisplay
 
-    # Shade the passband and the transition bands from the SAME arrays
-    # the audio uses, so this panel is a picture of the filter that ran.
-    for k from 1 to nSegs
-        segStart = (k - 1) * hopDur - padDur
-        segEnd = segStart + window_size_s
-        d1 = max(0, segStart)
-        d2 = min(duration, segEnd)
-        if d2 > d1
-            if filter_type = 1
-                Paint rectangle: "{0.85, 0.92, 1.0}", d1, d2, minFreqDisplay,
-                ... max(minFreqDisplay, min(fLow[k], maxFreqDisplay))
-                Paint rectangle: "{0.92, 0.95, 1.0}", d1, d2,
-                ... max(minFreqDisplay, min(fLow[k], maxFreqDisplay)),
-                ... max(minFreqDisplay, min(fHigh[k], maxFreqDisplay))
-            elsif filter_type = 2
-                Paint rectangle: "{0.85, 0.92, 1.0}", d1, d2,
-                ... max(minFreqDisplay, min(fHigh[k], maxFreqDisplay)), maxFreqDisplay
-                Paint rectangle: "{0.92, 0.95, 1.0}", d1, d2,
-                ... max(minFreqDisplay, min(fLow[k], maxFreqDisplay)),
-                ... max(minFreqDisplay, min(fHigh[k], maxFreqDisplay))
-            else
-                Paint rectangle: "{0.92, 0.95, 1.0}", d1, d2,
-                ... max(minFreqDisplay, min(fLow[k], maxFreqDisplay)),
-                ... max(minFreqDisplay, min(fHigh[k], maxFreqDisplay))
-                Paint rectangle: "{0.85, 0.92, 1.0}", d1, d2,
-                ... max(minFreqDisplay, min(fBpLow[k], maxFreqDisplay)),
-                ... max(minFreqDisplay, min(fBpHigh[k], maxFreqDisplay))
-            endif
-        endif
-    endfor
+    # A Spectrogram's own domain is inset by half its analysis window, so
+    # Paint leaves a bare sliver at each end of the panel. Filling first
+    # makes that read as panel background instead of blank page.
+    Paint rectangle: "{0.975, 0.975, 0.985}", 0, duration, minFreqDisplay, maxFreqDisplay
 
-    # Cutoff line, drawn frame to frame
-    Colour: "{0.80, 0.20, 0.20}"
-    Line width: 2
-    # Every frame whose WINDOW overlaps the file, with the plotted x
-    # clamped into range. v1.1 required the window CENTRE to fall inside
-    # [0, duration], so when the length was not a multiple of the hop the
-    # shading ran to the end frequency while the line stopped short of it.
+    selectObject: vizSpec
+    Paint: 0, duration, minFreqDisplay, maxFreqDisplay, 100, "yes", 42, 6, 0, "no"
+
+    # Paint leaves the axes on the spectrogram's own domain, so the
+    # panel geometry is re-established before anything is overlaid.
+    Select inner viewport: 0.60, 7.70, 0.85, 3.40
+    Axes: 0, duration, minFreqDisplay, maxFreqDisplay
+
+    # Transition edges first, so the cutoff line sits on top of them
+    # Dashed at width 1.5 rather than a dotted hairline: over a
+    # spectrogram a 1 px dotted line is barely visible, and Praat's
+    # on-screen renderer drops sub-pixel dashes altogether even though
+    # they survive a 300-dpi export.
+    Colour: "{0.10, 0.35, 0.75}"
+    Line width: 1.5
+    Dashed line
     prevSet = 0
     for k from 1 to nSegs
-        segStartC = (k - 1) * hopDur - padDur
-        segEndC = segStartC + window_size_s
-        if segEndC > 0 and segStartC < duration
-            plotX = min(max(segStartC + window_size_s / 2, 0), duration)
-            if prevSet = 1
-                Draw line: prevT, prevF, plotX, fCut[k]
-            endif
-            prevT = plotX
-            prevF = fCut[k]
-            prevSet = 1
-        endif
-    endfor
-    Line width: 1
-
-    # Transition edges
-    Colour: "{0.60, 0.60, 0.90}"
-    Dotted line
-    prevSet = 0
-    for k from 1 to nSegs
-        segStartC = (k - 1) * hopDur - padDur
-        segEndC = segStartC + window_size_s
-        if segEndC > 0 and segStartC < duration
-            plotX = min(max(segStartC + window_size_s / 2, 0), duration)
+        vSegStart = (k - 1) * hopDur - padDur
+        if vSegStart + window_size_s > 0 and vSegStart < duration
+            plotX = min(max(vSegStart + window_size_s / 2, 0), duration)
             if filter_type = 3
                 loEdge = fBpLow[k]
                 hiEdge = fBpHigh[k]
@@ -678,6 +887,8 @@ if draw_visualization
                 loEdge = fLow[k]
                 hiEdge = fHigh[k]
             endif
+            loEdge = min(max(loEdge, minFreqDisplay), maxFreqDisplay)
+            hiEdge = min(max(hiEdge, minFreqDisplay), maxFreqDisplay)
             if prevSet = 1
                 Draw line: prevT2, prevLo, plotX, loEdge
                 Draw line: prevT2, prevHi, plotX, hiEdge
@@ -690,35 +901,231 @@ if draw_visualization
     endfor
     Solid line
 
-    # Emphasis marker: labelled for what it is, not as Q
-    if resonance > 0
-        Colour: "{0.90, 0.60, 0.20}"
-        Font size: 7
-        if resonance_mode = 1
-            Text: duration * 0.98, "right", maxFreqDisplay * 0.94, "half",
-            ... "Emphasis " + fixed$(resonance, 2) + " (multiplied)"
-        else
-            Text: duration * 0.98, "right", maxFreqDisplay * 0.94, "half",
-            ... "Emphasis " + fixed$(resonance, 2) + " (peak at cutoff)"
+    # Cutoff / centre frequency
+    Colour: "{0.80, 0.20, 0.20}"
+    Line width: 2.5
+    prevSet = 0
+    for k from 1 to nSegs
+        vSegStart = (k - 1) * hopDur - padDur
+        if vSegStart + window_size_s > 0 and vSegStart < duration
+            plotX = min(max(vSegStart + window_size_s / 2, 0), duration)
+            plotF = min(max(fCut[k], minFreqDisplay), maxFreqDisplay)
+            if prevSet = 1
+                Draw line: prevT, prevF, plotX, plotF
+            endif
+            prevT = plotX
+            prevF = plotF
+            prevSet = 1
         endif
-    endif
-
+    endfor
     Line width: 1
+
+    # Endpoint readouts. In v1.3 these were written after Draw inner box
+    # and Marks left, both of which leave the drawing frame on the OUTER
+    # viewport, so the labels landed about 0.1 in outside the panel and
+    # sat visibly off their own line ends.
+    Select inner viewport: 0.60, 7.70, 0.85, 3.40
+    Axes: 0, duration, minFreqDisplay, maxFreqDisplay
+    @hzLabel: round(fCut[kFirst])
+    startLab$ = hzLabel.out$
+    @hzLabel: round(fCut[kLast])
+    endLab$ = hzLabel.out$
+    labY1 = min(max(fCut[kFirst], minFreqDisplay), maxFreqDisplay)
+    labY2 = min(max(fCut[kLast], minFreqDisplay), maxFreqDisplay)
+    labH = (maxFreqDisplay - minFreqDisplay) * 0.055
+    # Red on a mid-grey spectrogram is marginal and on a dark band it is
+    # unreadable, so each readout gets its own patch to sit on.
+    labY1 = min(labY1, maxFreqDisplay - labH)
+    labY2 = min(labY2, maxFreqDisplay - labH)
+    Paint rectangle: "White", duration * 0.008, duration * 0.115,
+    ... labY1 + labH * 0.10, labY1 + labH
+    Paint rectangle: "White", duration * 0.885, duration * 0.992,
+    ... labY2 + labH * 0.10, labY2 + labH
+
+    Select inner viewport: 0.60, 7.70, 0.85, 3.40
+    Axes: 0, duration, minFreqDisplay, maxFreqDisplay
+    Colour: "{0.80, 0.20, 0.20}"
+    Text: duration * 0.015, "left", labY1 + labH * 0.10, "bottom", startLab$ + " Hz"
+    Text: duration * 0.985, "right", labY2 + labH * 0.10, "bottom", endLab$ + " Hz"
+
+    # Frame, ticks and axis labels last, on a freshly re-established frame
+    Select inner viewport: 0.60, 7.70, 0.85, 3.40
+    Axes: 0, duration, minFreqDisplay, maxFreqDisplay
     Colour: "Black"
+    Line width: 1
     Draw inner box
-    Font size: 7
+
+    @niceStep: duration, 8
+    tStep = niceStep.step
+    Marks bottom every: 1, tStep, "yes", "yes", "no"
+    @niceStep: maxFreqDisplay, 6
+    fStep = niceStep.step
+    One mark left: 0, "no", "yes", "no", "0"
+    mk = fStep
+    while mk < maxFreqDisplay * 0.999
+        @hzLabel: mk
+        One mark left: mk, "no", "yes", "no", hzLabel.out$
+        mk = mk + fStep
+    endwhile
     Text left: "yes", "Frequency (Hz)"
     Text bottom: "yes", "Time (s)"
-    Marks left every: 1, 2000, "yes", "yes", "no"
 
-    Colour: "{0.20, 0.20, 0.80}"
+    # === LEGEND ===
+    # Its own strip rather than a floating label inside the panel: over a
+    # spectrogram there is no reliable patch of background to write on.
+    Font size: 6
+    Select outer viewport: 0, 8, 3.80, 4.14
+    Select inner viewport: 0.60, 7.70, 3.88, 4.06
+    Axes: 0, 1, 0, 1
+    Colour: "{0.80, 0.20, 0.20}"
+    Line width: 2
+    Draw line: 0.005, 0.5, 0.045, 0.5
+    Line width: 1
+    Colour: "{0.10, 0.35, 0.75}"
+    Line width: 1.5
+    Dashed line
+    Draw line: 0.235, 0.5, 0.275, 0.5
+    Solid line
+    Line width: 1
+
+    Select inner viewport: 0.60, 7.70, 3.88, 4.06
+    Axes: 0, 1, 0, 1
+    Colour: "{0.28, 0.28, 0.28}"
+    if filter_type = 3
+        Text: 0.055, "left", 0.5, "half", "band centre"
+        Text: 0.285, "left", 0.5, "half", "passband edges"
+    else
+        Text: 0.055, "left", 0.5, "half", "cutoff"
+        Text: 0.285, "left", 0.5, "half", "transition band edges"
+    endif
+    Text: 0.60, "left", 0.5, "half", "backdrop: input spectrogram (42 dB range)"
+
+    # ============================================================
+    # PANEL 2 - the response the audio is actually multiplied by
+    # ============================================================
+    # v1.3 drew where the filter was but never what it did. Everything
+    # that is easy to get wrong here - how wide the transition is, and
+    # whether the Gaussian emphasis is a peak or a dip below the passband
+    # - is invisible in a trajectory plot and obvious in this one.
+    nPts = 600
+    maxH = 1
+    for j from 0 to nPts
+        fj = minFreqDisplay + (maxFreqDisplay - minFreqDisplay) * j / nPts
+        vizF[j] = fj
+        @resp: kFirst, fj
+        rA[j] = resp.out
+        @resp: kMid, fj
+        rB[j] = resp.out
+        @resp: kLast, fj
+        rC[j] = resp.out
+        maxH = max(maxH, max(rA[j], max(rB[j], rC[j])))
+    endfor
+    yTop = max(1.15, maxH * 1.12)
+
     Font size: 7
-    Text: duration * 0.02, "left", fCut[1], "half", string$(round(fCut[1])) + " Hz"
-    Text: duration * 0.98, "right", fCut[nSegs], "half", string$(round(fCut[nSegs])) + " Hz"
+    Select outer viewport: 0, 8, 4.20, 6.60
+    Select inner viewport: 0.60, 7.70, 4.45, 6.35
+    Axes: 0, maxFreqDisplay, 0, yTop
+    Paint rectangle: "{0.975, 0.975, 0.985}", 0, maxFreqDisplay, 0, yTop
+
+    # Unity reference: the passband level everything is judged against
+    Select inner viewport: 0.60, 7.70, 4.45, 6.35
+    Axes: 0, maxFreqDisplay, 0, yTop
+    Colour: "{0.65, 0.65, 0.65}"
+    Dashed line
+    Draw line: 0, 1, maxFreqDisplay, 1
+    Solid line
+
+    # Three snapshots along the sweep, coloured start -> end so they read
+    # against the trajectory above (the end curve shares the cutoff red)
+    for c from 1 to 3
+        if c = 1
+            Colour: "{0.20, 0.40, 0.80}"
+            kk = kFirst
+        elsif c = 2
+            Colour: "{0.55, 0.30, 0.60}"
+            kk = kMid
+        else
+            Colour: "{0.80, 0.20, 0.20}"
+            kk = kLast
+        endif
+        Select inner viewport: 0.60, 7.70, 4.45, 6.35
+        Axes: 0, maxFreqDisplay, 0, yTop
+        Line width: 1.5
+        for j from 1 to nPts
+            if c = 1
+                y0 = rA[j - 1]
+                y1 = rA[j]
+            elsif c = 2
+                y0 = rB[j - 1]
+                y1 = rB[j]
+            else
+                y0 = rC[j - 1]
+                y1 = rC[j]
+            endif
+            Draw line: vizF[j - 1], min(y0, yTop), vizF[j], min(y1, yTop)
+        endfor
+        Line width: 1
+        # Mark the gain at the cutoff itself
+        gc = fH0Cut[kk]
+        if resonance > 0
+            if resonance_mode = 1
+                gc = fH0Cut[kk] * (1 + resonance)
+            else
+                gc = 1 + resonance
+            endif
+        endif
+        if fCut[kk] <= maxFreqDisplay and gc <= yTop
+            Paint circle (mm): "{0.20, 0.20, 0.20}", fCut[kk], gc, 1.1
+        endif
+    endfor
+
+    # yTop is 12% above the highest point any curve reaches, so this band
+    # is guaranteed clear whatever the sweep does. A right-hand stack
+    # would sit on the curves themselves for a rising highpass.
+    @hzLabel: round(fCut[kFirst])
+    lab1$ = hzLabel.out$
+    @hzLabel: round(fCut[kMid])
+    lab2$ = hzLabel.out$
+    @hzLabel: round(fCut[kLast])
+    lab3$ = hzLabel.out$
+
+    Font size: 6
+    Select inner viewport: 0.60, 7.70, 4.45, 6.35
+    Axes: 0, maxFreqDisplay, 0, yTop
+    Colour: "{0.20, 0.40, 0.80}"
+    Text: maxFreqDisplay * 0.02, "left", yTop * 0.95, "half", "start " + lab1$ + " Hz"
+    Colour: "{0.55, 0.30, 0.60}"
+    Text: maxFreqDisplay * 0.20, "left", yTop * 0.95, "half", "middle " + lab2$ + " Hz"
+    Colour: "{0.80, 0.20, 0.20}"
+    Text: maxFreqDisplay * 0.38, "left", yTop * 0.95, "half", "end " + lab3$ + " Hz"
+    Colour: "{0.28, 0.28, 0.28}"
+    Text: maxFreqDisplay * 0.99, "right", yTop * 0.95, "half",
+    ... "dots mark the gain at each cutoff"
+
+    Font size: 7
+    Select inner viewport: 0.60, 7.70, 4.45, 6.35
+    Axes: 0, maxFreqDisplay, 0, yTop
+    Colour: "Black"
+    Line width: 1
+    Draw inner box
+    @niceStep: yTop, 4
+    yStep = niceStep.step
+    Marks left every: 1, yStep, "yes", "yes", "no"
+    One mark bottom: 0, "no", "yes", "no", "0"
+    mk = fStep
+    while mk < maxFreqDisplay * 0.999
+        @hzLabel: mk
+        One mark bottom: mk, "no", "yes", "no", hzLabel.out$
+        mk = mk + fStep
+    endwhile
+    Text left: "yes", "Gain (linear)"
+    Text bottom: "yes", "Frequency (Hz)"
 
     # === SUMMARY ===
-    Select outer viewport: 0, 8, 3.95, 4.75
-    Select inner viewport: 0.6, 7.7, 4.00, 4.70
+    Font size: 7
+    Select outer viewport: 0, 8, 6.75, 7.80
+    Select inner viewport: 0.60, 7.70, 6.95, 7.65
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
 
@@ -729,47 +1136,72 @@ if draw_visualization
     else
         levelStr$ = "normalize to " + fixed$(ceiling_peak, 2)
     endif
-
-    Font size: 7
-    Colour: "Black"
-    Text: 0.02, "left", 0.80, "half", "##Summary##"
-    Font size: 6
-    Colour: "{0.28, 0.28, 0.28}"
-    Text: 0.02, "left", 0.50, "half",
-        ... "Sweep: " + string$(round(start_frequency)) + " -> " + string$(round(end_frequency)) + " Hz"
-        ... + "  |  Curve: " + curve$
-        ... + "  |  Window: " + fixed$(window_size_s * 1000, 0) + " ms (" + quality$ + ")"
-        ... + "  |  Hop: " + fixed$(hopDur * 1000, 0) + " ms"
-        ... + "  |  Frames: " + string$(nSegs)
     if filter_type = 3
-        bandStr$ = "  |  Band: " + string$(round(fBpLow[1])) + "-" + string$(round(fBpHigh[1])) +
-        ... " Hz -> " + string$(round(fBpLow[nSegs])) + "-" + string$(round(fBpHigh[nSegs])) + " Hz"
+        @hzLabel: round(fBpLow[kFirst])
+        b1$ = hzLabel.out$
+        @hzLabel: round(fBpHigh[kFirst])
+        b2$ = hzLabel.out$
+        @hzLabel: round(fBpLow[kLast])
+        b3$ = hzLabel.out$
+        @hzLabel: round(fBpHigh[kLast])
+        b4$ = hzLabel.out$
+        bandStr$ = "  |  Band: " + b1$ + "-" + b2$ + " -> " + b3$ + "-" + b4$ + " Hz"
     else
-        bandStr$ = "  |  Transition: +/- 15% of cutoff (min 50 Hz)"
+        bandStr$ = "  |  Transition: +/- 15\%  of cutoff (min 50 Hz)"
     endif
     if resonance > 0
-        emphStr$ = "  |  Emphasis: " + fixed$(resonance, 2) + " / " +
-        ... string$(round(resonance_bandwidth)) + " Hz"
+        if resonance_mode = 1
+            emphStr$ = "  |  Emphasis: " + fixed$(resonance, 2) + " / " +
+            ... string$(round(resonance_bandwidth)) + " Hz (multiplied)"
+        else
+            emphStr$ = "  |  Emphasis: " + fixed$(resonance, 2) + " / " +
+            ... string$(round(resonance_bandwidth)) + " Hz (peak at cutoff)"
+        endif
     else
         emphStr$ = "  |  Emphasis: off"
     endif
-    Text: 0.02, "left", 0.18, "half",
-        ... "Filter: " + filterType$
-        ... + bandStr$
-        ... + emphStr$
-        ... + "  |  Duration: " + fixed$(duration, 2) + " s"
-        ... + "  |  Level: " + levelStr$
 
+    Select inner viewport: 0.60, 7.70, 6.95, 7.65
+    Axes: 0, 1, 0, 1
+    Colour: "Black"
+    Text: 0.02, "left", 0.80, "half", "##Summary##"
+
+    Font size: 6
+    Select inner viewport: 0.60, 7.70, 6.95, 7.65
+    Axes: 0, 1, 0, 1
+    Colour: "{0.28, 0.28, 0.28}"
+    Text: 0.02, "left", 0.50, "half",
+    ... "Sweep: " + string$(round(start_frequency)) + " -> " + string$(round(end_frequency)) + " Hz"
+    ... + "  |  Curve: " + curve$
+    ... + "  |  Window: " + fixed$(window_size_s * 1000, 0) + " ms (" + quality$ + ")"
+    ... + "  |  Hop: " + fixed$(hopDur * 1000, 0) + " ms"
+    ... + "  |  Frames: " + string$(nSegs)
+    Text: 0.02, "left", 0.18, "half",
+    ... "Filter: " + filterType$
+    ... + bandStr$
+    ... + emphStr$
+    ... + "  |  Duration: " + fixed$(duration, 2) + " s"
+    ... + "  |  Level: " + levelStr$
+
+    # The grey strip is framed with Draw rectangle on a re-established
+    # frame. v1.3 called it straight after the Text commands, which leave
+    # the frame on the outer viewport, so the border was drawn about
+    # 0.06 in wide of the fill it was supposed to enclose.
+    Select inner viewport: 0.60, 7.70, 6.95, 7.65
+    Axes: 0, 1, 0, 1
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
+
+    removeObject: vizSpec, vizMono
+
+    # Restore the complete page. "Save as ... PNG" and the Picture
+    # window's own Save/Copy export the CURRENT viewport selection, so
+    # ending on the summary strip would export only the summary strip.
+    Select outer viewport: 0, 8, 0, pageHeight
     Font size: 10
     Colour: "Black"
-# Restore complete page for Picture export / clipboard.
-Select outer viewport: 0, 8, 0, pageHeight
-Font size: 10
-Colour: "Black"
-Line width: 1
-Solid line
+    Line width: 1
+    Solid line
 endif
 
 # ============================================================

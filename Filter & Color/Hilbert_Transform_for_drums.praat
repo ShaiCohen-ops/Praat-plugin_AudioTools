@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.7 (2026) - Suite-standard visualization
+# Version: 0.7.1 (2026) - Preserve source time domain
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -57,7 +57,7 @@
 #     can't break the formula on other Praat builds.
 # ============================================================
 
-form Hilbert Transform Envelope v0.7
+form Hilbert Transform Envelope v0.7.1
     optionmenu Preset: 1
         option Custom
         option Drum Punch (transient enhance)
@@ -115,6 +115,7 @@ sampleRate = Get sampling frequency
 duration = Get total duration
 numChannels = Get number of channels
 nyquist = sampleRate / 2
+originalXmin = Get start time
 
 if numChannels > 2
     exitScript: "This script supports mono or stereo Sound objects only."
@@ -411,6 +412,10 @@ selectObject: result
 if scale_peak > 0
     Scale peak: scale_peak
 endif
+# Spectrum -> Sound resets the time domain to zero. Restore the source
+# start time for every wet path; dry bypass already has the same xmin, so
+# shifting to the same start time is a no-op there.
+Shift times to: "start time", originalXmin
 Rename: originalName$ + "_" + modeName$
 
 finalOutput = selected("Sound")
@@ -440,6 +445,14 @@ if draw_visualization
         resultMono = Copy: "viz_output_" + uniqueID$
     endif
 
+    # The diagnostic layout uses a 0-based display time axis. Keep the audio
+    # object's original time domain intact and shift only the visualization
+    # copies to zero.
+    selectObject: origMono
+    Shift times to: "start time", 0
+    selectObject: resultMono
+    Shift times to: "start time", 0
+
     # Human-readable display label.
     if output_mode = 1
         modeLabel$ = "Transient Enhanced"
@@ -460,7 +473,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##Hilbert Transform Envelope v0.7##"
+    Text: 0.5, "centre", 0.68, "half", "##Hilbert Transform Envelope v0.7.1##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.50}"
     Text: 0.5, "centre", 0.22, "half", suiteVizName$ + " | " + preset$

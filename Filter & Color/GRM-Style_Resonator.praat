@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.5 (2026) - Suite-standard visualization
+# Version: 1.5.1 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -20,6 +20,10 @@
 #   to 3675 Hz (44 cents flat); at 16 kHz it lands on 4000 Hz (103
 #   cents sharp). The per-band tuning error is reported. Exact tuning
 #   would need fractional-delay interpolation.
+#
+# Changelog v1.5.1 (2026):
+#   - Single feedback comb now depends only on ringDecay, as intended;
+#     ringIterations remains specific to the finite echo-train model.
 #
 # Changelog v1.5 (2026):
 #   - VISUALIZATION STANDARDIZATION ONLY; audio processing, analysis,
@@ -96,7 +100,7 @@
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 # ============================================================
 
-form GRM-Style Resonator v1.5
+form GRM-Style Resonator v1.5.1
     optionmenu Preset: 1
         option Custom
         option Harmonic (organ-like)
@@ -375,7 +379,7 @@ else
 endif
 
 clearinfo
-writeInfoLine: "=== GRM-Style Resonator v1.5 ==="
+writeInfoLine: "=== GRM-Style Resonator v1.5.1 ==="
 appendInfoLine: "Input: ", originalName$, " (", fixed$(inputDuration, 3), " s, ",
     ... numChannels, " ch, ", samplingRate, " Hz)"
 appendInfoLine: "Preset: ", presetName$, " | Bands: ", actualNumBands, " | ", resStr$
@@ -482,30 +486,33 @@ for i from 1 to actualNumBands
     endif
 
     # --- Resonator ---
-    if ringIterations > 0 and ringDecay > 0
+    # Finite echo train uses ringIterations; the single feedback comb does not.
+    if ringDecay > 0
         if resonator_mode = 1
-            # Finite echoes: every tap reads the ORIGINAL band, so the
-            # result is x + a x[n-D] + a^2 x[n-2D] + ... and the gain is
-            # bounded by (1 - a^(N+1)) / (1 - a). v1.2 applied a
-            # recursive comb once per iteration ON THE PREVIOUS RESULT,
-            # cascading them: 6.1e11 at decay 0.95 over 40 iterations.
-            selectObject: bandSound
-            dryBand = Copy: "band_dry"
-            dryBand$ = string$(dryBand)
-            for it from 1 to ringIterations
-                a = ringDecay ^ it
-                d = delSamples * it
-                if d < totalSamples - 1
-                    selectObject: bandSound
-                    Formula (part): (d + 0.25) / samplingRate, duration, 1, numChannels,
-                        ... "self + " + string$(a) + " * object[" + dryBand$ +
-                        ... ", row, col - " + string$(d) + "]"
-                endif
-            endfor
-            removeObject: dryBand
+            if ringIterations > 0
+                # Finite echoes: every tap reads the ORIGINAL band, so the
+                # result is x + a x[n-D] + a^2 x[n-2D] + ... and the gain is
+                # bounded by (1 - a^(N+1)) / (1 - a). v1.2 applied a
+                # recursive comb once per iteration ON THE PREVIOUS RESULT,
+                # cascading them: 6.1e11 at decay 0.95 over 40 iterations.
+                selectObject: bandSound
+                dryBand = Copy: "band_dry"
+                dryBand$ = string$(dryBand)
+                for it from 1 to ringIterations
+                    a = ringDecay ^ it
+                    d = delSamples * it
+                    if d < totalSamples - 1
+                        selectObject: bandSound
+                        Formula (part): (d + 0.25) / samplingRate, duration, 1, numChannels,
+                            ... "self + " + string$(a) + " * object[" + dryBand$ +
+                            ... ", row, col - " + string$(d) + "]"
+                    endif
+                endfor
+                removeObject: dryBand
+            endif
         else
             # Single feedback comb: y[n] = x[n] + a y[n-D]. Bounded by
-            # 1 / (1 - a) at resonance.
+            # 1 / (1 - a) at resonance. ringIterations is intentionally ignored.
             selectObject: bandSound
             Formula: "if col > " + string$(delSamples) + " then self + " + string$(ringDecay) +
                 ... " * self[col-" + string$(delSamples) + "] else self fi"
@@ -721,7 +728,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##GRM-Style Resonator v1.5##"
+    Text: 0.5, "centre", 0.68, "half", "##GRM-Style Resonator v1.5.1##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.50}"
     Text: 0.5, "centre", 0.22, "half", suiteVizName$ + " | " + presetName$

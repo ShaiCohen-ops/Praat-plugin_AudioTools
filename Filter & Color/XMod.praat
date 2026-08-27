@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.2 (2026) - Suite-standard visualization
+# Version: 1.2.1 (2026) - Explicit Second Sound carrier assignment
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -23,6 +23,12 @@
 #     envelope. A shorter second Sound is zero-padded; a longer one is
 #     trimmed to the carrier duration.
 #   - Safety_peak attenuates only when needed; it never boosts.
+#
+# Changelog v1.2.1 (2026):
+#   - Fixed ambiguous Second Sound role assignment: Praat does not preserve
+#     mouse-click selection order in selected("Sound", n). When two Sounds
+#     are used, the script now shows their names/IDs and explicitly asks
+#     which one is the Carrier; the other becomes the Modulator.
 #
 # Changelog v1.2 (2026):
 #   - VISUALIZATION STANDARDIZATION ONLY; audio processing, analysis,
@@ -45,7 +51,7 @@
 #   - Updated visualization to AudioTools house style.
 # ============================================================
 
-form XMod - Cross Modulation v1.2
+form XMod - Cross Modulation v1.2.1
     optionmenu Preset: 1
         option Custom
         option Ring Mod - Metallic
@@ -168,8 +174,40 @@ if mod_source = 5
     if numSounds <> 2
         exitScript: "Please select exactly 2 Sound objects for Second Sound modulation."
     endif
-    carrierID = selected("Sound", 1)
-    modulatorSoundID = selected("Sound", 2)
+
+    # Praat returns selected Sound objects in object-list / ID order, not
+    # reliably in mouse-click order. Treat them only as two candidates, then
+    # ask explicitly which candidate is the carrier.
+    soundCandidate1 = selected("Sound", 1)
+    soundCandidate2 = selected("Sound", 2)
+
+    selectObject: soundCandidate1
+    soundCandidate1Name$ = selected$("Sound")
+    selectObject: soundCandidate2
+    soundCandidate2Name$ = selected$("Sound")
+
+    candidate1Label$ = soundCandidate1Name$ + "  [ID " + string$(soundCandidate1) + "]"
+    candidate2Label$ = soundCandidate2Name$ + "  [ID " + string$(soundCandidate2) + "]"
+
+    beginPause: "XMod - Choose Carrier"
+        comment: "Second Sound modulation uses one selected Sound as Carrier and the other as Modulator."
+        comment: "Choose the Carrier explicitly; the other selected Sound will become the Modulator."
+        choice: "Carrier", 1
+            option: candidate1Label$
+            option: candidate2Label$
+        clicked = endPause: "Cancel", "Continue", 2, 1
+
+    if clicked = 1
+        exitScript: "Cancelled."
+    endif
+
+    if carrier = 1
+        carrierID = soundCandidate1
+        modulatorSoundID = soundCandidate2
+    else
+        carrierID = soundCandidate2
+        modulatorSoundID = soundCandidate1
+    endif
 else
     if numSounds <> 1
         exitScript: "Please select exactly one Sound object."
@@ -218,7 +256,7 @@ releaseSec = release / 1000
 attackAlpha = exp(-1 / max(attackSec * sampleRate, 1e-12))
 releaseAlpha = exp(-1 / max(releaseSec * sampleRate, 1e-12))
 
-writeInfoLine: "=== XMod - Cross Modulation v1.2 ==="
+writeInfoLine: "=== XMod - Cross Modulation v1.2.1 ==="
 appendInfoLine: "Carrier: ", originalName$
 appendInfoLine: "Duration: ", fixed$(duration, 3), " s   Start: ", fixed$(carrierXmin, 3), " s"
 appendInfoLine: "Channels: ", numChannels, "   SR: ", round(sampleRate), " Hz"
@@ -396,7 +434,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##XMod - Cross Modulation v1.2##"
+    Text: 0.5, "centre", 0.68, "half", "##XMod - Cross Modulation v1.2.1##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.50}"
     Text: 0.5, "centre", 0.22, "half", suiteVizName$ + " | " + presetName$

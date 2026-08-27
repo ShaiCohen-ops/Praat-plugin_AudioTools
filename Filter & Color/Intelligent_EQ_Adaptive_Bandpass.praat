@@ -3,9 +3,13 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.2 (2026) - Suite-standard visualization
+# Version: 1.2.1 (2026) - Visualization-off fix
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v1.2.1 (2026):
+#   - Fixed Show_visualization=OFF so the script no longer references
+#     visualization-only page geometry when no Picture is drawn.
 #
 # Changelog v1.2 (2026):
 #   - VISUALIZATION STANDARDIZATION ONLY; audio processing, analysis,
@@ -59,7 +63,7 @@ if duration < 0.05
 endif
 
 # === USER PARAMETERS ===
-form Intelligent EQ: Adaptive Bandpass v1.2
+form Intelligent EQ: Adaptive Bandpass v1.2.1
     comment === Preset ===
     optionmenu Preset 1
         option Custom
@@ -462,7 +466,7 @@ if show_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##Intelligent EQ: Adaptive Bandpass v1.2##"
+    Text: 0.5, "centre", 0.68, "half", "##Intelligent EQ: Adaptive Bandpass v1.2.1##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.50}"
     Text: 0.5, "centre", 0.22, "half", suiteVizName$ + " | " + presetName$
@@ -641,14 +645,15 @@ if show_visualization
     Line width: 1
 
     removeObject: vizInput, vizOutput
+
+    # Restore complete page for Picture export / clipboard.
+    Select outer viewport: 0, 8, 0, pageHeight
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
 else
     appendInfoLine: "[4/4] Visualization disabled."
-# Restore complete page for Picture export / clipboard.
-Select outer viewport: 0, 8, 0, pageHeight
-Font size: 10
-Colour: "Black"
-Line width: 1
-Solid line
 endif
 
 # ============================================================

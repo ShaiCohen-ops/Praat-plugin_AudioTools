@@ -3,9 +3,14 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.2.1 (2026) - Visualization runtime fix
+# Version: 1.2.2 (2026) - Bell center preserved at spectrum boundaries
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v1.2.2 (2026):
+#   - Parametric Bell now remains centered exactly at Center_frequency_Hz when
+#     its nominal bandwidth extends below 0 Hz or above Nyquist. Only the
+#     out-of-band portion is truncated; the bell peak is no longer shifted.
 #
 # Changelog v1.2.1 (2026):
 #   - Fixed visualization waveform window using undefined vizDur; the defined
@@ -64,7 +69,7 @@ endif
 # ============================================================
 # FORM
 # ============================================================
-form Spectral Band EQ v1.2.1
+form Spectral Band EQ v1.2.2
     optionmenu Preset: 1
         option Custom
         option Telephone Bandpass (300-3400 Hz)
@@ -202,13 +207,13 @@ linearGain = 10 ^ (gain_dB / 20)
 
 if filter_mode = 1
     modeName$ = "Parametric Bell"
-    bandLow = max(0, center_frequency_Hz - bandwidth_Hz / 2)
-    bandHigh = min(nyquist, center_frequency_Hz + bandwidth_Hz / 2)
-    if bandHigh <= bandLow
+    bellCenter = center_frequency_Hz
+    bellHalf = bandwidth_Hz / 2
+    bandLow = max(0, bellCenter - bellHalf)
+    bandHigh = min(nyquist, bellCenter + bellHalf)
+    if bandHigh < bandLow or bellHalf <= 0
         exitScript: "The bell bandwidth does not overlap the sampled spectrum."
     endif
-    bellCenter = (bandLow + bandHigh) / 2
-    bellHalf = (bandHigh - bandLow) / 2
 elsif filter_mode = 2
     modeName$ = "Bandpass"
     passLow = max(0, center_frequency_Hz - bandwidth_Hz / 2)
@@ -551,7 +556,7 @@ endif
 # INFO
 # ============================================================
 clearinfo
-writeInfoLine: "=== Spectral Band EQ v1.2.1 ==="
+writeInfoLine: "=== Spectral Band EQ v1.2.2 ==="
 appendInfoLine: "Source: ", originalName$, "   ", fixed$(originalDur, 3), " s   ", nChannels, " ch   ", round(sampleRate), " Hz"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Mode: ", modeName$

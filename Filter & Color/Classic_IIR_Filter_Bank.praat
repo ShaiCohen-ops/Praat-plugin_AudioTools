@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4.1 (2026) - IIR visualization summary hotfix
+# Version: 0.5.1 (2026) - Sound-direct vector preloading and highpass fix
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -15,14 +15,41 @@
 #   - Bessel: Maximally flat group delay
 #   - Butterworth: Maximally flat magnitude response
 #   - Chebyshev I: Steeper rolloff, passband ripple
-#   - Chebyshev II: Steeper rolloff (simplified: poles only, no zeros)
-#   - Elliptic: Steepest rolloff, both ripples
 #
-# Note: Fast mode uses Praat built-in filters (Hann window).
-#       Custom IIR mode is slow but mathematically exact.
+# Audio rendering always uses the SOS coefficients designed by this script.
+# The former Hann-band fast path and the nonstandard Chebyshev-II/Elliptic
+# approximations have been removed so the rendered audio matches the plots.
 #
 # Usage:
 #   Select a Sound object in Praat and run this script.
+#
+# Changelog v0.5.1 (2026):
+#   - Replaced the non-portable Sound -> Matrix preload in applyCascadeFilter.
+#     Current Praat builds do not expose "To Matrix" for Sound, so the script
+#     now preloads each channel with direct object[SoundID, channel, sample]
+#     access into x#, keeps the same in-memory SOS recurrence, and writes the
+#     processed vector back with a single Formula pass. DSP coefficients and
+#     visualization are unchanged from v0.5.0.
+#
+# Changelog v0.5.0 (2026):
+#   - REMOVED FAST HANN RENDERING. Audio now always uses the exact SOS/IIR
+#     coefficients that are shown in the magnitude, phase and Z-plane plots.
+#   - FIXED HIGHPASS FREQUENCY MAPPING. The lowpass prototype is designed at
+#     the complementary digital cutoff before z -> -z reflection, so an HP
+#     cutoff of fc now occurs at fc rather than near Nyquist-fc.
+#   - RECALIBRATED the tabulated Bessel pole scale for each supported order
+#     so cutoff_frequency is the -3.0103 dB point while retaining the Bessel
+#     maximally-flat-delay pole pattern (orders 2/4/6/8).
+#   - REMOVED the former simplified Chebyshev-II and pseudo-Elliptic entries.
+#     They did not implement the transmission zeros/rational approximation
+#     required by those classical families and therefore should not be named
+#     as such. The bank now exposes only Bessel, Butterworth and Chebyshev-I,
+#     all rendered by their designed SOS cascade.
+#   - RENAMED the misleading "Presence Cut (2-5 kHz)" preset to
+#     "Presence Reduction (2 kHz LP)"; its actual operation remains a
+#     Butterworth lowpass at 2 kHz.
+#   - The SOS renderer preserves every input channel through the existing
+#     Matrix/vector cascade. Target-peak normalization remains unchanged.
 #
 # Changelog v0.4.1 (2026):
 #   - VISUALIZATION HOTFIX ONLY: removed an invalid Dry/Wet field
@@ -50,27 +77,23 @@
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 # ============================================================
 
-form Classic IIR Filter Bank v0.4.1
+form Classic IIR Filter Bank v0.5.1
     optionmenu Preset: 1
         option Custom
         option Speech Lowpass (3.5 kHz)
         option Music Lowpass (8 kHz)
         option Rumble Filter (80 Hz HP)
-        option Presence Cut (2-5 kHz)
+        option Presence Reduction (2 kHz LP)
     optionmenu Filter_type: 2
         option Bessel (flat delay)
         option Butterworth (flat magnitude)
         option Chebyshev I (passband ripple)
-        option Chebyshev II (simplified)
-        option Elliptic (steepest)
     optionmenu Filter_mode: 1
         option Lowpass
         option Highpass
     integer order 4
     positive cutoff_frequency 1000
     positive passband_ripple_db 0.5
-    positive stopband_attenuation_db 40
-    boolean fast_mode 1
     positive scale_peak 0.95
     boolean plot_responses 1
     boolean plot_zplane 1
@@ -96,7 +119,7 @@ elif preset$ = "Rumble Filter (80 Hz HP)"
     filter_mode = 2
     order = 4
     cutoff_frequency = 80
-elif preset$ = "Presence Cut (2-5 kHz)"
+elif preset$ = "Presence Reduction (2 kHz LP)"
     filter_type = 2
     filter_mode = 1
     order = 4
@@ -133,12 +156,8 @@ if filter_type = 1
     filterTypeName$ = "Bessel"
 elif filter_type = 2
     filterTypeName$ = "Butterworth"
-elif filter_type = 3
-    filterTypeName$ = "ChebyshevI"
-elif filter_type = 4
-    filterTypeName$ = "ChebyshevII"
 else
-    filterTypeName$ = "Elliptic"
+    filterTypeName$ = "ChebyshevI"
 endif
 
 if filter_mode = 1
@@ -147,13 +166,11 @@ else
     filterModeName$ = "HP"
 endif
 
-# What the response plot represents relative to the rendered audio
+# The response plot and rendered audio use the same SOS cascade.
 if apply_filter = 0
     modeNote$ = "[plot only]"
-elsif fast_mode
-    modeNote$ = "[audio: fast Hann band]"
 else
-    modeNote$ = "[audio: exact IIR]"
+    modeNote$ = "[audio: SOS IIR]"
 endif
 
 # ============================================================
@@ -168,7 +185,15 @@ for sec from 1 to nSections
     sos_a2[sec] = 0
 endfor
 
-wn = cutoff_frequency / nyquist
+wnUser = cutoff_frequency / nyquist
+# transformHighpass mirrors a digital lowpass response around Nyquist.
+# Design the lowpass prototype at the complementary cutoff so the reflected
+# highpass transition lands at the user-requested cutoff_frequency.
+if filter_mode = 1
+    wn = wnUser
+else
+    wn = 1 - wnUser
+endif
 
 # ============================================================
 # Report
@@ -191,13 +216,13 @@ if filter_type = 1
     if order = 2
         poles_re[1] = -1.1030
         poles_im[1] = 0.6368
-        normFactor = 1.2736
+        normFactor = 0.998748
     elsif order = 4
         poles_re[1] = -0.9952
         poles_im[1] = 0.4105
         poles_re[2] = -1.3808
         poles_im[2] = 0.7179
-        normFactor = 1.4192
+        normFactor = 1.555894
     elsif order = 6
         poles_re[1] = -0.9606
         poles_im[1] = 0.3272
@@ -205,7 +230,7 @@ if filter_type = 1
         poles_im[2] = 0.5950
         poles_re[3] = -1.5715
         poles_im[3] = 0.6301
-        normFactor = 1.5069
+        normFactor = 1.926225
     elsif order = 8
         poles_re[1] = -0.9425
         poles_im[1] = 0.2735
@@ -215,7 +240,7 @@ if filter_type = 1
         poles_im[3] = 0.5950
         poles_re[4] = -1.7627
         poles_im[4] = 0.5787
-        normFactor = 1.5735
+        normFactor = 2.188870
     endif
     
     for sec from 1 to nSections
@@ -243,38 +268,7 @@ elif filter_type = 3
         @analogToDigitalSOS: sec, pole_re, pole_im
     endfor
 
-elif filter_type = 4
-    # CHEBYSHEV TYPE II
-    epsilon = 1 / sqrt(10^(stopband_attenuation_db/10) - 1)
-    sinhVal = arcsinh(1/epsilon) / order
-    
-    for sec from 1 to nSections
-        theta = pi * (2*sec - 1) / (2*order)
-        sinhMu = sinh(sinhVal)
-        coshMu = cosh(sinhVal)
-        sinTheta = sin(theta)
-        cosTheta = cos(theta)
-        
-        s_re = sinhMu * sinTheta
-        s_im = coshMu * cosTheta
-        magSq = s_re^2 + s_im^2
-        
-        pole_re = -s_re / magSq
-        pole_im = s_im / magSq
-        @analogToDigitalSOS: sec, pole_re, pole_im
-    endfor
 
-else
-    # ELLIPTIC (simplified)
-    epsilon = sqrt(10^(passband_ripple_db/10) - 1)
-    sinhVal = arcsinh(1/epsilon) / order
-    
-    for sec from 1 to nSections
-        theta = pi * (2*sec - 1) / (2*order)
-        pole_re = -0.95 * sinh(sinhVal) * sin(theta)
-        pole_im = 0.95 * cosh(sinhVal) * cos(theta)
-        @analogToDigitalSOS: sec, pole_re, pole_im
-    endfor
 endif
 
 # Transform to highpass if needed
@@ -288,65 +282,18 @@ appendInfoLine: "Filter design complete."
 # Apply filter
 # ============================================================
 if apply_filter
-    if fast_mode
-        appendInfoLine: ""
-        appendInfoLine: "[Fast mode] Using Praat built-in filters..."
-        
-        selectObject: sound
-        
-        if numChannels = 1
-            if filter_mode = 1
-                filtered = Filter (pass Hann band): 0, cutoff_frequency, cutoff_frequency * 0.1
-            else
-                filtered = Filter (pass Hann band): cutoff_frequency, nyquist * 0.99, cutoff_frequency * 0.1
-            endif
-        else
-            Extract one channel: 1
-            left = selected("Sound")
-            
-            selectObject: sound
-            Extract one channel: 2
-            right = selected("Sound")
-            
-            if filter_mode = 1
-                selectObject: left
-                filteredL = Filter (pass Hann band): 0, cutoff_frequency, cutoff_frequency * 0.1
-                selectObject: right
-                filteredR = Filter (pass Hann band): 0, cutoff_frequency, cutoff_frequency * 0.1
-            else
-                selectObject: left
-                filteredL = Filter (pass Hann band): cutoff_frequency, nyquist * 0.99, cutoff_frequency * 0.1
-                selectObject: right
-                filteredR = Filter (pass Hann band): cutoff_frequency, nyquist * 0.99, cutoff_frequency * 0.1
-            endif
-            
-            selectObject: filteredL, filteredR
-            Combine to stereo
-            filtered = selected("Sound")
-            
-            removeObject: left, right, filteredL, filteredR
-        endif
-        
-        selectObject: filtered
-        Scale peak: scale_peak
-        Rename: originalName$ + "_" + filterTypeName$ + "_" + filterModeName$
-        
-        appendInfoLine: "Done!"
-        
-    else
-        appendInfoLine: ""
-        appendInfoLine: "[Custom IIR] Warning: This is slow for long files..."
-        
-        selectObject: sound
-        filtered = Copy: originalName$ + "_" + filterTypeName$ + "_" + filterModeName$
-        
-        @applyCascadeFilter
-        
-        selectObject: filtered
-        Scale peak: scale_peak
-        
-        appendInfoLine: "Done!"
-    endif
+    appendInfoLine: ""
+    appendInfoLine: "[SOS IIR] Applying designed cascade..."
+
+    selectObject: sound
+    filtered = Copy: originalName$ + "_" + filterTypeName$ + "_" + filterModeName$
+
+    @applyCascadeFilter
+
+    selectObject: filtered
+    Scale peak: scale_peak
+
+    appendInfoLine: "Done!"
 endif
 
 # ============================================================
@@ -362,7 +309,7 @@ if plot_responses or plot_zplane
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##Classic IIR Filter Bank v0.4.1##"
+    Text: 0.5, "centre", 0.68, "half", "##Classic IIR Filter Bank v0.5.1##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.50}"
     Text: 0.5, "centre", 0.22, "half", originalName$ + " | " + filterTypeName$ + " " + filterModeName$ + " | order " + string$(order)
@@ -467,17 +414,16 @@ procedure applyCascadeFilter
     ns = Get number of samples
     nc = Get number of channels
 
-    # Preload all samples into a Matrix once, then process each channel as
-    # an in-memory vector with fast indexed access. The IIR recurrence is
-    # sequential (state w1/w2), so it cannot be a single Formula, but this
-    # removes the per-sample Get/Set COMMANDS that were the real bottleneck.
-    selectObject: filtered
-    To Matrix
-    .mat = selected("Matrix")
-
+    # Sound has no portable "To Matrix" command in current Praat builds.
+    # Read each channel directly from the Sound object into a script vector,
+    # process the SOS cascade in memory, then write the vector back with one
+    # compiled Formula pass. Direct object[] sample access works for any
+    # channel count and avoids per-sample dynamic-menu Get/Set commands.
     for ch from 1 to nc
-        selectObject: .mat
-        x# = Get all values in row: ch
+        x# = zero# (ns)
+        for n from 1 to ns
+            x# [n] = object [filtered, ch, n]
+        endfor
 
         for sec from 1 to nSections
             .b0 = sos_b0[sec]
@@ -497,7 +443,7 @@ procedure applyCascadeFilter
             appendInfoLine: "  ch ", ch, " section ", sec, "/", nSections, " done"
         endfor
 
-        # Write this channel's filtered vector back (one compiled Formula pass)
+        # Write this channel's filtered vector back (one compiled Formula pass).
         selectObject: filtered
         if nc = 1
             Formula: "x# [col]"
@@ -505,8 +451,6 @@ procedure applyCascadeFilter
             Formula: "if row = " + string$(ch) + " then x# [col] else self fi"
         endif
     endfor
-
-    removeObject: .mat
 endproc
 
 procedure plotFrequencyResponse

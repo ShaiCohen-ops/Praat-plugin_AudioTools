@@ -1,28 +1,24 @@
 # ============================================================
-# Praat AudioTools - HF-Ratio De-Esser.praat
+# Praat AudioTools - ENTROPY_SMART_DE-ESSER.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.7 (2026) - Suite-standard visualization
+# Version: 0.8 (2026) - HF-ratio detector with spectral-entropy confidence
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Split-band de-esser. Sibilance is detected from the ratio of
-#   high-frequency intensity to full-band intensity, and the gain
-#   reduction is applied ONLY to the high band:
+#   Hybrid split-band de-esser. Candidate sibilance is detected from
+#   high-frequency intensity relative to full-band intensity, with an
+#   absolute HF level gate. Spectral entropy INSIDE the selected HF band
+#   then acts as a confidence modifier: noise-like HF receives the full
+#   requested reduction, while peaky/tonal HF receives less.
 #
 #       residual  = signal - HF band
 #       output    = residual + HF band x gain
 #
-#   so the fundamental, the low formants and the body of the voice
-#   keep their level while an "s" is under reduction.
-#
-#   NAMING: there is no entropy calculation here and never was - not
-#   Shannon entropy, not spectral flatness, no distribution over bins.
-#   The detector is an HF/full-band amplitude ratio, so the file is
-#   named for what it does. Calling it an entropy de-esser would be a
-#   claim the code does not support.
+#   Reduction is applied ONLY to the selected HF band, so the
+#   fundamental, low formants and body of the voice keep their level.
 #
 # Usage:
 #   Select a Sound object in Praat and run this script.
@@ -31,6 +27,20 @@
 #   Cohen, S. (2026). Praat AudioTools: An Offline Analysis-Resynthesis
 #   Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v0.8 (2026):
+#   - Added spectral entropy as a real secondary detector. The existing
+#     HF/full-band ratio and absolute HF gate remain primary; normalized
+#     Shannon entropy is measured only inside the selected HF band and
+#     smoothly scales the requested reduction.
+#   - Low-entropy (tonal/peaky) HF can receive substantially less
+#     attenuation; high-entropy (noise-like) HF receives the full
+#     ratio-derived attenuation.
+#   - Entropy uses a 20 ms Gaussian spectrogram and a soft confidence
+#     transition rather than a binary entropy gate.
+#   - Audio remains split-band, multichannel, and phase/image preserving
+#     in the same sense as v0.7: one shared gain curve is applied only to
+#     each channel's HF band.
 #
 # Changelog v0.7 (2026):
 #   - VISUALIZATION STANDARDIZATION ONLY; audio processing, analysis,
@@ -70,8 +80,6 @@
 #     the zoom caption.
 #   - Added a Telephony band preset (2.5-3.7 kHz) for narrowband
 #     material, where the default 4-8 kHz band is at or above Nyquist.
-#   - Renamed the file HF-Ratio_De-Esser.praat to match what it does.
-#     Nothing inside depends on the filename.
 #
 # Changelog v0.5 - reviewed by running the script under Parselmouth,
 # so the figures below are measurements.
@@ -128,7 +136,7 @@
 #     detector.
 # ============================================================
 
-form HF-Ratio De-Esser v0.7
+form Entropy Smart De-Esser v0.8
     optionmenu Preset: 1
         option Custom
         option Light De-Essing
@@ -170,6 +178,17 @@ knee_width = 0.12
 # near-silent noise reads as pure sibilance (1e-6 noise had 177 of
 # 200 frames "reduced").
 hf_gate_dBFS = -55
+
+# Spectral-entropy confidence, measured ONLY inside the selected HF band.
+# entropy_low..entropy_high maps entropy to a 0..1 confidence with a
+# smoothstep curve. entropy_weight says how strongly that confidence can
+# reduce the ratio-derived attenuation. At the default 0.70, low-entropy
+# HF keeps 30% of the ratio-derived reduction rather than being hard-gated.
+entropy_window_ms = 20
+entropy_freq_step_Hz = 20
+entropy_low = 0.55
+entropy_high = 0.90
+entropy_weight = 0.70
 
 # Minimum pitch for To Intensity. The physical analysis window is
 # 6.4 / this, so 200 Hz gives about 32 ms - short enough to see a
@@ -269,6 +288,15 @@ endif
 if ceiling_peak <= 0 or ceiling_peak > 1
     exitScript: "Ceiling_peak must be greater than 0 and at most 1."
 endif
+if entropy_low < 0 or entropy_high > 1 or entropy_low >= entropy_high
+    exitScript: "Entropy confidence limits must satisfy 0 <= low < high <= 1."
+endif
+if entropy_weight < 0 or entropy_weight > 1
+    exitScript: "Entropy_weight must be between 0 and 1."
+endif
+if entropy_window_ms <= 0 or entropy_freq_step_Hz <= 0
+    exitScript: "Entropy window and frequency step must be greater than zero."
+endif
 
 # To Intensity needs at least one physical window of audio.
 physWindow = 6.4 / detector_min_pitch_Hz
@@ -291,7 +319,7 @@ else
     suffix$ = "_sibilants"
 endif
 
-writeInfoLine: "HF-Ratio De-Esser v0.7"
+writeInfoLine: "Entropy Smart De-Esser v0.8"
 appendInfoLine: "===================="
 appendInfoLine: "Input: ", originalName$, " (", fixed$(duration, 2), " s, ", numChannels,
     ... " ch, ", sampleRate, " Hz)"
@@ -299,6 +327,9 @@ appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "HF band: ", fixed$(hf_low_hz, 0), "-", fixed$(hf_high_hz, 0), " Hz"
 appendInfoLine: "Detector window: ", fixed$(physWindow * 1000, 1),
     ... " ms - Attack/Release smooth an envelope already smeared by this."
+appendInfoLine: "Entropy confidence: HF-band Shannon entropy, ",
+    ... fixed$(entropy_low, 2), "-", fixed$(entropy_high, 2),
+    ... " soft range, weight ", fixed$(entropy_weight, 2)
 appendInfoLine: ""
 
 # ============================================================
@@ -384,6 +415,45 @@ endif
 appendInfoLine: "  Frames: ", numFrames, " at ", fixed$(frameDx * 1000, 2),
     ... " ms, first at ", fixed$(frameX1 * 1000, 1), " ms"
 
+# Spectral entropy matrices. These are used only as a confidence measure
+# after the HF-ratio/absolute-level detector has found a candidate frame.
+# The distribution is normalized within Hf_low_hz..Hf_high_hz, so the
+# entropy value describes spectral shape in the de-essing band, not the
+# amount of HF energy (the Intensity gate already handles amount).
+entropyTop = min(nyquist, hf_high_hz + 200)
+for d from 1 to nDetect
+    selectObject: detCh[d]
+    entSpec = To Spectrogram: entropy_window_ms / 1000, entropyTop, frameDx, entropy_freq_step_Hz, "Gaussian"
+    entMat[d] = To Matrix
+    removeObject: entSpec
+
+    selectObject: entMat[d]
+    entNrow[d] = Get number of rows
+    entNcol[d] = Get number of columns
+    entX1[d] = Get x of column: 1
+    if entNcol[d] > 1
+        .x2 = Get x of column: 2
+        entDx[d] = .x2 - entX1[d]
+    else
+        entDx[d] = frameDx
+    endif
+    entY1[d] = Get y of row: 1
+    if entNrow[d] > 1
+        .y2 = Get y of row: 2
+        entDy[d] = .y2 - entY1[d]
+    else
+        entDy[d] = 1
+    endif
+    entRowLo[d] = ceiling((hf_low_hz - entY1[d]) / entDy[d]) + 1
+    entRowHi[d] = floor((hf_high_hz - entY1[d]) / entDy[d]) + 1
+    if entRowLo[d] < 1
+        entRowLo[d] = 1
+    endif
+    if entRowHi[d] > entNrow[d]
+        entRowHi[d] = entNrow[d]
+    endif
+endfor
+
 halfKnee = knee_width / 2
 kneeSlope = (1 - minGainLinear) / (1 - threshold)
 framesGated = 0
@@ -396,6 +466,7 @@ for i from 1 to numFrames
     # RMS, which is not where sibilance lives.
     bestR = 0
     bestHf = -1000
+    bestD = 1
     for d from 1 to nDetect
         selectObject: fullInt[d]
         fullDb = Get value in frame: i
@@ -421,6 +492,7 @@ for i from 1 to numFrames
         if hfDb >= hfGateDb and rHere > bestR
             bestR = rHere
             bestHf = hfDb
+            bestD = d
         endif
         if hfDb > bestHf and bestR = 0
             bestHf = hfDb
@@ -442,7 +514,51 @@ for i from 1 to numFrames
         ratioVal[i] = bestR
     endif
 
-    # --- Target gain: threshold, quadratic knee, floor ---
+    # --- HF-band spectral entropy confidence ---
+    entropyVal[i] = 0
+    entropyConfidence[i] = 0
+    if ratioVal[i] > 0
+        cc = round((timeVal[i] - entX1[bestD]) / entDx[bestD]) + 1
+        if cc < 1
+            cc = 1
+        endif
+        if cc > entNcol[bestD]
+            cc = entNcol[bestD]
+        endif
+        rlo = entRowLo[bestD]
+        rhi = entRowHi[bestD]
+        nb = rhi - rlo + 1
+        sumP = 0
+        if nb > 1
+            for rr from rlo to rhi
+                pwr = object[entMat[bestD], rr, cc]
+                if pwr > 0
+                    sumP += pwr
+                endif
+            endfor
+            if sumP > 1e-30
+                hent = 0
+                for rr from rlo to rhi
+                    pwr = object[entMat[bestD], rr, cc]
+                    if pwr > 0
+                        pp = pwr / sumP
+                        hent -= pp * ln(pp)
+                    endif
+                endfor
+                entropyVal[i] = hent / ln(nb)
+            endif
+        endif
+        ec = (entropyVal[i] - entropy_low) / (entropy_high - entropy_low)
+        if ec < 0
+            ec = 0
+        elsif ec > 1
+            ec = 1
+        endif
+        # Smoothstep: continuous value and slope at both confidence edges.
+        entropyConfidence[i] = ec * ec * (3 - 2 * ec)
+    endif
+
+    # --- Target gain: ratio threshold/knee, then entropy confidence ---
     # A real C1 knee. v0.5 clamped the reduction to 0 through the whole
     # lower half of the knee, so the slope still jumped at the
     # threshold - smoothed onset, not a symmetric knee.
@@ -455,6 +571,12 @@ for i from 1 to numFrames
     else
         red = (r - threshold) * kneeSlope
     endif
+
+    # Entropy is a confidence MODIFIER, not a second hard gate. At low
+    # entropy the ratio detector retains (1 - entropy_weight) of its
+    # requested reduction; at high entropy it retains 100%.
+    entropyScale = (1 - entropy_weight) + entropy_weight * entropyConfidence[i]
+    red = red * entropyScale
     rawGain[i] = 1 - red
     if rawGain[i] < minGainLinear
         rawGain[i] = minGainLinear
@@ -480,6 +602,10 @@ endfor
 
 maxRatio = 0
 minRatio = 1
+maxEntropy = 0
+minEntropy = 1
+sumEntropy = 0
+entropyFrames = 0
 framesReduced = 0
 for i from 1 to numFrames
     if ratioVal[i] > maxRatio
@@ -488,10 +614,26 @@ for i from 1 to numFrames
     if ratioVal[i] < minRatio
         minRatio = ratioVal[i]
     endif
+    if ratioVal[i] > 0
+        entropyFrames += 1
+        sumEntropy += entropyVal[i]
+        if entropyVal[i] > maxEntropy
+            maxEntropy = entropyVal[i]
+        endif
+        if entropyVal[i] < minEntropy
+            minEntropy = entropyVal[i]
+        endif
+    endif
     if gainVal[i] < 0.999
         framesReduced = framesReduced + 1
     endif
 endfor
+if entropyFrames > 0
+    meanEntropy = sumEntropy / entropyFrames
+else
+    minEntropy = 0
+    meanEntropy = 0
+endif
 
 # --- Gain tier on the real frame times, held out to the edges ---
 Create IntensityTier: "deess_gain", 0, duration
@@ -654,7 +796,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##HF-Ratio De-Esser v0.7##"
+    Text: 0.5, "centre", 0.68, "half", "##Entropy Smart De-Esser v0.8##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.50}"
     Text: 0.5, "centre", 0.22, "half", suiteVizName$ + " | " + presetName$
@@ -745,6 +887,14 @@ if draw_visualization
     for i from 1 to numFrames - 1
         Draw line: timeVal[i], ratioVal[i], timeVal[i + 1], ratioVal[i + 1]
     endfor
+
+    # Entropy in the selected HF band. Zero on frames held out by the
+    # absolute HF gate, because entropy is not consulted there.
+    Colour: "{0.90, 0.55, 0.15}"
+    Line width: 1.4
+    for i from 1 to numFrames - 1
+        Draw line: timeVal[i], entropyVal[i], timeVal[i + 1], entropyVal[i + 1]
+    endfor
     Line width: 1
 
     Font size: 6
@@ -754,7 +904,7 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
     Font size: 6
-    Text left: "yes", "HF/full ratio"
+    Text left: "yes", "Ratio / entropy"
     Text bottom: "yes", "Time (s)"
 
     # ---- ALIGNED PANEL TITLES ----
@@ -765,7 +915,7 @@ if draw_visualization
     Colour: "Black"
     Text: 2.10, "centre", 7.30, "half", "Waveform (grey) + Gain reduction (red)"
     Text: 6.10, "centre", 7.30, "half",
-        ... "HF/full ratio (blue), knee band (pink), gated frames (green)"
+        ... "HF/full ratio (blue), HF entropy (orange), knee (pink), gate (green)"
 
     # ---- PANEL C: zoom overlay ----
     Select outer viewport: 0, 8, 4.68, 5.55
@@ -864,6 +1014,7 @@ if draw_visualization
         ... + "  " + originalName$ + suffix$
         ... + "  |  HF " + fixed$(hf_low_hz, 0) + "-" + fixed$(hf_high_hz, 0) + " Hz"
         ... + "  |  Threshold: " + fixed$(threshold, 2) + " (knee " + fixed$(knee_width, 2) + ")"
+        ... + "  |  Entropy: " + fixed$(entropy_low, 2) + "-" + fixed$(entropy_high, 2)
         ... + "  |  Max red: -" + fixed$(max_reduction_db, 1) + " dB"
         ... + "  |  Atk/Rel: " + fixed$(attack_ms, 0) + "/" + fixed$(release_ms, 0) + " ms"
 
@@ -908,7 +1059,7 @@ for ch from 1 to numChannels
     removeObject: chDry[ch]
 endfor
 for d from 1 to nDetect
-    removeObject: fullInt[d], hfInt[d], detCh[d]
+    removeObject: fullInt[d], hfInt[d], entMat[d], detCh[d]
 endfor
 removeObject: gainTier, workSound
 
@@ -919,6 +1070,8 @@ appendInfoLine: "Output: ", finalName$
 appendInfoLine: "Channels: ", numChannels, " (all processed)"
 appendInfoLine: ""
 appendInfoLine: "HF ratio range: ", fixed$(minRatio, 2), " - ", fixed$(maxRatio, 2)
+appendInfoLine: "HF-band entropy (gated-in frames): ", fixed$(minEntropy, 3), " - ",
+    ... fixed$(maxEntropy, 3), " | mean ", fixed$(meanEntropy, 3)
 appendInfoLine: "Frames reduced: ", framesReduced, " / ", numFrames, " (",
     ... fixed$(reducedPct, 1), "%)"
 appendInfoLine: "Frames held at unity by the HF gate: ", framesGated, " (",

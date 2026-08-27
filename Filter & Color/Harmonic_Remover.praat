@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.3 (2026) - Suite-standard visualization
+# Version: 1.3.1 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -57,6 +57,7 @@ selectObject: sound
 duration = Get total duration
 sampleRate = Get sampling frequency
 numChannels = Get number of channels
+originalXmin = Get start time
 
 if duration < 0.1
     exitScript: "Sound must be at least 100 ms."
@@ -66,7 +67,7 @@ endif
 # FORM
 # ============================================================
 
-form Harmonic Remover v1.3
+form Harmonic Remover v1.3.1
     comment === Preset ===
     optionmenu Preset: 1
         option Custom
@@ -100,7 +101,7 @@ form Harmonic Remover v1.3
     comment === Output ===
     real Wet_dry_percent 100
     positive Normalize_peak_to 0.95
-    comment (final peak normalization target; this also changes a 0% wet bypass)
+    comment (final peak normalization target; skipped at 0% wet for exact dry bypass)
     boolean Draw_visualization 1
     boolean Play_result 1
 endform
@@ -276,7 +277,7 @@ endif
 # ============================================================
 
 clearinfo
-writeInfoLine: "=== Harmonic Remover v1.3 ==="
+writeInfoLine: "=== Harmonic Remover v1.3.1 ==="
 appendInfoLine: "Source: ", soundName$, " (", fixed$(duration, 2), " s, ",
     ... sampleRate, " Hz, ", numChannels, " ch)"
 appendInfoLine: "Preset: ", presetName$
@@ -604,7 +605,11 @@ removeObject: outputBuf
 outputBuf = croppedOutput
 selectObject: outputBuf
 Shift times to: "start time", 0
-Scale peak: normalize_peak_to
+# At 0% wet the output must remain the unprocessed dry path. Peak
+# normalization is therefore skipped for an exact dry bypass.
+if wet_level > 0
+    Scale peak: normalize_peak_to
+endif
 Rename: soundName$ + "_harmonicRemoved_" + presetName$
 resultID = selected("Sound")
 
@@ -619,11 +624,11 @@ appendInfoLine: "Processing time: ", fixed$(processingTime, 1), " s"
 # VISUALIZATION
 # ============================================================
 
+pageHeight = 8.00
 if draw_visualization
     appendInfoLine: "[3/4] Creating visualization..."
 
     Erase all
-    pageHeight = 8.00
     Select outer viewport: 0, 8, 0, pageHeight
 
     # ----------------------------------------------------------
@@ -635,7 +640,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##Harmonic Remover v1.3##"
+    Text: 0.5, "centre", 0.68, "half", "##Harmonic Remover v1.3.1##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.50}"
     Text: 0.5, "centre", 0.22, "half", suiteVizName$ + " | " + presetName$
@@ -819,13 +824,14 @@ if draw_visualization
     Line width: 1
 else
     appendInfoLine: "[3/4] Visualization skipped."
+endif
+
 # Restore complete page for Picture export / clipboard.
 Select outer viewport: 0, 8, 0, pageHeight
 Font size: 10
 Colour: "Black"
 Line width: 1
 Solid line
-endif
 
 # ============================================================
 # FINAL
@@ -833,6 +839,11 @@ endif
 
 removeObject: monoWork
 selectObject: resultID
+# Processing uses a zero-based work copy; restore the source time domain
+# only after visualization so input/output plots share the same local axis.
+if originalXmin <> 0
+    Shift times to: "start time", originalXmin
+endif
 
 appendInfoLine: ""
 appendInfoLine: "=== Done ==="

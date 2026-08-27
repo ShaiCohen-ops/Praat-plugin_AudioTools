@@ -3,9 +3,16 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 2.4 (2026) - Suite-standard visualization
+# Version: 2.4.1 (2026) - Output-level safety
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v2.4.1 (2026):
+#   - Added explicit output-level modes: Natural level, Safety ceiling,
+#     and Peak normalize. Safety ceiling is the default and attenuates
+#     only when the post-resynthesis peak exceeds the user ceiling.
+#   - Natural level preserves the raw resynthesis level; playback uses a
+#     temporary safe copy if that raw peak exceeds 1.0.
 #
 # Changelog v2.4 (2026):
 #   - VISUALIZATION STANDARDIZATION ONLY; audio processing, analysis,
@@ -20,7 +27,7 @@
 #   not reconstruct or directly edit the MFCC spectral envelope.
 # ============================================================
 
-form MFCC Transformer v2.4
+form MFCC Transformer v2.4.1
     comment ======== PRESETS ========
     optionmenu Preset 1
         option Custom
@@ -62,6 +69,11 @@ form MFCC Transformer v2.4
         option Fast (downsample to 11 kHz)
     
     comment Output:
+    optionmenu Output_level_mode: 2
+        option Natural level
+        option Safety ceiling (attenuate only)
+        option Peak normalize
+    positive Ceiling_peak 0.99
     boolean Draw_visualization 1
     boolean Play_result 1
 endform
@@ -80,6 +92,9 @@ originalStart = Get start time
 
 if duration < 0.1
     exitScript: "Sound is too short (minimum 0.1s required)."
+endif
+if ceiling_peak <= 0 or ceiling_peak > 1
+    exitScript: "Ceiling_peak must be greater than 0 and at most 1."
 endif
 
 # Set target sample rate
@@ -267,7 +282,7 @@ elsif algo = 5
     algo_name$ = "_MFCCControlScramble"
 endif
 
-writeInfoLine: "=== MFCC Transformer v2.4 ==="
+writeInfoLine: "=== MFCC Transformer v2.4.1 ==="
 appendInfoLine: "Processing: ", soundName$
 appendInfoLine: "Speed: ", speedStr$
 appendInfoLine: "Algorithm: ", algo_name$
@@ -828,8 +843,33 @@ if targetSR > 0 and samplingFrequency > targetSR
     result = upsampled
 endif
 
-# Restore the original Sound time origin after all internal processing at t=0.
+# Output-level stage. This is deliberately applied after any final resampling,
+# because PSOLA/resampling can create peaks above the original source level.
 selectObject: result
+preLevelPeak = Get absolute extremum: 0, 0, "None"
+levelGain = 1
+levelAction$ = "natural level"
+
+if output_level_mode = 2
+    if preLevelPeak > ceiling_peak and preLevelPeak > 0
+        Scale peak: ceiling_peak
+        levelGain = ceiling_peak / preLevelPeak
+        levelAction$ = "ceiling applied"
+    else
+        levelAction$ = "ceiling not needed"
+    endif
+elsif output_level_mode = 3
+    if preLevelPeak > 0
+        Scale peak: ceiling_peak
+        levelGain = ceiling_peak / preLevelPeak
+        levelAction$ = "peak normalized"
+    endif
+endif
+
+selectObject: result
+outPeak = Get absolute extremum: 0, 0, "None"
+
+# Restore the original Sound time origin after all internal processing at t=0.
 if originalStart <> 0
     Shift times by: originalStart
 endif
@@ -858,7 +898,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##MFCC Transformer v2.4##"
+    Text: 0.5, "centre", 0.68, "half", "##MFCC Transformer v2.4.1##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.50}"
     Text: 0.5, "centre", 0.22, "half", suiteVizName$ + " | " + preset$
@@ -1111,7 +1151,7 @@ if draw_visualization
     
     Font size: 6
     Colour: "{0.25, 0.25, 0.35}"
-    Text: 0.02, "left", 0.5, "half", speedStr$ + " | Time: " + fixed$(processingTime, 2) + "s | Frames: " + string$(numFrames) + " | " + preset$
+    Text: 0.02, "left", 0.5, "half", speedStr$ + " | Level: " + levelAction$ + " | Time: " + fixed$(processingTime, 2) + "s | Frames: " + string$(numFrames) + " | " + preset$
     
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
@@ -1141,11 +1181,23 @@ appendInfoLine: ""
 appendInfoLine: "=== Complete ==="
 appendInfoLine: "Processing time: ", fixed$(processingTime, 2), " seconds"
 appendInfoLine: "Output: ", soundName$, algo_name$
+appendInfoLine: "Peak: ", fixed$(preLevelPeak, 4), " -> ", fixed$(outPeak, 4), " (", levelAction$, ")"
+if output_level_mode = 1 and outPeak > 1
+    appendInfoLine: "WARNING: Natural-level peak exceeds 1.0 and may clip when exported to integer PCM."
+endif
 
 selectObject: result
 
 if play_result
-    Play
+    if outPeak > 1
+        appendInfoLine: "Playing a temporary safe copy because the stored Natural-level peak exceeds 1.0."
+        playCopy = Copy: "mfcc_play_safe"
+        Scale peak: min(0.99, ceiling_peak)
+        Play
+        removeObject: playCopy
+    else
+        Play
+    endif
 endif
 
 selectObject: result

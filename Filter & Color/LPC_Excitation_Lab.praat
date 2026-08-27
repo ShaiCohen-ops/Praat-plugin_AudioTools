@@ -3,12 +3,12 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 2.2 (2026) - Suite-standard visualization
+# Version: 2.2.1 (2026) - Spectrum overlay window alignment
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   LPC Excitation Lab v2.1 - Unified resynthesis engine that
+#   LPC Excitation Lab v2.2.1 - Unified resynthesis engine that
 #   drives LPC spectral envelopes with five excitation sources,
 #   now with cross-synthesis and per-method modulations.
 #
@@ -45,6 +45,14 @@
 #   Cohen, S. (2026). Praat AudioTools: An Offline Analysis-Resynthesis
 #   Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v2.2.1 (2026):
+#   - FIX: Spectrum Overlay now compares matched Hann-windowed excerpts from
+#     the filter source and output instead of comparing the whole filter
+#     source against a short output excerpt. Equal-duration material uses
+#     the same 80 ms midpoint window; time-stretched output uses the same
+#     window length at the corresponding midpoint of each signal.
+#   - NOTE: audio processing and output are unchanged.
 #
 # Changelog v2.2 (2026):
 #   - VISUALIZATION STANDARDIZATION ONLY; audio processing, analysis,
@@ -110,7 +118,7 @@
 # FORM  (single compact form, all params directly visible)
 # ============================================================
 
-form LPC Excitation Lab v2.2
+form LPC Excitation Lab v2.2.1
     optionmenu Preset: 1
         option Custom
         option Voiced Sweep
@@ -383,7 +391,7 @@ intensity_tier = Down to IntensityTier
 # ============================================================
 
 clearinfo
-writeInfoLine: "=== LPC Excitation Lab v2.2 ==="
+writeInfoLine: "=== LPC Excitation Lab v2.2.1 ==="
 appendInfoLine: "Source 1: ", sourceName$, " (", fixed$(d1, 3), " s)"
 if cross_synth_mode <> 1
     appendInfoLine: "Source 2: ", secondName$, " (", fixed$(d2, 3), " s)"
@@ -818,7 +826,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##LPC Excitation Lab v2.2##"
+    Text: 0.5, "centre", 0.68, "half", "##LPC Excitation Lab v2.2.1##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.50}"
     Text: 0.5, "centre", 0.22, "half", suiteVizName$ + " | " + presetName$
@@ -932,29 +940,44 @@ if draw_visualization
     Select outer viewport: 0, 8, 4.68, 5.88
     Select inner viewport: 0.55, 7.72, 4.75, 5.82
     
+    # Compare matched local spectra.  Use the same Hann-window length at the
+    # midpoint of both signals; for equal-duration signals this is the same
+    # absolute time interval.  For Time Stretch, midpoint-to-midpoint keeps
+    # the comparison at the corresponding relative position.
     selectObject: filter_source
-    spec_src = To Spectrum: "yes"
-    
+    spec_src_dur = Get total duration
     selectObject: output
     spec_out_tmp_dur = Get total duration
+
     win_len = 0.08
-    if win_len > spec_out_tmp_dur
-        win_len = spec_out_tmp_dur * 0.8
+    common_dur = min(spec_src_dur, spec_out_tmp_dur)
+    if win_len > common_dur
+        win_len = common_dur * 0.8
     endif
-    mid_t = spec_out_tmp_dur / 2
-    t_from = mid_t - win_len / 2
-    if t_from < 0
-        t_from = 0
+
+    src_mid_t = spec_src_dur / 2
+    src_t_from = src_mid_t - win_len / 2
+    if src_t_from < 0
+        src_t_from = 0
     endif
-    t_to = t_from + win_len
-    
-    if spec_out_tmp_dur >= win_len
-        spec_win = Extract part: t_from, t_to, "Hanning", 1, "no"
-        spec_out = To Spectrum: "yes"
-        removeObject: spec_win
-    else
-        spec_out = To Spectrum: "yes"
+    src_t_to = src_t_from + win_len
+
+    out_mid_t = spec_out_tmp_dur / 2
+    out_t_from = out_mid_t - win_len / 2
+    if out_t_from < 0
+        out_t_from = 0
     endif
+    out_t_to = out_t_from + win_len
+
+    selectObject: filter_source
+    spec_src_win = Extract part: src_t_from, src_t_to, "Hanning", 1, "no"
+    spec_src = To Spectrum: "yes"
+    removeObject: spec_src_win
+
+    selectObject: output
+    spec_out_win = Extract part: out_t_from, out_t_to, "Hanning", 1, "no"
+    spec_out = To Spectrum: "yes"
+    removeObject: spec_out_win
     
     # Frequency display range
     selectObject: spec_src

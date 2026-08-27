@@ -3,21 +3,51 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 2.4 (2026) - Suite-standard visualization
+# Version: 2.4.1 (2026) - auto-detect rejection hotfix
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
 #   Removes electrical/power line hum (50 Hz or 60 Hz) and its
-#   harmonics using cascaded band-stop (notch) filters. Auto-detection
-#   scores a harmonic comb over a high-resolution spectrum and refuses
-#   to act unless it finds real evidence of hum.
+#   harmonics by fitting and subtracting coherent sinusoidal components.
+#   This avoids the pre/post-ringing of the former zero-phase Hann
+#   band-stop cascade. Auto-detection scores a harmonic comb over a
+#   high-resolution spectrum and refuses to act without evidence of hum.
 #
 # Categories: Audio Restoration, Spectral Processing, Noise Reduction
 #
 # Citation:
 #   Cohen, S. (2025). Praat AudioTools: An Offline Analysis-Resynthesis
 #   Toolkit for Experimental Composition.
+#
+# Changelog v2.5.0 (2026):
+#   - AUDIO ENGINE CHANGE: replaced cascaded zero-phase
+#     Filter (stop Hann band) processing with coherent sinusoidal
+#     cancellation. The old filter was spectrally subtractive but its
+#     symmetric impulse response produced audible pre/post-ringing on
+#     transients (measured on drums at > -60 dB for about 120 ms each
+#     side in the 50Hz_Strong preset).
+#   - Each requested harmonic is estimated from an integer-cycle analysis
+#     segment with Spectrum (resampled), preserving complex amplitude and
+#     phase, then only that fitted sinusoid is subtracted from every channel.
+#     Nearby frequencies are not passed through a notch filter.
+#   - Dry_wet_mix is now the cancellation depth: 0 is a bit-identical
+#     bypass and 1 removes the full fitted coherent component.
+#   - Removed notch width, transition and pass-count controls because they
+#     no longer describe the processing. Presets retain their harmonic
+#     counts and cancellation depth.
+#   - Multichannel stationarity verification now uses the same loudest
+#     channel selected by the detector, instead of always channel 1.
+#   - Visualization now marks cancellation frequencies rather than drawing
+#     obsolete stop/transition bands.
+#
+# Changelog v2.4.1 (2026):
+#   - AUTO-DETECT HOTFIX ONLY. Once a candidate is rejected by the
+#     mains-deviation or stationarity checks, that rejection now remains
+#     in force. v2.4 reset combScore to bestScore after those checks,
+#     unintentionally reviving rejected candidates.
+#   - Audio filtering, notch geometry, presets, level handling and
+#     visualization are otherwise unchanged from v2.4.
 #
 # Changelog v2.4 (2026):
 #   - VISUALIZATION STANDARDIZATION ONLY; audio processing, analysis,
@@ -179,7 +209,7 @@ endif
 originalID = selected("Sound")
 originalName$ = selected$("Sound")
 
-form Electrical Hum Removal v2.4
+form Electrical Hum Removal v2.5.0
     optionmenu Preset: 1
         option Custom
         option Auto-detect (mild)
@@ -193,15 +223,12 @@ form Electrical Hum Removal v2.4
         option Fixed 60 Hz
     optionmenu If_no_hum_found: 1
         option Return the input unchanged
-        option Filter anyway at the best candidate
+        option Cancel anyway at the best candidate
         option Stop with a message
-    comment === Notch shape ===
+    comment === Harmonic cancellation ===
     natural Max_harmonic 8
-    positive Base_notch_width_Hz 2.0
-    positive Transition_width_Hz 1.0
-    comment (stop band = full width; total affected = width + 2 x transition)
-    natural Notch_passes 1
     real Dry_wet_mix 1.0
+    comment (0 = exact bypass; 1 = full fitted sinusoid subtraction)
     comment === Output ===
     optionmenu Output_level_mode: 1
         option None (natural level)
@@ -239,10 +266,11 @@ max_freq_drift_Hz = 0.3
 # 0 = scan 47-53 and 57-63 Hz; 1 = the whole 45-65 Hz span.
 wide_search = 0
 
-# --- Notch growth ---
-# Added per harmonic, linearly, and capped.
-notch_width_growth_Hz = 0.3
-max_notch_width_Hz = 8.0
+# --- Cancellation fit ---
+# Use at most this many seconds to estimate the coherent sine/cosine
+# coefficients. The segment is shortened to an integer number of mains
+# cycles so each harmonic lands on an exact DFT bin after resampling.
+cancellation_fit_max_s = 10.0
 
 # ============================================================
 # PRESETS
@@ -250,54 +278,26 @@ max_notch_width_Hz = 8.0
 if preset = 2
     detection_mode = 1
     max_harmonic = 6
-    base_notch_width_Hz = 2.0
-    notch_width_growth_Hz = 0.2
-    max_notch_width_Hz = 6.0
-    transition_width_Hz = 1.0
-    notch_passes = 1
     dry_wet_mix = 0.7
     presetName$ = "AutoMild"
 elsif preset = 3
     detection_mode = 2
     max_harmonic = 10
-    base_notch_width_Hz = 3.0
-    notch_width_growth_Hz = 0.3
-    max_notch_width_Hz = 8.0
-    transition_width_Hz = 1.0
-    notch_passes = 2
     dry_wet_mix = 1.0
     presetName$ = "50Hz_Strong"
 elsif preset = 4
     detection_mode = 3
     max_harmonic = 10
-    base_notch_width_Hz = 3.0
-    notch_width_growth_Hz = 0.3
-    max_notch_width_Hz = 8.0
-    transition_width_Hz = 1.0
-    notch_passes = 2
     dry_wet_mix = 1.0
     presetName$ = "60Hz_Strong"
 elsif preset = 5
     detection_mode = 1
     max_harmonic = 5
-    base_notch_width_Hz = 1.6
-    notch_width_growth_Hz = 0.1
-    max_notch_width_Hz = 4.0
-    transition_width_Hz = 0.8
-    notch_passes = 1
     dry_wet_mix = 0.5
     presetName$ = "Studio"
 elsif preset = 6
-    # Recalibrated. The v2.0 version reached a 216 Hz notch at H12 and
-    # removed 46.02 dB from 300-600 Hz of noise - a low-mid hole, not
-    # hum removal.
     detection_mode = 1
     max_harmonic = 12
-    base_notch_width_Hz = 4.0
-    notch_width_growth_Hz = 0.5
-    max_notch_width_Hz = 10.0
-    transition_width_Hz = 1.5
-    notch_passes = 2
     dry_wet_mix = 1.0
     presetName$ = "Field"
 else
@@ -310,7 +310,7 @@ endif
 dummyTimer = stopwatch
 
 clearinfo
-writeInfoLine: "=== Electrical Hum Removal v2.4 ==="
+writeInfoLine: "=== Electrical Hum Removal v2.5.0 ==="
 appendInfoLine: "Input: ", originalName$
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
@@ -323,16 +323,6 @@ originalXmin = Get start time
 nyquist = samplingFreq / 2
 
 # === Validation ===
-if base_notch_width_Hz <= 0
-    exitScript: "Base_notch_width_Hz must be greater than 0."
-endif
-if notch_width_growth_Hz < 0
-    exitScript: "Notch_width_growth_Hz must be 0 or greater (it is added per harmonic)."
-endif
-if max_notch_width_Hz < base_notch_width_Hz
-    exitScript: "Max_notch_width_Hz (" + fixed$(max_notch_width_Hz, 2) + ") must be at " +
-    ... "least Base_notch_width_Hz (" + fixed$(base_notch_width_Hz, 2) + ")."
-endif
 if dry_wet_mix < 0 or dry_wet_mix > 1
     exitScript: "Dry_wet_mix must be between 0 and 1 (got " + fixed$(dry_wet_mix, 3) + ")."
 endif
@@ -340,8 +330,8 @@ if peak_level <= 0 or peak_level > 1
     exitScript: "Peak_level must be greater than 0 and at most 1 (got " +
     ... fixed$(peak_level, 3) + ")."
 endif
-if notch_passes > 6
-    exitScript: "Notch_passes above 6 widens the notch far beyond its stated width."
+if cancellation_fit_max_s <= 0
+    exitScript: "cancellation_fit_max_s must be greater than 0."
 endif
 # The comb only examines 5 harmonics, so a higher requirement could
 # never be met and detection would silently always fail.
@@ -373,6 +363,7 @@ appendInfoLine: "Stage 1: Hum frequency..."
 humFound = 1
 combScore = undefined
 detectRes = undefined
+pickCh = 1
 
 if detection_mode = 2
     baseFreq = 50
@@ -705,7 +696,7 @@ else
             if nChannels = 1
                 blkSnd = Copy: "blk_probe"
             else
-                blkSnd = Extract one channel: 1
+                blkSnd = Extract one channel: pickCh
             endif
             selectObject: blkSnd
             Extract part: (blk - 1) * blockLen, blk * blockLen, "Hanning", 1, "no"
@@ -764,7 +755,9 @@ else
     removeObject: detLtas
 
     baseFreq = bestFreq
-    combScore = bestScore
+    # Keep any rejection made by the plausibility/stationarity checks.
+    # v2.4 restored bestScore here, which revived a candidate after those
+    # checks had deliberately set combScore to 0.
     appendInfoLine: "  Best candidate: ", fixed$(baseFreq, 3), " Hz | score ",
         ... fixed$(combScore, 2), " dB (threshold ", fixed$(detection_confidence_dB, 1),
         ... ") | active harmonics: ", combActive
@@ -787,19 +780,19 @@ else
         elsif if_no_hum_found = 1
             appendInfoLine: "    Returning the input unchanged."
         else
-            appendInfoLine: "    Filtering anyway at ", fixed$(baseFreq, 2), " Hz, as requested."
+            appendInfoLine: "    Cancelling anyway at ", fixed$(baseFreq, 2), " Hz, as requested."
         endif
     endif
 endif
 
 # ============================================================
-# STAGE 2: NOTCH FILTERS
+# STAGE 2: COHERENT HARMONIC CANCELLATION
 # ============================================================
 doFilter = 1
 if dry_wet_mix = 0
     doFilter = 0
     appendInfoLine: ""
-    appendInfoLine: "Dry/Wet is 0: full bypass, the output is the input unchanged."
+    appendInfoLine: "Dry/Wet is 0: exact bypass, the output is the input unchanged."
 endif
 if humFound = 0 and if_no_hum_found = 1
     doFilter = 0
@@ -807,93 +800,116 @@ endif
 
 selectObject: workSound
 processedID = Copy: "filtered_temp"
+firstSampleTime = Get time from sample number: 1
 
 validHarmonics = 0
-notchFreqs# = zero#(max_harmonic)
-notchWidths# = zero#(max_harmonic)
-notchSpans# = zero#(max_harmonic)
-overlapWarned = 0
+cancelFreqs# = zero#(max_harmonic)
+cancelAmpSum# = zero#(max_harmonic)
+cancelAmpDb# = zero#(max_harmonic)
+fitTarget = 0
+fitCycles = 0
 
 if doFilter
     appendInfoLine: ""
-    appendInfoLine: "Stage 2: Notch filters..."
+    appendInfoLine: "Stage 2: coherent sinusoidal cancellation..."
 
     for harmonic from 1 to max_harmonic
         freq = baseFreq * harmonic
-
-        # Linear growth with a ceiling. v2.0 used base * scaling^(n-1),
-        # which reached 41.3 Hz at H10 and 216 Hz at H12.
-        currentW = base_notch_width_Hz + notch_width_growth_Hz * (harmonic - 1)
-        if currentW > max_notch_width_Hz
-            currentW = max_notch_width_Hz
-        endif
-
-        # The third argument of Filter (stop Hann band) is the
-        # TRANSITION width, so the total affected span is
-        # width + 2 x transition. v2.0 passed currentBW * 2 there while
-        # calling currentBW a half-width, which tripled the real reach.
-        halfW = currentW / 2
-        lowCut = max(1, freq - halfW)
-        highCut = freq + halfW
-        totalSpan = currentW + 2 * transition_width_Hz
-
         if freq < nyquist * 0.85
             validHarmonics += 1
-
-            if totalSpan >= baseFreq and overlapWarned = 0
-                appendInfoLine: "  WARNING: at H", harmonic, " the affected span (",
-                    ... fixed$(totalSpan, 1), " Hz) reaches the neighbouring harmonic (",
-                    ... fixed$(baseFreq, 1), " Hz apart). Notches are overlapping."
-                overlapWarned = 1
-            endif
-
-            for pass from 1 to notch_passes
-                selectObject: processedID
-                Filter (stop Hann band): lowCut, highCut, transition_width_Hz
-                filteredID = selected("Sound")
-                removeObject: processedID
-                processedID = filteredID
-            endfor
-
-            notchFreqs#[validHarmonics] = freq
-            notchWidths#[validHarmonics] = currentW
-            notchSpans#[validHarmonics] = totalSpan
+            cancelFreqs#[validHarmonics] = freq
         endif
     endfor
 
-    # v2.1 indexed notchSpans#[1] and [validHarmonics] unconditionally,
-    # so a sample rate low enough that baseFreq >= 0.85 x Nyquist left
-    # validHarmonics at 0 and crashed with "In vector indexing, the
-    # element index should be positive" (seen at 80, 100 and 120 Hz).
     if validHarmonics = 0
         appendInfoLine: "  No harmonic of ", fixed$(baseFreq, 2), " Hz falls below 85% of"
-        appendInfoLine: "  Nyquist (", fixed$(nyquist, 1), " Hz): nothing to filter."
+        appendInfoLine: "  Nyquist (", fixed$(nyquist, 1), " Hz): nothing to cancel."
         doFilter = 0
     else
-        appendInfoLine: "  ", validHarmonics, " harmonics, ", notch_passes, " pass(es) each"
-        appendInfoLine: "  H1 span: ", fixed$(notchSpans#[1], 2), " Hz | H", validHarmonics,
-            ... " span: ", fixed$(notchSpans#[validHarmonics], 2), " Hz"
-    endif
-endif
+        # Analyze an integer number of mains cycles. To Spectrum (resampled)
+        # keeps the analysis fast while the integer-cycle duration puts the
+        # fundamental and all harmonics on DFT bins. The complex bin gives
+        # the fitted cosine/sine coefficients without any time-domain
+        # convolution, so there is no filter impulse-response ringing.
+        fitLimit = min(duration, cancellation_fit_max_s)
+        fitCycles = floor(fitLimit * baseFreq)
+        if fitCycles < 1
+            fitCycles = 1
+        endif
+        fitTarget = fitCycles / baseFreq
+        if fitTarget > duration
+            fitTarget = duration
+        endif
 
-# ============================================================
-# STAGE 3: DRY/WET
-# ============================================================
-# Object ID, not the object NAME. v2.0 built "Sound_'name$'[]", which
-# fails for any name Praat parses as an expression: an object called
-# "a-b" produced "No such object: self * 0.5000 + Sound_a".
-if doFilter and dry_wet_mix < 1
-    selectObject: processedID
-    Formula: "self * " + fixed$(dry_wet_mix, 6) + " + object[" + string$(workSound) +
-        ... ", row, col] * " + fixed$(1 - dry_wet_mix, 6)
-    residual_dB = -20 * log10(1 - dry_wet_mix)
-    appendInfoLine: ""
-    appendInfoLine: "Stage 3: ", fixed$(dry_wet_mix * 100, 0), "% wet"
-    appendInfoLine: "  Dry/Wet is the depth control: the residual at each notch centre is",
-        ... " about ", fixed$(residual_dB, 1), " dB down."
-elsif doFilter
-    appendInfoLine: ""
-    appendInfoLine: "Stage 3: 100% wet (no residual added back)"
+        appendInfoLine: "  Fit duration: ", fixed$(fitTarget, 3), " s (", fitCycles,
+            ... " cycles at ", fixed$(baseFreq, 3), " Hz)"
+        appendInfoLine: "  Harmonics: ", validHarmonics, " | cancellation depth: ",
+            ... fixed$(dry_wet_mix * 100, 0), "%"
+
+        for ch from 1 to nChannels
+            selectObject: workSound
+            if nChannels = 1
+                fitCh = Copy: "hum_fit_ch"
+            else
+                fitCh = Extract one channel: ch
+            endif
+
+            selectObject: fitCh
+            fitPart = Extract part: 0, fitTarget, "rectangular", 1, "no"
+            fitDurActual = Get total duration
+            removeObject: fitCh
+
+            selectObject: fitPart
+            fitSpec = To Spectrum (resampled): 50
+            fitDf = Get bin width
+
+            cancelExpr$ = "self"
+            for h from 1 to validHarmonics
+                requestedFreq = cancelFreqs#[h]
+                bin = round(requestedFreq / fitDf) + 1
+                fittedFreq = (bin - 1) * fitDf
+                rePart = object[fitSpec, 1, bin]
+                imPart = object[fitSpec, 2, bin]
+                cosCoef = 2 * rePart / fitDurActual
+                sinCoef = -2 * imPart / fitDurActual
+                toneAmp = sqrt(cosCoef^2 + sinCoef^2)
+                cancelAmpSum#[h] += toneAmp
+
+                # Spectrum phase is referenced to the first sample as t=0.
+                # Formula x uses the Sound time coordinate, so subtract the
+                # first-sample time to use the same phase reference.
+                cancelExpr$ = cancelExpr$ + " - " + fixed$(dry_wet_mix, 8) +
+                    ... " * ((" + fixed$(cosCoef, 14) + ") * cos(2*pi*" +
+                    ... fixed$(fittedFreq, 14) + "*(x-" + fixed$(firstSampleTime, 14) + ")) + (" +
+                    ... fixed$(sinCoef, 14) + ") * sin(2*pi*" + fixed$(fittedFreq, 14) +
+                    ... "*(x-" + fixed$(firstSampleTime, 14) + ")))"
+
+                # Store the actual fitted bin frequency for reporting/plots.
+                cancelFreqs#[h] = fittedFreq
+            endfor
+
+            removeObject: fitPart, fitSpec
+            selectObject: processedID
+            Formula (part): 0, duration, ch, ch, cancelExpr$
+        endfor
+
+        for h from 1 to validHarmonics
+            avgAmp = cancelAmpSum#[h] / nChannels
+            if avgAmp > 0.000000000001
+                cancelAmpDb#[h] = 20 * log10(avgAmp)
+            else
+                cancelAmpDb#[h] = -240
+            endif
+        endfor
+
+        if dry_wet_mix < 1
+            residual_dB = -20 * log10(1 - dry_wet_mix)
+            appendInfoLine: "  Fitted stationary hum residual at each cancelled line: about ",
+                ... fixed$(residual_dB, 1), " dB down."
+        else
+            appendInfoLine: "  Full fitted coherent component removed at each harmonic."
+        endif
+    endif
 endif
 
 # ============================================================
@@ -902,8 +918,8 @@ endif
 # v2.1's changelog claimed the processed spectrum was measured before
 # normalization, but Stage 4 ran first and the Ltas was taken after, so
 # in Peak normalize mode the whole output spectrum was shifted and the
-# comparison showed notches plus a global gain. This copy is the state
-# the notches produced, nothing else.
+# comparison showed filtering plus a global gain. This copy is the state
+# the sinusoidal cancellation produced, nothing else.
 if draw_visualization
     selectObject: processedID
     vizProcID = Copy: "viz_pre_level"
@@ -912,7 +928,7 @@ else
 endif
 
 # ============================================================
-# STAGE 4: OUTPUT LEVEL
+# STAGE 3: OUTPUT LEVEL
 # ============================================================
 selectObject: processedID
 pre_level_peak = Get absolute extremum: 0, 0, "None"
@@ -989,7 +1005,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##Electrical Hum Removal v2.4##"
+    Text: 0.5, "centre", 0.68, "half", "##Electrical Hum Removal v2.5.0##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.50}"
     Text: 0.5, "centre", 0.22, "half", suiteVizName$ + " | " + presetName$
@@ -1003,15 +1019,8 @@ if draw_visualization
 
     Axes: 0, maxFreqDisplay, dbLo, dbHi
     for h to validHarmonics
-        freq = notchFreqs#[h]
-        wid = notchWidths#[h]
-        span = notchSpans#[h]
+        freq = cancelFreqs#[h]
         if freq < maxFreqDisplay
-            # The transition bands are part of what the filter removes,
-            # so they are drawn. v2.0 showed only freq +/- BW, which was
-            # a third of the real reach.
-            Paint rectangle: "{1.00, 0.93, 0.93}", freq - span / 2, freq + span / 2, dbLo, dbHi
-            Paint rectangle: "{0.98, 0.80, 0.80}", freq - wid / 2, freq + wid / 2, dbLo, dbHi
             Colour: "{0.90, 0.30, 0.30}"
             Line width: 1
             Draw line: freq, dbLo, freq, dbHi
@@ -1026,7 +1035,7 @@ if draw_visualization
     Line width: 1
     Draw inner box
     Font size: 7
-    Text top: "no", "Original + notch bands (dark = stop, pale = transition)"
+    Text top: "no", "Original + fitted cancellation frequencies"
     Text left: "yes", "dB"
     Text bottom: "yes", "Frequency (Hz)"
 
@@ -1040,7 +1049,7 @@ if draw_visualization
 
     Axes: 0, maxFreqDisplay, dbLo, dbHi
     for h to validHarmonics
-        freq = notchFreqs#[h]
+        freq = cancelFreqs#[h]
         if freq < maxFreqDisplay
             Colour: "{0.50, 0.80, 0.50}"
             Line width: 1
@@ -1054,7 +1063,7 @@ if draw_visualization
     Line width: 1
     Draw inner box
     Font size: 7
-    Text top: "no", "Processed, measured BEFORE the output stage (same dB axis)"
+    Text top: "no", "Processed after sinusoidal cancellation, BEFORE output stage (same dB axis)"
     Text left: "yes", "dB"
     Text bottom: "yes", "Frequency (Hz)"
 
@@ -1093,7 +1102,7 @@ if draw_visualization
     Text top: "no", "Processed"
     Text left: "yes", "Amp"
 
-    # === NOTCH TABLE ===
+    # === CANCELLATION TABLE ===
     Select outer viewport: 0, 8, 4.4, 5.5
     Select inner viewport: 0.6, 7.7, 4.5, 5.4
     Axes: 0, 1, 0, 1
@@ -1101,22 +1110,20 @@ if draw_visualization
 
     Font size: 7
     Colour: "Black"
-    Text: 0.05, "left", 0.9, "half", "##Notch Filters Applied##"
+    Text: 0.05, "left", 0.9, "half", "##Coherent Harmonic Cancellation##"
     Font size: 6
     Colour: "{0.30, 0.30, 0.30}"
 
     if validHarmonics = 0
-        Text: 0.08, "left", 0.6, "half", "None - no filtering was applied."
+        Text: 0.08, "left", 0.6, "half", "None - no cancellation was applied."
     else
         maxDisplay = min(validHarmonics, 8)
         for h to maxDisplay
             yPos = 0.75 - (h - 1) * 0.08
-            freq = notchFreqs#[h]
-            wid = notchWidths#[h]
-            span = notchSpans#[h]
-            text$ = "H" + string$(h) + ": " + fixed$(freq, 2) + " Hz  stop " +
-                ... fixed$(wid, 2) + " Hz  total affected " + fixed$(span, 2) + " Hz  (" +
-                ... fixed$(freq - span / 2, 1) + " - " + fixed$(freq + span / 2, 1) + " Hz)"
+            freq = cancelFreqs#[h]
+            text$ = "H" + string$(h) + ": " + fixed$(freq, 3) + " Hz  fitted tone " +
+                ... fixed$(cancelAmpDb#[h], 1) + " dBFS peak  cancellation " +
+                ... fixed$(dry_wet_mix * 100, 0) + "%"
             Text: 0.08, "left", yPos, "half", text$
         endfor
         if validHarmonics > 8
@@ -1137,7 +1144,7 @@ if draw_visualization
     Colour: "{0.30, 0.30, 0.30}"
     Text: 0.5, "centre", 0.5, "half",
         ... "Base: " + fixed$(baseFreq, 2) + " Hz  |  Harmonics: " + string$(validHarmonics)
-        ... + "  |  Passes: " + string$(notch_passes)
+        ... + "  |  Fit: " + fixed$(fitTarget, 2) + " s"
         ... + "  |  Mix: " + fixed$(dry_wet_mix * 100, 0) + "%"
         ... + "  |  Peak: " + fixed$(pre_level_peak, 3) + " -> " + fixed$(out_peak, 3)
         ... + "  |  Time: " + fixed$(processingTime, 2) + " s"
@@ -1174,7 +1181,7 @@ appendInfoLine: "=== Complete ==="
 appendInfoLine: "Output: ", finalName$
 appendInfoLine: "Processing time: ", fixed$(processingTime, 2), " s"
 appendInfoLine: "Base frequency: ", fixed$(baseFreq, 2), " Hz"
-appendInfoLine: "Harmonics filtered: ", validHarmonics
+appendInfoLine: "Harmonics cancelled: ", validHarmonics
 appendInfoLine: "Peak: ", fixed$(pre_level_peak, 4), " -> ", fixed$(out_peak, 4),
     ... " (", level_action$, ")"
 if output_level_mode <> 3 and out_peak > 1
