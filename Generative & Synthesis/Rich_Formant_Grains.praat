@@ -1,5 +1,5 @@
 # ============================================================
-# Praat AudioTools - Rich Formant Grains v1.1
+# Praat AudioTools - Rich Formant Grains v1.1.1
 # Multi-bank source-filter granular synthesis
 #
 # Formants here are SYNTHESIS resonances. Grains create harmonic-rich
@@ -8,7 +8,7 @@
 # using F1/F2/F3 as oscillator frequencies.
 # ============================================================
 
-form Rich Formant Grains v1.1
+form Rich Formant Grains v1.1.1
     comment === Musical controls ===
     optionmenu preset 1
         option Custom
@@ -129,7 +129,7 @@ elsif preset = 9
 endif
 
 if edit_details
-    beginPause: "Rich Formant Grains v1.1 - Details"
+    beginPause: "Rich Formant Grains v1.1.1 - Details"
         integer: "Sample rate (Hz)", sample_rate_hz
         integer: "Source harmonics", source_harmonics
         real: "Formant bandwidth scale", formant_bandwidth_scale
@@ -298,6 +298,10 @@ total_grains = round(duration_s * grain_density)
 if total_grains < 1
     total_grains = 1
 endif
+maxGrains = 12000
+if total_grains > maxGrains
+    exitScript: "Requested settings create " + string$(total_grains) + " grains; the safety limit is " + string$(maxGrains) + ". Reduce Duration or Grain density."
+endif
 realized_density = total_grains / duration_s
 sum_f1 = 0
 sum_f2 = 0
@@ -383,7 +387,7 @@ rep_f2 = grain_f2[rep_g]
 rep_f3 = grain_f3[rep_g]
 
 clearinfo
-writeInfoLine: "=== Rich Formant Grains v1.1 ==="
+writeInfoLine: "=== Rich Formant Grains v1.1.1 ==="
 appendInfoLine: "Preset: ", preset_name$
 appendInfoLine: "Duration: ", fixed$(duration_s, 2), " s | target/realized density: ", fixed$(grain_density, 1), "/", fixed$(realized_density, 1), " grains/s"
 appendInfoLine: "Total grains: ", total_grains, " | F0: ", fixed$(base_frequency_hz, 1), " Hz"
