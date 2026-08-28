@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 2.1.2 hybrid synchronization (2026)
+# Version: 2.1.3 spectra headroom fix (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -76,6 +76,14 @@
 #   for several display frames. High_flicker_mode removes that hold, but even
 #   then the Demo window remains far below the original project's extreme rates.
 #
+# v2.1.3 spectra headroom fix:
+#   - The spectra-inspired high-frequency stereo pair now receives one common
+#     scale when needed so both components remain at or below safeTop.
+#   - Default-rate behavior is unchanged; lower sample rates no longer alias
+#     the fixed 9.8-kHz pair.
+#   - No shared-data mapping, synchronization, visual, level or other study
+#     logic changed.
+#
 # v2.1.2 hybrid synchronization:
 #   - Added frame-aligned Sync_block_s (default 0.5 s).
 #   - One asynchronous audio start per block, not per frame and not per piece.
@@ -114,7 +122,7 @@
 #   official supercodex recording/live-set listings.
 # ============================================================
 
-form Ikeda-inspired Audiovisual Studies v2.1.2
+form Ikeda-inspired Audiovisual Studies v2.1.3
     optionmenu Study 1
         option test pattern-inspired Binary Transduction
         option datamatics-inspired Data Scan
@@ -355,12 +363,17 @@ elsif study = 2
 elsif study = 3
     # One analytic energy field drives both audio and later the visual beam.
     # The sound is intentionally minimal: slow low beating + sparse high energy.
+    # Keep the fixed high-frequency pair inside practical sampling headroom.
+    hfScale = min(1,safeTop/9813)
+    highLeftHz = 9800*hfScale
+    highRightHz = 9813*hfScale
+
     selectObject: masterSound
     Formula: "(0.16+0.34*(0.5+0.5*sin(2*pi*0.055*x)))"
         ... + "*(if row=1 then sin(2*pi*50*x)+0.72*sin(2*pi*50.8*x)"
-        ... + "+0.10*sin(2*pi*9800*x)"
+        ... + "+0.10*sin(2*pi*" + fixed$(highLeftHz,9) + "*x)"
         ... + " else sin(2*pi*50.3*x)+0.72*sin(2*pi*51.1*x)"
-        ... + "+0.10*sin(2*pi*9813*x) fi)"
+        ... + "+0.10*sin(2*pi*" + fixed$(highRightHz,9) + "*x) fi)"
 
 # ---------------------------------------------------------------------------
 # 5D. SUPERCODEX-INSPIRED DATA PULSE FIELD
@@ -456,7 +469,7 @@ endif
 # ---------------------------------------------------------------------------
 clearinfo
 writeInfoLine: "=============================================="
-writeInfoLine: "  IKEDA-INSPIRED AUDIOVISUAL STUDIES v2.1.2"
+writeInfoLine: "  IKEDA-INSPIRED AUDIOVISUAL STUDIES v2.1.3"
 writeInfoLine: "=============================================="
 appendInfoLine: "Study: ", studyName$
 appendInfoLine: "Scope: conceptual/data-mapping study, NOT work reconstruction"
