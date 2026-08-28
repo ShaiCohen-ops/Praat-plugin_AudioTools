@@ -1,7 +1,7 @@
 # ============================================================
 # Praat AudioTools - Waveguide_Modal_Synthesis.praat
 # Author: Shai Cohen
-# Version: 1.1.1 reviewed
+# Version: 1.1.2 reviewed
 #
 # Waveguide methods:
 #   Fractional-delay feedback loop with a two-sample loss filter.
@@ -15,7 +15,7 @@
 #   excitation/model -> delay or modal bank -> measured spectral peaks -> output
 # ============================================================
 
-form Waveguide and Modal Synthesis v1.1.1
+form Waveguide and Modal Synthesis v1.1.2
     comment === Instrument Model ===
     optionmenu Method: 4
         option Waveguide: Plucked String
@@ -74,6 +74,20 @@ if output_peak <= 0 or output_peak > 1
 endif
 if sample_rate_Hz < 8000
     exitScript: "Sample rate is too low for this synthesis model."
+endif
+if sample_rate_Hz > 192000
+    exitScript: "Sample rate must not exceed 192000 Hz."
+endif
+
+# Workload guard for the sample-by-sample single-note waveguide renderer.
+# Melody demo has a fixed short duration and is well below this limit.
+maxRenderedSamples = 5000000
+if not melody_demo
+    renderedSamples = round(duration_s * sample_rate_Hz)
+    if renderedSamples > maxRenderedSamples
+        maxDurationForRate = maxRenderedSamples / sample_rate_Hz
+        exitScript: "Single-note render is too large (" + string$(renderedSamples) + " samples). At " + string$(sample_rate_Hz) + " Hz, use Duration <= " + fixed$(maxDurationForRate, 2) + " s, or lower Sample rate."
+    endif
 endif
 
 if random_seed > 0
@@ -141,7 +155,7 @@ if method <= 2 and sample_rate_Hz / max_fundamental < 4
     exitScript: "Waveguide period is too short at this sample rate. Lower Frequency or raise Sample rate."
 endif
 
-writeInfoLine: "=== Waveguide and Modal Synthesis v1.1.1 ==="
+writeInfoLine: "=== Waveguide and Modal Synthesis v1.1.2 ==="
 appendInfoLine: "Model: ", method_label$
 appendInfoLine: "Sample rate: ", sample_rate_Hz, " Hz"
 appendInfoLine: "Damping: ", fixed$(damping, 5)
