@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2026)
+# Version: 0.4 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -12,9 +12,16 @@
 #   extracts the time-averaged F1-F4 via Burg LPC. The four
 #   formants become a 4-voice chord which is:
 #     (a) written to a MusicXML file (optional, via file picker),
-#         using 8th-tone microtonal alter values; and
-#     (b) resynthesised as an additive chord with per-voice
+#         using 8th-tone microtonal alter values;
+#     (b) kept in the Praat object list as a Strings object
+#         "musicxml_<name>", one score line per string, so the
+#         score survives in the session without touching disk; and
+#     (c) resynthesised as an additive chord with per-voice
 #         ADSR envelope and small onset stagger.
+#
+#   The file and the Strings object come from one shared line
+#   buffer, so the two outputs cannot diverge. The Strings object
+#   can be written out later with "Save as raw text file...".
 #
 #   The synthesised pitches are register-folded into C2-C5 for
 #   musical listenability. This keeps pitch-class information but
@@ -25,8 +32,11 @@
 #
 # Usage:
 #   Select a Sound. Run. If "Write MusicXML file" is checked,
-#   you will be prompted for a save path. A resynthesised
-#   Sound "formant_chords_<name>" is left selected at the end.
+#   you will be prompted for a save path; cancelling the picker
+#   skips the file but still produces the Strings object if
+#   "Keep MusicXML Strings" is checked. A resynthesised Sound
+#   "formant_chords_<name>" is left selected at the end, with
+#   "musicxml_<name>" left in the object list beside it.
 #
 # Dependencies: Praat 6.3+ only (no Python).
 #
@@ -55,6 +65,7 @@ form Formant to MusicXML Chord Converter
     real     Stagger_s            0.018
     integer  Num_harmonics        3
     boolean  Write_MusicXML_file  1
+    boolean  Keep_MusicXML_Strings 1
     boolean  Normalize_output     1
     boolean  Play_result          1
     boolean  Draw_visualization   1
@@ -81,6 +92,18 @@ if write_MusicXML_file
     endif
 endif
 
+# The score is built whenever EITHER sink is wanted. Cancelling
+# the file picker no longer discards the score, because the
+# Strings object is an independent destination.
+buildXml = 0
+if writeXmlActual or keep_MusicXML_Strings
+    buildXml = 1
+endif
+xmlStringsId    = 0
+xmlStringsName$ = ""
+nXmlLines       = 0
+xml$            = ""
+
 twoPi = 2 * pi
 uid$  = string$(randomInteger(10000, 99999))
 fColour$[1] = "{0.85, 0.22, 0.12}"
@@ -99,6 +122,15 @@ staggerClamped = stagger_s
 if staggerClamped > maxStagger
     staggerClamped = maxStagger
 endif
+
+# One score line in, two sinks out: appended to the flat text
+# that goes to the file, and stored as its own array element so
+# it can become one string of the Strings object.
+procedure xmlAdd: .line$
+    nXmlLines += 1
+    xmlLine$[nXmlLines] = .line$
+    xml$ = xml$ + .line$ + newline$
+endproc
 
 procedure xmlEscape: .s$
     .out$ = replace_regex$(.s$, "&", "&amp;", 0)
@@ -381,26 +413,30 @@ for seg from 1 to number_of_segments
 endfor
 
 # ============================================================
-# Phase 2 - MusicXML
+# Phase 2 - MusicXML (file and/or in-memory Strings)
 # ============================================================
-if writeXmlActual
-    appendInfoLine: "[2/5] Writing MusicXML to:"
-    appendInfoLine: "  ", xmlPath$
+if buildXml
+    if writeXmlActual
+        appendInfoLine: "[2/5] Building MusicXML; file target:"
+        appendInfoLine: "  ", xmlPath$
+    else
+        appendInfoLine: "[2/5] Building MusicXML (Strings object only, no file)..."
+    endif
     @xmlEscape: soundName$
     titleEsc$ = xmlEscape.out$
 
-    xml$ = "<?xml version=""1.0"" encoding=""UTF-8""?>" + newline$
-    xml$ = xml$ + "<!DOCTYPE score-partwise PUBLIC ""-//Recordare//DTD MusicXML 3.1 Partwise//EN"" ""http://www.musicxml.org/dtds/partwise.dtd"">" + newline$
-    xml$ = xml$ + "<score-partwise version=""3.1"">" + newline$
-    xml$ = xml$ + "  <work><work-title>Formant Analysis: " + titleEsc$ + "</work-title></work>" + newline$
-    xml$ = xml$ + "  <identification><creator type=""software"">Praat AudioTools - Formant Chord Converter</creator></identification>" + newline$
-    xml$ = xml$ + "  <part-list><score-part id=""P1""><part-name>Formant Chords</part-name></score-part></part-list>" + newline$
-    xml$ = xml$ + "  <part id=""P1"">" + newline$
+    @xmlAdd: "<?xml version=""1.0"" encoding=""UTF-8""?>"
+    @xmlAdd: "<!DOCTYPE score-partwise PUBLIC ""-//Recordare//DTD MusicXML 3.1 Partwise//EN"" ""http://www.musicxml.org/dtds/partwise.dtd"">"
+    @xmlAdd: "<score-partwise version=""3.1"">"
+    @xmlAdd: "  <work><work-title>Formant Analysis: " + titleEsc$ + "</work-title></work>"
+    @xmlAdd: "  <identification><creator type=""software"">Praat AudioTools - Formant Chord Converter</creator></identification>"
+    @xmlAdd: "  <part-list><score-part id=""P1""><part-name>Formant Chords</part-name></score-part></part-list>"
+    @xmlAdd: "  <part id=""P1"">"
 
     for seg from 1 to number_of_segments
-        xml$ = xml$ + "    <measure number=""" + string$(seg) + """>" + newline$
+        @xmlAdd: "    <measure number=""" + string$(seg) + """>"
         if seg = 1
-            xml$ = xml$ + "      <attributes><divisions>1</divisions><key><fifths>0</fifths></key><time><beats>4</beats><beat-type>4</beat-type></time><clef><sign>G</sign><line>2</line></clef></attributes>" + newline$
+            @xmlAdd: "      <attributes><divisions>1</divisions><key><fifths>0</fifths></key><time><beats>4</beats><beat-type>4</beat-type></time><clef><sign>G</sign><line>2</line></clef></attributes>"
         endif
 
         noteIndex = 0
@@ -413,28 +449,49 @@ if writeXmlActual
                 baseAlter  = midiToNoteName.alter
                 microAlter = storedAlter[seg, fNum]
                 totalAlter = baseAlter + microAlter
-                xml$ = xml$ + "      <note>" + newline$
+                @xmlAdd: "      <note>"
                 if noteIndex > 1
-                    xml$ = xml$ + "        <chord/>" + newline$
+                    @xmlAdd: "        <chord/>"
                 endif
-                xml$ = xml$ + "        <pitch><step>" + step$ + "</step>"
+                pitchLine$ = "        <pitch><step>" + step$ + "</step>"
                 if totalAlter <> 0
-                    xml$ = xml$ + "<alter>" + fixed$(totalAlter, 4) + "</alter>"
+                    pitchLine$ = pitchLine$ + "<alter>" + fixed$(totalAlter, 4) + "</alter>"
                 endif
-                xml$ = xml$ + "<octave>" + string$(octaveOut) + "</octave></pitch>" + newline$
-                xml$ = xml$ + "        <duration>4</duration><type>whole</type>" + newline$
-                xml$ = xml$ + "      </note>" + newline$
+                pitchLine$ = pitchLine$ + "<octave>" + string$(octaveOut) + "</octave></pitch>"
+                @xmlAdd: pitchLine$
+                @xmlAdd: "        <duration>4</duration><type>whole</type>"
+                @xmlAdd: "      </note>"
             endif
         endfor
 
         if noteIndex = 0
-            xml$ = xml$ + "      <note><rest/><duration>4</duration><type>whole</type></note>" + newline$
+            @xmlAdd: "      <note><rest/><duration>4</duration><type>whole</type></note>"
         endif
-        xml$ = xml$ + "    </measure>" + newline$
+        @xmlAdd: "    </measure>"
     endfor
-    xml$ = xml$ + "  </part>" + newline$ + "</score-partwise>" + newline$
-    writeFile: xmlPath$, xml$
-    appendInfoLine: "  MusicXML written (", length(xml$), " bytes)."
+    @xmlAdd: "  </part>"
+    @xmlAdd: "</score-partwise>"
+
+    if writeXmlActual
+        writeFile: xmlPath$, xml$
+        appendInfoLine: "  MusicXML file written (", length(xml$), " bytes, ", nXmlLines, " lines)."
+    endif
+
+    # In-memory copy. Created from a one-token Strings so that the
+    # first line can be written with "Set string" and the rest
+    # appended with "Insert string: 0" (0 = at the end). Verified
+    # on Praat 6.1.38, 6.4.06 and 7.0; no temporary file is used,
+    # so this also stays clear of the 7.0 full-trust file gate.
+    if keep_MusicXML_Strings
+        xmlStringsId = Create Strings as tokens: "placeholder", " "
+        Set string: 1, xmlLine$[1]
+        for lineNo from 2 to nXmlLines
+            Insert string: 0, xmlLine$[lineNo]
+        endfor
+        Rename: "musicxml_" + soundName$
+        xmlStringsName$ = selected$("Strings")
+        appendInfoLine: "  MusicXML kept as Strings object """, xmlStringsName$, """ (", nXmlLines, " strings)."
+    endif
 else
     appendInfoLine: "[2/5] MusicXML output skipped."
 endif
@@ -527,13 +584,23 @@ if draw_visualization
     Erase all
     Select outer viewport: 0, 8, 0, 8
 
-    Select outer viewport: 0, 8, 0, 0.55
-    Axes: 0, 1, 0, 1
+    # Text strips must use the INNER viewport: Axes maps to the
+    # inner rectangle, so an outer 0.55 in strip is inset by the
+    # standard margins and the two lines collapse onto each other.
+    # Font size is set BEFORE each selection, because a later font
+    # change re-derives the margins and shifts the frame.
     Font size: 13
+    Select inner viewport: 0, 8, 0, 0.55
+    Axes: 0, 1, 0, 1
     Colour: "Black"
-    Text: 0.5, "centre", 0.70, "half", "##Formant-to-MusicXML Chord Converter##"
+    Text: 0.5, "centre", 0.72, "half", "##Formant-to-MusicXML Chord Converter##"
+    # "_" is subscript markup in Picture text; escape it so object
+    # names with underscores are drawn verbatim.
+    nameDraw$ = replace$(soundName$, "_", "\_ ", 0)
     Font size: 7
-    Text: 0.5, "centre", 0.20, "half", soundName$ + " | reliable chords=" + string$(nAccepted) + "/" + string$(number_of_segments)
+    Select inner viewport: 0, 8, 0, 0.55
+    Axes: 0, 1, 0, 1
+    Text: 0.5, "centre", 0.24, "half", nameDraw$ + " | reliable chords=" + string$(nAccepted) + "/" + string$(number_of_segments)
 
     # Source spectrogram from the analysis channel.
     Select outer viewport: 0, 8, 0.60, 3.10
@@ -615,13 +682,21 @@ if draw_visualization
     Text: 0.02, "left", 0.66, "half", "Reliable chords: " + string$(nAccepted) + "/" + string$(number_of_segments) + " | source SR=" + string$(sourceFs) + " Hz | formant ceiling=" + fixed$(maxFormantEff,0) + " Hz"
     Text: 0.02, "left", 0.46, "half", "Note=" + fixed$(note_duration_s,2) + "s | A=" + fixed$(attack_s*1000,0) + "ms D=" + fixed$(decay_s*1000,0) + "ms S=" + fixed$(sustain_level,2) + " R=" + fixed$(release_s*1000,0) + "ms"
     xmlStatus$ = "skipped"
-    if writeXmlActual
-        xmlStatus$ = "written"
+    if writeXmlActual and xmlStringsId <> 0
+        xmlStatus$ = "file+Strings"
+    elsif writeXmlActual
+        xmlStatus$ = "file"
+    elsif xmlStringsId <> 0
+        xmlStatus$ = "Strings"
     endif
     Text: 0.02, "left", 0.26, "half", "Harmonics=" + string$(num_harmonics) + " | stagger=" + fixed$(staggerClamped*1000,0) + "ms | MusicXML=" + xmlStatus$ + " | normalize=" + string$(normalize_output)
     Text: 0.02, "left", 0.08, "half", "Rejected segments are RESTS in both score and audio; no canonical formant fallback."
     Draw rectangle: 0, 1, 0, 1
     Font size: 10
+
+    # Leave the selection on the whole canvas, otherwise Save/Copy
+    # from the Picture window exports only this summary strip.
+    Select outer viewport: 0, 8, 0, 8
 endif
 
 removeObject: formantObj, hnrObj, analysisSound
@@ -633,6 +708,9 @@ appendInfoLine: "Reliable chords: ", nAccepted, "/", number_of_segments
 appendInfoLine: "Total duration: ", fixed$(note_duration_s * number_of_segments, 2), " s"
 if writeXmlActual
     appendInfoLine: "MusicXML file: ", xmlPath$
+endif
+if xmlStringsId <> 0
+    appendInfoLine: "MusicXML Strings: ", xmlStringsName$, " (", nXmlLines, " strings, left in the object list)"
 endif
 if play_result
     Play
