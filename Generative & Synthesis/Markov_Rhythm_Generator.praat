@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.5.1 musical canon-delay fix (2026)
+# Version: 0.5.2 transition-softmax stability fix (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -77,6 +77,16 @@
 # Common frequency scaling protects ALL components and canon transpositions from
 # Nyquist violation.
 #
+# v0.5.2 transition-softmax stability fix
+# -----------------------------------------
+#   - Hamming-distance transition weights now use a row-wise shifted
+#     exponential: exp(-(d-d_min)/temperature). This is algebraically
+#     equivalent after normalization, but guarantees that at least the
+#     nearest alternative successor has weight 1 and prevents an all-zero
+#     row through floating-point underflow at very small positive temperatures.
+#   - No rhythm templates, persistence semantics, timing, swing, canon,
+#     synthesis, spatialization, level handling or visualization changed.
+#
 # v0.5.1 canon-delay fix
 # ----------------------
 #   - Canon delay is specified in BEATS, not seconds.
@@ -113,7 +123,7 @@
 #   Musical Rhythms" (Bridges, 2005).
 # ============================================================
 
-form Markov Rhythm Generator v0.5.1
+form Markov Rhythm Generator v0.5.2
     optionmenu Preset 1
         option Custom
         option Simple March
@@ -503,7 +513,11 @@ transitionP## = zero##(rhythmStates,rhythmStates)
 hamming## = zero##(rhythmStates,rhythmStates)
 
 for i from 1 to rhythmStates
-    alternativeWeight = 0
+    # First measure the complete row and find its nearest alternative state.
+    # Subtracting this minimum distance in the exponential leaves normalized
+    # probabilities unchanged but prevents all alternative weights underflowing
+    # to zero when Transition temperature is very small.
+    minAlternativeDistance = 1e30
 
     for j from 1 to rhythmStates
         mismatches = 0
@@ -517,7 +531,16 @@ for i from 1 to rhythmStates
         hamming##[i,j] = distance
 
         if i <> j
-            weight = exp(-distance/transition_temperature)
+            minAlternativeDistance = min(minAlternativeDistance,distance)
+        endif
+    endfor
+
+    alternativeWeight = 0
+
+    for j from 1 to rhythmStates
+        if i <> j
+            distance = hamming##[i,j]
+            weight = exp(-(distance-minAlternativeDistance)/transition_temperature)
             transitionP##[i,j] = weight
             alternativeWeight = alternativeWeight+weight
         endif
@@ -695,7 +718,7 @@ overlapGain = 1/sqrt(max(1,overlapLoad))
 # ---------------------------------------------------------------------------
 clearinfo
 writeInfoLine: "=============================================="
-writeInfoLine: "  MARKOV RHYTHM GENERATOR v0.5.1"
+writeInfoLine: "  MARKOV RHYTHM GENERATOR v0.5.2"
 writeInfoLine: "=============================================="
 appendInfoLine: "Preset: ", preset_name$
 appendInfoLine: "Tempo: ", fixed$(tempo_bpm,2), " BPM"
