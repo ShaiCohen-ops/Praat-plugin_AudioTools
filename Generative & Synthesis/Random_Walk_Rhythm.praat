@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4 (2026)
+# Version: 0.4.1 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -38,12 +38,15 @@
 #     decay, rotation speed, output peak, and sample rate on a Details page.
 #   - Rebuilt visualization around the generating mechanism and used
 #     independent Picture viewports for all title/text/QC strips.
+#
+# Changelog v0.4.1:
+#   - Added a 12,000-event runtime guard for extreme custom timing grids.
 # ============================================================
 
 # ============================================================
 # COMPACT FORM
 # ============================================================
-form Random Walk Rhythm v0.4
+form Random Walk Rhythm v0.4.1
     optionmenu Preset 1
         option Custom
         option Gentle Bounce
@@ -213,6 +216,10 @@ totalSteps = ceiling(duration_s / stepDuration)
 if totalSteps < 1
     totalSteps = 1
 endif
+maxEvents = 12000
+if totalSteps > maxEvents
+    exitScript: "Timing grid would create " + string$(totalSteps) + " events; the safety limit is " + string$(maxEvents) + ". Reduce Duration, Tempo, or Steps per beat."
+endif
 if eventDuration * sample_rate_Hz < 8
     exitScript: "Event duration is too short for the selected sample rate (need at least 8 samples per event)."
 endif
@@ -343,7 +350,7 @@ endfor
 # ============================================================
 # INFO
 # ============================================================
-writeInfoLine: "=== Random Walk Rhythm v0.4 ==="
+writeInfoLine: "=== Random Walk Rhythm v0.4.1 ==="
 appendInfoLine: "Preset: ", preset_name$
 appendInfoLine: "Timing grid: ", tempo_bpm, " BPM x ", steps_per_beat, " steps/beat = ", fixed$(stepDuration, 5), " s/step"
 appendInfoLine: "Events: ", totalSteps, " | event fill: ", fixed$(event_fill, 3), " | event duration: ", fixed$(eventDuration, 5), " s"
