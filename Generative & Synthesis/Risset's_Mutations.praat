@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.5.2 (2026)
+# Version: 0.5.3 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -27,6 +27,13 @@
 #   B. amplitude and mutation envelopes for a representative event,
 #   C. analytical harmonic model versus a measured Praat spectral probe,
 #      followed by compact QC.
+#
+# Changelog v0.5.3:
+#   - Made the representative spectral validation probe Nyquist-safe.
+#   - Harmonic bins are measured only when h*f0 is below Nyquist; bins above
+#     Nyquist are assigned measured magnitude 0 (their analytical model value
+#     is already 0 because all generated partials pass the synthesis guard).
+#   - Prevents undefined LTAS values from contaminating spectral MAE / drawing.
 #
 # Changelog v0.5.2:
 #   - Restored the characteristic per-event mutation arches in the score.
@@ -57,7 +64,7 @@
 # ============================================================
 # COMPACT FORM
 # ============================================================
-form Risset's Mutations v0.5.2
+form Risset's Mutations v0.5.3
     optionmenu Preset 1
         option Full Composition (3-Part Arc)
         option Odd Harmonics (Woody/Hollow)
@@ -306,7 +313,7 @@ rep_mode = mode[rep_index]
 # SYNTHESIS
 # ============================================================
 clearinfo
-writeInfoLine: "=== Risset's Mutations v0.5.2 ==="
+writeInfoLine: "=== Risset's Mutations v0.5.3 ==="
 appendInfoLine: "Preset: ", preset_name$
 appendInfoLine: "Events: ", n_events, " | Duration: ", fixed$(master_duration, 3), " s"
 if random_seed > 0
@@ -433,13 +440,24 @@ procedure drawVisualization
 
     .measMaxDb = -1e30
     for .h to 7
-        .measDb[.h] = Get value at frequency: .h * rep_freq, "Cubic"
-        if .measDb[.h] > .measMaxDb
-            .measMaxDb = .measDb[.h]
+        .probeHz = .h * rep_freq
+        .binInRange[.h] = 0
+        if .probeHz < nyquist
+            .measDb[.h] = Get value at frequency: .probeHz, "Cubic"
+            .binInRange[.h] = 1
+            if .measDb[.h] > .measMaxDb
+                .measMaxDb = .measDb[.h]
+            endif
+        else
+            .measDb[.h] = -1e30
         endif
     endfor
     for .h to 7
-        .measured[.h] = 10 ^ ((.measDb[.h] - .measMaxDb) / 20)
+        if .binInRange[.h] = 1
+            .measured[.h] = 10 ^ ((.measDb[.h] - .measMaxDb) / 20)
+        else
+            .measured[.h] = 0
+        endif
         .model[.h] = 0
     endfor
 
