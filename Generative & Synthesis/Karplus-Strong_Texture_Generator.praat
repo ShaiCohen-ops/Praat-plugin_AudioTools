@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4.1 scheduler/headroom fix (2026)
+# Version: 0.4.2 strum-span fix (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -63,6 +63,14 @@
 #   Event tails are estimated from the fundamental loop decay and capped by
 #   Max_tail_s. Mixing gain is compensated from the ACTUAL scheduled overlap.
 #
+# v0.4.2 strum-span fix:
+#   - Strummed Cluster now limits its effective strum span to the requested
+#     output duration, so no event onset is scheduled beyond the Sound.
+#   - This keeps event-tail and overlap-compensation calculations valid for
+#     short custom durations with long Strum span values.
+#   - No KS loop, pitch, damping, brightness, excitation, spatial rendering,
+#     presets, peak protection or visualization logic changed.
+#
 # v0.4.1 scheduler/headroom fix:
 #   - Frequency-headroom validation now follows the actual scheduler:
 #       Single Pluck: base pitch only
@@ -102,7 +110,7 @@
 #   Jaffe & Smith (1983), Extensions of the Karplus-Strong Plucked-String Algorithm
 # ============================================================
 
-form Karplus-Strong Texture Generator v0.4.1
+form Karplus-Strong Texture Generator v0.4.2
     optionmenu Preset 1
         option Custom
         option Canonical Single Pluck
@@ -509,13 +517,14 @@ elsif texture_mode = 3
 
 elsif texture_mode = 4
     eventCount = voice_count
+    actualStrumSpan = min(strum_span_ms/1000,duration_s)
     for ev from 1 to eventCount
         if eventCount = 1
             pos = 0.5
         else
             pos = (ev-1)/(eventCount-1)
         endif
-        eventOnset[ev] = (strum_span_ms/1000)*pos
+        eventOnset[ev] = actualStrumSpan*pos
         semis = (pos-0.5)*pitch_span_semitones
         eventPitch[ev] = base_pitch_Hz*2^(semis/12)*
             ... 2^(randomUniform(-pitch_jitter_cents,pitch_jitter_cents)/1200)
@@ -598,7 +607,7 @@ firstT60 = computeLoop.t60
 # ---------------------------------------------------------------------------
 clearinfo
 writeInfoLine: "=============================================="
-writeInfoLine: "  KARPLUS-STRONG TEXTURE GENERATOR v0.4.1"
+writeInfoLine: "  KARPLUS-STRONG TEXTURE GENERATOR v0.4.2"
 writeInfoLine: "=============================================="
 appendInfoLine: "Preset: ", preset_name$
 appendInfoLine: "Texture: ", texture_name$
