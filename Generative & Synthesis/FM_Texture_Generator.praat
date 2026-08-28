@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4 reviewed (2026)
+# Version: 0.4.1 runtime fix (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -41,6 +41,12 @@
 #   - Brightness scales modulator indices in Series/Dual algorithms.
 #   - In Parallel mode Brightness tilts upper-partial operator gains.
 #
+# v0.4.1 runtime fix:
+#   - Removed the silent 300-event truncation in Random Bursts.
+#   - The Poisson burst field now runs for the complete requested duration.
+#   - Added a high explicit 5000-event runaway guard that exits with a message
+#     instead of silently dropping the remainder of the stochastic envelope.
+#
 # v0.4 reviewed:
 #   - Reframed the engine accurately as six-operator PM/FM-style synthesis.
 #   - Replaced the old analytic "feedback" approximation
@@ -70,7 +76,7 @@
 #       routing / bandwidth / level QC
 # ============================================================
 
-form FM PM Operator Texture v0.4
+form FM PM Operator Texture v0.4.1
     boolean Melody_demo 0
 
     optionmenu Preset 1
@@ -765,12 +771,21 @@ elsif global_envelope = 10
 
     burstTime = 0
     burstCount = 0
-    while burstTime < totalDur and burstCount < 300
+    maxBurstEvents = 5000
+    while burstTime < totalDur
         u = max(1e-12,randomUniform(0,1))
         burstTime = burstTime-ln(u)/burstDensity
 
         if burstTime < totalDur
             burstCount = burstCount+1
+            if burstCount > maxBurstEvents
+                if seededBursts
+                    random_initializeSafelyAndUnpredictably ()
+                endif
+                removeObject: burstGate
+                exitScript: "Random Bursts exceeded 5000 events. Reduce Brightness or Duration."
+            endif
+
             burstDur = randomUniform(0.035,0.11)
             burstEnd = min(totalDur,burstTime+burstDur)
 
