@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4 reviewed (2026)
+# Version: 0.4.1 scheduler/headroom fix (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -63,6 +63,17 @@
 #   Event tails are estimated from the fundamental loop decay and capped by
 #   Max_tail_s. Mixing gain is compensated from the ACTUAL scheduled overlap.
 #
+# v0.4.1 scheduler/headroom fix:
+#   - Frequency-headroom validation now follows the actual scheduler:
+#       Single Pluck: base pitch only
+#       Regular Re-plucks / Re-excited Drone: pitch jitter
+#       Poisson / Strum / Cascade: pitch span + pitch jitter
+#       Stereo Detuned Pair: includes the actual upward detune when positive
+#   - Replaced the silent 64-event truncation in Regular / Poisson / Drone modes
+#     with a 5000-event safety guard and explicit abort if the schedule exceeds it.
+#   - No KS loop, damping, brightness, excitation, presets, spatial rendering,
+#     tail estimation, peak protection or visualization behavior changed.
+#
 # v0.4 reviewed:
 #   - true texture/event layer instead of misleading single-pluck presets
 #   - mechanism-faithful preset names
@@ -91,7 +102,7 @@
 #   Jaffe & Smith (1983), Extensions of the Karplus-Strong Plucked-String Algorithm
 # ============================================================
 
-form Karplus-Strong Texture Generator v0.4
+form Karplus-Strong Texture Generator v0.4.1
     optionmenu Preset 1
         option Custom
         option Canonical Single Pluck
@@ -362,18 +373,30 @@ sr = sample_rate_Hz
 safeTop = 0.20*sr
 uid$ = string$(randomInteger(10000,99999))
 
-# Conservative maximum scheduled pitch.
-if texture_mode = 4 or texture_mode = 5
-    maxScheduledPitch = base_pitch_Hz*2^(0.5*pitch_span_semitones/12)
+# Maximum scheduled pitch, matched to the actual scheduler.
+if texture_mode = 1
+    # Single Pluck has no pitch jitter/span.
+    maxScheduledPitch = base_pitch_Hz
+
+elsif texture_mode = 2 or texture_mode = 6
+    # Regular Re-plucks / Re-excited Drone use pitch jitter only.
+    maxScheduledPitch = base_pitch_Hz*
+        ... 2^(abs(pitch_jitter_cents)/1200)
+
 else
-    maxScheduledPitch = base_pitch_Hz*2^(abs(pitch_jitter_cents)/1200)
+    # Poisson / Strum / Cascade use both half-span and pitch jitter.
+    maxScheduledPitch = base_pitch_Hz*
+        ... 2^(0.5*pitch_span_semitones/12)*
+        ... 2^(abs(pitch_jitter_cents)/1200)
 endif
-if spatial_mode = 3
-    maxScheduledPitch = maxScheduledPitch*2^(abs(detune_cents)/1200)
+
+if spatial_mode = 3 and detune_cents > 0
+    # Only an upward stereo detune can raise the highest rendered pitch.
+    maxScheduledPitch = maxScheduledPitch*2^(detune_cents/1200)
 endif
 
 if maxScheduledPitch > safeTop
-    exitScript: "Highest scheduled pitch exceeds 0.20*sample rate. Reduce pitch/span/detune or increase sample rate."
+    exitScript: "Highest scheduled/rendered pitch exceeds 0.20*sample rate. Reduce pitch/span/jitter/detune or increase sample rate."
 endif
 
 # ---------------------------------------------------------------------------
@@ -433,6 +456,7 @@ endproc
 # ---------------------------------------------------------------------------
 # SCHEDULE ACTUAL EVENTS
 # ---------------------------------------------------------------------------
+maxEvents = 5000
 eventCount = 0
 
 if texture_mode = 1
@@ -443,7 +467,7 @@ if texture_mode = 1
 
 elsif texture_mode = 2
     t = 0
-    while t < duration_s and eventCount < 64
+    while t < duration_s and eventCount < maxEvents
         eventCount = eventCount+1
         eventOnset[eventCount] = t
         eventPitch[eventCount] = base_pitch_Hz*
@@ -452,9 +476,16 @@ elsif texture_mode = 2
         t = t+1/event_rate_Hz
     endwhile
 
+    if t < duration_s
+        if seedWasFixed
+            random_initializeSafelyAndUnpredictably ()
+        endif
+        exitScript: "Regular Re-plucks exceeded the 5000-event safety limit. Reduce duration or event rate."
+    endif
+
 elsif texture_mode = 3
     t = 0
-    while t < duration_s and eventCount < 64
+    while t < duration_s and eventCount < maxEvents
         u = max(1e-12,randomUniform(0,1))
         t = t-ln(u)/event_rate_Hz
         if t < duration_s
@@ -468,6 +499,13 @@ elsif texture_mode = 3
             eventWeight[eventCount] = randomUniform(0.78,1.10)
         endif
     endwhile
+
+    if eventCount >= maxEvents and t < duration_s
+        if seedWasFixed
+            random_initializeSafelyAndUnpredictably ()
+        endif
+        exitScript: "Poisson Pluck Stream exceeded the 5000-event safety limit. Reduce duration or event rate."
+    endif
 
 elsif texture_mode = 4
     eventCount = voice_count
@@ -502,7 +540,7 @@ elsif texture_mode = 5
 
 else
     t = 0
-    while t < duration_s and eventCount < 64
+    while t < duration_s and eventCount < maxEvents
         eventCount = eventCount+1
         eventOnset[eventCount] = t
         eventPitch[eventCount] = base_pitch_Hz*
@@ -510,6 +548,13 @@ else
         eventWeight[eventCount] = randomUniform(0.72,1.0)
         t = t+1/event_rate_Hz
     endwhile
+
+    if t < duration_s
+        if seedWasFixed
+            random_initializeSafelyAndUnpredictably ()
+        endif
+        exitScript: "Re-excited Drone exceeded the 5000-event safety limit. Reduce duration or event rate."
+    endif
 endif
 
 if eventCount < 1
@@ -553,7 +598,7 @@ firstT60 = computeLoop.t60
 # ---------------------------------------------------------------------------
 clearinfo
 writeInfoLine: "=============================================="
-writeInfoLine: "  KARPLUS-STRONG TEXTURE GENERATOR v0.4"
+writeInfoLine: "  KARPLUS-STRONG TEXTURE GENERATOR v0.4.1"
 writeInfoLine: "=============================================="
 appendInfoLine: "Preset: ", preset_name$
 appendInfoLine: "Texture: ", texture_name$
