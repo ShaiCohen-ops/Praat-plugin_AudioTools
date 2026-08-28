@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 2.1.2 fast render (2026)
+# Version: 2.1.3 adaptive sum-headroom fix (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -118,6 +118,15 @@
 #    Combination tones are OFF by default in that preset; they are not treated
 #    as the historical cause of the opening spectral reveal.
 #
+# v2.1.3 adaptive sum-headroom fix:
+#   - Adaptive internal render-rate planning now includes the highest possible
+#     explicit sum-frequency component from the low-partial pair set actually
+#     used by the combination layer.
+#   - Prevents valid sum components from being omitted solely because the
+#     adaptive internal rate was planned from the primary field alone.
+#   - No primary/companion trajectories, stochastic controls, process form,
+#     noise dissolution, presets, peak protection or visualization logic changed.
+#
 # v2.1.2 fast render:
 #   - Added adaptive INTERNAL synthesis sample rate (default on).
 #   - The spectral model is rendered at the lowest rate that preserves
@@ -161,7 +170,7 @@
 #     rhythm/timbre perceptual continua
 # ============================================================
 
-form Spectral Becoming Engine v2.1.2
+form Spectral Becoming Engine v2.1.3
     optionmenu Preset 2
         option Custom
         option Partiels-inspired Low-E Field
@@ -475,6 +484,25 @@ maxSplitHz = 24*detStrength*(1+family_instability_depth)
 requestedTop =
     ... fundamental_Hz*nPartials^(1+inharm)+maxSplitHz
 
+# If explicit sum-frequency consequences are enabled, adaptive render-rate
+# planning must also include the highest sum that can actually be synthesized.
+# The combination layer uses pairs from the first min(6,nPartials) primaries.
+if combination_layer = 3
+    pairLimitForTop = min(6,nPartials)
+
+    if pairLimitForTop >= 2
+        sumTopStart =
+            ... fundamental_Hz*pairLimitForTop+
+            ... fundamental_Hz*(pairLimitForTop-1)
+
+        sumTopTarget =
+            ... fundamental_Hz*pairLimitForTop^(1+inharm)+
+            ... fundamental_Hz*(pairLimitForTop-1)^(1+inharm)
+
+        requestedTop = max(requestedTop,max(sumTopStart,sumTopTarget))
+    endif
+endif
+
 # Adaptive internal rendering:
 # keep requested spectral top below ~32 percent of the internal sample rate,
 # with a 16-kHz minimum for comfortable waveform resolution. The final Sound
@@ -695,7 +723,7 @@ globalAmpScale =
 # ---------------------------------------------------------------------------
 clearinfo
 writeInfoLine: "=============================================="
-writeInfoLine: "  SPECTRAL BECOMING ENGINE v2.1.2"
+writeInfoLine: "  SPECTRAL BECOMING ENGINE v2.1.3"
 writeInfoLine: "=============================================="
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Concept: Grisey-inspired process engine, not score reconstruction"
