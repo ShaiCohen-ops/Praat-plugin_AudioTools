@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4 reviewed (2026)
+# Version: 0.4.1 range fix (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -44,6 +44,12 @@
 #   Rotating Layers    - moving equal-power positions with layer phase offsets
 #   Micro-Delay Stereo - spectrum-preserving short right-channel delays
 #
+# v0.4.1 range fix:
+#   - Clamped resampled bounded control signals before downstream mapping:
+#       Harmonic Drift [-1,1], Chaotic FM [0,1], Subtractive Noise [-1,1].
+#     This prevents sinc-resampling overshoot from exceeding the documented
+#     drift/FM/gain ranges. No synthesis topology or preset logic changed.
+#
 # v0.4 reviewed:
 #   - Granular Cloud is now genuinely granular; the old version was periodic AM.
 #   - FM Chaos is now driven by a logistic map and audio-rate phase integration.
@@ -72,7 +78,7 @@
 #       process / bandwidth / randomness / level QC
 # ============================================================
 
-form Generative Sound System v0.4
+form Generative Sound System v0.4.1
     optionmenu Synthesis_mode 1
         option Harmonic Drift
         option Granular Cloud
@@ -278,7 +284,7 @@ generationCount = 0
 # ---------------------------------------------------------------------------
 clearinfo
 writeInfoLine: "=============================================="
-writeInfoLine: "  GENERATIVE SOUND SYSTEM v0.4"
+writeInfoLine: "  GENERATIVE SOUND SYSTEM v0.4.1"
 writeInfoLine: "=============================================="
 appendInfoLine: "Mode: ", mode_name$
 appendInfoLine: "Duration: ", fixed$(duration_s,2), " s"
@@ -325,6 +331,7 @@ if synthesis_mode = 1
         removeObject: driftRaw
 
         selectObject: driftAudio
+        Formula: "if self < -1 then -1 else if self > 1 then 1 else self fi fi"
         Formula: fixed$(nominal,9) + "*(1+" + fixed$(driftDepth,9)
             ... + "*self)"
         freqControl = selected("Sound")
@@ -494,6 +501,7 @@ elsif synthesis_mode = 3
         removeObject: chaosRaw
 
         selectObject: chaosAudio
+        Formula: "if self < 0 then 0 else if self > 1 then 1 else self fi fi"
         Formula: fixed$(carrier,9) + "*(1+" + fixed$(fmDepth,9)
             ... + "*(2*self-1))"
         freqControl = selected("Sound")
@@ -701,6 +709,7 @@ else
         removeObject: ampRaw
 
         selectObject: ampControl
+        Formula: "if self < -1 then -1 else if self > 1 then 1 else self fi fi"
         Formula: "0.18+0.82*(0.5+0.5*self)"
 
         if layer = 1
