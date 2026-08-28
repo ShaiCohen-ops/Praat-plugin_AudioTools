@@ -1,6 +1,6 @@
 # ============================================================
 # Praat AudioTools - Custom Generative Chain
-# Version: 1.1 - Kotoński FSM v1.5 compatibility
+# Version: 1.4 - Stereo Mixer v0.6.2 compatibility
 # ============================================================
 
 Erase all
@@ -98,7 +98,22 @@ appendInfoLine: "Step 2: Kotoński-inspired v1.5 field complete."
 # STEP 3: Risset's Mutations
 # ==============================================================================
 appendInfoLine: "Step 3: Generating Risset's Mutations..."
-runScript: path3$, "1. Full Composition (3-Part Arc)", 30, 0
+
+# FIX: Updated to Risset's Mutations v0.5.2's compact 5-argument form.
+# The old 3-arg call ("1. Full Composition (3-Part Arc)", 30, 0) predates the
+# v0.5 rewrite: the leading "1. " numbering no longer belongs to the
+# optionmenu option text (the current form lists the option as plain
+# "Full Composition (3-Part Arc)"), and the single trailing 0 doesn't align
+# with any parameter in the current form.
+#
+# v0.5.2 main-form signature:
+#   Preset, Duration_s, Edit_details, Draw_visualization, Play_result
+#
+# Chain mapping: preset and duration carried over unchanged; Edit_details
+# stays off (non-interactive chain, matches the other steps' advanced pages);
+# Draw_visualization and Play_result stay off since this is an intermediate
+# stage feeding Step 5's mix, not the final output.
+runScript: path3$, "Full Composition (3-Part Arc)", 30, 0, 0, 0
 
 sound3 = selected("Sound")
 appendInfoLine: "Step 3: Risset's Mutations complete."
@@ -107,7 +122,22 @@ appendInfoLine: "Step 3: Risset's Mutations complete."
 # STEP 4: Stockhausen Studie II Generator
 # ==============================================================================
 appendInfoLine: "Step 4: Generating Stockhausen Studie II..."
-runScript: path4$, "Random (varied each time)", 30, 7, 44100, 100, 0.1, 0.3, 0, 0, 0, 0
+
+# FIX: Updated to Stockhausen_Studie_II_Generator's compact 5-argument form
+# (introduced in v0.7, retained in v0.8). The old 12-arg call (base
+# frequency, amplitude range, random groups, rotation offset, etc.) predates
+# that rewrite - those engineering/model controls now live on the Edit
+# details pause page, off by default and skipped in this unattended chain.
+# The old preset text "Random (varied each time)" is also stale; the current
+# optionmenu option reads "Random (creative, varied)".
+#
+# v0.8 main-form signature:
+#   Generation_mode, Duration_s, Edit_details, Draw_score, Play_result
+#
+# Chain mapping: mode and duration carried over unchanged (Random, 30 s);
+# Edit_details off (non-interactive chain); Draw_score and Play_result off
+# since this is an intermediate stage feeding Step 5's mix.
+runScript: path4$, "Random (creative, varied)", 30, 0, 0, 0
 
 sound4 = selected("Sound")
 appendInfoLine: "Step 4: Stockhausen Studie II complete."
@@ -121,7 +151,29 @@ plusObject: sound2
 plusObject: sound3
 plusObject: sound4
 
-runScript: path5$, "V Shape (outside in)", 1, 1, 1, 1, 1, 1, 1, 1, "yes", 0.95, 0, 0
+# FIX: Updated to Stereo_Mixer v0.6.2's form. Two things changed since the
+# old call:
+# - A new Edit_custom_gains_5_to_8 boolean was inserted right after the four
+#   Custom-gain pairs (Sounds 5-8's gains moved to an optional second dialog
+#   to keep the main form compact); the old 13-value call was missing this
+#   field entirely, which would misalign every argument from
+#   Normalize_output onward.
+# - Normalize_output is a real boolean field (1/0), not the string "yes"
+#   the old call passed.
+# - The V Shape preset text was renamed/clarified: "V Shape (outside in)" ->
+#   "V Shape (L to R to L)".
+#
+# v0.6.2 main-form signature:
+#   Preset, Gain_1_L, Gain_1_R, Gain_2_L, Gain_2_R, Gain_3_L, Gain_3_R,
+#   Gain_4_L, Gain_4_R, Edit_custom_gains_5_to_8, Normalize_output,
+#   Target_peak, Draw_visualization, Play_result
+#
+# Chain mapping: preset is V Shape, so the four gain pairs are placeholders
+# only (the preset branch overwrites them for all sounds); Edit_custom_gains
+# stays off (non-interactive chain); Normalize_output on at Target_peak 0.95
+# as before; Draw_visualization and Play_result stay off since this is an
+# intermediate stage feeding Step 6.
+runScript: path5$, "V Shape (L to R to L)", 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 0.95, 0, 0
 
 sound5 = selected("Sound")
 appendInfoLine: "Step 5: Stereo Mix complete."
