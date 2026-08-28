@@ -1,5 +1,6 @@
 # ============================================================
 # Praat AudioTools - Signal Chain 2 (Corrected)
+# Version: 1.1 - 8-channel_speed_deviations v0.5 compatibility
 # Flow: Spiral Pitch -> Neural Drone -> 8-channel Deviations
 # ============================================================
 
@@ -70,12 +71,25 @@ appendInfoLine: "Step 2: Neural Drone complete."
 # STEP 3: 8-Channel Speed Deviations
 # ==============================================================================
 selectObject: sound3
-# 8-Channel Speed Deviations parameters (matches current 22-arg form):
-# Preset, Mode, Speed_deviation_factor, Channel_1-8_speed, Random_min_speed,
-# Random_max_speed, Random_seed, Min_pitch, Max_pitch,
-# Override_sampling_frequency, Target_sampling_frequency, Output_format,
-# Scale_peak, Draw_visualization, Play_result
-runScript: path3$, "Custom (use mode below)", "Automatic (using factor)", 0.15, 0.85, 0.88, 0.91, 0.94, 1.06, 1.09, 1.12, 1.15, 0.80, 1.20, 42, 75, 600, 1, 44100, "8 channels - octophonic (Ch1-Ch8)", 0.95, 0, 1
+
+# FIX: Updated to the current 8-channel_speed_deviations form. The old
+# 22-arg call predates a compact-form rewrite that collapsed two groups of
+# individual fields into single space-separated sentence fields:
+#   - the 8 "Channel_N_speed" reals -> one "Manual speeds" sentence
+#     ("Ch1..Ch8" values separated by spaces)
+#   - the 2 "Min_pitch"/"Max_pitch" reals -> one "Pitch range" sentence
+#     ("Min Max" separated by a space)
+# The old positional call (with 8 separate channel-speed args and 2 separate
+# pitch args) no longer aligns with any field past Speed_deviation_factor.
+# The Manual speeds field is still parsed and validated even in Automatic
+# mode, so it's passed through unchanged as one string.
+#
+# Current main-form signature (14 args):
+#   Preset, Mode, Speed_deviation_factor, Manual_speeds, Random_min_speed,
+#   Random_max_speed, Random_seed, Pitch_range, Override_sampling_frequency,
+#   Target_sampling_frequency, Output_format, Scale_peak,
+#   Draw_visualization, Play_result
+runScript: path3$, "Custom (use mode below)", "Automatic (using factor)", 0.15, "0.85 0.88 0.91 0.94 1.06 1.09 1.12 1.15", 0.80, 1.20, 42, "75 600", 1, 44100, "8 channels - octophonic (Ch1-Ch8)", 0.95, 0, 1
 
 # Capture final output (Praat leaves the last created object selected)
 sound4 = selected("Sound")

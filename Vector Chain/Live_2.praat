@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.0 (2025)
+# Version: 1.1 (2026) - 8-channel_speed_deviations v0.5 compatibility
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -187,12 +187,22 @@ appendInfoLine: ""
 appendInfoLine: "=== Part 3: Outro (8-Channel Deviations) ==="
 appendInfoLine: "  Generating..."
 
-# 8-Channel Speed Deviations parameters (matches current 22-arg form):
-# Preset, Mode, Speed_deviation_factor, Channel_1-8_speed, Random_min_speed,
-# Random_max_speed, Random_seed, Min_pitch, Max_pitch,
-# Override_sampling_frequency, Target_sampling_frequency, Output_format,
-# Scale_peak, Draw_visualization, Play_result
-runScript: path_outro$, "Custom (use mode below)", "Automatic (using factor)", 0.15, 0.85, 0.88, 0.91, 0.94, 1.06, 1.09, 1.12, 1.15, 0.80, 1.20, 42, 75, 600, 1, 44100, "8 channels - octophonic (Ch1-Ch8)", 0.95, 0, 0
+# FIX: Updated to the current 8-channel_speed_deviations form. The old
+# 22-arg call predates a compact-form rewrite that collapsed two groups of
+# individual fields into single space-separated sentence fields:
+#   - the 8 "Channel_N_speed" reals -> one "Manual speeds" sentence
+#     ("Ch1..Ch8" values separated by spaces)
+#   - the 2 "Min_pitch"/"Max_pitch" reals -> one "Pitch range" sentence
+#     ("Min Max" separated by a space)
+# The Manual speeds field is still parsed and validated even in Automatic
+# mode, so it's passed through unchanged as one string.
+#
+# Current main-form signature (14 args):
+#   Preset, Mode, Speed_deviation_factor, Manual_speeds, Random_min_speed,
+#   Random_max_speed, Random_seed, Pitch_range, Override_sampling_frequency,
+#   Target_sampling_frequency, Output_format, Scale_peak,
+#   Draw_visualization, Play_result
+runScript: path_outro$, "Custom (use mode below)", "Automatic (using factor)", 0.15, "0.85 0.88 0.91 0.94 1.06 1.09 1.12 1.15", 0.80, 1.20, 42, "75 600", 1, 44100, "8 channels - octophonic (Ch1-Ch8)", 0.95, 0, 0
 
 # Get the output
 sound_outro_raw = selected("Sound")
