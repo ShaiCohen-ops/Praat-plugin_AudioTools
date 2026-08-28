@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.1 (reviewed 2026)
+# Version: 1.1.1 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -25,6 +25,11 @@
 #       C. selected kernel plus global envelope / AM controls,
 #       D. measured output waveform, followed by process/QC summary.
 #
+# v1.1.1 safety fix:
+#   - Added a 12,000-pulse runtime guard before/while constructing onset sets.
+#   - A fixed random seed is now scoped to onset generation; Praat's global RNG
+#     is restored to a safely unpredictable state immediately afterward.
+#
 # References:
 #   Roads, C. (2001). Microsound. MIT Press.
 #   Roads, C. (1978). Automated Granular Synthesis of Sound.
@@ -40,7 +45,7 @@
 # ============================================================
 # COMPACT FORM
 # ============================================================
-form Pulsar Synthesis Engine v1.1
+form Pulsar Synthesis Engine v1.1.1
     optionmenu Preset 2
         option Custom
         option Periodic Tone (harmonic fundamental)
@@ -245,6 +250,21 @@ if seed < 0
     exitScript: "Random seed must be 0 or a positive integer."
 endif
 
+# Runtime safety: the duty gate is assembled with one Formula (part) per pulse.
+# Bound the event count before potentially expensive point-process construction.
+maxPulseCount = 12000
+if synthMode = 2
+    expectedPulseCount = density * duration
+    if expectedPulseCount > maxPulseCount
+        exitScript: "Requested Poisson density and duration imply more than " + string$(maxPulseCount) + " expected pulses. Reduce Density or Duration."
+    endif
+elsif enableChirp = 0 and jitter = 0
+    expectedPulseCount = ceiling(duration / basePeriod) + 1
+    if expectedPulseCount > maxPulseCount
+        exitScript: "Requested period and duration imply more than " + string$(maxPulseCount) + " pulses. Increase Period or reduce Duration."
+    endif
+endif
+
 if fadeIn > duration * 0.45
     fadeIn = duration * 0.45
 endif
@@ -263,10 +283,6 @@ if synthMode = 1
     endif
 else
     modeName$ = "Stochastic Poisson"
-endif
-
-if seed > 0
-    random_initializeWithSeedUnsafelyButPredictably (seed)
 endif
 
 # ============================================================
@@ -313,7 +329,7 @@ kernelPeak = Get absolute extremum: 0, 0, "None"
 # ============================================================
 # INFO HEADER
 # ============================================================
-writeInfoLine: "=== Pulsar Synthesis Engine v1.1 ==="
+writeInfoLine: "=== Pulsar Synthesis Engine v1.1.1 ==="
 appendInfoLine: "Preset:        ", presetName$
 appendInfoLine: "Mode:          ", modeName$
 appendInfoLine: "Duration:      ", fixed$(duration, 3), " s"
@@ -334,6 +350,12 @@ appendInfoLine: ""
 # ============================================================
 # STEP 1: ONSET PROCESS
 # ============================================================
+# Seed only immediately before the stochastic onset stage, after all input
+# validation and kernel preparation have succeeded.
+if seed > 0
+    random_initializeWithSeedUnsafelyButPredictably (seed)
+endif
+
 appendInfoLine: "[1/5] Building onset process..."
 minIOI = 2 / sr
 timingClampCount = 0
@@ -345,10 +367,25 @@ if synthMode = 1
     if enableChirp = 0 and jitter = 0
         Fill: 0, 0, basePeriod
         pulseCount = Get number of points
+        if pulseCount > maxPulseCount
+            removeObject: pp, kernelWork
+            if seed > 0
+                random_initializeSafelyAndUnpredictably ()
+            endif
+            exitScript: "Periodic realization exceeded the safety limit of " + string$(maxPulseCount) + " pulses. Increase Period or reduce Duration."
+        endif
     else
         t_now = 0
         pulseCount = 0
         while t_now < duration
+            if pulseCount >= maxPulseCount
+                removeObject: pp, kernelWork
+                if seed > 0
+                    random_initializeSafelyAndUnpredictably ()
+                endif
+                exitScript: "Periodic chirp/jitter realization exceeded the safety limit of " + string$(maxPulseCount) + " pulses. Increase Period, reduce jitter/chirp rate, or reduce Duration."
+            endif
+
             Add point: t_now
             pulseCount = pulseCount + 1
 
@@ -373,6 +410,19 @@ else
     Create Poisson process: "pulsar_pp", 0, duration, density
     pp = selected("PointProcess")
     pulseCount = Get number of points
+    if pulseCount > maxPulseCount
+        removeObject: pp, kernelWork
+        if seed > 0
+            random_initializeSafelyAndUnpredictably ()
+        endif
+        exitScript: "Poisson realization exceeded the safety limit of " + string$(maxPulseCount) + " pulses. Reduce Density or Duration."
+    endif
+endif
+
+# The onset process is the only stochastic stage. Do not leave Praat's global
+# RNG in deterministic mode after a reproducible run.
+if seed > 0
+    random_initializeSafelyAndUnpredictably ()
 endif
 
 # Realized IOI statistics
@@ -621,7 +671,7 @@ if draw_visualization = 1
     Axes: 0, 1, 0, 1
     Font size: 13
     Colour: "Black"
-    Text: 0.5, "centre", 0.64, "half", "##Pulsar Synthesis Engine v1.1##"
+    Text: 0.5, "centre", 0.64, "half", "##Pulsar Synthesis Engine v1.1.1##"
 
     Select inner viewport: 0.35, 7.65, 0.37, 0.67
     Axes: 0, 1, 0, 1
