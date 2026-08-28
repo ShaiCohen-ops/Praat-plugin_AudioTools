@@ -3,7 +3,24 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 2.4 (2026)
+# Version: 2.4.2 (2026)
+#
+# Changelog v2.4.2 (2026):
+#   - FIX (default internal rate): raised the default 11025 -> 12000 Hz.
+#     A single analyzed pitch-track anchor can legitimately transpose the
+#     manual soprano range by +6 semitones, reaching MIDI 90 (~1480 Hz);
+#     11025 Hz provides fewer than the required 8 samples per waveguide
+#     period. 12000 Hz safely covers that analysis path while preserving
+#     the temporal-resolution guard.
+#   - SAFETY: SATB rate validation now includes the maximum 2.5 Hz
+#     multi-string detune when checking the highest possible string.
+#
+# Changelog v2.4.1 (2026):
+#   - SAFETY: added final reverb workload guards after preset/audio-analysis
+#     overrides and before tail/IR allocation: extended output <= 30,000,000
+#     samples/channel, each IR <= 12,000,000 samples, and expected Poisson
+#     events/channel <= 250,000. This prevents accidental custom tail/IR
+#     settings from exhausting memory or making convolution impractical.
 #
 # Changelog v2.4 (2026):
 #   - FIX (tuning): compensates the fractional delay for the phase
@@ -79,7 +96,7 @@
 #
 # ============================================================
 
-form Synthesize Random SATB Klang Machine v2.4
+form Synthesize Random SATB Klang Machine v2.4.2
     comment === Source / Musical Control ===
     boolean Use_selected_sound 1
     real Duration_s 8.0
@@ -105,7 +122,7 @@ endform
 # ---------------------------------------------------------------------------
 # ADVANCED DEFAULTS
 # ---------------------------------------------------------------------------
-internal_rate = 11025
+internal_rate = 12000
 final_rate = 44100
 tail_duration_s = 2.0
 impulse_duration_s = 3.0
@@ -120,7 +137,7 @@ output_peak = 0.98
 random_seed = 0
 
 if edit_reverb_render_details
-    beginPause: "Waveguide Klangmaschine v2.4 - Reverb / Render Details"
+    beginPause: "Waveguide Klangmaschine v2.4.2 - Reverb / Render Details"
         positive: "Internal waveguide rate (Hz)", internal_rate
         positive: "Final output rate (Hz)", final_rate
         positive: "Tail duration (s)", tail_duration_s
@@ -619,9 +636,13 @@ else
     highest_midi_for_rate = soprano_hi + transpose_semitones
 endif
 highest_f_for_rate = 440 * (2 ^ ((highest_midi_for_rate - 69) / 12))
-if internal_rate / highest_f_for_rate < 8
-    min_rate_needed = ceiling(8 * highest_f_for_rate)
-    exitScript: "Internal rate is too low for the highest possible SATB note. Use at least " + string$(min_rate_needed) + " Hz."
+# Up to 2.5 Hz detune is added to the outer unison string, so validate
+# the highest possible STRING frequency rather than only the MIDI center.
+max_string_detune_Hz = 2.5
+highest_string_f_for_rate = highest_f_for_rate + max_string_detune_Hz
+if internal_rate / highest_string_f_for_rate < 8
+    min_rate_needed = ceiling(8 * highest_string_f_for_rate)
+    exitScript: "Internal rate is too low for the highest possible SATB string (including detune). Use at least " + string$(min_rate_needed) + " Hz."
 endif
 
 if random_seed > 0
@@ -688,7 +709,7 @@ endproc
 # 1. GLOBAL SETUP & RANDOMIZED PARAMETERS
 # =============================================================
 Erase all
-appendInfoLine: "KLANG MACHINE v2.4: Generating New Patch..."
+appendInfoLine: "KLANG MACHINE v2.4.2: Generating New Patch..."
 if audio_was_analyzed
     appendInfoLine: "(Parameters derived from audio analysis)"
 endif
@@ -1603,6 +1624,31 @@ endif
 if low_cutoff_Hz <= 0 or high_cutoff_Hz <= low_cutoff_Hz
     exitScript: "Final reverb cutoff range is invalid."
 endif
+
+# Final reverb workload guards. These are evaluated here, after preset and
+# audio-analysis overrides, and before allocating the silent tail / IR Sounds.
+maxExtendedSamplesPerChannel = 30000000
+maxIrSamplesPerChannel = 12000000
+maxExpectedPoissonEventsPerChannel = 250000
+extendedSamplesPerChannel = round((originalDur + tail_duration_s) * sr)
+irSamplesPerChannel = round(impulse_duration_s * sr)
+expectedPoissonEventsLeft = impulse_duration_s * poisson_density
+expectedPoissonEventsRight = impulse_duration_s * 0.93 * poisson_density * 0.95
+maxExpectedPoissonEvents = max(expectedPoissonEventsLeft, expectedPoissonEventsRight)
+
+if extendedSamplesPerChannel > maxExtendedSamplesPerChannel
+    maxTailAtRate = max(0, maxExtendedSamplesPerChannel / sr - originalDur)
+    exitScript: "Reverb tail workload is too large at the current output rate. Reduce Tail duration or Final output rate. Maximum tail for this render is about " + fixed$(maxTailAtRate, 2) + " s."
+endif
+if irSamplesPerChannel > maxIrSamplesPerChannel
+    maxImpulseAtRate = maxIrSamplesPerChannel / sr
+    exitScript: "Reverb impulse workload is too large at the current output rate. Reduce Impulse duration or Final output rate. Maximum impulse duration at this rate is about " + fixed$(maxImpulseAtRate, 2) + " s."
+endif
+if maxExpectedPoissonEvents > maxExpectedPoissonEventsPerChannel
+    maxDensityAtImpulse = maxExpectedPoissonEventsPerChannel / max(0.001, impulse_duration_s)
+    exitScript: "Reverb Poisson workload is too large. Reduce Impulse duration or Poisson density. At this impulse duration, density should be about " + fixed$(maxDensityAtImpulse, 0) + " events/s or lower."
+endif
+
 wet_level = wet_dry_percent / 100
 dry_level = 1 - wet_level
 
@@ -1791,7 +1837,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 11
     Colour: "Black"
-    Text special: 0.5, "centre", 0.68, "half", "Helvetica", 11, "0", "##Waveguide Klangmaschine v2.4##"
+    Text special: 0.5, "centre", 0.68, "half", "Helvetica", 11, "0", "##Waveguide Klangmaschine v2.4.2##"
     Font size: 7
     Colour: "{0.35,0.35,0.38}"
     if audio_was_analyzed
