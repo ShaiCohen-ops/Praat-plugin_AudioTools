@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4.1 (2026)
+# Version: 0.4.2 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -11,6 +11,9 @@
 #   Wave-terrain synthesis: a bounded 2-D trajectory scans a terrain z(x,y),
 #   and the interpolated terrain height becomes the audio sample value.
 #
+# v0.4.2 runtime guard:
+#   - Caps Terrain size at 512 before Matrix allocation to prevent accidental
+#     excessive memory/CPU use in Custom settings. Audio/DSP behavior is unchanged.
 # v0.4.1 hotfix:
 #   - Fixed manual trajectory plotting at Sound endpoints: Get value at time 0
 #     or exactly duration can be undefined because Sound sample centres lie
@@ -287,8 +290,12 @@ endif
 # Validation
 # ------------------------------------------------------------------------------
 tsize = round(terrain_size)
+maxTerrainSize = 512
 if tsize < 8
     exitScript: "Terrain size must be at least 8."
+endif
+if tsize > maxTerrainSize
+    exitScript: "Terrain size " + string$(tsize) + " is too large. Maximum is " + string$(maxTerrainSize) + ". Reduce Terrain size."
 endif
 if terrain_scale <= 0
     exitScript: "Terrain spatial scale must be positive."
@@ -327,7 +334,7 @@ endif
 # ------------------------------------------------------------------------------
 # Information
 # ------------------------------------------------------------------------------
-writeInfoLine: "=== Wave Terrain Synthesis v0.4.1 ==="
+writeInfoLine: "=== Wave Terrain Synthesis v0.4.2 ==="
 appendInfoLine: "Preset: ", preset_name$
 appendInfoLine: "Terrain: ", terrain_name$, " (", tsize, "x", tsize, ")"
 appendInfoLine: "X: ", x_name$, " @ ", fixed$(x_frequency_Hz, 2), " Hz | span ", fixed$(x_span, 2)
