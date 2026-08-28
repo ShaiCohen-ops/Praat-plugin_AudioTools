@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.6 conceptual + DSP review (2026)
+# Version: 1.6.1 frequency-grid/visual-range fix (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -72,6 +72,16 @@
 #   Noise band        local white-noise fragment through Hann pass-band filter
 #   Metallic transient three inharmonic decaying sinusoids
 #   Mixed             stochastic selection among the above
+#
+# v1.6.1 frequency-grid / visual-range fix:
+#   - Aela-inspired upper frequency boundary is now quantized downward to the
+#     25-Hz grid, so sampling-headroom truncation cannot create a non-grid tone.
+#   - Visualization frequency bounds now use effective_min_Hz/effective_max_Hz
+#     after any common sampling-headroom scaling, so low scaled events are not
+#     clipped out of the realization score.
+#   - Header, form and Info version labels synchronized to v1.6.1.
+#   - No state-transition logic, event realization, rendering, spatialization,
+#     density compensation, peak protection or score-layout logic changed.
 #
 # v1.6 changes (visualization only; the audio path is unchanged)
 # ------------
@@ -155,7 +165,7 @@
 #   UNT Music Library metadata for Microstructures
 # ============================================================
 
-form Kotonski-Inspired State-Event Generator v1.5
+form Kotonski-Inspired State-Event Generator v1.6.1
     optionmenu Preset 1
         option Etude-inspired Serial Parameter Field
         option Microstructures-inspired Fragment Montage
@@ -429,7 +439,7 @@ frequency_scale = 1
 
 if aela_mode
     effective_min_Hz = max(25,frequency_min_Hz)
-    effective_max_Hz = min(frequency_max_Hz,safeTop)
+    effective_max_Hz = 25*floor(min(frequency_max_Hz,safeTop)/25)
     if effective_max_Hz < 50
         exitScript: "Sample rate is too low for the requested Aela-inspired grid."
     endif
@@ -616,7 +626,7 @@ endproc
 # ---------------------------------------------------------------------------
 clearinfo
 writeInfoLine: "=============================================="
-writeInfoLine: "  KOTONSKI-INSPIRED STATE-EVENT GENERATOR v1.5"
+writeInfoLine: "  KOTONSKI-INSPIRED STATE-EVENT GENERATOR v1.6.1"
 writeInfoLine: "=============================================="
 appendInfoLine: "Preset: ", preset_name$
 appendInfoLine: "Scope: finite-state study / historical analogy, NOT reconstruction"
@@ -1154,8 +1164,8 @@ procedure drawVisualization
     .s3$ = "{0.84,0.62,0.18}"
     .s4$ = "{0.78,0.34,0.20}"
 
-    .logLo = ln(max(20, 0.85 * frequency_min_Hz))
-    .logHi = ln(min(safeTop, 1.15 * frequency_max_Hz))
+    .logLo = ln(max(20, 0.85 * effective_min_Hz))
+    .logHi = ln(min(safeTop, 1.15 * effective_max_Hz))
     if .logHi <= .logLo
         .logHi = .logLo + 1
     endif
