@@ -2,13 +2,16 @@
 # Praat AudioTools - Visual_Game_of_Life_Synthesis.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
-# Version: 1.1 (2026) - reviewed
+# Version: 1.1.1 (2026) - reviewed
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
 #   Conway Game of Life sonification.  The cellular state is evolved first,
 #   then each live cell is mapped to a sinusoid for one generation.
+#
+# v1.1.1 review changes:
+#   - Added runtime guards for maximum generations and stored Life states.
 #
 # v1.1 review changes:
 #   - Exact Conway B3/S23 transition accounting: births, deaths, survivors.
@@ -30,7 +33,7 @@
 #   - Explicit Nyquist, duration, grid, and output validations.
 # ============================================================
 
-form Visual Game of Life Synthesis v1.1
+form Visual Game of Life Synthesis v1.1.1
     optionmenu Preset 1
         option Random Soup
         option Glider
@@ -70,7 +73,7 @@ animation_delay_s = 0.08
 audition_animation = 0
 
 if edit_details
-    beginPause: "Game of Life Synthesis v1.1 - Details"
+    beginPause: "Game of Life Synthesis v1.1.1 - Details"
         integer: "Sample rate (Hz)", sample_rate_Hz
         real: "Output peak (0..1]", output_peak
         real: "Random Soup live probability (0..1)", random_fill_probability
@@ -134,6 +137,20 @@ elsif preset = 8
     grid_size = max(grid_size, 10)
 endif
 
+# Runtime guards: this script stores every generation and later revisits the
+# complete state history for recurrence testing, synthesis, and visualization.
+maxGenerations = 1000
+maxStoredStates = 1000000
+cellsPerGrid = grid_size * grid_size
+totalStoredStates = number_of_generations * cellsPerGrid
+
+if number_of_generations > maxGenerations
+    exitScript: "Requested " + string$(number_of_generations) + " generations. Maximum is " + string$(maxGenerations) + ". Reduce Number of generations."
+endif
+if totalStoredStates > maxStoredStates
+    exitScript: "Requested state history would store " + string$(totalStoredStates) + " cells. Maximum is " + string$(maxStoredStates) + ". Reduce Grid size or Number of generations."
+endif
+
 stepDuration = duration_s / number_of_generations
 if stepDuration * sample_rate_Hz < 8
     exitScript: "Each generation must contain at least 8 samples. Increase duration or sample rate, or reduce generations."
@@ -147,7 +164,6 @@ endif
 
 uid$ = string$(randomInteger(10000, 99999))
 twoPi = 2 * pi
-cellsPerGrid = grid_size * grid_size
 diagCount = 2 * grid_size - 1
 
 if wrap_edges
@@ -469,7 +485,7 @@ endif
 # INFO
 # ============================================================
 clearinfo
-writeInfoLine: "=== Visual Game of Life Synthesis v1.1 ==="
+writeInfoLine: "=== Visual Game of Life Synthesis v1.1.1 ==="
 appendInfoLine: "Pattern: ", preset_name$
 appendInfoLine: "Grid / generations: ", grid_size, " x ", grid_size, " / ", number_of_generations
 appendInfoLine: "Boundary: ", boundary_name$
