@@ -426,6 +426,7 @@ else
 
         semitoneShift = shiftDepths#[i] * sin(currentPhase)
         shiftSemis#[i] = semitoneShift
+        appliedShift = semitoneShift
 
         if origFreqs#[i] <> undefined and origFreqs#[i] > 0
             newFreq = origFreqs#[i] * 2 ^ (semitoneShift / 12)
@@ -436,6 +437,7 @@ else
                 newFreq = synth_ceil
                 limited_points += 1
             endif
+            appliedShift = 12 * ln(newFreq / origFreqs#[i]) / ln(2)
             newFreqs#[i] = newFreq
         endif
 
@@ -447,7 +449,7 @@ else
         endif
         if vizFilled#[vizIdx] = 0
             vizTimes#[vizIdx] = timesRel#[i]
-            vizShifts#[vizIdx] = semitoneShift
+            vizShifts#[vizIdx] = appliedShift
             vizDepths#[vizIdx] = shiftDepths#[i]
             vizSpeeds#[vizIdx] = modSpeeds#[i]
             vizFilled#[vizIdx] = 1
