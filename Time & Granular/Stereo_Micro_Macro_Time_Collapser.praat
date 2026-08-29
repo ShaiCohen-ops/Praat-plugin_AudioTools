@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.1 (2026) - Stereo/source-domain correctness pass
+# Version: 1.2 (2026) - Compact form pass
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -22,9 +22,27 @@
 #   5. Interleave and crossfade assembly
 #   6. Multi-panel visualization
 #
+# Changelog v1.2:
+#   - FORM REDUCED: the tall 22-field form is now 6 rows (preset, stereo
+#     width, target duration, three checkboxes). Everything else moved to
+#     three optional pause dialogs opened by Edit_advanced_settings, each
+#     pre-filled with the values the chosen preset just set, so a preset
+#     stays inspectable and editable instead of being a black box.
+#   - The advanced dialogs use optionmenu fields, which exist in beginPause
+#     only from Praat 6.3 on. On 6.1.x (the Parselmouth 0.4.7 interpreter)
+#     they error; leave Edit_advanced_settings off there, or swap the three
+#     optionmenu blocks for choice, which works on both.
+#   - Parameters that left the form keep their previous form defaults when
+#     the advanced dialogs are not opened, so Custom + advanced off
+#     reproduces v1.1 exactly.
+#   - The two transformation lines are now echoed to the Info window, since
+#     they are no longer visible in the form.
+#   - API BREAK: the form signature changed, so any runScript: caller that
+#     passed the old 24 arguments must be updated. Output object name
+#     remains Stereo_Collapser_Output. DSP is unchanged.
+#
 # Changelog v1.1:
-#   - API COMPATIBILITY: public form is byte-for-byte unchanged.
-#     Output object name remains Stereo_Collapser_Output.
+#   - Output object name remains Stereo_Collapser_Output.
 #   - FIX: analysis and synthesis work copies are shifted to time 0, so
 #     non-zero Sound time domains are handled correctly.
 #   - FIX: stereo inputs now retain their original L/R source channels for
@@ -42,7 +60,6 @@
 # ============================================================
 
 form Stereo Micro ↔ Macro Time Collapser
-    comment === Preset Selection ===
     optionmenu Preset: 1
         option Custom
         option Gentle Bloom (subtle expansion)
@@ -51,43 +68,37 @@ form Stereo Micro ↔ Macro Time Collapser
         option Macro Drone (emphasize slow textures)
         option Granular Chaos (high fragmentation)
         option Smooth Morph (minimal disruption)
-    comment === Analysis Parameters ===
-    positive Micro_window_ms 15
-    positive Micro_burst_min_ms 25
-    positive Micro_burst_max_ms 180
-    positive Burst_threshold_dB_above_median 8
-    positive Slow_min_ms 600
-    real Slow_variance_threshold 0.15
-    positive Slow_slope_threshold_dB_per_s 6
-    comment === Transformation Parameters ===
-    positive Stretch_factor 12
-    positive Compress_factor 0.15
-    positive Crossfade_ms 15
-    comment === Stereo Parameters ===
     positive Stereo_width_percent 20
-    comment === Assembly Parameters ===
-    optionmenu Interleave_mode: 1
-        option Alternate (micro/slow when available)
-        option Probabilistic (50/50)
-        option Timeline order (swapped roles)
-    comment === Output ===
     positive Target_output_duration_s 60
-    positive Max_output_duration_s 120
-    boolean Allow_fallback_if_insufficient_segments 1
+    boolean Edit_advanced_settings 0
     boolean Draw_visualization 1
     boolean Play_output 1
-    comment === Normalization ===
-    optionmenu Segment_normalization: 1
-        option Scale peak (0.95)
-        option Scale intensity
-        option Off
-    positive Segment_intensity_target_dB 70
-    optionmenu Output_normalization: 1
-        option Scale peak (0.99)
-        option Scale intensity
-        option Off
-    positive Output_intensity_target_dB 70
 endform
+
+# ============================================================
+# Defaults for the parameters that left the form
+# ============================================================
+# First group = the former Custom-preset form defaults; a non-Custom preset
+# overwrites them below. Second group was never preset-controlled.
+
+micro_window_ms = 15
+micro_burst_min_ms = 25
+micro_burst_max_ms = 180
+burst_threshold_dB_above_median = 8
+slow_min_ms = 600
+slow_variance_threshold = 0.15
+slow_slope_threshold_dB_per_s = 6
+stretch_factor = 12
+compress_factor = 0.15
+crossfade_ms = 15
+interleave_mode = 1
+
+max_output_duration_s = 120
+allow_fallback_if_insufficient_segments = 1
+segment_normalization = 1
+segment_intensity_target_dB = 70
+output_normalization = 1
+output_intensity_target_dB = 70
 
 # ============================================================
 # Apply Presets
@@ -176,6 +187,48 @@ else
 endif
 
 # ============================================================
+# Advanced settings (optional, pre-filled from the preset)
+# ============================================================
+
+if edit_advanced_settings
+    beginPause: "Advanced 1/3 — Analysis"
+        comment: "Segment detection. Shown values are the ones the preset just set."
+        positive: "Micro_window_ms", string$(micro_window_ms)
+        positive: "Micro_burst_min_ms", string$(micro_burst_min_ms)
+        positive: "Micro_burst_max_ms", string$(micro_burst_max_ms)
+        positive: "Burst_threshold_dB_above_median", string$(burst_threshold_dB_above_median)
+        positive: "Slow_min_ms", string$(slow_min_ms)
+        real: "Slow_variance_threshold", string$(slow_variance_threshold)
+        positive: "Slow_slope_threshold_dB_per_s", string$(slow_slope_threshold_dB_per_s)
+    endPause: "Continue", 1
+
+    beginPause: "Advanced 2/3 — Transformation and assembly"
+        positive: "Stretch_factor", string$(stretch_factor)
+        positive: "Compress_factor", string$(compress_factor)
+        positive: "Crossfade_ms", string$(crossfade_ms)
+        optionmenu: "Interleave_mode", interleave_mode
+            option: "Alternate (micro/slow when available)"
+            option: "Probabilistic (50/50)"
+            option: "Timeline order (swapped roles)"
+        positive: "Max_output_duration_s", string$(max_output_duration_s)
+        boolean: "Allow_fallback_if_insufficient_segments", allow_fallback_if_insufficient_segments
+    endPause: "Continue", 1
+
+    beginPause: "Advanced 3/3 — Normalization"
+        optionmenu: "Segment_normalization", segment_normalization
+            option: "Scale peak (0.95)"
+            option: "Scale intensity"
+            option: "Off"
+        positive: "Segment_intensity_target_dB", string$(segment_intensity_target_dB)
+        optionmenu: "Output_normalization", output_normalization
+            option: "Scale peak (0.99)"
+            option: "Scale intensity"
+            option: "Off"
+        positive: "Output_intensity_target_dB", string$(output_intensity_target_dB)
+    endPause: "Continue", 1
+endif
+
+# ============================================================
 # Input validation
 # ============================================================
 
@@ -206,6 +259,8 @@ appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Input: ", inputName$
 appendInfoLine: "Duration: ", fixed$(inputDuration, 3), " s"
 appendInfoLine: "Target output: ", fixed$(target_output_duration_s, 1), " s (cap: ", fixed$(max_output_duration_s, 0), " s)"
+appendInfoLine: "Transform: stretch x", fixed$(stretch_factor, 1), " | compress x", fixed$(compress_factor, 2), " | xfade ", fixed$(crossfade_ms, 0), " ms | mode ", interleave_mode
+appendInfoLine: "Analysis: win ", fixed$(micro_window_ms, 0), " ms | burst ", fixed$(micro_burst_min_ms, 0), "-", fixed$(micro_burst_max_ms, 0), " ms at +", fixed$(burst_threshold_dB_above_median, 0), " dB | slow ", fixed$(slow_min_ms, 0), " ms"
 
 # ============================================================
 # Prepare common mono analysis + per-channel synthesis sources
