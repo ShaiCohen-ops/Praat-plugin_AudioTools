@@ -341,7 +341,8 @@ for i from 0 to npoints - 1
     selectObject: pitchTier
     Add point: t, new_f0
 
-    # Visualization stores the actual Hz offset used.
+    # Visualization stores the actual Hz offset used after synthesis safety.
+    applied_offset_hz = new_f0 - median_f0
     vizIdx = floor(i / vizStep) + 1
     if vizIdx < 1
         vizIdx = 1
@@ -350,7 +351,7 @@ for i from 0 to npoints - 1
     endif
     if vizFilled#[vizIdx] = 0
         vizTimes#[vizIdx] = t
-        vizShifts#[vizIdx] = pitch_offset_hz
+        vizShifts#[vizIdx] = applied_offset_hz
         vizFilled#[vizIdx] = 1
     endif
 endfor
