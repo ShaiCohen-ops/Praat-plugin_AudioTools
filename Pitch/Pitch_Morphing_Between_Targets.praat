@@ -345,6 +345,9 @@ for i from 0 to npoints - 1
         limited_points += 1
     endif
 
+    # Store the pitch that is actually applied after synthesis-safe limiting.
+    applied_pitch_st = 12 * log2(new_f0 / median_f0)
+
     selectObject: pitchTier
     Add point: t, new_f0
 
@@ -353,7 +356,7 @@ for i from 0 to npoints - 1
     if vizIdx >= 1 and vizIdx <= maxVizPoints
         if vizFilled#[vizIdx] = 0
             vizTimes#[vizIdx] = t
-            vizPitch#[vizIdx] = final_pitch_st
+            vizPitch#[vizIdx] = applied_pitch_st
             vizFilled#[vizIdx] = 1
         endif
     endif
