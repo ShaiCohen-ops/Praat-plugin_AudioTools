@@ -3,7 +3,9 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4.1 reviewed (2026)
+# Version: 0.4.3 reviewed (2026)
+# v0.4.3 (2026): Added persistent Apply/OK workflow; Apply processes then automatically reopens the same algorithm settings with values preserved.
+# v0.4.2 (2026): Two-step wizard supports Back/Generate and preserves entered settings; DSP/analysis unchanged.
 # v0.4.1 (2026): Shared left panel-label rails and user-approved Summary geometry; DSP/analysis unchanged.
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
@@ -52,247 +54,361 @@ if inputChannels <> 1 and inputChannels <> 2
 endif
 
 # ---------------------------------------------------------------------------
-# STEP 1: Main selection
+# STEP 1 + STEP 2: reversible two-stage wizard
 # ---------------------------------------------------------------------------
 
-beginPause: "Universal Convolver - Step 1"
-    comment: "Select your generation algorithm:"
-    optionmenu: "Algorithm", 1
-        option: "Accelerando"
-        option: "Bouncing Ball"
-        option: "Bursts and Taps"
-        option: "Euclidean Rhythm"
-        option: "Fibonacci (Mono)"
-        option: "Golden Angle Drift"
-        option: "Random Walk"
-        option: "Stereo Fibonacci"
-        option: "Swing"
+# Persistent UI state. These values are initialized once, then reused as
+# defaults whenever the user returns with < Back. This keeps the pause
+# windows compact without making the algorithm choice irreversible.
+ui_algorithm = 1
+ui_duration = 2.0
+ui_wet_dry = 70
+ui_random_seed = 0
+ui_draw_visualization = 1
+ui_play_after_processing = 1
 
-    comment: "General Settings:"
-    positive: "Duration", 2.0
-    real: "Wet_dry_percent", 70
-    integer: "Random_seed", 0
-    comment: "Random seed: 0 = different stochastic pattern each run"
+# Algorithm-specific persistent defaults
+accel_first = 0.10
+accel_pulses = 24
+accel_shrink = 0.85
 
-    comment: "Output:"
-    boolean: "Draw_visualization", 1
-    boolean: "Play_after_processing", 1
-endPause: "Next >>", 1
+ball_first = 0.10
+ball_gravity = 9.81
+ball_velocity = 3.0
+ball_bounce = 0.60
 
-if wet_dry_percent < 0
-    wet_dry_percent = 0
-elsif wet_dry_percent > 100
-    wet_dry_percent = 100
-endif
+burst_tap1 = 0.15
+burst_tap2 = 1.20
+burst_num = 3
+burst_points = 10
+burst_std = 0.035
 
-if random_seed < 0
-    random_seed = 0
-endif
+euclid_steps = 16
+euclid_pulses = 5
 
-wet_level = wet_dry_percent / 100
-dry_level = 1 - wet_level
-duration_seconds = duration
-sr = inputSR
+fib_num = 12
+fib_scale = 100.0
+fib_jitter = 0.01
 
-# PointProcess pulse rendering settings. With adaptation factor = 1,
-# adaptation time does not attenuate pulses; sinc depth controls
-# band-limited sub-sample interpolation.
-adaptationFactor = 1
-adaptationTime = 0.05
-sincDepth = 2000
+golden_num = 24
+golden_margin = 0.10
 
-# ---------------------------------------------------------------------------
-# STEP 2: Algorithm-specific parameters
-# ---------------------------------------------------------------------------
+walk_gap = 0.18
+walk_var = 0.015
 
+sfib_num = 12
+sfib_L1 = 1
+sfib_L2 = 1
+sfib_R1 = 2
+sfib_R2 = 3
+
+swing_tempo = 120
+swing_delay = 0.06
+
+sessionActive = 1
+showStep1 = 1
 usesRandom = 0
+uiAction = 3
 
-if algorithm$ = "Accelerando"
-    beginPause: "Settings: Accelerando"
-        comment: "Pulses accelerate as successive gaps shrink"
-        positive: "First_hit_time", 0.10
-        natural: "Number_of_pulses", 24
-        positive: "Gap_shrink_ratio", 0.85
-    endPause: "Run", 1
+while sessionActive = 1
+    wizardDone = 0
 
-    accel_first = first_hit_time
-    accel_pulses = number_of_pulses
-    accel_shrink = gap_shrink_ratio
+    while wizardDone = 0
+        # -------------------------------------------------------------------
+        # STEP 1: Algorithm + shared settings
+        # -------------------------------------------------------------------
+        if showStep1 = 1
+    beginPause: "Universal Convolver - Step 1"
+        comment: "Select your generation algorithm:"
+        optionmenu: "Algorithm", ui_algorithm
+            option: "Accelerando"
+            option: "Bouncing Ball"
+            option: "Bursts and Taps"
+            option: "Euclidean Rhythm"
+            option: "Fibonacci (Mono)"
+            option: "Golden Angle Drift"
+            option: "Random Walk"
+            option: "Stereo Fibonacci"
+            option: "Swing"
 
-    if accel_first >= duration_seconds
-        exitScript: "Accelerando: First hit time must be shorter than IR duration."
-    endif
-    if accel_shrink >= 1
-        exitScript: "Accelerando: Gap shrink ratio must be greater than 0 and smaller than 1."
-    endif
-    if accel_pulses > 5000
-        exitScript: "Accelerando: Number of pulses is limited to 5000."
-    endif
+        comment: "General Settings:"
+        positive: "Duration", ui_duration
+        real: "Wet_dry_percent", ui_wet_dry
+        integer: "Random_seed", ui_random_seed
+        comment: "Random seed: 0 = different stochastic pattern each run"
 
-    algoParams$ = "First " + fixed$(accel_first, 3) + " s | Pulses " + string$(accel_pulses) + " | Gap ratio " + fixed$(accel_shrink, 3)
+        comment: "Output:"
+        boolean: "Draw_visualization", ui_draw_visualization
+        boolean: "Play_after_processing", ui_play_after_processing
+    endPause: "Next >", 1
 
-elsif algorithm$ = "Bouncing Ball"
-    beginPause: "Settings: Bouncing Ball"
-        comment: "Restitution-controlled shrinking bounce intervals"
-        positive: "First_bounce_time", 0.10
-        positive: "Gravity", 9.81
-        positive: "Initial_velocity", 3.0
-        positive: "Bounce_coefficient", 0.60
-    endPause: "Run", 1
+    # Save Step 1 state so it survives a return from Step 2.
+    ui_algorithm = algorithm
+    ui_duration = duration
+    ui_wet_dry = wet_dry_percent
+    ui_random_seed = random_seed
+    ui_draw_visualization = draw_visualization
+    ui_play_after_processing = play_after_processing
 
-    ball_first = first_bounce_time
-    ball_gravity = gravity
-    ball_velocity = initial_velocity
-    ball_bounce = bounce_coefficient
-
-    if ball_first >= duration_seconds
-        exitScript: "Bouncing Ball: First bounce must be shorter than IR duration."
-    endif
-    if ball_bounce >= 1
-        exitScript: "Bouncing Ball: Bounce coefficient must be greater than 0 and smaller than 1."
-    endif
-
-    algoParams$ = "First " + fixed$(ball_first, 3) + " s | g " + fixed$(ball_gravity, 2) + " | v0 " + fixed$(ball_velocity, 2) + " | restitution " + fixed$(ball_bounce, 2)
-
-elsif algorithm$ = "Bursts and Taps"
-    usesRandom = 1
-
-    beginPause: "Settings: Bursts & Taps"
-        comment: "Random Gaussian bursts around independently chosen centres"
-        positive: "Tap_1_time", 0.15
-        positive: "Tap_2_time", 1.20
-        natural: "Number_of_bursts", 3
-        natural: "Points_per_burst", 10
-        positive: "Burst_stddev", 0.035
-    endPause: "Run", 1
-
-    burst_tap1 = tap_1_time
-    burst_tap2 = tap_2_time
-    burst_num = number_of_bursts
-    burst_points = points_per_burst
-    burst_std = burst_stddev
-
-    if burst_num * burst_points > 5000
-        exitScript: "Bursts & Taps: total burst points are limited to 5000."
+    # Clamp shared settings exactly as before.
+    if ui_wet_dry < 0
+        ui_wet_dry = 0
+    elsif ui_wet_dry > 100
+        ui_wet_dry = 100
     endif
 
-    algoParams$ = "Taps " + fixed$(burst_tap1, 2) + "/" + fixed$(burst_tap2, 2) + " s | Bursts " + string$(burst_num) + " x " + string$(burst_points) + " | sigma " + fixed$(burst_std, 3) + " s"
-
-elsif algorithm$ = "Euclidean Rhythm"
-    beginPause: "Settings: Euclidean"
-        comment: "Evenly distributed K-pulse Euclidean rhythm in N steps"
-        natural: "Total_steps", 16
-        natural: "Active_pulses", 5
-    endPause: "Run", 1
-
-    euclid_steps = total_steps
-    euclid_pulses = active_pulses
-
-    if euclid_pulses > euclid_steps
-        exitScript: "Euclidean Rhythm: Active pulses cannot exceed total steps."
-    endif
-    if euclid_steps > 10000
-        exitScript: "Euclidean Rhythm: Total steps are limited to 10000."
+    if ui_random_seed < 0
+        ui_random_seed = 0
     endif
 
-    algoParams$ = "Euclidean E(" + string$(euclid_pulses) + "," + string$(euclid_steps) + ")"
+    wet_dry_percent = ui_wet_dry
+    random_seed = ui_random_seed
+    draw_visualization = ui_draw_visualization
+    play_after_processing = ui_play_after_processing
+    wet_level = wet_dry_percent / 100
+    dry_level = 1 - wet_level
+    duration_seconds = ui_duration
+    sr = inputSR
 
-elsif algorithm$ = "Fibonacci (Mono)"
-    usesRandom = 1
+    # PointProcess pulse rendering settings. With adaptation factor = 1,
+    # adaptation time does not attenuate pulses; sinc depth controls
+    # band-limited sub-sample interpolation.
+    adaptationFactor = 1
+    adaptationTime = 0.05
+    sincDepth = 2000
 
-    beginPause: "Settings: Fibonacci"
-        comment: "Fibonacci-positioned impulses with optional timing jitter"
-        natural: "Fibonacci_terms", 12
-        positive: "Scale_divisor", 100.0
-        positive: "Jitter_stddev", 0.01
-    endPause: "Run", 1
+        endif
 
-    fib_num = fibonacci_terms
-    fib_scale = scale_divisor
-    fib_jitter = jitter_stddev
+        # -------------------------------------------------------------------
+        # STEP 2: Algorithm-specific settings
+        # -------------------------------------------------------------------
+    # Reset each time through the wizard. The final selected algorithm sets
+    # this value before Generate exits the loop.
+    usesRandom = 0
+    clicked = 0
 
-    if fib_num > 80
-        exitScript: "Fibonacci: Number of impulses is limited to 80."
+    if algorithm$ = "Accelerando"
+        beginPause: "Settings: Accelerando"
+            comment: "Pulses accelerate as successive gaps shrink"
+            positive: "First_hit_time", accel_first
+            natural: "Number_of_pulses", accel_pulses
+            positive: "Gap_shrink_ratio", accel_shrink
+        clicked = endPause: "< Back", "Apply", "OK", 2
+
+        accel_first = first_hit_time
+        accel_pulses = number_of_pulses
+        accel_shrink = gap_shrink_ratio
+
+        if clicked = 2 or clicked = 3
+            if accel_first >= duration_seconds
+                exitScript: "Accelerando: First hit time must be shorter than IR duration."
+            endif
+            if accel_shrink >= 1
+                exitScript: "Accelerando: Gap shrink ratio must be greater than 0 and smaller than 1."
+            endif
+            if accel_pulses > 5000
+                exitScript: "Accelerando: Number of pulses is limited to 5000."
+            endif
+
+            algoParams$ = "First " + fixed$(accel_first, 3) + " s | Pulses " + string$(accel_pulses) + " | Gap ratio " + fixed$(accel_shrink, 3)
+            wizardDone = 1
+        endif
+
+    elsif algorithm$ = "Bouncing Ball"
+        beginPause: "Settings: Bouncing Ball"
+            comment: "Restitution-controlled shrinking bounce intervals"
+            positive: "First_bounce_time", ball_first
+            positive: "Gravity", ball_gravity
+            positive: "Initial_velocity", ball_velocity
+            positive: "Bounce_coefficient", ball_bounce
+        clicked = endPause: "< Back", "Apply", "OK", 2
+
+        ball_first = first_bounce_time
+        ball_gravity = gravity
+        ball_velocity = initial_velocity
+        ball_bounce = bounce_coefficient
+
+        if clicked = 2 or clicked = 3
+            if ball_first >= duration_seconds
+                exitScript: "Bouncing Ball: First bounce must be shorter than IR duration."
+            endif
+            if ball_bounce >= 1
+                exitScript: "Bouncing Ball: Bounce coefficient must be greater than 0 and smaller than 1."
+            endif
+
+            algoParams$ = "First " + fixed$(ball_first, 3) + " s | g " + fixed$(ball_gravity, 2) + " | v0 " + fixed$(ball_velocity, 2) + " | restitution " + fixed$(ball_bounce, 2)
+            wizardDone = 1
+        endif
+
+    elsif algorithm$ = "Bursts and Taps"
+        usesRandom = 1
+
+        beginPause: "Settings: Bursts & Taps"
+            comment: "Random Gaussian bursts around independently chosen centres"
+            positive: "Tap_1_time", burst_tap1
+            positive: "Tap_2_time", burst_tap2
+            natural: "Number_of_bursts", burst_num
+            natural: "Points_per_burst", burst_points
+            positive: "Burst_stddev", burst_std
+        clicked = endPause: "< Back", "Apply", "OK", 2
+
+        burst_tap1 = tap_1_time
+        burst_tap2 = tap_2_time
+        burst_num = number_of_bursts
+        burst_points = points_per_burst
+        burst_std = burst_stddev
+
+        if clicked = 2 or clicked = 3
+            if burst_num * burst_points > 5000
+                exitScript: "Bursts & Taps: total burst points are limited to 5000."
+            endif
+
+            algoParams$ = "Taps " + fixed$(burst_tap1, 2) + "/" + fixed$(burst_tap2, 2) + " s | Bursts " + string$(burst_num) + " x " + string$(burst_points) + " | sigma " + fixed$(burst_std, 3) + " s"
+            wizardDone = 1
+        endif
+
+    elsif algorithm$ = "Euclidean Rhythm"
+        beginPause: "Settings: Euclidean"
+            comment: "Evenly distributed K-pulse Euclidean rhythm in N steps"
+            natural: "Total_steps", euclid_steps
+            natural: "Active_pulses", euclid_pulses
+        clicked = endPause: "< Back", "Apply", "OK", 2
+
+        euclid_steps = total_steps
+        euclid_pulses = active_pulses
+
+        if clicked = 2 or clicked = 3
+            if euclid_pulses > euclid_steps
+                exitScript: "Euclidean Rhythm: Active pulses cannot exceed total steps."
+            endif
+            if euclid_steps > 10000
+                exitScript: "Euclidean Rhythm: Total steps are limited to 10000."
+            endif
+
+            algoParams$ = "Euclidean E(" + string$(euclid_pulses) + "," + string$(euclid_steps) + ")"
+            wizardDone = 1
+        endif
+
+    elsif algorithm$ = "Fibonacci (Mono)"
+        usesRandom = 1
+
+        beginPause: "Settings: Fibonacci"
+            comment: "Fibonacci-positioned impulses with optional timing jitter"
+            natural: "Fibonacci_terms", fib_num
+            positive: "Scale_divisor", fib_scale
+            positive: "Jitter_stddev", fib_jitter
+        clicked = endPause: "< Back", "Apply", "OK", 2
+
+        fib_num = fibonacci_terms
+        fib_scale = scale_divisor
+        fib_jitter = jitter_stddev
+
+        if clicked = 2 or clicked = 3
+            if fib_num > 80
+                exitScript: "Fibonacci: Number of impulses is limited to 80."
+            endif
+
+            algoParams$ = "Requested " + string$(fib_num) + " | Scale " + fixed$(fib_scale, 1) + " | Jitter sigma " + fixed$(fib_jitter, 3) + " s"
+            wizardDone = 1
+        endif
+
+    elsif algorithm$ = "Golden Angle Drift"
+        beginPause: "Settings: Golden Angle"
+            comment: "Low-discrepancy golden-ratio distribution"
+            natural: "Number_of_impulses", golden_num
+            positive: "Margin_s", golden_margin
+        clicked = endPause: "< Back", "Apply", "OK", 2
+
+        golden_num = number_of_impulses
+        golden_margin = margin_s
+
+        if clicked = 2 or clicked = 3
+            if 2 * golden_margin >= duration_seconds
+                exitScript: "Golden Angle: Margin must be smaller than half the IR duration."
+            endif
+            if golden_num > 5000
+                exitScript: "Golden Angle: Number of impulses is limited to 5000."
+            endif
+
+            algoParams$ = "Impulses " + string$(golden_num) + " | Margin " + fixed$(golden_margin, 3) + " s"
+            wizardDone = 1
+        endif
+
+    elsif algorithm$ = "Random Walk"
+        usesRandom = 1
+
+        beginPause: "Settings: Random Walk"
+            comment: "Successive gaps follow a bounded random walk"
+            positive: "Initial_gap", walk_gap
+            positive: "Gap_variation", walk_var
+        clicked = endPause: "< Back", "Apply", "OK", 2
+
+        walk_gap = initial_gap
+        walk_var = gap_variation
+
+        if clicked = 2 or clicked = 3
+            algoParams$ = "Initial gap " + fixed$(walk_gap, 3) + " s | Step sigma " + fixed$(walk_var, 3) + " s"
+            wizardDone = 1
+        endif
+
+    elsif algorithm$ = "Stereo Fibonacci"
+        usesRandom = 1
+
+        beginPause: "Settings: Stereo Fibonacci"
+            comment: "Different Fibonacci seeds and jitter per channel"
+            natural: "Fibonacci_terms_per_channel", sfib_num
+            comment: "Left Channel Seeds:"
+            natural: "Left_seed_1", sfib_L1
+            natural: "Left_seed_2", sfib_L2
+            comment: "Right Channel Seeds:"
+            natural: "Right_seed_1", sfib_R1
+            natural: "Right_seed_2", sfib_R2
+        clicked = endPause: "< Back", "Apply", "OK", 2
+
+        sfib_num = fibonacci_terms_per_channel
+        sfib_L1 = left_seed_1
+        sfib_L2 = left_seed_2
+        sfib_R1 = right_seed_1
+        sfib_R2 = right_seed_2
+
+        if clicked = 2 or clicked = 3
+            if sfib_num > 80
+                exitScript: "Stereo Fibonacci: Number of impulses is limited to 80."
+            endif
+
+            algoParams$ = "Requested " + string$(sfib_num) + "/ch | L seeds " + string$(sfib_L1) + "," + string$(sfib_L2) + " | R seeds " + string$(sfib_R1) + "," + string$(sfib_R2)
+            wizardDone = 1
+        endif
+
+    elsif algorithm$ = "Swing"
+        beginPause: "Settings: Swing"
+            comment: "Alternating delayed timing around a tempo grid"
+            positive: "Tempo_BPM", swing_tempo
+            positive: "Swing_delay_s", swing_delay
+        clicked = endPause: "< Back", "Apply", "OK", 2
+
+        swing_tempo = tempo_BPM
+        swing_delay = swing_delay_s
+
+        if clicked = 2 or clicked = 3
+            swingBeat = 60 / swing_tempo
+            if swing_delay >= swingBeat
+                exitScript: "Swing: Swing delay must be shorter than one beat."
+            endif
+
+            algoParams$ = "Tempo " + fixed$(swing_tempo, 1) + " BPM | Alternate delay " + fixed$(swing_delay * 1000, 1) + " ms"
+            wizardDone = 1
+        endif
     endif
 
-    algoParams$ = "Requested " + string$(fib_num) + " | Scale " + fixed$(fib_scale, 1) + " | Jitter sigma " + fixed$(fib_jitter, 3) + " s"
-
-elsif algorithm$ = "Golden Angle Drift"
-    beginPause: "Settings: Golden Angle"
-        comment: "Low-discrepancy golden-ratio distribution"
-        natural: "Number_of_impulses", 24
-        positive: "Margin_s", 0.10
-    endPause: "Run", 1
-
-    golden_num = number_of_impulses
-    golden_margin = margin_s
-
-    if 2 * golden_margin >= duration_seconds
-        exitScript: "Golden Angle: Margin must be smaller than half the IR duration."
-    endif
-    if golden_num > 5000
-        exitScript: "Golden Angle: Number of impulses is limited to 5000."
-    endif
-
-    algoParams$ = "Impulses " + string$(golden_num) + " | Margin " + fixed$(golden_margin, 3) + " s"
-
-elsif algorithm$ = "Random Walk"
-    usesRandom = 1
-
-    beginPause: "Settings: Random Walk"
-        comment: "Successive gaps follow a bounded random walk"
-        positive: "Initial_gap", 0.18
-        positive: "Gap_variation", 0.015
-    endPause: "Run", 1
-
-    walk_gap = initial_gap
-    walk_var = gap_variation
-
-    algoParams$ = "Initial gap " + fixed$(walk_gap, 3) + " s | Step sigma " + fixed$(walk_var, 3) + " s"
-
-elsif algorithm$ = "Stereo Fibonacci"
-    usesRandom = 1
-
-    beginPause: "Settings: Stereo Fibonacci"
-        comment: "Different Fibonacci seeds and jitter per channel"
-        natural: "Fibonacci_terms_per_channel", 12
-        comment: "Left Channel Seeds:"
-        natural: "Left_seed_1", 1
-        natural: "Left_seed_2", 1
-        comment: "Right Channel Seeds:"
-        natural: "Right_seed_1", 2
-        natural: "Right_seed_2", 3
-    endPause: "Run", 1
-
-    sfib_num = fibonacci_terms_per_channel
-    sfib_L1 = left_seed_1
-    sfib_L2 = left_seed_2
-    sfib_R1 = right_seed_1
-    sfib_R2 = right_seed_2
-
-    if sfib_num > 80
-        exitScript: "Stereo Fibonacci: Number of impulses is limited to 80."
-    endif
-
-    algoParams$ = "Requested " + string$(sfib_num) + "/ch | L seeds " + string$(sfib_L1) + "," + string$(sfib_L2) + " | R seeds " + string$(sfib_R1) + "," + string$(sfib_R2)
-
-elsif algorithm$ = "Swing"
-    beginPause: "Settings: Swing"
-        comment: "Alternating delayed timing around a tempo grid"
-        positive: "Tempo_BPM", 120
-        positive: "Swing_delay_s", 0.06
-    endPause: "Run", 1
-
-    swing_tempo = tempo_BPM
-    swing_delay = swing_delay_s
-    swingBeat = 60 / swing_tempo
-
-    if swing_delay >= swingBeat
-        exitScript: "Swing: Swing delay must be shorter than one beat."
-    endif
-
-    algoParams$ = "Tempo " + fixed$(swing_tempo, 1) + " BPM | Alternate delay " + fixed$(swing_delay * 1000, 1) + " ms"
-endif
+        # Navigation state shared by all algorithm pages.
+        if clicked = 1
+            showStep1 = 1
+        elsif wizardDone = 1
+            uiAction = clicked
+            showStep1 = 0
+        endif
+    endwhile
 
 # ---------------------------------------------------------------------------
 # Random-state handling
@@ -766,7 +882,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.58, "half", "Universal Convolution Generator | " + algorithm$ + " | v0.4.1"
+    Text: 0.5, "centre", 0.58, "half", "Universal Convolution Generator | " + algorithm$ + " | v0.4.3"
 
     # Metadata.
     Select outer viewport: 0, 8, 0.36, 0.58
@@ -928,5 +1044,16 @@ if play_after_processing
     selectObject: result
     Play
 endif
+
+selectObject: result
+
+    # Apply keeps the session alive and returns directly to the same
+    # algorithm-specific page. OK applies once and closes the session.
+    if uiAction = 2
+        selectObject: originalID
+    else
+        sessionActive = 0
+    endif
+endwhile
 
 selectObject: result
