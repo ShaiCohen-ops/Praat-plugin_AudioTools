@@ -812,8 +812,16 @@ procedure onset
         @addPoint: current_time, current_pitch
         @randomUniform: 10 * interval_scale, 30 * interval_scale
         current_pitch = current_pitch + randomUniform.result
-        current_time = current_time + .dur
+
+        # PitchTier interpolation is linear between points. Give JumpUp a
+        # near-instantaneous transition (<= 1 ms), then hold the new pitch
+        # for the remainder of the onset. No form fields or procedure
+        # interfaces are changed, so callers remain compatible.
+        .onsetEnd = current_time + .dur
+        .jumpTransition = min(0.001, .dur / 10)
+        current_time = current_time + .jumpTransition
         @addPoint: current_time, current_pitch
+        current_time = .onsetEnd
     else
         last_gesture_type$ = "GlissUp"
         @addPoint: current_time, current_pitch
