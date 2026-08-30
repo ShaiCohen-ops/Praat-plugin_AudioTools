@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.2 (2026)
+# Version: 1.3 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -40,6 +40,55 @@
 #   Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
+# Changelog v1.3:
+#   BUG FIX (changes audio output):
+#   - MFCC extraction used the wrong argument order. `Get value in frame:`
+#     takes (frameNumber, index); the script passed (index, frameNumber).
+#     Since the MFCC time step is 0.005 s, every grain past roughly 65 ms
+#     asked for a coefficient index beyond the 12 that exist, got undefined,
+#     and the guard clamped it to 0. Verified on 6.4.06: (1, 100) returns
+#     undefined, (100, 1) returns 26.67. Consequence: mfcc1-mfcc6 were 0.0
+#     for every row of both feature CSVs, mfcc_distance was 0.0 on every
+#     match, and the KD-tree was matching on centroid, pitch, intensity, HNR
+#     and ZCR only — the MFCC weight did nothing. Output WILL differ from
+#     v1.2.1 for every preset, because matching now uses the feature the
+#     script was named for.
+#   VISUALIZATION (rebuilt around results instead of parameters):
+#   - Removed the voice-timeline panel. Hop is grain x (1 - overlap/100), so
+#     hop <= grain always and adjacent blocks always abut: the panel rendered
+#     as solid bars at every setting, including 0% overlap. It also plotted
+#     scheduled grains, so pause-gating never appeared in it.
+#   - Removed the parameter report panel. Every field in it also appeared in
+#     the subtitle, the summary bar and the Info window.
+#   - Removed Show_spectrograms and both spectrogram panels, with the two
+#     `To Spectrogram` calls they needed.
+#   - NEW Panel A: timbral distance per grain over time, one line per voice,
+#     with per-voice means. This is the script's premise, plotted.
+#   - NEW Panel B: grain provenance — one block per grain coloured by corpus
+#     file, consecutive grains alternating half-lanes so overlap and grain
+#     count stay legible.
+#   - NEW Panel C: voice separation — distance min/max/mean per voice with
+#     requested vs actually used neighbour rank.
+#   - NEW Panel D: corpus usage — grains drawn per corpus file, which makes
+#     repetition-penalty behaviour and corpus coverage visible.
+#   - Removed the target and mix waveform panels. The output waveform says
+#     nothing about the matching decisions this figure exists to report, and
+#     the reclaimed height goes to the four panels that do.
+#   - Summary bar reports mean MFCC contribution, and warns outright if the
+#     MFCC weight is non-zero while its contribution is 0 — the condition
+#     that hid the bug above.
+#   - Layout follows the suite drawing rules: font set before viewport
+#     selection, viewport re-selected between drawing groups, no
+#     `Text bottom:` / `Text left:` (units moved into panel captions, panel
+#     names onto a rotated left rail), and the full canvas re-selected at the
+#     end so Save/Copy captures the whole figure.
+# Changelog v1.2.1:
+#   - FIXED stereo corpus reconstruction: every multichannel corpus grain is
+#     downmixed to mono before stereo duplication and constant-power panning.
+#     Reconstruction now uses the same mono timbral content represented by the
+#     feature analysis, instead of retaining the original L/R image for stereo
+#     corpus files. Matching, scheduling and all other DSP are unchanged.
+#   - Runtime banner synchronized to v1.2.1.
 # Changelog v1.2:
 #   - Sample-accurate track scheduler: start times and silence gaps are
 #     quantized to the target sample grid, eliminating zero-sample Sound
@@ -87,7 +136,7 @@
 #   - Initial unified cross-platform release.
 # ============================================================
 
-form KD-Tree Timbral Counterpoint v1.2
+form KD-Tree Timbral Counterpoint v1.3
     comment ── Target & Corpus ──
     sentence Corpus_folder /Users/username/Desktop/Corpus
     real Grain_size_ms 200
@@ -121,8 +170,6 @@ form KD-Tree Timbral Counterpoint v1.2
         option Pauses only
         option Amplitude envelope only
         option Pauses + Amplitude envelope
-    boolean Show_spectrograms 0
-    comment (ON shows time-frequency comparison, but adds analysis time)
     boolean Draw_visualization 1
     boolean Play_result 1
 endform
@@ -348,27 +395,27 @@ procedure extractFeatures: .sndObj, .fPath$, .csvTable, .isCorpus
             .frame = .nFrames
         endif
 
-        .m1 = Get value in frame: 1, .frame
+        .m1 = Get value in frame: .frame, 1
         if .m1 = undefined
             .m1 = 0
         endif
-        .m2 = Get value in frame: 2, .frame
+        .m2 = Get value in frame: .frame, 2
         if .m2 = undefined
             .m2 = 0
         endif
-        .m3 = Get value in frame: 3, .frame
+        .m3 = Get value in frame: .frame, 3
         if .m3 = undefined
             .m3 = 0
         endif
-        .m4 = Get value in frame: 4, .frame
+        .m4 = Get value in frame: .frame, 4
         if .m4 = undefined
             .m4 = 0
         endif
-        .m5 = Get value in frame: 5, .frame
+        .m5 = Get value in frame: .frame, 5
         if .m5 = undefined
             .m5 = 0
         endif
-        .m6 = Get value in frame: 6, .frame
+        .m6 = Get value in frame: .frame, 6
         if .m6 = undefined
             .m6 = 0
         endif
@@ -433,7 +480,7 @@ procedure extractFeatures: .sndObj, .fPath$, .csvTable, .isCorpus
 endproc
 
 clearinfo
-writeInfoLine: "KD-Tree Timbral Counterpoint v1.1 running..."
+writeInfoLine: "KD-Tree Timbral Counterpoint v1.3 running..."
 
 # 1. Target Features
 appendInfoLine: "[1/4] Extracting Target Features..."
@@ -515,6 +562,7 @@ endfor
 
 corpusAudio = 0
 prev_file$ = ""
+nUsedFiles = 0
 
 for r from 1 to nRows
     selectObject: mapTable
@@ -527,7 +575,13 @@ for r from 1 to nRows
     pan     = Get value: r, "pan_position"
     delay   = Get value: r, "delay_ms"
     voice   = Get value: r, "voice_number"
-    
+
+    # Match metrics, kept for the figure. These are the only record of what
+    # the KD-tree actually decided; the table is removed before drawing.
+    m_dist  = Get value: r, "distance"
+    m_mdist = Get value: r, "mfcc_distance"
+    m_rank  = Get value: r, "neighbor_rank"
+
     if c_file$ <> prev_file$
         if corpusAudio <> 0
             removeObject: corpusAudio
@@ -535,7 +589,14 @@ for r from 1 to nRows
         Read from file: c_file$
         corpusAudio = selected("Sound")
         prev_file$ = c_file$
+        # The table is sorted by file path, so each distinct corpus file is
+        # seen exactly once here: this doubles as the provenance index.
+        nUsedFiles = nUsedFiles + 1
+        @baseName: c_file$
+        usedFileName$[nUsedFiles] = baseName$
+        usedFileCount[nUsedFiles] = 0
     endif
+    usedFileCount[nUsedFiles] = usedFileCount[nUsedFiles] + 1
     
     selectObject: corpusAudio
     Extract part: c_start, c_end, "rectangular", 1, "no"
@@ -562,19 +623,18 @@ for r from 1 to nRows
     # KDTC pan law controls the final stereo position consistently.
     selectObject: grainTemp
     nChan = Get number of channels
-    if nChan = 1
-        Convert to stereo
-        grainStereo = selected("Sound")
-        removeObject: grainTemp
-    elsif nChan = 2
-        grainStereo = grainTemp
-    else
+    if nChan > 1
         Convert to mono
         grainMono = selected("Sound")
-        Convert to stereo
-        grainStereo = selected("Sound")
-        removeObject: grainTemp, grainMono
+        removeObject: grainTemp
+    else
+        grainMono = grainTemp
     endif
+
+    selectObject: grainMono
+    Convert to stereo
+    grainStereo = selected("Sound")
+    removeObject: grainMono
 
     selectObject: grainStereo
     Formula: "if row = 1 then self * 'lg' else self * 'rg' fi"
@@ -605,6 +665,10 @@ for r from 1 to nRows
     vg_obj[voice, idx] = grainStereo
     vg_start[voice, idx] = startSamples / targetSR
     vg_dur[voice, idx] = grainDurActual
+    vg_dist[voice, idx] = m_dist
+    vg_mdist[voice, idx] = m_mdist
+    vg_rank[voice, idx] = m_rank
+    vg_file[voice, idx] = nUsedFiles
 endfor
 
 if corpusAudio <> 0
@@ -630,6 +694,24 @@ for v from 1 to number_of_voices
                 tmpObj = vg_obj[v, i]
                 vg_obj[v, i] = vg_obj[v, j]
                 vg_obj[v, j] = tmpObj
+
+                # The match metrics must travel with their grain, or the
+                # figure would plot them against the wrong times.
+                tmpX = vg_dist[v, i]
+                vg_dist[v, i] = vg_dist[v, j]
+                vg_dist[v, j] = tmpX
+
+                tmpX = vg_mdist[v, i]
+                vg_mdist[v, i] = vg_mdist[v, j]
+                vg_mdist[v, j] = tmpX
+
+                tmpX = vg_rank[v, i]
+                vg_rank[v, i] = vg_rank[v, j]
+                vg_rank[v, j] = tmpX
+
+                tmpX = vg_file[v, i]
+                vg_file[v, i] = vg_file[v, j]
+                vg_file[v, j] = tmpX
             endif
         endfor
     endfor
@@ -940,68 +1022,127 @@ nTargetGrains = vg_idx[1]
 
 # ============================================================================
 # VISUALIZATION  (8 x 8 canvas — suite standard)
+#
+# Every panel below reports a RESULT of the match, not a form input. The
+# parameters live in the subtitle, the summary bar and the Info window; there
+# is no reason for a fourth copy of them on the canvas.
 # ============================================================================
 if draw_visualization
 
-    # ----------------------------------------------------------
-    # Compute spectrograms ONLY if user opted in
-    # ----------------------------------------------------------
-    if show_spectrograms
-        appendInfoLine: "  Computing spectrograms for visualization..."
+    # ------------------------------------------------------------
+    # Per-voice match statistics
+    # ------------------------------------------------------------
+    gdMin = 1e30
+    gdMax = -1e30
+    mfccTotal = 0
+    grainTotal = 0
 
-        selectObject: targetObj
-        tgtChans_pre = Get number of channels
-        if tgtChans_pre > 1
-            Convert to mono
-            tmpTgt = selected("Sound")
-        else
-            Copy: "tmpTgt"
-            tmpTgt = selected("Sound")
+    for v from 1 to number_of_voices
+        nG = vg_idx[v]
+        dLoV[v] = 0
+        dHiV[v] = 0
+        dMeanV[v] = 0
+        rMeanV[v] = 0
+        mMeanV[v] = 0
+        if nG > 0
+            dLo = 1e30
+            dHi = -1e30
+            dSum = 0
+            rSum = 0
+            mSum = 0
+            for i from 1 to nG
+                dv = vg_dist[v, i]
+                if dv < dLo
+                    dLo = dv
+                endif
+                if dv > dHi
+                    dHi = dv
+                endif
+                dSum = dSum + dv
+                rSum = rSum + vg_rank[v, i]
+                mSum = mSum + vg_mdist[v, i]
+            endfor
+            dLoV[v] = dLo
+            dHiV[v] = dHi
+            dMeanV[v] = dSum / nG
+            rMeanV[v] = rSum / nG
+            mMeanV[v] = mSum / nG
+            if dLo < gdMin
+                gdMin = dLo
+            endif
+            if dHi > gdMax
+                gdMax = dHi
+            endif
+            mfccTotal = mfccTotal + mSum
+            grainTotal = grainTotal + nG
         endif
-        selectObject: tmpTgt
-        To Spectrogram: 0.03, 5000, 0.002, 20, "Gaussian"
-        specTgt = selected("Spectrogram")
+    endfor
 
-        selectObject: kdtcMix
-        Convert to mono
-        tmpMix = selected("Sound")
-        To Spectrogram: 0.03, 5000, 0.002, 20, "Gaussian"
-        specMix = selected("Spectrogram")
+    if gdMin > gdMax
+        gdMin = 0
+        gdMax = 1
+    endif
+    if gdMax - gdMin < 1e-6
+        gdMax = gdMin + 1
+    endif
+    dPad = (gdMax - gdMin) * 0.08
+    dAxLo = gdMin - dPad
+    dAxHi = gdMax + dPad
+    @niceStep: dAxHi - dAxLo, 5
+    dMarkStep = niceStep
+
+    # Requested rank per voice, parsed from the form string. The Python
+    # helper pads a short list by repeating its last value; mirror that here
+    # so the figure reports what the matcher actually used.
+    rkScan$ = eff_ranks$ + ","
+    nRk = 0
+    rkBuf$ = ""
+    for ci from 1 to length(rkScan$)
+        rkCh$ = mid$(rkScan$, ci, 1)
+        if rkCh$ = "," or rkCh$ = " " or rkCh$ = ";"
+            if length(rkBuf$) > 0
+                nRk = nRk + 1
+                rkVal = number(rkBuf$)
+                if rkVal = undefined
+                    rkVal = 1
+                endif
+                reqRank[nRk] = rkVal
+                rkBuf$ = ""
+            endif
+        else
+            rkBuf$ = rkBuf$ + rkCh$
+        endif
+    endfor
+    if nRk < 1
+        nRk = 1
+        reqRank[1] = 1
+    endif
+    for v from nRk + 1 to number_of_voices
+        reqRank[v] = reqRank[nRk]
+    endfor
+
+    mfccMeanAll = 0
+    if grainTotal > 0
+        mfccMeanAll = mfccTotal / grainTotal
     endif
 
-    Erase all
-    Black
-    Plain line
+    # Diagnostic: an MFCC weight that contributes nothing means the feature
+    # columns are flat, and the "timbral" match is running on the remaining
+    # scalar features alone. Worth saying out loud rather than hiding.
+    mfccDead = 0
+    if eff_mfcc_w > 0 and mfccMeanAll < 1e-6
+        mfccDead = 1
+    endif
 
-    # ----------------------------------------------------------
-    # TITLE BAR
-    # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 0, 0.65
-    Axes: 0, 1, 0, 1
-    Font size: 12
-    Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##KD-TREE TIMBRAL COUNTERPOINT##"
-    Font size: 7
-    Colour: "{0.35, 0.35, 0.52}"
-    Text: 0.5, "centre", -0.22, "half",
-        ... soundName$
-        ... + "  |  " + presetName$
-        ... + "  |  " + string$(number_of_voices) + " voices"
-        ... + "  |  Ranks: " + eff_ranks$
-        ... + "  |  Grain " + fixed$(grain_size_ms, 0) + "ms / " + fixed$(grain_overlap_percent, 0) + "% overlap"
-        ... + "  |  Shaping: " + envShapeLabel$
-
-    # ----------------------------------------------------------
-    # PANEL A: VOICE TIMELINE  (left, headline)
-    # The script's most distinctive visual — colored grain blocks
-    # showing the contrapuntal placement of corpus matches.
-    # ----------------------------------------------------------
-    Select outer viewport: 0, 4.2, 0.75, 4.60
-    Select inner viewport: 0.55, 4.00, 0.95, 4.40
-
-    tlDur = trimEnd
-    Axes: 0, tlDur, -0.5, number_of_voices - 0.5
-    Paint rectangle: "{0.97, 0.97, 0.99}", 0, tlDur, -0.5, number_of_voices - 0.5
+    # ------------------------------------------------------------
+    # Palette and layout
+    # ------------------------------------------------------------
+    bgCol$    = "{0.97, 0.97, 0.99}"
+    gridCol$  = "{0.74, 0.74, 0.80}"
+    axisCol$  = "{0.20, 0.20, 0.28}"
+    dimCol$   = "{0.45, 0.45, 0.55}"
+    panelBg$  = "{0.94, 0.94, 0.94}"
+    warnCol$  = "{0.75, 0.20, 0.15}"
 
     vCol_1$ = "{0.20, 0.50, 0.80}"
     vCol_2$ = "{0.70, 0.30, 0.20}"
@@ -1010,197 +1151,401 @@ if draw_visualization
     vCol_5$ = "{0.75, 0.60, 0.15}"
     vCol_6$ = "{0.25, 0.62, 0.75}"
 
-    laneH = 0.33
+    vL = 0.60
+    vR = 7.70
+    hL1 = 0.60
+    hR1 = 3.85
+    hL2 = 4.45
+    hR2 = 7.70
+    railX = -0.035
+    pageHeight = 8
+
+    voiceWord$ = " voices"
+    if number_of_voices = 1
+        voiceWord$ = " voice"
+    endif
+
+    tlDur = trimEnd
+    if tlDur <= 0
+        tlDur = targetDur
+    endif
+
+    @niceStep: tlDur, 8
+    tickStep = niceStep
+
+    Erase all
+    Black
+    Solid line
+    Line width: 1
+
+    # ============================================================
+    # TITLE
+    # ============================================================
+    Font size: 12
+    Select inner viewport: vL, vR, 0.12, 0.32
+    Axes: 0, 1, 0, 1
+    Colour: "Black"
+    Text: 0.5, "centre", 0.5, "half", "##KD-TREE TIMBRAL COUNTERPOINT##"
+
+    @vizSafe: soundName$
+    srcLabel$ = vizSafe$
+
+    Font size: 7
+    Select inner viewport: vL, vR, 0.34, 0.50
+    Axes: 0, 1, 0, 1
+    Colour: "{0.35, 0.35, 0.52}"
+    Text: 0.5, "centre", 0.5, "half",
+        ... srcLabel$
+        ... + "  |  " + presetName$
+        ... + "  |  " + string$(number_of_voices) + voiceWord$
+        ... + "  |  Ranks: " + eff_ranks$
+        ... + "  |  Grain " + fixed$(grain_size_ms, 0) + " ms / "
+        ... + fixed$(grain_overlap_percent, 0) + "\%  overlap"
+        ... + "  |  " + envShapeLabel$
+
+    # ============================================================
+    # PANEL A — TIMBRAL DISTANCE OVER TIME
+    # The script's premise, plotted: do the ranks actually separate
+    # the voices, and do they stay separated locally?
+    # ============================================================
+    pAT = 0.85
+    pAB = 2.80
+
+    Font size: 6
+    Select inner viewport: vL, vR, pAT, pAB
+    Axes: 0, tlDur, dAxLo, dAxHi
+    Paint rectangle: bgCol$, 0, tlDur, dAxLo, dAxHi
+
+    Select inner viewport: vL, vR, pAT, pAB
+    Axes: 0, tlDur, dAxLo, dAxHi
+    Colour: gridCol$
+    for v from 1 to number_of_voices
+        if vg_idx[v] > 0
+            Draw line: 0, dMeanV[v], tlDur, dMeanV[v]
+        endif
+    endfor
+
+    Select inner viewport: vL, vR, pAT, pAB
+    Axes: 0, tlDur, dAxLo, dAxHi
+    Line width: 1
+    for v from 1 to number_of_voices
+        vIdx = min(v, 6)
+        Colour: vCol_'vIdx'$
+        nG = vg_idx[v]
+        for i from 2 to nG
+            xa = vg_start[v, i - 1] + vg_dur[v, i - 1] / 2
+            xb = vg_start[v, i] + vg_dur[v, i] / 2
+            ya = vg_dist[v, i - 1]
+            yb = vg_dist[v, i]
+            if xa > tlDur
+                xa = tlDur
+            endif
+            if xb > tlDur
+                xb = tlDur
+            endif
+            Draw line: xa, ya, xb, yb
+        endfor
+    endfor
+
+    Select inner viewport: vL, vR, pAT, pAB
+    Axes: 0, tlDur, dAxLo, dAxHi
+    Colour: "Black"
+    Draw inner box
+    Marks bottom every: 1, tickStep, "yes", "yes", "no"
+    Marks left every: 1, dMarkStep, "yes", "yes", "no"
+
+    Select inner viewport: vL, vR, pAT, pAB
+    Axes: 0, 1, 0, 1
+    Colour: dimCol$
+    Text special: railX, "centre", 0.5, "bottom", "Helvetica", 6, "90", "Distance"
+
+    # Legend
+    for v from 1 to number_of_voices
+        Select inner viewport: vL, vR, pAT, pAB
+        Axes: 0, 1, 0, 1
+        vIdx = min(v, 6)
+        Colour: vCol_'vIdx'$
+        Text: 0.975 - (number_of_voices - v) * 0.042, "left", 0.955, "half", "V" + string$(v)
+    endfor
+
+    Select inner viewport: vL, vR, pAT, pAB
+    Axes: 0, 1, 0, 1
+    Colour: axisCol$
+    Text top: "no",
+        ... "##Timbral distance per grain## — weighted feature-space distance"
+        ... + " to the target, time in seconds (grey lines = per-voice means)"
+
+    # ============================================================
+    # PANEL B — GRAIN PROVENANCE
+    # One block per grain, coloured by which corpus file it came
+    # from. Consecutive grains alternate between the upper and lower
+    # half of each lane, so overlap and grain count stay visible
+    # instead of merging into one solid bar.
+    # ============================================================
+    pBT = 3.30
+    pBB = 5.20
+
+    Font size: 6
+    Select inner viewport: vL, vR, pBT, pBB
+    Axes: 0, tlDur, -0.5, number_of_voices - 0.5
+    Paint rectangle: bgCol$, 0, tlDur, -0.5, number_of_voices - 0.5
+
+    Select inner viewport: vL, vR, pBT, pBB
+    Axes: 0, tlDur, -0.5, number_of_voices - 0.5
     for v from 1 to number_of_voices
         laneY = number_of_voices - v
-        vIdx = min(v, 6)
-        thisCol$ = vCol_'vIdx'$
         nG = vg_idx[v]
         for i from 1 to nG
             blS = vg_start[v, i]
             blE = blS + vg_dur[v, i]
-            Paint rectangle: thisCol$, blS, blE, laneY - laneH, laneY + laneH
+            if blE > tlDur
+                blE = tlDur
+            endif
+            if blS < tlDur
+                @fileCol: vg_file[v, i]
+                if i mod 2 = 1
+                    Paint rectangle: fileCol$, blS, blE, laneY - 0.34, laneY - 0.01
+                else
+                    Paint rectangle: fileCol$, blS, blE, laneY + 0.01, laneY + 0.34
+                endif
+            endif
         endfor
-        Font size: 5
-        Colour: "Black"
-        Text: -tlDur * 0.005, "right", laneY, "half", "V" + string$(v)
     endfor
 
+    Select inner viewport: vL, vR, pBT, pBB
+    Axes: 0, tlDur, -0.5, number_of_voices - 0.5
     Colour: "Black"
     Draw inner box
+    Marks bottom every: 1, tickStep, "yes", "yes", "no"
+
+    for v from 1 to number_of_voices
+        Select inner viewport: vL, vR, pBT, pBB
+        Axes: 0, tlDur, -0.5, number_of_voices - 0.5
+        vIdx = min(v, 6)
+        Colour: vCol_'vIdx'$
+        Text: -tlDur * 0.008, "right", number_of_voices - v, "half", "V" + string$(v)
+    endfor
+
+    Select inner viewport: vL, vR, pBT, pBB
+    Axes: 0, 1, 0, 1
+    Colour: axisCol$
+    Text top: "no",
+        ... "##Grain provenance## — one block per grain, colour = corpus file;"
+        ... + " consecutive grains alternate half-lanes to show overlap,"
+        ... + " time in seconds"
+
+    # ============================================================
+    # PANEL C — VOICE SEPARATION SUMMARY
+    # ============================================================
+    pCT = 5.72
+    pCB = 7.02
+
     Font size: 6
-    Text left: "yes", "Voice"
-    Text bottom: "yes", "Time (s)"
+    Select inner viewport: hL1, hR1, pCT, pCB
+    Axes: dAxLo, dAxHi, number_of_voices + 0.62, 0.38
+    Paint rectangle: bgCol$, dAxLo, dAxHi, number_of_voices + 0.62, 0.38
 
-    # ----------------------------------------------------------
-    # PANEL B: PARAMETER REPORT  (right, headline)
-    # ----------------------------------------------------------
-    Select outer viewport: 4.2, 8, 0.75, 4.60
-    Select inner viewport: 4.55, 7.75, 0.95, 4.40
+    Select inner viewport: hL1, hR1, pCT, pCB
+    Axes: dAxLo, dAxHi, number_of_voices + 0.62, 0.38
+    for v from 1 to number_of_voices
+        if vg_idx[v] > 0
+            vIdx = min(v, 6)
+            Paint rectangle: vCol_'vIdx'$, dLoV[v], dHiV[v], v + 0.02, v + 0.34
+        endif
+    endfor
 
-    Axes: 0, 1, 0, 1
-    Paint rectangle: "{0.96, 0.96, 0.96}", 0, 1, 0, 1
+    Select inner viewport: hL1, hR1, pCT, pCB
+    Axes: dAxLo, dAxHi, number_of_voices + 0.62, 0.38
+    Colour: "{0.12, 0.12, 0.16}"
+    Line width: 1.5
+    for v from 1 to number_of_voices
+        if vg_idx[v] > 0
+            Draw line: dMeanV[v], v - 0.02, dMeanV[v], v + 0.38
+        endif
+    endfor
+    Line width: 1
 
-    Font size: 9
-    Colour: "{0.30, 0.30, 0.30}"
-    Text: 0.05, "left", 0.93, "half", "Architecture:"
-
-    Font size: 11
-    Colour: "{0.20, 0.50, 0.80}"
-    Text: 0.10, "left", 0.85, "half", "Voices:    " + string$(number_of_voices)
-    Text: 0.10, "left", 0.78, "half", "Ranks:     " + eff_ranks$
-
-    Font size: 9
-    Colour: "{0.30, 0.30, 0.30}"
-    Text: 0.05, "left", 0.69, "half", "Grain:"
-
-    Font size: 10
-    Colour: "{0.70, 0.45, 0.20}"
-    Text: 0.10, "left", 0.62, "half", "Size:      " + fixed$(grain_size_ms, 0) + " ms"
-    Text: 0.10, "left", 0.55, "half", "Overlap:   " + fixed$(grain_overlap_percent, 0) + "%"
-    Text: 0.10, "left", 0.48, "half", "Per voice: " + string$(nTargetGrains) + " grains"
-    Text: 0.10, "left", 0.41, "half", "Corpus:    " + string$(nFiles) + " files"
-
-    Font size: 9
-    Colour: "{0.30, 0.30, 0.30}"
-    Text: 0.05, "left", 0.32, "half", "Weights:"
-
-    Font size: 7
-    Colour: "{0.30, 0.55, 0.30}"
-    Text: 0.10, "left", 0.26, "half", "MFCC: " + fixed$(eff_mfcc_w, 2)
-        ... + "  Pitch: " + fixed$(eff_pitch_w, 2)
-        ... + "  Cent: " + fixed$(eff_cent_w, 2)
-    Text: 0.10, "left", 0.20, "half", "Int: " + fixed$(eff_int_w, 2)
-        ... + "  HNR: " + fixed$(eff_hnr_w, 2)
-
-    Font size: 9
-    Colour: "{0.30, 0.30, 0.30}"
-    Text: 0.05, "left", 0.12, "half", "Search:"
-
-    Font size: 8
-    Colour: "{0.55, 0.30, 0.65}"
-    Text: 0.10, "left", 0.06, "half", "Random: " + fixed$(eff_randomness, 2)
-        ... + "  Rep penalty: " + string$(repetition_penalty)
-
+    Select inner viewport: hL1, hR1, pCT, pCB
+    Axes: dAxLo, dAxHi, number_of_voices + 0.62, 0.38
     Colour: "Black"
     Draw inner box
+    Marks bottom every: 1, dMarkStep, "yes", "yes", "no"
 
-    # ----------------------------------------------------------
-    # ALIGNED PANEL TITLES
-    # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 0, 8
-    Select inner viewport: 0, 8, 0, 8
-    Axes: 0, 8, 0, 8
+    for v from 1 to number_of_voices
+        Select inner viewport: hL1, hR1, pCT, pCB
+        Axes: dAxLo, dAxHi, number_of_voices + 0.62, 0.38
+        Colour: axisCol$
+        Text: dAxLo + (dAxHi - dAxLo) * 0.02, "left", v - 0.26, "half",
+            ... "V" + string$(v)
+            ... + "   rank " + string$(reqRank[v]) + " -> " + fixed$(rMeanV[v], 1)
+            ... + "   mean " + fixed$(dMeanV[v], 3)
+    endfor
 
-    Font size: 7
-    Colour: "Black"
-    Text: 2.10, "centre", 7.30, "half", "Voice timeline (one block = one corpus grain)"
-    Text: 6.10, "centre", 7.30, "half", "Parameter report"
-
-    # ----------------------------------------------------------
-    # PANEL C: TARGET WAVEFORM or SPECTROGRAM
-    # Conditional on Show_spectrograms
-    # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 4.68, 5.55
-    Select inner viewport: 0.55, 7.72, 4.75, 5.48
-
-    if show_spectrograms
-        # Spectrogram
-        selectObject: specTgt
-        Paint: 0, 0, 0, 5000, 100, "yes", 50, 6, 0, "no"
-        Colour: "Black"
-        Draw inner box
-        Font size: 7
-        Text top: "no", "Target spectrogram"
-        Text left: "yes", "Hz"
-    else
-        # Waveform
-        selectObject: targetObj
-        Colour: "{0.50, 0.50, 0.50}"
-        Draw: 0, 0, 0, 0, "no", "Curve"
-        Colour: "Black"
-        Draw inner box
-        Font size: 7
-        Text top: "no", "Target waveform"
-        Text left: "yes", "Amp"
-    endif
-
-    # ----------------------------------------------------------
-    # PANEL D: MIX WAVEFORM or SPECTROGRAM
-    # Conditional on Show_spectrograms
-    # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 5.62, 6.55
-    Select inner viewport: 0.55, 7.72, 5.69, 6.48
-
-    if show_spectrograms
-        selectObject: specMix
-        Paint: 0, 0, 0, 5000, 100, "yes", 50, 6, 0, "no"
-        Colour: "Black"
-        Draw inner box
-        Font size: 7
-        Text top: "no", "Mix spectrogram (L channel)"
-        Text left: "yes", "Hz"
-        Text bottom: "yes", "Time (s)"
-    else
-        selectObject: kdtcMix
-        Colour: "{0.20, 0.50, 0.70}"
-        Draw: 0, 0, 0, 0, "no", "Curve"
-        Colour: "Black"
-        Draw inner box
-        Font size: 7
-        Text top: "no", "Mix waveform"
-        Text left: "yes", "Amp"
-        Text bottom: "yes", "Time (s)"
-    endif
-
-    # ----------------------------------------------------------
-    # PANEL E: SUMMARY BAR
-    # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 6.62, 7.30
-    Select inner viewport: 0.55, 7.72, 6.68, 7.24
+    Select inner viewport: hL1, hR1, pCT, pCB
     Axes: 0, 1, 0, 1
-    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    Colour: axisCol$
+    Text top: "no", "##Voice separation## — distance min-max, tick = mean"
 
-    if show_spectrograms
-        spectrogramStr$ = "shown"
-    else
-        spectrogramStr$ = "off"
+    # ============================================================
+    # PANEL D — CORPUS USAGE
+    # ============================================================
+    nShow = nUsedFiles
+    if nShow > 12
+        nShow = 12
+    endif
+
+    # Rank files by grain count (selection sort on an index array)
+    for f from 1 to nUsedFiles
+        fOrder[f] = f
+    endfor
+    for f from 1 to nUsedFiles - 1
+        for g from f + 1 to nUsedFiles
+            fa = fOrder[f]
+            fb = fOrder[g]
+            if usedFileCount[fb] > usedFileCount[fa]
+                fOrder[f] = fb
+                fOrder[g] = fa
+            endif
+        endfor
+    endfor
+
+    maxCount = 1
+    for f from 1 to nUsedFiles
+        if usedFileCount[f] > maxCount
+            maxCount = usedFileCount[f]
+        endif
+    endfor
+    @niceStep: maxCount, 4
+    dCountStep = niceStep
+    if dCountStep < 1
+        dCountStep = 1
     endif
 
     Font size: 6
+    Select inner viewport: hL2, hR2, pCT, pCB
+    Axes: 0, maxCount * 1.18, nShow + 0.62, 0.38
+    Paint rectangle: bgCol$, 0, maxCount * 1.18, nShow + 0.62, 0.38
+
+    Select inner viewport: hL2, hR2, pCT, pCB
+    Axes: 0, maxCount * 1.18, nShow + 0.62, 0.38
+    for f from 1 to nShow
+        fSrc = fOrder[f]
+        @fileCol: fSrc
+        Paint rectangle: fileCol$, 0, usedFileCount[fSrc], f - 0.42, f + 0.42
+    endfor
+
+    Select inner viewport: hL2, hR2, pCT, pCB
+    Axes: 0, maxCount * 1.18, nShow + 0.62, 0.38
+    Colour: "Black"
+    Draw inner box
+    Marks bottom every: 1, dCountStep, "yes", "yes", "no"
+
+    dFont = 6
+    if nShow > 8
+        dFont = 5
+    endif
+
+    for f from 1 to nShow
+        fSrc = fOrder[f]
+        @vizSafe: usedFileName$[fSrc]
+        fLabel$ = vizSafe$
+        Font size: dFont
+        Select inner viewport: hL2, hR2, pCT, pCB
+        Axes: 0, maxCount * 1.18, nShow + 0.62, 0.38
+        # A short bar cannot hold white text; put the name beside it instead.
+        if usedFileCount[fSrc] > maxCount * 0.24
+            Colour: "{1.0, 1.0, 1.0}"
+            Text: maxCount * 0.02, "left", f, "half", fLabel$
+        else
+            Colour: dimCol$
+            Text: usedFileCount[fSrc] + maxCount * 0.09, "left", f, "half", fLabel$
+        endif
+        Font size: dFont
+        Select inner viewport: hL2, hR2, pCT, pCB
+        Axes: 0, maxCount * 1.18, nShow + 0.62, 0.38
+        Colour: axisCol$
+        Text: usedFileCount[fSrc] + maxCount * 0.02, "left", f, "half",
+            ... string$(usedFileCount[fSrc])
+    endfor
+
+    usageCap$ = "##Corpus usage## — grains drawn per file"
+    if nUsedFiles > nShow
+        usageCap$ = usageCap$ + "  (top " + string$(nShow)
+            ... + " of " + string$(nUsedFiles) + ")"
+    endif
+
+    Select inner viewport: hL2, hR2, pCT, pCB
+    Axes: 0, 1, 0, 1
+    Colour: axisCol$
+    Text top: "no", usageCap$
+
+    # ============================================================
+    # SUMMARY BAR
+    # ============================================================
+    sT = 7.38
+    sB = 7.92
+
+    Font size: 7
+    Select inner viewport: vL, vR, sT, sB
+    Axes: 0, 1, 0, 1
+    Paint rectangle: panelBg$, 0, 1, 0, 1
+
+    Select inner viewport: vL, vR, sT, sB
+    Axes: 0, 1, 0, 1
+    Colour: "Black"
+    Text: 0.012, "left", 0.84, "half",
+        ... "##" + presetName$ + "##   " + srcLabel$
+        ... + "   |   " + string$(number_of_voices) + voiceWord$ + " x "
+        ... + string$(nTargetGrains) + " grains"
+        ... + "   |   corpus " + string$(nUsedFiles) + " of "
+        ... + string$(nFiles) + " files used"
+        ... + "   |   target " + fixed$(targetDur, 2) + " s -> output "
+        ... + fixed$(trimEnd, 2) + " s"
+
+    Font size: 6
+    Select inner viewport: vL, vR, sT, sB
+    Axes: 0, 1, 0, 1
     Colour: "{0.28, 0.28, 0.28}"
-    Text: 0.02, "left", 0.78, "half",
-        ... "##" + presetName$ + "##"
-        ... + "  " + soundName$
-        ... + "  |  " + string$(number_of_voices) + " voices x " + string$(nTargetGrains) + " grains"
-        ... + "  |  Corpus: " + string$(nFiles) + " files"
-        ... + "  |  Ranks: " + eff_ranks$
-        ... + "  |  Random: " + fixed$(eff_randomness, 2)
+    Text: 0.012, "left", 0.56, "half",
+        ... "Weights — MFCC " + fixed$(eff_mfcc_w, 2)
+        ... + "  Pitch " + fixed$(eff_pitch_w, 2)
+        ... + "  Cent " + fixed$(eff_cent_w, 2)
+        ... + "  Int " + fixed$(eff_int_w, 2)
+        ... + "  HNR " + fixed$(eff_hnr_w, 2)
+        ... + "   |   randomness " + fixed$(eff_randomness, 2)
+        ... + "   |   rep penalty " + string$(repetition_penalty)
+        ... + "   |   crossfade " + fixed$(crossfade_duration * 1000, 0) + " ms"
 
-    Text: 0.02, "left", 0.50, "half",
-        ... "Weights — MFCC: " + fixed$(eff_mfcc_w, 2)
-        ... + "  Pitch: " + fixed$(eff_pitch_w, 2)
-        ... + "  Cent: " + fixed$(eff_cent_w, 2)
-        ... + "  Int: " + fixed$(eff_int_w, 2)
-        ... + "  HNR: " + fixed$(eff_hnr_w, 2)
-        ... + "  |  Rep penalty: " + string$(repetition_penalty)
+    Select inner viewport: vL, vR, sT, sB
+    Axes: 0, 1, 0, 1
+    if mfccDead = 1
+        Colour: warnCol$
+        Text: 0.012, "left", 0.26, "half",
+            ... "WARNING: mean MFCC contribution is 0.000 — the MFCC columns are"
+            ... + " flat, so matching is running on the scalar features only."
+    else
+        Colour: "{0.28, 0.28, 0.28}"
+        Text: 0.012, "left", 0.26, "half",
+            ... "Mean MFCC contribution to distance: " + fixed$(mfccMeanAll, 3)
+            ... + "   |   distance range across all voices "
+            ... + fixed$(gdMin, 3) + " to " + fixed$(gdMax, 3)
+            ... + "   |   " + envShapeLabel$
+    endif
 
-    Text: 0.02, "left", 0.20, "half",
-        ... "Target: " + fixed$(targetDur, 2) + " s"
-        ... + "  |  Output: " + fixed$(trimEnd, 2) + " s"
-        ... + "  |  Shaping: " + envShapeLabel$
-        ... + "  |  Spectrograms: " + spectrogramStr$
-
+    Select inner viewport: vL, vR, sT, sB
+    Axes: 0, 1, 0, 1
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
 
+    # ------------------------------------------------------------
+    # Restore the full canvas so Save / Copy from the Picture window
+    # (and any scripted PNG export) captures the whole figure.
+    # ------------------------------------------------------------
     Font size: 10
+    Select outer viewport: 0, 8, 0, pageHeight
     Colour: "Black"
-
-    # Cleanup spectrogram objects if computed
-    if show_spectrograms
-        removeObject: specTgt, tmpTgt, specMix, tmpMix
-    endif
+    Line width: 1
+    Solid line
 endif
 
 # ===========================================================================
@@ -1238,3 +1583,97 @@ if output_mode <> 2
         Play
     endif
 endif
+
+
+# ============================================================================
+# HELPERS
+# ============================================================================
+
+# Snap an axis step to 1 / 2 / 5 x 10^k so tick labels read in round numbers.
+procedure niceStep: .span, .n
+    .raw = .span / .n
+    if .raw <= 0
+        .raw = 1
+    endif
+    .pw = 10 ^ floor(log10(.raw))
+    .nm = .raw / .pw
+    if .nm < 1.5
+        niceStep = 1 * .pw
+    elsif .nm < 3.5
+        niceStep = 2 * .pw
+    elsif .nm < 7.5
+        niceStep = 5 * .pw
+    else
+        niceStep = 10 * .pw
+    endif
+endproc
+
+# Categorical colour for a corpus file index: six hues, darkened one step
+# every six files, so up to 18 files stay distinguishable.
+procedure fileCol: .f
+    .tier = floor((.f - 1) / 6)
+    .hue = .f - .tier * 6
+    .shade = 1 - .tier * 0.26
+    if .shade < 0.40
+        .shade = 0.40
+    endif
+    if .hue = 1
+        .r = 0.20
+        .g = 0.50
+        .b = 0.80
+    elsif .hue = 2
+        .r = 0.80
+        .g = 0.45
+        .b = 0.15
+    elsif .hue = 3
+        .r = 0.25
+        .g = 0.62
+        .b = 0.35
+    elsif .hue = 4
+        .r = 0.60
+        .g = 0.30
+        .b = 0.70
+    elsif .hue = 5
+        .r = 0.85
+        .g = 0.30
+        .b = 0.25
+    else
+        .r = 0.25
+        .g = 0.55
+        .b = 0.62
+    endif
+    fileCol$ = "{" + fixed$(.r * .shade, 3) + ", " + fixed$(.g * .shade, 3)
+        ... + ", " + fixed$(.b * .shade, 3) + "}"
+endproc
+
+# Strip a path and extension down to a bare file name.
+procedure baseName: .p$
+    .cut = 0
+    for .i from 1 to length(.p$)
+        .ch$ = mid$(.p$, .i, 1)
+        if .ch$ = "/" or .ch$ = "\"
+            .cut = .i
+        endif
+    endfor
+    .b$ = mid$(.p$, .cut + 1, length(.p$) - .cut)
+    .dot = 0
+    for .i from 1 to length(.b$)
+        if mid$(.b$, .i, 1) = "."
+            .dot = .i
+        endif
+    endfor
+    if .dot > 1
+        .b$ = mid$(.b$, 1, .dot - 1)
+    endif
+    baseName$ = .b$
+endproc
+
+# Escape Picture-window markup in machine-generated names. Order matters:
+# the replacements for #, % and ^ contain no underscore, so the underscore
+# pass must run last.
+procedure vizSafe: .s$
+    vizSafe$ = replace$(.s$, "#", "\# ", 0)
+    vizSafe$ = replace$(vizSafe$, "%", "\% ", 0)
+    vizSafe$ = replace$(vizSafe$, "^", "\^ ", 0)
+    vizSafe$ = replace$(vizSafe$, "_", "\_ ", 0)
+endproc
