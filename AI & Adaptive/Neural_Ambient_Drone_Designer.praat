@@ -48,6 +48,42 @@
 #     Extended interval set: it is a mixed set of up and down
 #     transpositions, not a harmonic series.
 #
+# Changelog v1.2 (2026):
+#
+#   CRITICAL BUG FIX (changes audio output):
+#   - Spectral centroid and bandwidth were read straight out of the
+#     Spectrum slice with no check. On a grain that falls in a digitally
+#     silent region the spectrum is all zeros, both moments are 0/0, and
+#     Praat returns undefined for each. The v0.8 silence guard only tested
+#     the peak of the WHOLE file, so leading or trailing silence, or a gap
+#     between phrases, passed it while still producing undefined grains.
+#     One undefined value made mean_cent undefined, then std_cent, then
+#     every norm_cent#, then every k-means distSq. Praat evaluates a
+#     comparison against undefined as false, so `distSq < minDist` never
+#     fired, bestK stayed 1, and the entire corpus was assigned to cluster
+#     1 with no warning: k-means produced one cluster regardless of the
+#     Number_of_clusters setting, and the drone was built from an
+#     unfiltered corpus. The axis pass was hit the same way, leaving
+#     centLo at its 1e9 sentinel and centHi at -1e9.
+#     Nothing raised an error until the Panel C scatter tried to paint a
+#     circle at an undefined x ("Argument Center x has the value
+#     undefined"), which is why the failure looked like a drawing bug.
+#     Unmeasurable moments are now flagged during extraction and parked
+#     just below the lowest genuine reading after it, the same treatment
+#     v1.1 gave the harmonicity floor, and the count is reported in the
+#     Info window and on the figure. Output WILL differ from v1.1 for any
+#     source containing digital silence; a source with no silent grain is
+#     bit-identical.
+#   - A source in which NO grain has spectral content now exits with a
+#     clear message instead of clustering noise.
+#
+#   VISUALIZATION:
+#   - Panel C gains a dotted vertical band at the lowest genuine centroid,
+#     matching the existing horizontal HNR floor band, so floored grains
+#     are visibly floored rather than looking like real measurements.
+#   - The summary panel's Input line reports the count of grains with no
+#     spectrum when there are any.
+#
 # Changelog v1.1 (2026):
 #
 #   BUG FIX (changes audio output):
@@ -309,7 +345,7 @@ endif
 snd = selected("Sound")
 sndName$ = selected$("Sound")
 
-form Cluster-Based Ambient Drone Designer v1.1
+form Cluster-Based Ambient Drone Designer v1.2
     optionmenu Preset: 1
         option Manual
         option Dark Ambient
@@ -522,7 +558,7 @@ if fade < crossfadeSec - 1e-9
 endif
 
 clearinfo
-writeInfoLine: "=== Cluster-Based Ambient Drone Designer v1.1 ==="
+writeInfoLine: "=== Cluster-Based Ambient Drone Designer v1.2 ==="
 appendInfoLine: "Seed: ", seedStr$
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Duration: ", output_duration_sec, " s | Layers: ", layer_density
@@ -576,6 +612,7 @@ feat_hnr# = zero#(nGrains)
 feat_pitch# = zero#(nGrains)
 grain_time# = zero#(nGrains)
 hnr_valid# = zero#(nGrains)
+cent_valid# = zero#(nGrains)
 
 selectObject: workSnd
 spec = To Spectrogram: grainSec, specMaxFreq, stepSec, 20, "Gaussian"
@@ -602,9 +639,32 @@ for i from 1 to nGrains
     selectObject: spec
     slice = To Spectrum (slice): t
     selectObject: slice
-    feat_centroid#[i] = Get centre of gravity: 2
-    feat_bandwidth#[i] = Get standard deviation: 2
+    cog = Get centre of gravity: 2
+    sd = Get standard deviation: 2
     removeObject: slice
+
+    # v1.2 CRITICAL: a grain sitting in a digitally silent region of an
+    # otherwise loud file has an all-zero spectrum, so both moments are
+    # 0/0 = undefined. The v0.8 guard below the SETUP header only rejected
+    # a file that was silent END TO END, so leading or trailing silence,
+    # or a gap in the middle, walked straight past it.
+    #
+    # A single undefined value poisons mean_cent, then std_cent, then
+    # every z-score, and every k-means distSq with it. Praat compares
+    # undefined as false, so `distSq < minDist` never fires, bestK stays
+    # 1, and the entire corpus collapses silently into cluster 1. The same
+    # silence also left centLo at 1e9 and centHi at -1e9 in the axis pass.
+    # Nothing raised an error until the Panel C scatter tried to paint at
+    # an undefined x.
+    if cog = undefined or cog <= 0 or sd = undefined or sd < 0
+        feat_centroid#[i] = 0
+        feat_bandwidth#[i] = 0
+        cent_valid#[i] = 0
+    else
+        feat_centroid#[i] = cog
+        feat_bandwidth#[i] = sd
+        cent_valid#[i] = 1
+    endif
     
     # v1.1: Harmonicity returns -200.00 dB as a DEFINED value for silent
     # or unvoiced frames, so `h = undefined` never catches them, and cubic
@@ -631,6 +691,48 @@ for i from 1 to nGrains
 endfor
 
 removeObject: spec, hnr, pit
+
+# v1.2: resolve the spectrally empty grains the same way v1.1 resolves the
+# harmonicity floor - park them just below the lowest GENUINE reading, so
+# they stay separable as the "no spectral content" group without setting
+# the scale for the grains that do have content.
+nCentValid = 0
+centValidMin = 1e9
+bandValidMin = 1e9
+for i from 1 to nGrains
+    if cent_valid#[i] = 1
+        nCentValid += 1
+        if feat_centroid#[i] < centValidMin
+            centValidMin = feat_centroid#[i]
+        endif
+        if feat_bandwidth#[i] < bandValidMin
+            bandValidMin = feat_bandwidth#[i]
+        endif
+    endif
+endfor
+
+nCentFloored = nGrains - nCentValid
+if nCentValid = 0
+    removeObject: workSnd
+    exitScript: "No analysis grain in the selected Sound has any spectral "
+        ... + "content; nothing to cluster."
+endif
+
+# 10 Hz is the hard floor because Panel C plots log10 of this value.
+centFloorValue = max(centValidMin * 0.5, 10)
+bandFloorValue = max(bandValidMin * 0.5, 1)
+for i from 1 to nGrains
+    if cent_valid#[i] = 0
+        feat_centroid#[i] = centFloorValue
+        feat_bandwidth#[i] = bandFloorValue
+    endif
+endfor
+
+if nCentFloored > 0
+    appendInfoLine: "  ", nCentFloored, " of ", nGrains,
+        ... " grains had no spectral content (digital silence);",
+        ... " centroid floored to ", fixed$(centFloorValue, 1), " Hz"
+endif
 
 # v1.1: park the unmeasurable grains just below the lowest GENUINE
 # reading instead of at -200. They stay separable as the least harmonic
@@ -1346,6 +1448,15 @@ else
     stereoDesc$ = "mono output"
 endif
 
+# v1.2: report the spectrally empty grains alongside the grain count, so a
+# source with silent stretches says so on the figure instead of only in the
+# Info window.
+if nCentFloored > 0
+    silenceDesc$ = "  |  " + string$(nCentFloored) + " with no spectrum"
+else
+    silenceDesc$ = ""
+endif
+
 # ------------------------------------------------------------
 # Derived statistics
 # ------------------------------------------------------------
@@ -1506,7 +1617,7 @@ Select inner viewport: vL, vR, 0.12, 0.32
 Axes: 0, 1, 0, 1
 Colour: "Black"
 Text: 0.5, "centre", 0.5, "half",
-    ... "##Cluster-Based Ambient Drone Designer v1.1##"
+    ... "##Cluster-Based Ambient Drone Designer v1.2##"
 
 Font size: 7
 Select inner viewport: vL, vR, 0.34, 0.50
@@ -1616,6 +1727,16 @@ if nHnrFloored > 0
     Colour: gridCol$
     Dotted line
     Draw line: cLogLo, hnrValidMin, cLogHi, hnrValidMin
+    Solid line
+endif
+
+# v1.2: the matching vertical band for grains with no spectral content
+Select inner viewport: hL1, hR1, pCT, pCB
+Axes: cLogLo, cLogHi, hnrAxLo, hnrAxHi
+if nCentFloored > 0
+    Colour: gridCol$
+    Dotted line
+    Draw line: log10(centValidMin), hnrAxLo, log10(centValidMin), hnrAxHi
     Solid line
 endif
 
@@ -1825,7 +1946,7 @@ Text: 0.015, "left", 0.82, "half",
     ... "##Input##  " + vizSndName$ + "  |  " + fixed$(dur, 2) + " s"
     ... + "  |  grain " + fixed$(grain_size_ms, 1) + " ms"
     ... + "  |  crossfade " + fixed$(fade * 1000, 1) + " ms"
-    ... + "  |  " + string$(nGrains) + " analysis grains"
+    ... + "  |  " + string$(nGrains) + " analysis grains" + silenceDesc$
 
 Font size: 6
 Select inner viewport: vL, vR, sT, sB
