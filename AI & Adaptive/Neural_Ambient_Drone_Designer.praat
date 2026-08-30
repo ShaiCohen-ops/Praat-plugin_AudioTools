@@ -48,6 +48,66 @@
 #     Extended interval set: it is a mixed set of up and down
 #     transpositions, not a harmonic series.
 #
+# Changelog v1.1 (2026):
+#
+#   BUG FIX (changes audio output):
+#   - HNR feature extraction trusted `h = undefined` to catch unmeasurable
+#     frames. It does not: `To Harmonicity (cc)` returns -200.00 dB as a
+#     DEFINED value for silent or unvoiced frames (verified on 6.4.06), and
+#     cubic interpolation across the edge of such a region undershoots it
+#     further still. Measured on a 5 s source with one noisy second: the
+#     HNR range fed to the z-score was -227.7 to +51.4 dB, the standard
+#     deviation was 61.24 against 14.07 for the valid grains alone, and the
+#     whole 60 dB of genuine HNR variation spanned 0.98 z-units instead of
+#     4.26. HNR is one of four clustering dimensions AND the criterion the
+#     final cluster is chosen on, so it was contributing roughly a quarter
+#     of its intended weight to the k-means distance while the other three
+#     dimensions were correctly scaled.
+#     Readings below -60 dB are now treated as unmeasurable and parked just
+#     under the lowest genuine reading, and the count is reported. Output
+#     WILL differ from v1.0 for any source containing silence or unvoiced
+#     material; a fully voiced source is unaffected.
+#   - The -50 dB sentinel for undefined HNR is gone; it was fed into the
+#     mean and standard deviation as though it were a measurement.
+#
+#   VISUALIZATION (rebuilt around results):
+#   - Added axis marks. v1.0 drew "Time (s)" and "HNR (dB)" as labels on
+#     axes that carried no tick numbers at all: there was not one
+#     `Marks bottom`, `Marks left` or `One mark` call in the whole script.
+#   - Replaced the HNR-over-time panel. It plotted one of the four
+#     clustering features, and that one is also the selection criterion, so
+#     the selected cluster was guaranteed to sit on top: the panel could
+#     not show whether the clustering was any good. It also occupied 30% of
+#     the canvas while, with the HNR bug above, 82% of its own height was
+#     empty.
+#   - NEW feature-space panel: centroid (log Hz) against HNR, cluster
+#     coloured, with the cluster centres ringed - a 2-D view of the actual
+#     4-D clustering, so overlapping or degenerate clusters are visible.
+#   - NEW cluster ribbon under the source waveform: every analysis grain
+#     placed on the source timeline in its cluster colour, selected cluster
+#     at full height. Ties the analysis directly to the audio.
+#   - NEW cluster composition panel: grains per cluster with each cluster's
+#     mean HNR and centroid in original units.
+#   - NEW grain reuse panel: how often each selected grain was drawn into
+#     the output. The synthesis samples with replacement, so reuse is
+#     wildly uneven and is a real compositional property; it was invisible.
+#   - Removed the output waveform panel: 20 s of continuous drone
+#     normalised to 0.99 renders as a solid block.
+#   - Cluster colours are now a six-hue categorical palette with the
+#     selected cluster always green. v1.0 ramped every cluster along one
+#     short blue-purple gradient, which at k = 3 gave two colours that
+#     cannot be told apart, and there was no legend or cluster size shown.
+#   - Summary reports realised shimmer against requested, grain reuse
+#     spread, and how many grains had unmeasurable harmonicity (and how
+#     many of those landed in the selected cluster).
+#   - Fixed "15\%octaves" in the shimmer description: the space after the
+#     `\%` escape is its terminator and gets eaten, so a second one is
+#     needed.
+#   - Layout follows the suite rules: font set before viewport selection,
+#     viewport re-selected between drawing groups, no `Text bottom:` or
+#     `Text left:` (units in captions, panel names on a rotated left rail),
+#     full page re-selected at the end.
+#
 # Changelog v1.0 (2026):
 #
 #   VISUALIZATION STANDARDIZATION ONLY; k-means feature clustering,
@@ -249,7 +309,7 @@ endif
 snd = selected("Sound")
 sndName$ = selected$("Sound")
 
-form Cluster-Based Ambient Drone Designer v1.0
+form Cluster-Based Ambient Drone Designer v1.1
     optionmenu Preset: 1
         option Manual
         option Dark Ambient
@@ -462,7 +522,7 @@ if fade < crossfadeSec - 1e-9
 endif
 
 clearinfo
-writeInfoLine: "=== Cluster-Based Ambient Drone Designer v1.0 ==="
+writeInfoLine: "=== Cluster-Based Ambient Drone Designer v1.1 ==="
 appendInfoLine: "Seed: ", seedStr$
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Duration: ", output_duration_sec, " s | Layers: ", layer_density
@@ -506,11 +566,16 @@ if specMaxFreq >= nyquist
     specMaxFreq = nyquist * 0.98
 endif
 
+# Any harmonicity reading below this is Praat's unvoiced/silent floor
+# (-200 dB) or an interpolation undershoot of it, not a measurement.
+hnrArtefactDb = -60
+
 feat_centroid# = zero#(nGrains)
 feat_bandwidth# = zero#(nGrains)
 feat_hnr# = zero#(nGrains)
 feat_pitch# = zero#(nGrains)
 grain_time# = zero#(nGrains)
+hnr_valid# = zero#(nGrains)
 
 selectObject: workSnd
 spec = To Spectrogram: grainSec, specMaxFreq, stepSec, 20, "Gaussian"
@@ -541,12 +606,19 @@ for i from 1 to nGrains
     feat_bandwidth#[i] = Get standard deviation: 2
     removeObject: slice
     
+    # v1.1: Harmonicity returns -200.00 dB as a DEFINED value for silent
+    # or unvoiced frames, so `h = undefined` never catches them, and cubic
+    # interpolation across the edge of such a region undershoots further
+    # still. Flag anything below the artefact threshold as unmeasurable and
+    # resolve it after the loop, once the genuine range is known.
     selectObject: hnr
     h = Get value at time: t, "cubic"
-    if h = undefined
-        feat_hnr#[i] = -50
+    if h = undefined or h < hnrArtefactDb
+        feat_hnr#[i] = hnrArtefactDb
+        hnr_valid#[i] = 0
     else
         feat_hnr#[i] = h
+        hnr_valid#[i] = 1
     endif
     
     selectObject: pit
@@ -559,6 +631,56 @@ for i from 1 to nGrains
 endfor
 
 removeObject: spec, hnr, pit
+
+# v1.1: park the unmeasurable grains just below the lowest GENUINE
+# reading instead of at -200. They stay separable as the least harmonic
+# group, but they no longer set the scale for everything else.
+#
+# Before this fix, on a 5 s source with one noisy second: the plotted HNR
+# range was -227.7 to +51.4 dB, the standard deviation used for the
+# z-score was 61.24 against 14.07 for the valid grains alone, and the
+# whole 60 dB of real HNR variation spanned 0.98 z-units instead of 4.26.
+# HNR is one of four clustering dimensions and the one the final cluster
+# is selected on, so it was contributing about a quarter of its intended
+# weight to the k-means distance.
+nHnrValid = 0
+hnrValidMin = 1e9
+hnrValidMax = -1e9
+for i from 1 to nGrains
+    if hnr_valid#[i] = 1
+        nHnrValid += 1
+        if feat_hnr#[i] < hnrValidMin
+            hnrValidMin = feat_hnr#[i]
+        endif
+        if feat_hnr#[i] > hnrValidMax
+            hnrValidMax = feat_hnr#[i]
+        endif
+    endif
+endfor
+
+nHnrFloored = nGrains - nHnrValid
+if nHnrValid = 0
+    # No grain yielded a usable harmonicity value. Everything is equally
+    # unmeasurable; a flat feature contributes nothing to the clustering,
+    # which is the honest outcome.
+    hnrValidMin = 0
+    hnrValidMax = 0
+    hnrFloorValue = 0
+else
+    hnrFloorValue = hnrValidMin - 6
+endif
+
+for i from 1 to nGrains
+    if hnr_valid#[i] = 0
+        feat_hnr#[i] = hnrFloorValue
+    endif
+endfor
+
+if nHnrFloored > 0
+    appendInfoLine: "  ", nHnrFloored, " of ", nGrains,
+        ... " grains had no measurable harmonicity (silent/unvoiced);",
+        ... " floored to ", fixed$(hnrFloorValue, 1), " dB"
+endif
 
 appendInfoLine: "  Extracted ", nGrains, " grains"
 
@@ -896,6 +1018,13 @@ appendInfoLine: "Generating drone layers..."
 nLayers = layer_density
 layer_dur = output_duration_sec
 
+# v1.1: the figure reports what the synthesis actually did, so the
+# counters have to be kept while it does it.
+grainUse# = zero#(nGrains)
+shimCount# = zero#(6)
+nShimmerFired = 0
+nRenderedGrains = 0
+
 layer_ids# = zero#(nLayers)
 
 # Calculate pan positions
@@ -928,6 +1057,8 @@ for layer_idx from 1 to nLayers
     for g from 1 to grains_needed
         rand_idx = randomInteger(1, tonal_count)
         g_idx = tonal_indices#[rand_idx]
+        nRenderedGrains = nRenderedGrains + 1
+        grainUse#[g_idx] = grainUse#[g_idx] + 1
         
         t_center = grain_time#[g_idx]
         t1 = t_center - (grainSec / 2)
@@ -956,6 +1087,8 @@ for layer_idx from 1 to nLayers
             
             int_choice = randomInteger(1, n_intervals)
             ratio = interval_'int_choice'
+            nShimmerFired = nShimmerFired + 1
+            shimCount#[int_choice] = shimCount#[int_choice] + 1
             
             new_sr = sr_orig * ratio
             if new_sr > 8000 and new_sr < 96000
@@ -1173,6 +1306,10 @@ endfor
 
 # ============================================
 # VISUALIZATION
+#
+# Every panel reports something the run DECIDED or MEASURED. The
+# parameters are in the subtitle, the summary strip and the Info window;
+# a fourth copy on the canvas would not earn its space.
 # ============================================
 
 appendInfoLine: ""
@@ -1183,7 +1320,8 @@ vizOutDur = Get total duration
 vizOutPeak = Get absolute extremum: 0, 0, "None"
 vizOutChannels = Get number of channels
 
-vizSndName$ = replace$(sndName$, "_", "\_ ", 0)
+@vizSafe: sndName$
+vizSndName$ = vizSafe$
 
 if shimmer_intervals = 1
     shimmerMode$ = "octaves"
@@ -1193,8 +1331,11 @@ else
     shimmerMode$ = "extended interval set"
 endif
 
+# v1.1: "\% " renders a percent sign and EATS the space that terminates
+# the escape, so v1.0 printed "15%octaves". The separator has to be added
+# back explicitly.
 if add_octave_shimmer
-    shimmerDesc$ = fixed$(100 * shimmer_probability, 0) + "\% " + shimmerMode$
+    shimmerDesc$ = fixed$(100 * shimmer_probability, 0) + "\%  " + shimmerMode$
 else
     shimmerDesc$ = "off"
 endif
@@ -1205,123 +1346,524 @@ else
     stereoDesc$ = "mono output"
 endif
 
-pageHeight = 6.75
+# ------------------------------------------------------------
+# Derived statistics
+# ------------------------------------------------------------
+
+# Cluster means in ORIGINAL units, recovered from the z-space centroids,
+# so the scatter and the composition panel can be read in Hz and dB.
+clustHnr# = zero#(k)
+clustCent# = zero#(k)
+for c from 1 to k
+    clustHnr#[c] = cent_h#[c] * std_hnr + mean_hnr
+    clustCent#[c] = cent_c#[c] * std_cent + mean_cent
+endfor
+
+# Axis ranges from the data actually plotted.
+centLo = 1e9
+centHi = -1e9
+hnrLo = 1e9
+hnrHi = -1e9
+for i from 1 to nGrains
+    if feat_centroid#[i] < centLo
+        centLo = feat_centroid#[i]
+    endif
+    if feat_centroid#[i] > centHi
+        centHi = feat_centroid#[i]
+    endif
+    if feat_hnr#[i] < hnrLo
+        hnrLo = feat_hnr#[i]
+    endif
+    if feat_hnr#[i] > hnrHi
+        hnrHi = feat_hnr#[i]
+    endif
+endfor
+if centHi - centLo < 1
+    centHi = centLo + 1
+endif
+if hnrHi - hnrLo < 1
+    hnrHi = hnrLo + 1
+endif
+# Log frequency: the tonal material and the noisy material sit two decades
+# apart, and on a linear axis the selected cluster collapses into the left
+# edge, hiding exactly the structure that matters.
+centPlotLo = centLo * 0.75
+if centPlotLo < 10
+    centPlotLo = 10
+endif
+centPlotHi = centHi * 1.35
+if centPlotHi <= centPlotLo
+    centPlotHi = centPlotLo * 10
+endif
+cLogLo = log10(centPlotLo)
+cLogHi = log10(centPlotHi)
+
+centPad = (centHi - centLo) * 0.08
+hnrPad = (hnrHi - hnrLo) * 0.08
+centAxLo = centLo - centPad
+centAxHi = centHi + centPad
+hnrAxLo = hnrLo - hnrPad
+hnrAxHi = hnrHi + hnrPad
+
+@niceStep: hnrAxHi - hnrAxLo, 5
+hnrStep = niceStep
+@niceStep: dur, 8
+timeStep = niceStep
+
+# Reuse of the selected cluster's grains by the synthesis.
+maxUse = 0
+usedDistinct = 0
+for i from 1 to nGrains
+    if grainUse#[i] > maxUse
+        maxUse = grainUse#[i]
+    endif
+    if grainUse#[i] > 0
+        usedDistinct += 1
+    endif
+endfor
+if maxUse < 1
+    maxUse = 1
+endif
+meanUse = 0
+if tonal_count > 0
+    meanUse = nRenderedGrains / tonal_count
+endif
+@niceStep: maxUse, 4
+useStep = niceStep
+if useStep < 1
+    useStep = 1
+endif
+
+# How much of the drone material has no measurable harmonicity. The
+# selection criterion is "highest HNR", so floored grains landing in the
+# winning cluster is exactly the case worth seeing.
+nFlooredSelected = 0
+for j from 1 to tonal_count
+    if hnr_valid#[tonal_indices#[j]] = 0
+        nFlooredSelected += 1
+    endif
+endfor
+
+shimmerPct = 0
+if nRenderedGrains > 0
+    shimmerPct = 100 * nShimmerFired / nRenderedGrains
+endif
+
+maxClusterCount = 1
+for c from 1 to k
+    if clusterCount#[c] > maxClusterCount
+        maxClusterCount = clusterCount#[c]
+    endif
+endfor
+@niceStep: maxClusterCount, 4
+countStep = niceStep
+if countStep < 1
+    countStep = 1
+endif
+
+nClustShow = k
+if nClustShow > 12
+    nClustShow = 12
+endif
+
+selectObject: snd
+srcPeakViz = Get absolute extremum: 0, 0, "None"
+if srcPeakViz < 0.001
+    srcPeakViz = 0.001
+endif
+srcAmp = srcPeakViz * 1.12
+
+# ------------------------------------------------------------
+# Palette and layout
+# ------------------------------------------------------------
+bgCol$    = "{0.97, 0.97, 0.99}"
+gridCol$  = "{0.74, 0.74, 0.80}"
+axisCol$  = "{0.20, 0.20, 0.28}"
+dimCol$   = "{0.45, 0.45, 0.55}"
+panelBg$  = "{0.94, 0.94, 0.94}"
+srcCol$   = "{0.55, 0.55, 0.55}"
+selCol$   = "{0.16, 0.58, 0.30}"
+
+vL = 0.60
+vR = 7.70
+hL1 = 0.60
+hR1 = 3.85
+hL2 = 4.45
+hR2 = 7.70
+railX = -0.035
+pageHeight = 7.20
+
 Erase all
 Line width: 1
 Colour: "Black"
 Solid line
-Select outer viewport: 0, 8, 0, pageHeight
 
-# === Header ===
-Select outer viewport: 0, 8, 0, 0.52
-Select inner viewport: 0.60, 7.70, 0.02, 0.50
-Axes: 0, 1, 0, 1
+# ============================================
+# TITLE
+# ============================================
 Font size: 12
-Colour: "Black"
-Text: 0.5, "centre", 0.68, "half", "##Cluster-Based Ambient Drone Designer v1.0##"
-Font size: 7
-Colour: "{0.35, 0.35, 0.50}"
-Text: 0.5, "centre", 0.22, "half", vizSndName$ + " | " + presetName$ + " | " + string$(nLayers) + " layers | " + string$(nActiveClusters) + "/" + string$(number_of_clusters) + " active clusters"
-
-# === Source waveform ===
-Select outer viewport: 0, 8, 0.68, 1.62
-Select inner viewport: 0.60, 7.70, 0.82, 1.44
-selectObject: snd
-Colour: "{0.55, 0.55, 0.55}"
-Draw: 0, 0, 0, 0, "no", "Curve"
-Colour: "Black"
-Draw inner box
-Font size: 7
-Text left: "yes", "Source"
-Text top: "no", "Source Sound | " + fixed$(dur, 2) + " s"
-
-# === HNR cluster analysis ===
-Select outer viewport: 0, 8, 1.84, 4.34
-Select inner viewport: 0.60, 7.70, 2.10, 4.10
-
-hnr_min = 1e9
-hnr_max = -1e9
-for i from 1 to nGrains
-    if feat_hnr#[i] < hnr_min
-        hnr_min = feat_hnr#[i]
-    endif
-    if feat_hnr#[i] > hnr_max
-        hnr_max = feat_hnr#[i]
-    endif
-endfor
-
-hnr_range = hnr_max - hnr_min
-if hnr_range < 1
-    hnr_range = 1
-endif
-
-plotHnrLo = hnr_min - max(2, hnr_range * 0.08)
-plotHnrHi = hnr_max + max(2, hnr_range * 0.08)
-Axes: 0, dur, plotHnrLo, plotHnrHi
-Paint rectangle: "{0.97, 0.97, 0.97}", 0, dur, plotHnrLo, plotHnrHi
-
-# Draw all grains; selected highest-HNR cluster gets one consistent green.
-for i from 1 to nGrains
-    t = grain_time#[i]
-    h = feat_hnr#[i]
-    cluster = assigns#[i]
-
-    if cluster = best_cluster
-        pointColor$ = "{0.25, 0.65, 0.35}"
-        pointSize = 1.15
-    else
-        if number_of_clusters > 1
-            colorFrac = (cluster - 1) / (number_of_clusters - 1)
-        else
-            colorFrac = 0
-        endif
-        cR = 0.35 + 0.35 * colorFrac
-        cG = 0.40 - 0.10 * colorFrac
-        cB = 0.70 - 0.20 * colorFrac
-        pointColor$ = "{" + fixed$(cR, 3) + ", " + fixed$(cG, 3) + ", " + fixed$(cB, 3) + "}"
-        pointSize = 0.85
-    endif
-
-    Paint circle (mm): pointColor$, t, h, pointSize
-endfor
-
-Colour: "Black"
-Draw inner box
-Font size: 7
-Text left: "yes", "HNR (dB)"
-Text bottom: "no", "Time (s)"
-Text top: "no", "Cluster Analysis | green = selected highest-HNR cluster " + string$(best_cluster)
-
-# === Output waveform ===
-Select outer viewport: 0, 8, 4.56, 5.68
-Select inner viewport: 0.60, 7.70, 4.74, 5.46
-selectObject: finalOut
-Colour: "{0.25, 0.45, 0.75}"
-Draw: 0, 0, 0, 0, "no", "Curve"
-Colour: "Black"
-Draw inner box
-Font size: 7
-Text left: "yes", "Output"
-Text bottom: "no", "Time (s)"
-Text top: "no", "Ambient Drone Output | " + fixed$(vizOutDur, 2) + " s | " + string$(vizOutChannels) + " ch | peak " + fixed$(vizOutPeak, 3)
-
-# === Summary strip ===
-Select outer viewport: 0, 8, 5.90, 6.70
-Select inner viewport: 0.60, 7.70, 5.98, 6.62
+Select inner viewport: vL, vR, 0.12, 0.32
 Axes: 0, 1, 0, 1
-Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+Colour: "Black"
+Text: 0.5, "centre", 0.5, "half",
+    ... "##Cluster-Based Ambient Drone Designer v1.1##"
+
+Font size: 7
+Select inner viewport: vL, vR, 0.34, 0.50
+Axes: 0, 1, 0, 1
+Colour: "{0.35, 0.35, 0.50}"
+Text: 0.5, "centre", 0.5, "half",
+    ... vizSndName$ + "  |  " + presetName$
+    ... + "  |  " + string$(nGrains) + " analysis grains"
+    ... + "  |  " + string$(nActiveClusters) + "/" + string$(k) + " active clusters"
+    ... + "  |  cluster " + string$(best_cluster) + " selected"
+    ... + "  |  " + string$(nLayers) + " layers"
+
+# ============================================
+# PANEL A — SOURCE WAVEFORM
+# ============================================
+pAT = 0.82
+pAB = 1.55
 
 Font size: 6
-Colour: "{0.25, 0.25, 0.35}"
-summary1$ = "##Input##  " + vizSndName$ + " | " + fixed$(dur, 2) + " s | grain " + fixed$(grain_size_ms, 1) + " ms | crossfade " + fixed$(fade * 1000, 1) + " ms | " + string$(nGrains) + " analysis grains"
-summary2$ = "##Clustering##  k-means " + string$(kmeans_iterations) + " iterations | " + string$(nActiveClusters) + "/" + string$(number_of_clusters) + " active | selected cluster " + string$(best_cluster) + " | selected grains " + string$(tonal_count) + "/" + string$(nGrains)
-summary3$ = "##Output##  " + string$(nLayers) + " layers | shimmer " + shimmerDesc$ + " | " + stereoDesc$ + " | requested " + fixed$(output_duration_sec, 2) + " s | rendered " + fixed$(vizOutDur, 2) + " s"
-Text: 0.02, "left", 0.78, "half", summary1$
-Text: 0.02, "left", 0.50, "half", summary2$
-Text: 0.02, "left", 0.22, "half", summary3$
+Select inner viewport: vL, vR, pAT, pAB
+Axes: 0, dur, -srcAmp, srcAmp
+Paint rectangle: bgCol$, 0, dur, -srcAmp, srcAmp
 
+Select inner viewport: vL, vR, pAT, pAB
+Axes: 0, dur, -srcAmp, srcAmp
+selectObject: snd
+Colour: srcCol$
+Draw: 0, dur, -srcAmp, srcAmp, "no", "Curve"
+
+Select inner viewport: vL, vR, pAT, pAB
+Axes: 0, dur, -srcAmp, srcAmp
 Colour: "Black"
 Draw inner box
+
+Select inner viewport: vL, vR, pAT, pAB
+Axes: 0, 1, 0, 1
+Colour: dimCol$
+Text special: railX, "centre", 0.5, "bottom", "Helvetica", 6, "90", "Source"
+
+Select inner viewport: vL, vR, pAT, pAB
+Axes: 0, 1, 0, 1
+Colour: axisCol$
+Text top: "no",
+    ... "##Source and cluster map## — " + fixed$(dur, 2) + " s,"
+    ... + " grain " + fixed$(grain_size_ms, 0) + " ms / hop "
+    ... + fixed$(stepSec * 1000, 0) + " ms;"
+    ... + " the strip below assigns every analysis grain to a cluster"
+
+# ============================================
+# PANEL B — CLUSTER RIBBON (shares the source time axis)
+# Each analysis grain occupies its hop cell, so the cells tile the
+# timeline without the 50% analysis overlap double-painting them.
+# ============================================
+pBT = 1.57
+pBB = 1.78
+
+Font size: 6
+Select inner viewport: vL, vR, pBT, pBB
+Axes: 0, dur, 0, 1
+Paint rectangle: "{1.0, 1.0, 1.0}", 0, dur, 0, 1
+
+Select inner viewport: vL, vR, pBT, pBB
+Axes: 0, dur, 0, 1
+for i from 1 to nGrains
+    cellA = grain_time#[i] - stepSec / 2
+    cellB = grain_time#[i] + stepSec / 2
+    if cellA < 0
+        cellA = 0
+    endif
+    if cellB > dur
+        cellB = dur
+    endif
+    @clusterCol: assigns#[i]
+    if assigns#[i] = best_cluster
+        Paint rectangle: clusterCol$, cellA, cellB, 0, 1
+    else
+        Paint rectangle: clusterCol$, cellA, cellB, 0, 0.55
+    endif
+endfor
+
+Select inner viewport: vL, vR, pBT, pBB
+Axes: 0, dur, 0, 1
+Colour: "Black"
+Draw inner box
+Marks bottom every: 1, timeStep, "yes", "yes", "no"
+
+Select inner viewport: vL, vR, pBT, pBB
+Axes: 0, 1, 0, 1
+Colour: dimCol$
+Text special: railX, "centre", 0.5, "bottom", "Helvetica", 6, "90", "Cluster"
+
+# ============================================
+# PANEL C — FEATURE SPACE (2-D projection of the 4-D clustering)
+# ============================================
+pCT = 2.28
+pCB = 4.05
+
+Font size: 6
+Select inner viewport: hL1, hR1, pCT, pCB
+Axes: cLogLo, cLogHi, hnrAxLo, hnrAxHi
+Paint rectangle: bgCol$, cLogLo, cLogHi, hnrAxLo, hnrAxHi
+
+# The floor band, if any unmeasurable grains were parked there
+Select inner viewport: hL1, hR1, pCT, pCB
+Axes: cLogLo, cLogHi, hnrAxLo, hnrAxHi
+if nHnrFloored > 0
+    Colour: gridCol$
+    Dotted line
+    Draw line: cLogLo, hnrValidMin, cLogHi, hnrValidMin
+    Solid line
+endif
+
+Select inner viewport: hL1, hR1, pCT, pCB
+Axes: cLogLo, cLogHi, hnrAxLo, hnrAxHi
+for i from 1 to nGrains
+    @clusterCol: assigns#[i]
+    if assigns#[i] = best_cluster
+        Paint circle (mm): clusterCol$, log10(max(feat_centroid#[i], 10)),
+            ... feat_hnr#[i], 1.15
+    else
+        Paint circle (mm): clusterCol$, log10(max(feat_centroid#[i], 10)),
+            ... feat_hnr#[i], 0.85
+    endif
+endfor
+
+# Cluster centroids, ringed so they read over the point cloud
+Select inner viewport: hL1, hR1, pCT, pCB
+Axes: cLogLo, cLogHi, hnrAxLo, hnrAxHi
+Colour: "Black"
+Line width: 1
+for c from 1 to k
+    if clusterCount#[c] > 0
+        Draw circle (mm): log10(max(clustCent#[c], 10)), clustHnr#[c], 3.0
+    endif
+endfor
+
+Select inner viewport: hL1, hR1, pCT, pCB
+Axes: cLogLo, cLogHi, hnrAxLo, hnrAxHi
+Colour: "Black"
+Draw inner box
+Marks left every: 1, hnrStep, "yes", "yes", "no"
+
+Select inner viewport: hL1, hR1, pCT, pCB
+Axes: cLogLo, cLogHi, hnrAxLo, hnrAxHi
+nFMarks = 0
+for dec from 1 to 5
+    fBase = 10 ^ dec
+    for m from 1 to 4
+        if m = 1
+            fMark = fBase
+        elsif m = 2
+            fMark = fBase * 2
+        elsif m = 3
+            fMark = fBase * 3
+        else
+            fMark = fBase * 5
+        endif
+        if fMark >= centPlotLo and fMark <= centPlotHi
+            if fMark >= 1000
+                fMark$ = string$(fMark / 1000) + "k"
+            else
+                fMark$ = string$(fMark)
+            endif
+            One mark bottom: log10(fMark), "no", "yes", "no", fMark$
+            nFMarks = nFMarks + 1
+        endif
+    endfor
+endfor
+# A narrow centroid spread can fall between two decade marks entirely;
+# label the range ends rather than leaving the axis blank.
+if nFMarks < 2
+    One mark bottom: cLogLo, "no", "yes", "no", fixed$(centPlotLo, 0)
+    One mark bottom: cLogHi, "no", "yes", "no", fixed$(centPlotHi, 0)
+endif
+
+Select inner viewport: hL1, hR1, pCT, pCB
+Axes: 0, 1, 0, 1
+Colour: dimCol$
+Text special: railX, "centre", 0.5, "bottom", "Helvetica", 6, "90", "HNR (dB)"
+
+if nHnrFloored > 0
+    Select inner viewport: hL1, hR1, pCT, pCB
+    Axes: 0, 1, 0, 1
+    Colour: dimCol$
+    Text: 0.985, "right", 0.035, "half",
+        ... string$(nHnrFloored) + " unmeasurable grains floored below the line"
+endif
+
+Select inner viewport: hL1, hR1, pCT, pCB
+Axes: 0, 1, 0, 1
+Colour: axisCol$
+Text top: "no",
+    ... "##Feature space## — centroid (Hz, log) vs HNR, 2-D view of the 4-D"
+    ... + " clustering; rings = cluster centres"
+
+# ============================================
+# PANEL D — CLUSTER COMPOSITION
+# ============================================
+Font size: 6
+Select inner viewport: hL2, hR2, pCT, pCB
+Axes: 0, maxClusterCount * 1.18, nClustShow + 0.62, 0.38
+Paint rectangle: bgCol$, 0, maxClusterCount * 1.18, nClustShow + 0.62, 0.38
+
+Select inner viewport: hL2, hR2, pCT, pCB
+Axes: 0, maxClusterCount * 1.18, nClustShow + 0.62, 0.38
+for c from 1 to nClustShow
+    @clusterCol: c
+    Paint rectangle: clusterCol$, 0, clusterCount#[c], c - 0.30, c + 0.30
+endfor
+
+Select inner viewport: hL2, hR2, pCT, pCB
+Axes: 0, maxClusterCount * 1.18, nClustShow + 0.62, 0.38
+Colour: "Black"
+Draw inner box
+Marks bottom every: 1, countStep, "yes", "yes", "no"
+
+for c from 1 to nClustShow
+    Select inner viewport: hL2, hR2, pCT, pCB
+    Axes: 0, maxClusterCount * 1.18, nClustShow + 0.62, 0.38
+    Colour: axisCol$
+    cLabel$ = "cluster " + string$(c)
+    if c = best_cluster
+        cLabel$ = cLabel$ + " (selected)"
+    endif
+    if clusterCount#[c] = 0
+        cLabel$ = cLabel$ + "  empty"
+    else
+        cLabel$ = cLabel$ + "   " + string$(clusterCount#[c]) + " grains"
+            ... + "   HNR " + fixed$(clustHnr#[c], 1) + " dB"
+            ... + "   " + fixed$(clustCent#[c], 0) + " Hz"
+    endif
+    Text: maxClusterCount * 0.02, "left", c - 0.42, "half", cLabel$
+endfor
+
+Select inner viewport: hL2, hR2, pCT, pCB
+Axes: 0, 1, 0, 1
+Colour: axisCol$
+Text top: "no",
+    ... "##Cluster composition## — grains per cluster, with cluster means"
+
+# ============================================
+# PANEL E — GRAIN REUSE
+# The synthesis draws grains from the selected cluster at random with
+# replacement, so some source material carries far more of the output
+# than the rest. That distribution is a compositional property.
+# ============================================
+pET = 4.55
+pEB = 5.95
+
+Font size: 6
+Select inner viewport: vL, vR, pET, pEB
+Axes: 0, dur, 0, maxUse * 1.12
+Paint rectangle: bgCol$, 0, dur, 0, maxUse * 1.12
+
+Select inner viewport: vL, vR, pET, pEB
+Axes: 0, dur, 0, maxUse * 1.12
+for j from 1 to tonal_count
+    gi = tonal_indices#[j]
+    cellA = grain_time#[gi] - stepSec / 2
+    cellB = grain_time#[gi] + stepSec / 2
+    if cellA < 0
+        cellA = 0
+    endif
+    if cellB > dur
+        cellB = dur
+    endif
+    if grainUse#[gi] > 0
+        Paint rectangle: selCol$, cellA, cellB, 0, grainUse#[gi]
+    else
+        # A selected grain the synthesis never happened to draw.
+        Paint rectangle: "{0.80, 0.55, 0.25}", cellA, cellB, 0, maxUse * 0.03
+    endif
+endfor
+
+Select inner viewport: vL, vR, pET, pEB
+Axes: 0, dur, 0, maxUse * 1.12
+Colour: "{0.12, 0.12, 0.16}"
+Dashed line
+Draw line: 0, meanUse, dur, meanUse
+Solid line
+
+Select inner viewport: vL, vR, pET, pEB
+Axes: 0, dur, 0, maxUse * 1.12
+Colour: "Black"
+Draw inner box
+Marks bottom every: 1, timeStep, "yes", "yes", "no"
+Marks left every: 1, useStep, "yes", "yes", "no"
+
+Select inner viewport: vL, vR, pET, pEB
+Axes: 0, 1, 0, 1
+Colour: dimCol$
+Text special: railX, "centre", 0.5, "bottom", "Helvetica", 6, "90", "Times used"
+
+Select inner viewport: vL, vR, pET, pEB
+Axes: 0, 1, 0, 1
+Colour: axisCol$
+Text top: "no",
+    ... "##Grain reuse## — how often each selected grain was drawn into the"
+    ... + " output (dashed = mean " + fixed$(meanUse, 1) + "), source time in seconds"
+
+# ============================================
+# SUMMARY STRIP
+# ============================================
+sT = 6.35
+sB = 7.05
+
+Font size: 7
+Select inner viewport: vL, vR, sT, sB
+Axes: 0, 1, 0, 1
+Paint rectangle: panelBg$, 0, 1, 0, 1
+
+Select inner viewport: vL, vR, sT, sB
+Axes: 0, 1, 0, 1
+Colour: "Black"
+Text: 0.015, "left", 0.82, "half",
+    ... "##Input##  " + vizSndName$ + "  |  " + fixed$(dur, 2) + " s"
+    ... + "  |  grain " + fixed$(grain_size_ms, 1) + " ms"
+    ... + "  |  crossfade " + fixed$(fade * 1000, 1) + " ms"
+    ... + "  |  " + string$(nGrains) + " analysis grains"
+
+Font size: 6
+Select inner viewport: vL, vR, sT, sB
+Axes: 0, 1, 0, 1
+Colour: "{0.25, 0.25, 0.35}"
+Text: 0.015, "left", 0.58, "half",
+    ... "##Clustering##  k-means " + string$(kmeans_iterations) + " iterations"
+    ... + "  |  " + string$(nActiveClusters) + "/" + string$(k) + " active"
+    ... + "  |  selected cluster " + string$(best_cluster)
+    ... + "  |  " + string$(tonal_count) + "/" + string$(nGrains) + " grains"
+    ... + "  |  HNR unmeasurable in " + string$(nHnrFloored) + " grains ("
+    ... + string$(nFlooredSelected) + " of them in the selected cluster),"
+    ... + " floored to " + fixed$(hnrFloorValue, 1) + " dB"
+
+Select inner viewport: vL, vR, sT, sB
+Axes: 0, 1, 0, 1
+Colour: "{0.25, 0.25, 0.35}"
+Text: 0.015, "left", 0.35, "half",
+    ... "##Synthesis##  " + string$(nRenderedGrains) + " grains rendered from "
+    ... + string$(usedDistinct) + " of " + string$(tonal_count) + " sources"
+    ... + "  |  reuse " + fixed$(meanUse, 1) + " mean, " + string$(maxUse) + " max"
+    ... + "  |  shimmer " + shimmerDesc$ + " requested, "
+    ... + fixed$(shimmerPct, 1) + "\%  realised (" + string$(nShimmerFired) + " grains)"
+
+Select inner viewport: vL, vR, sT, sB
+Axes: 0, 1, 0, 1
+Colour: "{0.25, 0.25, 0.35}"
+Text: 0.015, "left", 0.12, "half",
+    ... "##Output##  " + string$(nLayers) + " layers  |  " + stereoDesc$
+    ... + "  |  requested " + fixed$(output_duration_sec, 2) + " s"
+    ... + "  |  rendered " + fixed$(vizOutDur, 2) + " s"
+    ... + "  |  " + string$(vizOutChannels) + " ch"
+    ... + "  |  peak " + fixed$(vizOutPeak, 3)
+
+Select inner viewport: vL, vR, sT, sB
+Axes: 0, 1, 0, 1
+Colour: "Black"
+Draw rectangle: 0, 1, 0, 1
 
 # Restore complete page for Picture export / clipboard.
 Select outer viewport: 0, 8, 0, pageHeight
@@ -1355,3 +1897,82 @@ if play_result
 endif
 
 selectObject: finalOut
+
+
+# ============================================
+# HELPERS
+# ============================================
+
+# Snap an axis step to 1 / 2 / 5 x 10^k so tick labels read in round numbers.
+procedure niceStep: .span, .n
+    .raw = .span / .n
+    if .raw <= 0
+        .raw = 1
+    endif
+    .pw = 10 ^ floor(log10(.raw))
+    .nm = .raw / .pw
+    if .nm < 1.5
+        niceStep = 1 * .pw
+    elsif .nm < 3.5
+        niceStep = 2 * .pw
+    elsif .nm < 7.5
+        niceStep = 5 * .pw
+    else
+        niceStep = 10 * .pw
+    endif
+endproc
+
+# Categorical cluster colour. The selected cluster is always the same
+# green; the rest come from a six-hue palette that deliberately contains
+# no green, darkened one step every six clusters. v1.0 ramped all
+# clusters along one short blue-purple gradient, which at k = 3 gave two
+# colours a reader cannot tell apart.
+procedure clusterCol: .c
+    if .c = best_cluster
+        clusterCol$ = "{0.160, 0.580, 0.300}"
+    else
+        .tier = floor((.c - 1) / 6)
+        .hue = .c - .tier * 6
+        .shade = 1 - .tier * 0.26
+        if .shade < 0.40
+            .shade = 0.40
+        endif
+        if .hue = 1
+            .r = 0.20
+            .g = 0.45
+            .b = 0.75
+        elsif .hue = 2
+            .r = 0.85
+            .g = 0.45
+            .b = 0.15
+        elsif .hue = 3
+            .r = 0.55
+            .g = 0.30
+            .b = 0.70
+        elsif .hue = 4
+            .r = 0.55
+            .g = 0.35
+            .b = 0.20
+        elsif .hue = 5
+            .r = 0.20
+            .g = 0.60
+            .b = 0.65
+        else
+            .r = 0.80
+            .g = 0.30
+            .b = 0.45
+        endif
+        clusterCol$ = "{" + fixed$(.r * .shade, 3) + ", "
+            ... + fixed$(.g * .shade, 3) + ", " + fixed$(.b * .shade, 3) + "}"
+    endif
+endproc
+
+# Escape Picture-window markup in machine-generated names. Order matters:
+# the replacements for #, % and ^ contain no underscore, so the underscore
+# pass must run last.
+procedure vizSafe: .s$
+    vizSafe$ = replace$(.s$, "#", "\# ", 0)
+    vizSafe$ = replace$(vizSafe$, "%", "\% ", 0)
+    vizSafe$ = replace$(vizSafe$, "^", "\^ ", 0)
+    vizSafe$ = replace$(vizSafe$, "_", "\_ ", 0)
+endproc
