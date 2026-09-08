@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.2 (2026) - Review + multichannel/analysis repair
+# Version: 1.3 (2026) - Wet/dry continuity + harmonic-order repair
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -23,6 +23,13 @@
 #   Role separation:
 #     Praat  -- selection, export, import, visualization.
 #     Python -- all analysis, physical modelling, and rendering.
+#
+#
+# v1.3 correctness pass:
+#   - wet/dry is continuous; no fixed peak normalisation for every non-dry mix
+#   - higher detected base pitches keep fundamental-like decay; harmonic order is
+#     preserved per base pitch through bank construction
+#   - resonance-bank visual gain represents effective resonant strength, not raw b0
 #
 #   Python engine: sympathetic_resonance.py
 #   Dependencies (Python): numpy  soundfile  scipy
@@ -121,7 +128,7 @@ endproc
 @cleanUpTempFiles
 
 # ---- FORM ----
-form Sympathetic Resonance v1.2
+form Sympathetic Resonance v1.3
     optionmenu Preset: 1
         option Custom
         option Piano Frame
@@ -143,7 +150,7 @@ form Sympathetic Resonance v1.2
         option Cloud fill
     positive Decay_ceiling_s 5.0
     positive Coupling 0.30
-    comment Wet/dry  ( 0 = 100% resonance   1 = 100% dry original )
+    comment Wet/dry  ( 0 = 100% resonance   1 = dry source routing )
     real Wet_dry 0.0
     boolean Draw_visualization 1
     boolean Play_result 1
@@ -280,7 +287,7 @@ endif
 
 # ---- INFO HEADER ----
 clearinfo
-writeInfoLine:  "=== Sympathetic Resonance v1.2 ==="
+writeInfoLine:  "=== Sympathetic Resonance v1.3 ==="
 appendInfoLine: "Source:    ", origName$
 appendInfoLine: "Preset:    ", presetName$
 appendInfoLine: "Character: ", charStr$
@@ -464,7 +471,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.62, "half", "##Sympathetic Resonance##"
+    Text: 0.5, "centre", 0.72, "half", "##Sympathetic Resonance##"
     Font size: 8
     Colour: "{0.38, 0.38, 0.52}"
     Text: 0.5, "centre", -0.8, "half",
@@ -603,7 +610,7 @@ if draw_visualization
     Colour: "{0.80, 0.80, 0.80}"
     Text left: "yes", "Gain"
     Text bottom: "yes", "Log frequency  ( 20 Hz ... 20 kHz )"
-    Text top: "no", "Resonator bank  ( bar height = relative resonator excitation gain )"
+    Text top: "no", "Resonator bank  ( bar height = relative resonant strength )"
 
     # === Spectrogram of result ===
     Select outer viewport: 0, 8, 4.35, 5.85

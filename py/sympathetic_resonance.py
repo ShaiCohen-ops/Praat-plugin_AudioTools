@@ -1,11 +1,23 @@
 """
-sympathetic_resonance.py  --  Sympathetic Resonance  v1.2
+sympathetic_resonance.py  --  Sympathetic Resonance  v1.3
 
 Part of Praat AudioTools plugin
 Author: Shai Cohen, Department of Music, Bar-Ilan University
 Email: shai.cohen@biu.ac.il
 
 Called by SympatheticResonance.praat -- not run directly.
+
+Version 1.3 (2026) — correctness + level-continuity repairs:
+  * Wet/dry is now continuous: the wet body is RMS-matched to the source region
+    for every mix value, and the final renderer only scales DOWN for overload.
+    Values near 1.0 therefore remain genuinely near the dry source instead of
+    jumping to a fixed 0.92 peak.
+  * Harmonic-order metadata is preserved through deduplication/subsampling, so
+    each discovered base pitch keeps fundamental-like decay. Higher fundamentals
+    are no longer misclassified as high partials of the lowest detected pitch.
+  * Resonance CSV gain now represents estimated resonant peak strength rather
+    than the raw IIR numerator coefficient.
+  * Render QC reports wet level matching and any protective peak attenuation.
 
 Version 1.2 (2026) — review repairs:
   * Energy-gated spectral flatness: silence no longer reads as white noise.
@@ -41,13 +53,14 @@ Architecture:
     D -- Discover measured spectral peaks in log-frequency space
          (optional Cloud fill is an explicit AudioTools extension)
     E -- Build resonator bank: per-string pole radius r computed from
-         decay_s and character bandwidth; gain shaped by brightness curve
-         and spectral flatness; stiffness inharmonicity for metallic
-    F -- Excite all resonators with the source signal in parallel
-         using second-order IIR filters (scipy.signal.sosfilt)
-    G -- Apply sympathetic coupling: Gaussian blur across the
-         frequency axis of the output matrix
-    H -- Character spectral shaping, wet/dry blend, soft-limit, write FLOAT output
+         decay ceiling, character bandwidth and spectral flatness; gain shaped
+         by harmonic rolloff / source-tilt compensation; metallic adds stiffness
+    F -- Evaluate all second-order resonators as transfer functions and excite
+         them from the source in the FFT domain (mathematically equivalent LTI bank)
+    G -- Apply sympathetic coupling by Gaussian smoothing across the ordered
+         resonator-frequency axis
+    H -- Character spectral shaping, level-matched wet/dry blend, overload guard,
+         write FLOAT output
     I -- Write stats.txt and resonances.csv
 
 Physical model notes:
@@ -59,11 +72,9 @@ Physical model notes:
     Spectral flatness (0=tonal, 1=white) drives:
         - shorter decay for noisy/breathy sources
         - wider bandwidth (lower r_bw) for noise-excited resonators
-        - stronger sympathetic coupling for diffuse sources
-    Coupling is implemented as Gaussian blur along the resonator
-    frequency axis of the output matrix, creating the spread of
-    energy between adjacent strings that characterises a real
-    instrument body.
+    The user coupling control is character-scaled and implemented as Gaussian
+    smoothing along the ordered resonator-frequency axis, spreading energy
+    between adjacent virtual strings as in a shared resonant body.
 
 Dependencies: numpy  soundfile  scipy
 """
@@ -92,7 +103,7 @@ check_dependencies()
 
 import numpy as np
 import soundfile as sf
-from scipy.signal import sosfilt, find_peaks
+from scipy.signal import find_peaks
 from scipy.ndimage import gaussian_filter1d
 
 
@@ -465,12 +476,15 @@ def build_resonator_bank(pitches, sr, character, decay_s, spectral_flatness,
 
 def expand_with_harmonics(base_pitches, n_harmonics, harm_rolloff,
                           inharmonicity, nyquist):
-    """
-    For each base pitch generate harmonic overtones up to Nyquist.
-    Returns list of (freq_hz, relative_gain) tuples.
+    """Expand each measured base pitch into harmonic/inharmonic partials.
+
+    Returns tuples ``(freq_hz, relative_gain, harmonic_order, base_pitch)``.
+    Keeping harmonic order is important: decay must be relative to the base pitch
+    that generated a partial, not relative to the globally lowest discovered pitch.
     """
     entries = []
     for f0 in base_pitches:
+        f0 = float(f0)
         for k in range(1, n_harmonics + 2):
             if inharmonicity > 0:
                 freq = f0 * k * math.sqrt(1.0 + inharmonicity * k * k)
@@ -479,16 +493,16 @@ def expand_with_harmonics(base_pitches, n_harmonics, harm_rolloff,
             if freq >= nyquist:
                 break
             amp = 1.0 / (k ** harm_rolloff)
-            entries.append((float(freq), float(amp)))
+            entries.append((float(freq), float(amp), int(k), f0))
     return entries
 
 
 def build_harmonic_resonator_bank(pitches, sr, character, decay_s,
                                   spectral_flatness, n_strings):
-    """
-    Expanded resonator bank including harmonic series of each discovered pitch.
-    Each partial decays faster than the fundamental (realistic string physics).
-    b0 compensated for IIR peak gain so amplitude is well-behaved.
+    """Build the sympathetic resonator bank from measured/cloud base pitches.
+
+    Harmonic order is preserved per source pitch, so every base pitch (k=1)
+    receives fundamental-like decay while its own higher partials decay faster.
     """
     p         = CHAR_PRESETS[character]
     flat      = float(np.clip(spectral_flatness, 0.0, 1.0))
@@ -499,42 +513,48 @@ def build_harmonic_resonator_bank(pitches, sr, character, decay_s,
     entries = expand_with_harmonics(pitches, p["n_harmonics"],
                                     p["harm_rolloff"], p["inharmonicity"],
                                     nyquist)
+    if not entries:
+        raise ValueError("no resonator frequencies could be built from the discovered pitch basis")
 
-    # Deduplicate within 2 cents
+    # Deduplicate within ~2 cents. If two bases generate nearly the same partial,
+    # keep the entry with the strongest nominal amplitude; on a tie prefer the
+    # lower harmonic order because it should retain the longer decay role.
     entries.sort(key=lambda x: x[0])
     deduped = []
-    for freq, amp in entries:
+    for freq, amp, order, base_f0 in entries:
+        item = [freq, amp, order, base_f0]
         if deduped and abs(math.log(freq / deduped[-1][0])) < 0.00116:
-            if amp > deduped[-1][1]:
-                deduped[-1] = (freq, amp)
+            prev = deduped[-1]
+            if amp > prev[1] or (abs(amp - prev[1]) < 1e-12 and order < prev[2]):
+                deduped[-1] = item
         else:
-            deduped.append([freq, amp])
+            deduped.append(item)
 
-    # Subsample uniformly in log-frequency space so upper harmonics
-    # are represented. Sorting by amplitude would keep only the lowest
-    # partials (k=1 has amp=1.0, k=2 has 0.5, ...) producing an LPF effect.
+    # Subsample uniformly in log-frequency space so upper harmonics remain
+    # represented. n_strings is explicitly a maximum, not a target count.
     if len(deduped) > n_strings:
-        import numpy as _np
-        log_f  = _np.log([e[0] for e in deduped])
+        log_f  = np.log([e[0] for e in deduped])
         lo, hi = log_f[0], log_f[-1]
-        targets = _np.linspace(lo, hi, n_strings)
-        picked  = set()
+        targets = np.linspace(lo, hi, n_strings)
+        picked = set()
         for t in targets:
-            idx = int(_np.argmin(_np.abs(log_f - t)))
-            picked.add(idx)
+            picked.add(int(np.argmin(np.abs(log_f - t))))
         deduped = [deduped[i] for i in sorted(picked)]
     deduped.sort(key=lambda x: x[0])
 
     n = max(len(deduped), 1)
-    f0_ref = pitches[0] if len(pitches) > 0 else deduped[0][0]
+    # Absolute-frequency tilt compensation remains anchored to the lowest measured
+    # base pitch; unlike decay, this is intentionally a global spectral balance.
+    f0_ref = float(np.min(pitches)) if len(pitches) > 0 else deduped[0][0]
 
     resonators = []
-    for freq, harm_amp in deduped:
+    for freq, harm_amp, harmonic_order, base_f0 in deduped:
         freq = float(np.clip(freq, 20.0, nyquist))
 
-        # Higher partials decay faster
-        k_approx  = max(1.0, freq / f0_ref)
-        eff_k     = max(0.05, eff_decay / (k_approx ** 0.35))
+        # Higher partials of EACH base pitch decay faster. A high detected base
+        # fundamental stays order 1 instead of being treated as freq/min(base).
+        k = max(1.0, float(harmonic_order))
+        eff_k     = max(0.05, eff_decay / (k ** 0.35))
         r_partial = math.exp(-6.908 / max(eff_k * sr, 1.0))
 
         bw_hz = freq * (2.0 ** (p["bw_semitones"] * bw_extra / 12.0) - 1.0)
@@ -544,12 +564,6 @@ def build_harmonic_resonator_bank(pitches, sr, character, decay_s,
 
         peak_gain = 1.0 / max(1.0 - r * r, 1e-8)
 
-        # Compensate for source spectral rolloff.
-        # Speech/voice has roughly -6 dB/octave tilt; without correction,
-        # high-frequency resonators receive far less excitation energy and
-        # the output sounds like an LPF regardless of post-EQ.
-        # We boost each resonator gain by (freq / f_ref)^(tilt_db/20/log2)
-        # so that doubling frequency adds src_tilt_db_oct dB of gain.
         tilt_exp  = p["src_tilt_db_oct"] / (20.0 * math.log10(2.0))
         tilt_gain = (freq / max(f0_ref, 20.0)) ** tilt_exp
         tilt_gain = float(np.clip(tilt_gain, 0.5, 40.0))
@@ -679,6 +693,7 @@ def render_fft(signal, dry_stereo, resonators, sr, coupling, character,
         return dry_stereo.astype(np.float32), {
             "fft_size": 0, "tail_samples": 0, "response_block_bins": 0,
             "wet_match_scale": 0.0,
+            "peak_guard_scale": 1.0,
         }
 
     r_max = max(res.r for res in resonators)
@@ -729,33 +744,42 @@ def render_fft(signal, dry_stereo, resonators, sr, coupling, character,
     left = np.fft.irfft(X * H_L, n=n_fft)[:n_out]
     right = np.fft.irfft(X * H_R, n=n_fft)[:n_out]
 
-    wet_match_scale = 1.0
-    if wet_dry > 0.0:
-        dry64 = np.zeros((n_out, 2), dtype=np.float64)
-        dry64[:n_sig, :] = dry_stereo[:n_sig, :]
-        # Match level over the source region, not over the long zero-padded dry
-        # tail, and do not mono-fold stereo (which could phase-cancel).
-        wet_rms = max(float(np.sqrt(np.mean(
-            0.5 * (left[:n_sig] ** 2 + right[:n_sig] ** 2)))), 1e-10)
-        dry_rms = max(float(np.sqrt(np.mean(dry_stereo[:n_sig, :] ** 2))), 1e-10)
+    # Match the wet body to the source-region RMS for ALL mix values. The old
+    # implementation only matched when wet_dry > 0 and then normalised every
+    # non-dry result UP to peak 0.92, producing a discontinuity at wet_dry=1.
+    dry64 = np.zeros((n_out, 2), dtype=np.float64)
+    dry64[:n_sig, :] = dry_stereo[:n_sig, :]
+    wet_rms = float(np.sqrt(np.mean(
+        0.5 * (left[:n_sig] ** 2 + right[:n_sig] ** 2))))
+    dry_rms = float(np.sqrt(np.mean(dry_stereo[:n_sig, :] ** 2)))
+    if wet_rms > 1e-12 and dry_rms > 0.0:
         wet_match_scale = dry_rms / wet_rms
-        left = ((1.0 - wet_dry) * left * wet_match_scale
-                + wet_dry * dry64[:, 0])
-        right = ((1.0 - wet_dry) * right * wet_match_scale
-                 + wet_dry * dry64[:, 1])
+    elif wet_rms > 1e-12:
+        wet_match_scale = 0.0
+    else:
+        wet_match_scale = 1.0
 
-    left = soft_limit(left)
-    right = soft_limit(right)
+    left_wet  = left  * wet_match_scale
+    right_wet = right * wet_match_scale
+    wet_amount = 1.0 - wet_dry
+    left  = wet_amount * left_wet  + wet_dry * dry64[:, 0]
+    right = wet_amount * right_wet + wet_dry * dry64[:, 1]
+
+    # Transparent overload guard: never normalise upward. This preserves source
+    # level and makes the wet/dry control continuous. Scale only when required.
     peak = max(float(np.max(np.abs(left))), float(np.max(np.abs(right))))
-    if peak > 1e-8:
-        left = left / peak * 0.92
-        right = right / peak * 0.92
+    peak_guard_scale = 1.0
+    if peak > 0.98:
+        peak_guard_scale = 0.98 / peak
+        left *= peak_guard_scale
+        right *= peak_guard_scale
 
     return np.column_stack([left, right]).astype(np.float32), {
         "fft_size": int(n_fft),
         "tail_samples": int(tail_smp),
         "response_block_bins": int(block),
         "wet_match_scale": float(wet_match_scale),
+        "peak_guard_scale": float(peak_guard_scale),
     }
 
 
@@ -797,12 +821,18 @@ def write_stats(path, resonators, base_pitches, spectral_flatness, character,
         f.write("fft_size=%d\n" % int(render_qc.get("fft_size", 0)))
         f.write("tail_s=%.3f\n" % (render_qc.get("tail_samples", 0) / float(sr)))
         f.write("response_block_bins=%d\n" % int(render_qc.get("response_block_bins", 0)))
+        f.write("wet_match_scale=%.6f\n" % float(render_qc.get("wet_match_scale", 1.0)))
+        f.write("peak_guard_scale=%.6f\n" % float(render_qc.get("peak_guard_scale", 1.0)))
 
 
 def write_resonances_csv(path, resonators):
-    """Write freq_hz and normalised gain for Praat visualisation."""
-    gains = np.array([r.gain for r in resonators], dtype=float)
-    g_max = gains.max() if gains.max() > 1e-10 else 1.0
+    """Write frequency and normalised estimated peak resonance strength."""
+    # r.gain is the IIR numerator coefficient and is deliberately smaller for
+    # high-Q poles. Visualising it directly understates narrow resonators. Undo
+    # the same peak-gain compensation used when the bank was built.
+    gains = np.array([r.gain / max(1.0 - r.r * r.r, 1e-8)
+                      for r in resonators], dtype=float)
+    g_max = gains.max() if gains.size and gains.max() > 1e-10 else 1.0
     gains_norm = gains / g_max
 
     with open(path, "w", newline="", encoding="utf-8") as f:
@@ -829,7 +859,7 @@ def main():
     parser.add_argument("--decay_s",     type=float, default=5.0)
     parser.add_argument("--coupling",    type=float, default=0.30)
     parser.add_argument("--wet_dry",     type=float, default=0.0,
-        help="0=100%% wet resonance, 1=100%% dry original")
+        help="0=100%% wet resonance, 1=100%% dry source routing")
     parser.add_argument("--pitch_mode", choices=["measured", "cloud"], default="measured",
         help="measured=only source-supported peaks; cloud=synthetic geometric fill")
     args = parser.parse_args()
