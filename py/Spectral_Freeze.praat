@@ -3,13 +3,13 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 3.2 (2026) - Unified Cross-Platform Version
+# Version: 3.3 (2026) - reviewed
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
 #   Spectral freeze — captures the spectrum at one or more moments
-#   and sustains it via phase randomization OLA.
+#   and sustains it via overlap-add synthesis with random or coherent phase.
 #
 #   v3: Multi-Freeze mode — captures spectra at N points and
 #   crossfades between them, creating an evolving frozen texture.
@@ -33,6 +33,20 @@
 # Citation:
 #   Cohen, S. (2026). Praat AudioTools.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v3.3:
+#   AUDIO:
+#   - Multi-freeze crossfades are energy-stable; dissimilar spectra no longer
+#     collapse toward silence in the middle of a transition.
+#   - Coherent multi-freeze gives every waypoint its own phase/frequency
+#     trajectory and crossfades coherent streams with equal-power weights.
+#   - Freeze times are true frame centres with safe edge padding; sounds shorter
+#     than the FFT window are supported.
+#   - Preserves mono/stereo/multichannel layouts; peak safety is global.
+#   - Python writes FLOAT WAV.
+#   PRAAT/QA:
+#   - Unique temp/log paths, captured Python errors, effective FFT-window report.
+#   - Multichannel visualisation uses strongest-RMS channels and Nyquist-safe Hz.
 #
 # Changelog v3.2:
 #   - Phase mode: Coherent locks partials to their true frequencies for
@@ -71,13 +85,16 @@ pythonScriptJ$ = replace_regex$(pythonScript$, "\\", "/", 0)
 tempDirRaw$ = temporaryDirectory$ + "/"
 tempDir$ = replace_regex$(tempDirRaw$, "\\", "/", 0)
 
-tempInput$   = tempDir$ + "freeze_input.wav"
-tempOutput$  = tempDir$ + "freeze_output.wav"
-probePy$     = tempDir$ + "freeze_probe.py"
-probeMarker$ = tempDir$ + "freeze_probe.ok"
+runTag$       = string$(sound)
+tempInput$    = tempDir$ + "freeze_" + runTag$ + "_input.wav"
+tempOutput$   = tempDir$ + "freeze_" + runTag$ + "_output.wav"
+tempLog$      = tempDir$ + "freeze_" + runTag$ + "_python.log"
+probePy$      = tempDir$ + "freeze_" + runTag$ + "_probe.py"
+probeMarker$  = tempDir$ + "freeze_" + runTag$ + "_probe.ok"
 
 tempInputJ$   = replace_regex$(tempInput$,   "\\", "/", 0)
 tempOutputJ$  = replace_regex$(tempOutput$,  "\\", "/", 0)
+tempLogJ$     = replace_regex$(tempLog$,     "\\", "/", 0)
 probePyJ$     = replace_regex$(probePy$,     "\\", "/", 0)
 probeMarkerJ$ = replace_regex$(probeMarker$, "\\", "/", 0)
 
@@ -88,6 +105,9 @@ procedure cleanUpTempFiles
     endif
     if fileReadable(tempOutput$)
         deleteFile: tempOutput$
+    endif
+    if fileReadable(tempLog$)
+        deleteFile: tempLog$
     endif
     if fileReadable(probePy$)
         deleteFile: probePy$
@@ -164,8 +184,7 @@ if pythonCmd$ = ""
 endif
 
 # ---- FORM ----
-form Spectral Freeze v3.2
-    comment === Preset ===
+form Spectral Freeze v3.3
     optionmenu Preset: 1
         option Custom
         option Drone (static, pure)
@@ -174,31 +193,23 @@ form Spectral Freeze v3.2
         option Long fade (cinematic)
         option Evolving Landscape (multi-freeze)
         option Vowel Drift (multi-freeze)
-        option Frozen Glissando (multi-freeze, loop)
-    comment === Mode ===
+        option Frozen Spectral Loop (multi-freeze)
     optionmenu Freeze_mode: 1
         option Single freeze point
         option Multi-freeze (evolving texture)
-    comment === Single-freeze point (seconds) ===
     real Freeze_time_s 0.5
-    comment === Multi-freeze settings ===
-    positive Number_of_freeze_points 4
+    integer Number_of_freeze_points 4
     real Crossfade_s 2.0
     real Dwell_s 1.5
     boolean Loop 0
-    comment === Output ===
     positive Duration_s 8.0
-    comment === Analysis ===
     positive Window_ms 80.0
-    comment === Character ===
     real Shimmer 0.15
     optionmenu Phase: 1
         option Random (diffuse)
         option Coherent (tonal)
-    comment === Fades ===
     real Fade_in_s 0.5
     real Fade_out_s 1.0
-    comment === Display ===
     boolean Draw_visualization 1
     boolean Play_result 1
 endform
@@ -275,15 +286,15 @@ elsif preset = 8
     loop = 1
     duration_s = 15.0
     phase = 1
-    presetName$ = "FrozenGlissando"
+    presetName$ = "FrozenSpectralLoop"
 endif
 
 # ---- CLAMP PARAMETERS ----
 if freeze_time_s < 0
     freeze_time_s = 0
 endif
-if freeze_time_s > totalDuration - 0.01
-    freeze_time_s = totalDuration - 0.01
+if freeze_time_s > totalDuration
+    freeze_time_s = totalDuration
 endif
 if number_of_freeze_points < 2
     number_of_freeze_points = 2
@@ -297,6 +308,29 @@ endif
 if dwell_s < 0
     dwell_s = 0
 endif
+if shimmer < 0
+    shimmer = 0
+endif
+if shimmer > 1
+    shimmer = 1
+endif
+if fade_in_s < 0
+    fade_in_s = 0
+endif
+if fade_out_s < 0
+    fade_out_s = 0
+endif
+
+# Python rounds the requested analysis window up to a power of two.
+requestedWindowSamples = round(window_ms / 1000 * sr)
+if requestedWindowSamples < 1
+    requestedWindowSamples = 1
+endif
+fftSamples = 64
+while fftSamples < requestedWindowSamples
+    fftSamples = fftSamples * 2
+endwhile
+effectiveWindowMs = 1000 * fftSamples / sr
 
 # ---- BUILD FREEZE TIMES STRING (multi mode) ----
 freezeTimesStr$ = ""
@@ -344,7 +378,7 @@ endif
 
 # ---- INFO ----
 clearinfo
-writeInfoLine:  "=== Spectral Freeze v3.2 ==="
+writeInfoLine:  "=== Spectral Freeze v3.3 ==="
 appendInfoLine: "Input: ", soundName$, "  (", fixed$(totalDuration, 3), "s)"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Mode:   ", modeLabel$
@@ -364,7 +398,7 @@ else
     endif
 endif
 appendInfoLine: "Duration:    ", fixed$(duration_s, 2), " s"
-appendInfoLine: "Window:      ", fixed$(window_ms, 0), " ms"
+appendInfoLine: "Window:      requested ", fixed$(window_ms, 1), " ms  |  FFT ", fftSamples, " samples = ", fixed$(effectiveWindowMs, 1), " ms"
 appendInfoLine: "Shimmer:     ", fixed$(shimmer, 2)
 appendInfoLine: "Phase:       ", phaseMode$
 appendInfoLine: "Fades:       in ", fixed$(fade_in_s, 2), " s  out ", fixed$(fade_out_s, 2), " s"
@@ -395,6 +429,7 @@ if freeze_mode = 1
         ... + " " + fixed$(fade_out_s, 4)
         ... + " single"
         ... + " " + phaseMode$
+        ... + " > """ + tempLogJ$ + """ 2>&1"
 else
     runSystem_nocheck: pythonCmd$ + " """ + pythonScriptJ$ + """"
         ... + " """ + tempInputJ$ + """"
@@ -410,18 +445,22 @@ else
         ... + " " + fixed$(dwell_s, 4)
         ... + " " + string$(loop)
         ... + " " + phaseMode$
+        ... + " > """ + tempLogJ$ + """ 2>&1"
 endif
 
 # ===========================================================================
 # STAGE 3 — Verify & Import
 # ===========================================================================
 if not fileReadable(tempOutput$)
+    pyErr$ = ""
+    if fileReadable(tempLog$)
+        pyErr$ = readFile$(tempLog$)
+    endif
+    if pyErr$ = ""
+        pyErr$ = "(no Python output captured)"
+    endif
     @cleanUpTempFiles
-    exitScript: "Python spectral freeze failed." + newline$
-        ... + "Possible causes:" + newline$
-        ... + "  - numpy or soundfile not installed" + newline$
-        ... + "  - Python not found in PATH" + newline$
-        ... + "Check the terminal/console for Python error messages."
+    exitScript: "Python spectral freeze failed." + newline$ + newline$ + pyErr$
 endif
 
 appendInfoLine: "[3/4] Importing result..."
@@ -437,6 +476,7 @@ resultSound = selected("Sound")
 # ---- RESULT STATS ----
 selectObject: resultSound
 durOut = Get total duration
+nChannelsOut = Get number of channels
 rms_out = Get root-mean-square: 0, 0
 
 selectObject: sound
@@ -449,23 +489,78 @@ rms_orig = Get root-mean-square: 0, 0
 if draw_visualization
     appendInfoLine: "[4/4] Creating visualization..."
 
+    # Use the strongest-RMS real channel for display only. Processing itself
+    # preserves all channels in Python.
+    if nChannels > 1
+        bestInRms = -1
+        monoInViz = 0
+        for ch from 1 to nChannels
+            selectObject: sound
+            Extract one channel: ch
+            cand = selected("Sound")
+            candRms = Get root-mean-square: 0, 0
+            if candRms > bestInRms
+                if monoInViz <> 0
+                    removeObject: monoInViz
+                endif
+                monoInViz = cand
+                bestInRms = candRms
+            else
+                removeObject: cand
+            endif
+        endfor
+    else
+        selectObject: sound
+        Copy: "freeze_input_viz"
+        monoInViz = selected("Sound")
+    endif
+
+    if nChannelsOut > 1
+        bestOutRms = -1
+        monoOutViz = 0
+        for ch from 1 to nChannelsOut
+            selectObject: resultSound
+            Extract one channel: ch
+            cand = selected("Sound")
+            candRms = Get root-mean-square: 0, 0
+            if candRms > bestOutRms
+                if monoOutViz <> 0
+                    removeObject: monoOutViz
+                endif
+                monoOutViz = cand
+                bestOutRms = candRms
+            else
+                removeObject: cand
+            endif
+        endfor
+    else
+        selectObject: resultSound
+        Copy: "freeze_output_viz"
+        monoOutViz = selected("Sound")
+    endif
+
+    vizMaxHz = sr / 2
+    if vizMaxHz > 5000
+        vizMaxHz = 5000
+    endif
+
     Erase all
     Select outer viewport: 0, 8, 0, 8
 
     # === Title ===
-    Select outer viewport: 0, 8, 0, 0.5
+    Select outer viewport: 0, 8, 0, 0.78
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.6, "half", "##Spectral Freeze v3.2##"
-    Font size: 9
+    Text: 0.5, "centre", 0.74, "half", "##SPECTRAL FREEZE##"
+    Font size: 7
     Colour: "{0.4, 0.4, 0.5}"
-    Text: 0.5, "centre", -1.2, "half", soundName$ + " | " + presetName$ + " | " + modeLabel$ + " | " + phaseMode$ + " | Shimmer: " + fixed$(shimmer, 2)
+    Text: 0.5, "centre", 0.22, "half", soundName$ + " | " + presetName$ + " | " + modeLabel$ + " | " + phaseMode$ + " | Shimmer " + fixed$(shimmer, 2)
 
     # === Input Waveform with freeze markers ===
-    Select outer viewport: 0, 8, 0.6, 1.6
-    Select inner viewport: 0.6, 7.7, 0.65, 1.55
-    selectObject: sound
+    Select outer viewport: 0, 8, 0.88, 1.82
+    Select inner viewport: 0.6, 7.7, 0.96, 1.76
+    selectObject: monoInViz
     Colour: "{0.5, 0.5, 0.5}"
     Draw: 0, 0, 0, 0, "no", "Curve"
 
@@ -510,39 +605,33 @@ if draw_visualization
     endif
 
     # === Output Waveform ===
-    Select outer viewport: 0, 8, 1.6, 2.4
-    Select inner viewport: 0.6, 7.7, 1.65, 2.35
-    selectObject: resultSound
+    Select outer viewport: 0, 8, 1.90, 2.72
+    Select inner viewport: 0.6, 7.7, 1.97, 2.66
+    selectObject: monoOutViz
     Colour: "{0.3, 0.6, 0.5}"
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 7
     Text left: "yes", "Frozen"
-    Text bottom: "yes", "Time (s)"
     Text top: "no", fixed$(durOut, 2) + " s"
 
     # === Input Spectrogram with freeze line(s) ===
-    Select outer viewport: 0, 8, 2.5, 3.8
-    Select inner viewport: 0.6, 7.7, 2.6, 3.7
+    Select outer viewport: 0, 8, 2.84, 4.12
+    Select inner viewport: 0.6, 7.7, 2.94, 4.03
 
-    selectObject: sound
-    if nChannels > 1
-        Extract one channel: 1
-        tmpOrig = selected("Sound")
-    else
-        Copy: "tmpOrig"
-        tmpOrig = selected("Sound")
-    endif
+    selectObject: monoInViz
+    Copy: "tmpOrig"
+    tmpOrig = selected("Sound")
 
-    To Spectrogram: 0.005, 5000, 0.002, 20, "Gaussian"
+    To Spectrogram: 0.005, vizMaxHz, 0.01, 20, "Gaussian"
     specOrig = selected("Spectrogram")
-    Paint: 0, 0, 0, 5000, 100, "yes", 50, 6, 0, "no"
+    Paint: 0, 0, 0, vizMaxHz, 100, "yes", 50, 6, 0, "no"
 
     if freeze_mode = 1
         Colour: "{0.8, 0.3, 0.3}"
         Line width: 2
-        Draw line: freeze_time_s, 0, freeze_time_s, 5000
+        Draw line: freeze_time_s, 0, freeze_time_s, vizMaxHz
         Line width: 1
     else
         for fp from 1 to nFP
@@ -555,7 +644,7 @@ if draw_visualization
             bCol = 0.8 - 0.6 * (fp - 1) / max(nFP - 1, 1)
             Colour: "{" + fixed$(rCol, 2) + ", 0.3, " + fixed$(bCol, 2) + "}"
             Line width: 2
-            Draw line: fpTime, 0, fpTime, 5000
+            Draw line: fpTime, 0, fpTime, vizMaxHz
             Line width: 1
         endfor
     endif
@@ -573,40 +662,34 @@ if draw_visualization
     removeObject: specOrig, tmpOrig
 
     # === Frozen Spectrogram ===
-    Select outer viewport: 0, 8, 3.8, 5.1
-    Select inner viewport: 0.6, 7.7, 3.9, 5.0
+    Select outer viewport: 0, 8, 4.22, 5.48
+    Select inner viewport: 0.6, 7.7, 4.31, 5.39
 
-    selectObject: resultSound
+    selectObject: monoOutViz
     Copy: "tmpFreeze"
     tmpFreeze = selected("Sound")
 
-    To Spectrogram: 0.005, 5000, 0.002, 20, "Gaussian"
+    To Spectrogram: 0.005, vizMaxHz, 0.01, 20, "Gaussian"
     specFreeze = selected("Spectrogram")
-    Paint: 0, 0, 0, 5000, 100, "yes", 50, 6, 0, "no"
+    Paint: 0, 0, 0, vizMaxHz, 100, "yes", 50, 6, 0, "no"
 
     Colour: "Black"
     Draw inner box
     Font size: 7
     Text left: "yes", "Freq (Hz)"
-    Text bottom: "yes", "Time (s)"
     Text top: "no", "Frozen Spectrogram"
 
     removeObject: specFreeze, tmpFreeze
 
     # === Frozen Frame Spectrum (snapshot) ===
-    Select outer viewport: 0, 4, 5.2, 6.8
-    Select inner viewport: 0.6, 3.7, 5.35, 6.7
+    Select outer viewport: 0, 4, 5.66, 6.92
+    Select inner viewport: 0.6, 3.7, 5.77, 6.82
 
-    selectObject: sound
-    if nChannels > 1
-        Extract one channel: 1
-        tmpSlice = selected("Sound")
-    else
-        Copy: "tmpSlice"
-        tmpSlice = selected("Sound")
-    endif
+    selectObject: monoInViz
+    Copy: "tmpSlice"
+    tmpSlice = selected("Sound")
 
-    To Spectrogram: 0.005, 5000, 0.002, 20, "Gaussian"
+    To Spectrogram: 0.005, vizMaxHz, 0.01, 20, "Gaussian"
     specSlice = selected("Spectrogram")
 
     if freeze_mode = 1
@@ -619,7 +702,7 @@ if draw_visualization
     selectObject: sliceSpec
     Colour: "{0.4, 0.5, 0.8}"
     Line width: 2
-    Draw: 0, 5000, 0, 0, "no"
+    Draw: 0, vizMaxHz, 0, 0, "no"
     Line width: 1
 
     Colour: "Black"
@@ -636,10 +719,10 @@ if draw_visualization
     removeObject: specSlice, sliceSpec, tmpSlice
 
     # === Output Intensity Envelope ===
-    Select outer viewport: 4, 8, 5.2, 6.8
-    Select inner viewport: 4.4, 7.7, 5.35, 6.7
+    Select outer viewport: 4, 8, 5.66, 6.92
+    Select inner viewport: 4.4, 7.7, 5.77, 6.82
 
-    selectObject: resultSound
+    selectObject: monoOutViz
     Copy: "tmpOutI"
     tmpOutI = selected("Sound")
 
@@ -672,8 +755,8 @@ if draw_visualization
     removeObject: intOut, tmpOutI
 
     # === Summary Panel ===
-    Select outer viewport: 0, 8, 7.0, 8.0
-    Select inner viewport: 0.6, 7.7, 7.1, 7.9
+    Select outer viewport: 0, 8, 7.08, 8.0
+    Select inner viewport: 0.6, 7.7, 7.17, 7.90
 
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.95, 0.95, 0.95}", 0, 1, 0, 1
@@ -684,7 +767,7 @@ if draw_visualization
     Font size: 6
     Colour: "{0.3, 0.3, 0.3}"
     if freeze_mode = 1
-        Text: 0.05, "left", 0.55, "half", "Freeze: " + fixed$(freeze_time_s, 3) + "s | Window: " + fixed$(window_ms, 0) + "ms | Shimmer: " + fixed$(shimmer, 2)
+        Text: 0.05, "left", 0.55, "half", "Freeze: " + fixed$(freeze_time_s, 3) + "s | FFT window: " + fixed$(effectiveWindowMs, 1) + "ms | Shimmer: " + fixed$(shimmer, 2)
     else
         Text: 0.05, "left", 0.55, "half", "Points: " + string$(nFP) + " | Xfade: " + fixed$(crossfade_s, 2) + "s | Dwell: " + fixed$(dwell_s, 2) + "s | Loop: " + string$(loop)
     endif
@@ -696,13 +779,15 @@ if draw_visualization
     Font size: 6
     Colour: "{0.3, 0.3, 0.3}"
     Text: 0.65, "left", 0.55, "half", "In: " + fixed$(totalDuration, 2) + "s | Out: " + fixed$(durOut, 2) + "s | SR: " + string$(sr) + " Hz"
-    Text: 0.65, "left", 0.3, "half", "Channels: " + string$(nChannels) + " | Preset: " + presetName$
+    Text: 0.65, "left", 0.3, "half", "Channels: " + string$(nChannels) + " -> " + string$(nChannelsOut) + " | Preset: " + presetName$
 
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
 
     Font size: 10
     Colour: "Black"
+
+    removeObject: monoInViz, monoOutViz
 else
     appendInfoLine: "[4/4] Visualization skipped."
 endif
