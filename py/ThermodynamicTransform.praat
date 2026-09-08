@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 2.3 (2026)
+# Version: 2.4 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -11,7 +11,8 @@
 #   Thermodynamic event relocation with AI state discovery.
 #   Analyzes acoustic structure -> discovers phase regimes via ML ->
 #   segments complete time-domain events -> relocates/duplicates/evaporates
-#   events according to Crystal/Fluid/Gas/Plasma rules.
+#   events according to Crystal/Fluid/Gas/Plasma rules. Exact Preserve_duration
+#   may trim/pad only the final render boundary, with a short anti-click fade.
 #   Powered by Python (numpy, scipy, scikit-learn, soundfile).
 #
 #   Parameters:
@@ -25,6 +26,21 @@
 #   Cohen, S. (2026). Praat AudioTools: An Offline Analysis-Resynthesis
 #   Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v2.4 (2026):
+#   - CONTROL: Thermo_intensity=0 + Convection=0 is now sample-exact identity,
+#     including sources whose peak exceeds 0.95.
+#   - THERMODYNAMICS: regime transitions now couple Entropy, Temperature and
+#     Order; T/O are no longer analysis-only side fields.
+#   - AI MODE B: predictive instability is based on future-prediction residuals.
+#   - AI BYPASS: AI_strength=0 skips model fitting entirely.
+#   - SEGMENTATION: short final tails merge backward to honor the 200 ms minimum
+#     event duration whenever the input duration permits it.
+#   - RELOCATION/STATS: Plasma evaporation now works on small high-intensity event
+#     sets; relocation counts ignore mere slot shifts caused by dup/evap operations.
+#   - PRESERVE DURATION: unavoidable final trim/pad fitting uses a short fade to
+#     prevent an end discontinuity.
+#   - ROBUSTNESS: adaptive short-input STFT and hop-scaled thermodynamic energy.
 #
 # Changelog v2.3 (2026):
 #   - CORRECTNESS: exact Praat/STFT time-grid alignment; silence no longer
@@ -149,7 +165,7 @@ endproc
 @cleanUpTempFiles
 
 # ---- FORM ----
-form Thermodynamic Transform v2.3
+form Thermodynamic Transform v2.4
     comment === Preset ===
     optionmenu Preset: 1
         option Custom
@@ -235,7 +251,7 @@ endif
 
 # ---- INFO ----
 clearinfo
-writeInfoLine:  "=== Thermodynamic Transform v2.3 (Event Relocation) ==="
+writeInfoLine:  "=== Thermodynamic Transform v2.4 (Event Relocation) ==="
 appendInfoLine: "Input: ", soundName$
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
@@ -388,8 +404,10 @@ harmObj = To Harmonicity (cc): 0.01, 75, 0.1, 1.0
 selectObject: analysisMono
 intObj = To Intensity: 100, 0.01, "yes"
 
+# Keep the formant ceiling safely below Nyquist on low-rate material.
+formantCeil = min(5500, 0.45 * sr)
 selectObject: analysisMono
-formantObj = To Formant (burg): 0.01, 5, 5500, 0.025, 50
+formantObj = To Formant (burg): 0.01, 5, formantCeil, 0.025, 50
 
 # ---- Build feature table ----
 Create Table with column names: "features", nFrames,
@@ -633,7 +651,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.6, "half", "##Thermodynamic Event Relocation v2.3##"
+    Text: 0.5, "centre", 0.6, "half", "##Thermodynamic Event Relocation v2.4##"
     Font size: 9
     Colour: "{0.4, 0.4, 0.5}"
     Text: 0.5, "centre", -1.18, "half", soundName$ + " | " + presetName$ + " | AI: " + aiModeLetter$ + " | Seed: " + string$(seed)

@@ -1,6 +1,6 @@
 """
 thermodynamic_transform.py — Thermodynamic event relocation engine
-Version: 2.3
+Version: 2.4
 
 Part of Praat AudioTools plugin
 Author: Shai Cohen, Department of Music, Bar-Ilan University
@@ -19,7 +19,29 @@ Architecture:
     Stage 5 — Time-domain reconstruction with click-free splicing
 
 No spectral smoothing, phase randomization, STFT transforms, or time stretching.
-All operations are on complete audio events in the time domain.
+Relocation operates on complete audio events in the time domain.  When exact
+preserve_duration is requested after duplication/evaporation/crossfade overlap,
+only the final render boundary may be trimmed or zero-padded (with a short fade).
+
+Changelog v2.4 (2026):
+    - CONTROL INVARIANT: Thermo_intensity=0 + Convection=0 is now sample-exact
+      identity, including full-scale inputs; safety normalization is bypassed for
+      a true identity render.
+    - THERMODYNAMIC COUPLING: regime transitions now use a phase-drive field that
+      combines entropy S, temperature T and inverse order (1-O). Previously T and O
+      were computed but did not affect the state machine.
+    - MODE B CORRECTNESS: Predictive Instability now uses future-prediction residual
+      magnitude as the instability cue instead of using the predicted entropy itself.
+    - AI OFF means OFF: ai_strength=0 skips GMM/PCA/Ridge discovery completely.
+    - SEGMENTATION: a short final tail is merged backward so the 200 ms minimum event
+      duration is honored whenever the total sound is at least 200 ms.
+    - RELOCATION/STATS: strong Plasma settings can evaporate one event even in small
+      2-3 event Plasma sets; relocation counts no longer inflate merely because a
+      duplicate/evaporation shifts later absolute output slots.
+    - PRESERVE DURATION: trim/pad corrections receive a short terminal fade so exact
+      duration fitting cannot create a hard end discontinuity.
+    - ROBUSTNESS: short/low-rate inputs use an adaptive STFT size; energy-budget rates
+      scale with hop_sec so non-10-ms callers retain the same time constants.
 
 Changelog v2.3 (2026):
     - CORRECTNESS: exact time-grid alignment for spectral features; silent
@@ -151,7 +173,10 @@ def compute_spectral_features(audio, sr, times):
     import numpy as np
     from scipy.signal import stft as scipy_stft
 
-    n_fft = 2048
+    # Keep the analysis valid for short / low-sample-rate inputs. scipy.stft
+    # silently shortens nperseg when it exceeds the signal length, but then the
+    # previously computed noverlap can become invalid. Choose a valid FFT size up front.
+    n_fft = max(2, min(2048, len(audio)))
     half = n_fft // 2 + 1
     freqs = np.fft.rfftfreq(n_fft, d=1.0 / sr)
     n_frames = len(times)
@@ -406,12 +431,13 @@ def ai_mode_a(X_norm, S0, seed, n_clusters=6):
 
 
 def ai_mode_b(X_norm, S0, hop_sec, seed):
-    """Mode B — Predictive instability via Ridge regression.
+    """Mode B — predictive instability via Ridge future-prediction error.
 
-    v2.2: Batched the per-frame predict() call into a single
-    matrix prediction. Output is mathematically identical to v2.1
-    — same Ridge fit, same per-frame predictions, just computed in
-    one matmul instead of N separate sklearn calls.
+    A 0.5 s feature history predicts entropy 0.2 s ahead.  The absolute
+    prediction residual is the instability / surprise cue: predictable passages
+    remain low, while locally hard-to-predict passages push the regime mapping
+    upward.  The residual is blended with baseline entropy before GMM clusters
+    are mapped to regimes.
     """
     import numpy as np
     from sklearn.linear_model import Ridge
@@ -420,10 +446,8 @@ def ai_mode_b(X_norm, S0, hop_sec, seed):
     lookback = max(1, int(0.5 / hop_sec))
     lookahead = max(1, int(0.2 / hop_sec))
 
-    # Build training matrix once.
     indices = np.arange(lookback, n - lookahead)
     if len(indices) == 0:
-        # Too short for prediction — fall back to clustering on S0
         return ai_mode_a(X_norm, S0, seed)
 
     X_all = np.array([X_norm[i - lookback:i].flatten() for i in indices])
@@ -431,19 +455,18 @@ def ai_mode_b(X_norm, S0, hop_sec, seed):
 
     model = Ridge(alpha=1.0, random_state=seed)
     model.fit(X_all, y_all)
-
-    # v2.2: single batched prediction over the same matrix.
-    # Was looping model.predict() per frame which incurs ~50us
-    # sklearn dispatch overhead per call; for n~3000 frames this
-    # accumulates to ~150ms wasted in Python.
     preds = model.predict(X_all)
 
-    S_pred = S0.copy()
-    S_pred[indices] = preds
-    S_pred = np.clip(S_pred, 0, 1)
+    # The old implementation inserted the prediction itself into S0.  That did
+    # not measure instability.  Use future prediction ERROR instead, aligned to
+    # the frame that was predicted.
+    residual = np.clip(np.abs(preds - y_all), 0.0, 1.0)
+    surprise = np.zeros(n, dtype=np.float64)
+    surprise[indices + lookahead] = residual
+    surprise = gaussian_smooth(surprise, max(1, int(round(0.05 / hop_sec))))
 
-    Z, C, n_cl = ai_mode_a(X_norm, S_pred, seed)
-    return Z, C, n_cl
+    S_predictive = np.clip(0.65 * S0 + 0.35 * surprise, 0.0, 1.0)
+    return ai_mode_a(X_norm, S_predictive, seed)
 
 
 def ai_mode_c(X_norm, S0, seed, hop_sec):
@@ -505,6 +528,14 @@ def run_ai(X_norm, S0, O0, T0, ai_mode_str, ai_strength, seed, hop_sec):
     """Run the selected AI mode and blend with physics fields."""
     import numpy as np
 
+    a = float(np.clip(ai_strength, 0.0, 1.0))
+    if a <= 1e-12:
+        # AI_strength=0 must be a genuine bypass, not merely a zero-weight blend
+        # after an unnecessary model fit (which could still fail on degenerate input).
+        Z_base = np.digitize(S0, [0.20, 0.42, 0.65]).astype(int)
+        return (S0.copy(), T0.copy(), O0.copy(), Z_base,
+                np.zeros(len(S0), dtype=np.float64), 0)
+
     mode = ai_mode_str.upper()
     if mode == "B":
         Z_ai, C_ai, n_cl = ai_mode_b(X_norm, S0, hop_sec, seed)
@@ -519,7 +550,6 @@ def run_ai(X_norm, S0, O0, T0, ai_mode_str, ai_strength, seed, hop_sec):
         for z in Z_ai])
     O_ai = 1.0 - S_ai
 
-    a = ai_strength
     S = (1 - a) * S0 + a * S_ai
     O = (1 - a) * O0 + a * O_ai
     T = T0 * (1 + 0.3 * a * np.abs(S - S0))
@@ -534,7 +564,12 @@ def run_ai(X_norm, S0, O0, T0, ai_mode_str, ai_strength, seed, hop_sec):
 
 def thermodynamic_state_machine(S, T, O, Z_ai, C_ai,
                                 memory_param, thermo_intensity, ai_strength, hop_sec):
-    """State machine with hysteresis, memory, and energy budget."""
+    """State machine with hysteresis, memory, and energy budget.
+
+    Regime drive is genuinely thermodynamic: entropy contributes most, temperature
+    raises phase energy, and order stabilizes lower regimes.  The convex weighting
+    keeps the field bounded while preserving entropy as the dominant cue.
+    """
     import numpy as np
 
     n = len(S)
@@ -544,16 +579,21 @@ def thermodynamic_state_machine(S, T, O, Z_ai, C_ai,
     thresh_heat = np.array([0.20, 0.42, 0.65])
     thresh_cool = np.array([0.12, 0.30, 0.50])
 
+    phase_drive = np.clip(0.60 * S + 0.25 * T + 0.15 * (1.0 - O), 0.0, 1.0)
     mem_window = max(3, int(memory_param * 2.0 / hop_sec))
-    S_mem = gaussian_smooth(S, mem_window)
+    drive_mem = gaussian_smooth(phase_drive, mem_window)
 
     current_regime = REGIME_CRYSTAL
     heat = 0.0
     dwell_time = 0.0
 
+    # Preserve the original 10 ms calibration while making other hop sizes
+    # represent the same amount of heating/cooling per second.
+    rate_scale = max(hop_sec, 1e-6) / 0.010
+
     for i in range(n):
-        s = S_mem[i]
-        ds = S_mem[i] - S_mem[max(0, i - 1)]
+        s = drive_mem[i]
+        ds = drive_mem[i] - drive_mem[max(0, i - 1)]
         heating = ds > 0
 
         min_dwell = memory_param * 0.15
@@ -597,8 +637,8 @@ def thermodynamic_state_machine(S, T, O, Z_ai, C_ai,
 
         Z[i] = current_regime
 
-        heat_rate = H_HEAT_RATES[current_regime] * thermo_intensity
-        cool_rate = H_COOL_BASE * (1.0 - s) * (1 + dwell_time * 0.5)
+        heat_rate = H_HEAT_RATES[current_regime] * thermo_intensity * rate_scale
+        cool_rate = H_COOL_BASE * (1.0 - s) * (1 + dwell_time * 0.5) * rate_scale
         heat = max(0, heat + heat_rate - cool_rate)
         H[i] = heat
 
@@ -723,7 +763,12 @@ def segment_events(novelty, S, T, O, Z, sr, hop_sec, n_samples):
         if b - merged[-1] >= min_frames:
             merged.append(b)
     if merged[-1] != n_frames:
-        merged.append(n_frames)
+        tail = n_frames - merged[-1]
+        if tail < min_frames and len(merged) > 1:
+            # Drop the last candidate boundary: merge a too-short tail backward.
+            merged[-1] = n_frames
+        else:
+            merged.append(n_frames)
     boundaries = merged
 
     # --- Enforce maximum duration ---
@@ -955,7 +1000,11 @@ def _apply_plasma_rule(order, events, entropies, regimes, intensity):
 
     evap_fraction = intensity * 0.3
     n_plasma = len(plasma_entries)
-    n_evap = max(0, int(n_plasma * evap_fraction))
+    # Nearest-integer event count: with only 2-3 Plasma events, floor() made
+    # even maximum intensity evaporate none (e.g. 3 * 0.30 -> int(0.9) == 0).
+    # Rounding keeps the operation deterministic while letting strong settings
+    # have an audible effect on small event sets.
+    n_evap = max(0, min(n_plasma, int(round(n_plasma * evap_fraction))))
     evap_set = set()
     if n_evap > 0:
         by_entropy = sorted(plasma_entries,
@@ -1005,6 +1054,33 @@ def _apply_convection(order, events, entropies, convection):
 
     keys.sort(key=lambda x: x[0])
     return [idx for _, idx in keys]
+
+
+
+
+def order_diagnostics(order, n_events):
+    """Return (relocated, evaporated, duplicated) without insertion-shift inflation.
+
+    Relocated means a surviving original event changed its RELATIVE rank among the
+    surviving unique events.  Pure duplication or evaporation no longer makes every
+    later event look relocated merely because its absolute output slot shifted.
+    """
+    seen = set()
+    unique_order = []
+    for idx in order:
+        if idx not in seen:
+            seen.add(idx)
+            unique_order.append(idx)
+
+    original_survivors = [idx for idx in range(n_events) if idx in seen]
+    original_rank = {idx: pos for pos, idx in enumerate(original_survivors)}
+    n_relocated = sum(
+        1 for pos, idx in enumerate(unique_order)
+        if original_rank.get(idx, pos) != pos
+    )
+    n_evaporated = max(0, n_events - len(unique_order))
+    n_duplicated = max(0, len(order) - len(unique_order))
+    return n_relocated, n_evaporated, n_duplicated
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1094,18 +1170,41 @@ def reconstruct(clips, order, events, sr, original_length, preserve_duration):
 
     output = output[:write_pos]
 
+    identity_order = (len(order) == len(events) and
+                      order == list(range(len(events))))
+
     if preserve_duration:
         if len(output) > original_length:
             output = output[:original_length]
+            # Exact-duration cropping can cut through a relocated event.  A short
+            # terminal fade avoids turning that necessary boundary fit into a click.
+            nf = min(xfade_nom, len(output))
+            if nf > 1:
+                fade = np.linspace(1.0, 0.0, nf, dtype=np.float32)
+                if multichannel:
+                    output[-nf:, :] *= fade[:, None]
+                else:
+                    output[-nf:] *= fade
         elif len(output) < original_length:
+            # Fade the actual transformed tail before zero-padding.  This keeps the
+            # exact requested duration without a hard waveform-to-zero discontinuity.
+            nf = min(xfade_nom, len(output))
+            if nf > 1:
+                fade = np.linspace(1.0, 0.0, nf, dtype=np.float32)
+                if multichannel:
+                    output[-nf:, :] *= fade[:, None]
+                else:
+                    output[-nf:] *= fade
             pad = original_length - len(output)
             if multichannel:
                 output = np.pad(output, ((0, pad), (0, 0)))
             else:
                 output = np.pad(output, (0, pad))
 
+    # A true identity render must remain sample-exact, even if the source peak is
+    # above the normal 0.95 safety ceiling.  Only transformed renders are limited.
     peak = float(np.max(np.abs(output))) if output.size else 0.0
-    if peak > 0.95:
+    if (not identity_order) and peak > 0.95:
         output = output * (0.95 / peak)
 
     n_crossfades = int(sum(1 for ov in overlaps if ov > 0))
@@ -1136,11 +1235,7 @@ def write_stats_file(path, Z, S, T, ai_mode_str, n_clusters,
     transitions = int(np.sum(np.diff(Z) != 0))
 
     n_events = len(events)
-    n_relocated = sum(
-        1 for idx in range(n_events)
-        if idx in order and order.index(idx) != idx)
-    n_evaporated = max(0, n_events - len(set(order)))
-    n_duplicated = max(0, len(order) - len(set(order)))
+    n_relocated, n_evaporated, n_duplicated = order_diagnostics(order, n_events)
     durations = [e["duration"] for e in events]
 
     with open(path, "w") as f:
@@ -1274,12 +1369,7 @@ def main():
     order = relocate_events(events, thermo_int, convection)
 
     n_events = len(events)
-    n_unique_in_order = len(set(order))
-    n_relocated = sum(
-        1 for idx in range(n_events)
-        if idx in order and order.index(idx) != idx)
-    n_evaporated = max(0, n_events - n_unique_in_order)
-    n_duplicated = max(0, len(order) - n_unique_in_order)
+    n_relocated, n_evaporated, n_duplicated = order_diagnostics(order, n_events)
 
     print("    Relocated: %d/%d  |  Evaporated: %d  |  Duplicated: %d"
           % (n_relocated, n_events, n_evaporated, n_duplicated))
