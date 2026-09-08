@@ -3,7 +3,7 @@
 # Praat AudioTools - praat_spectral_gen.py
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
-# Version: 1.3 (2026)
+# Version: 1.4.1 (2026)
 # License: MIT License
 #
 # Description:
@@ -45,7 +45,7 @@ except ImportError:
     HAS_SCIPY = False
 
 
-VERSION = "1.3"
+VERSION = "1.4.1"
 
 
 def validated_chunk_size(chunk_size, hop_length):
@@ -246,7 +246,7 @@ def analyse_corpus(waveforms, sr, n_fft, hop, chunk_size):
 # =============================================================================
 
 def _profile_for_frame(profile_bank, mean_profile, std_profile, variation, rng):
-    """Variation law: 0 -> corpus mean, 1 -> full corpus-frame variation."""
+    """Variation law: 0 -> corpus mean, 1 -> maximum learned frame variation."""
     v = float(np.clip(variation, 0.0, 1.0))
     if v <= 0.0 or len(profile_bank) == 0:
         return mean_profile
@@ -344,37 +344,49 @@ def generate_stereo(profile_bank, mean_profile, mean_envelope, canonical_freq,
 
 
 def _mean_mag_profile(audio, sr, canonical_freq, frame_size=2048, hop=512):
-    """Mean magnitude on canonical_freq for QC/visualisation."""
-    if audio.ndim > 1:
-        rms = np.sqrt(np.mean(audio.astype(np.float64) ** 2, axis=0))
-        audio = audio[:, int(np.argmax(rms))]
+    """Mean stereo-aware magnitude profile on canonical_freq for QC/visualisation.
+
+    Multichannel output is measured by averaging channel magnitudes per frame,
+    rather than choosing one channel.  The generator gives L/R independent phase
+    but a shared spectral trajectory, so this estimates the rendered timbral
+    profile without phase cancellation or arbitrary channel selection.
+    """
     audio = np.asarray(audio, dtype=np.float32)
-    frame_size = min(frame_size, max(64, len(audio)))
+    if audio.ndim == 1:
+        audio = audio[:, None]
+    if audio.ndim != 2:
+        raise ValueError("audio must be mono or multichannel")
+
+    frame_size = min(frame_size, max(64, audio.shape[0]))
     if frame_size < 2:
         return np.zeros_like(canonical_freq, dtype=np.float32)
     window = np.hanning(frame_size)
     mags = []
-    nframes = max(1, int(math.ceil(max(0, len(audio)-frame_size) / float(hop))) + 1)
+    nframes = max(1, int(math.ceil(max(0, audio.shape[0]-frame_size) / float(hop))) + 1)
     fsrc = np.fft.rfftfreq(frame_size, d=1.0/sr)
     for i in range(nframes):
-        fr = audio[i*hop:i*hop+frame_size]
+        fr = audio[i*hop:i*hop+frame_size, :]
         if len(fr) < frame_size:
-            fr = np.pad(fr, (0, frame_size-len(fr)))
-        mag = np.abs(np.fft.rfft(fr*window))
-        mags.append(np.interp(canonical_freq, fsrc, mag))
+            fr = np.pad(fr, ((0, frame_size-len(fr)), (0, 0)))
+        per_ch = []
+        for ch in range(fr.shape[1]):
+            mag = np.abs(np.fft.rfft(fr[:, ch] * window))
+            per_ch.append(np.interp(canonical_freq, fsrc, mag))
+        mags.append(np.mean(np.asarray(per_ch), axis=0))
     return np.mean(np.asarray(mags), axis=0).astype(np.float32)
 
 
 def _rms_envelope(audio, n_points=200):
-    if audio.ndim > 1:
-        audio = audio[:, 0]
+    """Normalised multichannel-energy envelope for rendered-output QC."""
     audio = np.asarray(audio, dtype=np.float64)
-    if len(audio) == 0:
+    if audio.ndim == 1:
+        audio = audio[:, None]
+    if audio.ndim != 2 or audio.shape[0] == 0:
         return np.zeros(n_points, dtype=np.float32)
-    edges = np.linspace(0, len(audio), n_points + 1).astype(int)
+    edges = np.linspace(0, audio.shape[0], n_points + 1).astype(int)
     vals = np.zeros(n_points, dtype=np.float64)
     for i in range(n_points):
-        seg = audio[edges[i]:edges[i+1]]
+        seg = audio[edges[i]:edges[i+1], :]
         if len(seg):
             vals[i] = np.sqrt(np.mean(seg**2))
     pk = vals.max() if len(vals) else 0.0
@@ -383,33 +395,69 @@ def _rms_envelope(audio, n_points=200):
     return vals.astype(np.float32)
 
 
+def _cosine_similarity(a, b):
+    a = np.asarray(a, dtype=np.float64)
+    b = np.asarray(b, dtype=np.float64)
+    denom = np.linalg.norm(a) * np.linalg.norm(b)
+    return float(np.dot(a, b) / denom) if denom > 1e-12 else 0.0
+
+
 def write_analysis_csv(profile_path, envelope_path, canonical_freq, mean_profile,
-                       mean_envelope, output, sr):
+                       mean_envelope, output, sr, stats):
     out_profile = _mean_mag_profile(output, sr, canonical_freq,
                                     frame_size=min(2048, max(64, len(output))), hop=512)
     cp = mean_profile.astype(np.float64)
     op = out_profile.astype(np.float64)
     cp /= max(float(cp.max()), 1e-12)
     op /= max(float(op.max()), 1e-12)
+
+    spectral_cos = _cosine_similarity(cp, op)
+    corpus_centroid = float(np.sum(canonical_freq * cp) / max(np.sum(cp), 1e-12))
+    output_centroid = float(np.sum(canonical_freq * op) / max(np.sum(op), 1e-12))
+
     with open(profile_path, "w", encoding="utf-8") as f:
         f.write("frequency_hz,corpus_mean,output_mean\n")
         for hz, a, b in zip(canonical_freq, cp, op):
             f.write(f"{hz:.9g},{a:.9g},{b:.9g}\n")
 
     out_env = _rms_envelope(output, len(mean_envelope))
+    env_a = mean_envelope.astype(np.float64)
+    env_b = out_env.astype(np.float64)
+    env_cos = _cosine_similarity(env_a, env_b)
+    if np.std(env_a) > 0.02 and np.std(env_b) > 0.02:
+        env_corr = float(np.corrcoef(env_a, env_b)[0, 1])
+    else:
+        env_corr = float("nan")
+
     with open(envelope_path, "w", encoding="utf-8") as f:
         f.write("time_norm,learned_envelope,output_rms\n")
         for i, (a, b) in enumerate(zip(mean_envelope, out_env)):
             x = i / max(1, len(mean_envelope)-1)
             f.write(f"{x:.9g},{float(a):.9g},{float(b):.9g}\n")
 
-    # QC metrics
-    denom = np.linalg.norm(cp) * np.linalg.norm(op)
-    spectral_cos = float(np.dot(cp, op) / denom) if denom > 1e-12 else 0.0
-    env_a = mean_envelope.astype(np.float64)
-    env_b = out_env.astype(np.float64)
-    env_corr = float(np.corrcoef(env_a, env_b)[0,1]) if np.std(env_a)>1e-9 and np.std(env_b)>1e-9 else 0.0
-    return spectral_cos, env_corr
+    return spectral_cos, env_cos, env_corr, corpus_centroid, output_centroid
+
+
+def write_summary_csv(path, stats):
+    """Write one row of run-level metadata for the Praat visualization."""
+    fields = [
+        "files_used", "files_skipped", "corpus_duration_s",
+        "profile_bank_size", "corpus_centroid_hz", "output_centroid_hz",
+        "spectral_match", "envelope_match",
+    ]
+    values = [
+        int(stats.get("files_used", 0)),
+        int(stats.get("files_skipped", 0)),
+        float(stats.get("corpus_duration_used_s", 0.0)),
+        int(stats.get("profile_bank_size", 0)),
+        float(stats.get("corpus_spectral_centroid_hz", 0.0)),
+        float(stats.get("output_spectral_centroid_hz", 0.0)),
+        float(stats.get("spectral_profile_cosine", 0.0)),
+        float(stats.get("envelope_match_cosine", 0.0)),
+    ]
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(",".join(fields) + "\n")
+        f.write(",".join(str(v) for v in values) + "\n")
 
 
 # =============================================================================
@@ -443,9 +491,10 @@ def main():
                          ">= 2 × hop_length). Controls temporal grain: smaller = "
                          "more fluttery, larger = smoother. Defaults to n_fft.")
     ap.add_argument("--variation", type=float, default=0.5,
-                    help="0 = corpus mean profile, 1 = full corpus-frame variation")
+                    help="0 = corpus mean profile, 1 = maximum learned frame variation")
     ap.add_argument("--profile_csv", type=str, default=None)
     ap.add_argument("--envelope_csv", type=str, default=None)
+    ap.add_argument("--summary_csv", type=str, default=None)
     args = ap.parse_args()
 
     # chunk_size defaults to n_fft; validate before doing any work
@@ -507,12 +556,18 @@ def main():
         stats["output_duration"] = round(audio.shape[0] / args.sr, 3)
         stats["output_peak"] = round(float(np.max(np.abs(audio))), 4)
         if args.profile_csv and args.envelope_csv:
-            spectral_cos, env_corr = write_analysis_csv(
+            spectral_cos, env_match, env_corr, corpus_centroid, output_centroid = write_analysis_csv(
                 args.profile_csv, args.envelope_csv, canonical_freq, mean_profile,
-                mean_envelope, audio, args.sr
+                mean_envelope, audio, args.sr, stats
             )
             stats["spectral_profile_cosine"] = round(spectral_cos, 6)
-            stats["envelope_correlation"] = round(env_corr, 6)
+            stats["envelope_match_cosine"] = round(env_match, 6)
+            stats["envelope_correlation"] = (round(env_corr, 6)
+                                              if np.isfinite(env_corr) else "undefined")
+            stats["corpus_spectral_centroid_hz"] = round(corpus_centroid, 2)
+            stats["output_spectral_centroid_hz"] = round(output_centroid, 2)
+        if args.summary_csv:
+            write_summary_csv(args.summary_csv, stats)
         stats["total_time_s"] = round(elapsed, 2)
 
         print(f"[5/5] Done in {elapsed:.1f}s", flush=True)

@@ -2,7 +2,7 @@
 # Praat AudioTools - Spectral_Noise_Shaping.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
-# Version: 1.3 (2026) - reviewed
+# Version: 1.4.1 (2026) - folder chooser + robust visualization summary
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -42,6 +42,7 @@ resultWav$   = tempDir$ + "specgen_" + runTag$ + "_output.wav"
 statsTxt$    = tempDir$ + "specgen_" + runTag$ + "_stats.txt"
 profileCSV$  = tempDir$ + "specgen_" + runTag$ + "_profile.csv"
 envelopeCSV$ = tempDir$ + "specgen_" + runTag$ + "_envelope.csv"
+summaryCSV$  = tempDir$ + "specgen_" + runTag$ + "_summary.csv"
 pyLog$       = tempDir$ + "specgen_" + runTag$ + "_python.log"
 probePy$     = tempDir$ + "specgen_" + runTag$ + "_probe.py"
 probeMarker$ = tempDir$ + "specgen_" + runTag$ + "_probe.ok"
@@ -50,6 +51,7 @@ resultWavJ$   = replace_regex$(resultWav$,    "\\", "/", 0)
 statsTxtJ$    = replace_regex$(statsTxt$,     "\\", "/", 0)
 profileCSVJ$  = replace_regex$(profileCSV$,   "\\", "/", 0)
 envelopeCSVJ$ = replace_regex$(envelopeCSV$, "\\", "/", 0)
+summaryCSVJ$  = replace_regex$(summaryCSV$,  "\\", "/", 0)
 pyLogJ$       = replace_regex$(pyLog$,        "\\", "/", 0)
 probePyJ$     = replace_regex$(probePy$,      "\\", "/", 0)
 probeMarkerJ$ = replace_regex$(probeMarker$,  "\\", "/", 0)
@@ -67,6 +69,9 @@ procedure cleanUpTempFiles
     endif
     if fileReadable(envelopeCSV$)
         deleteFile: envelopeCSV$
+    endif
+    if fileReadable(summaryCSV$)
+        deleteFile: summaryCSV$
     endif
     if fileReadable(pyLog$)
         deleteFile: pyLog$
@@ -140,10 +145,10 @@ if pythonCmd$ = ""
 endif
 
 # ---- FORM ----
-form Spectral Noise Shaping v1.3
+form Spectral Noise Shaping v1.4.1
     comment === INPUT ===
-    sentence Input_folder D:\sounds\corpus
-    comment (folder containing audio files to analyse)
+    comment (Leave blank to choose a folder after Apply)
+    sentence Input_folder
 
     comment === OUTPUT ===
     positive Duration 3.0
@@ -160,7 +165,7 @@ form Spectral Noise Shaping v1.3
         option 8192  —  slow / washy
         option Same as N_fft
     real Variation 0.5
-    comment (0 = corpus mean spectral shape / 1 = full corpus-frame variation)
+    comment (0 = stable corpus mean / 1 = maximum learned frame variation)
 
     comment === AUDIO ===
     integer Sample_rate 44100
@@ -170,10 +175,22 @@ form Spectral Noise Shaping v1.3
     boolean Play_result 1
 endform
 
-# ---- VALIDATE ----
-if not folderExists(input_folder$)
+# ---- FOLDER DISCOVERY + VALIDATE ----
+# Typed path wins; a blank field opens the folder chooser after Apply.
+inputDirectory$ = replace_regex$(input_folder$, "^[ 	]*|[ 	]*$", "", 0)
+if inputDirectory$ == ""
+    inputDirectory$ = chooseFolder$: "Select audio corpus folder"
+    inputDirectory$ = replace_regex$(inputDirectory$, "^[ \t]*|[ \t]*$", "", 0)
+endif
+
+if inputDirectory$ == ""
     @cleanUpTempFiles
-    exitScript: "Input folder not found: " + input_folder$
+    exitScript: "Operation cancelled. Please choose an audio corpus folder or type its path in Input_folder."
+endif
+
+if not folderExists(inputDirectory$)
+    @cleanUpTempFiles
+    exitScript: "Input folder not found: " + inputDirectory$
 endif
 if variation < 0 or variation > 1
     @cleanUpTempFiles
@@ -196,8 +213,8 @@ if seed < 0
     exitScript: "Seed must be 0 (random) or a positive integer."
 endif
 
-# ---- NORMALIZE USER-TYPED INPUT PATH ----
-inputFolderJ$ = replace_regex$(input_folder$, "\\", "/", 0)
+# ---- NORMALIZE RESOLVED INPUT PATH FOR PYTHON ----
+inputFolderJ$ = replace_regex$(inputDirectory$, "\\", "/", 0)
 
 # ---- RESOLVE CHUNK PRESET ----
 if chunk_preset = 1
@@ -216,13 +233,13 @@ if effective_chunk < 2 * hop_length
     @cleanUpTempFiles
     exitScript: "Chunk size (" + string$(effective_chunk) + ") is smaller " +
         ... "than 2 x Hop length (" + string$(2 * hop_length) + "). " +
-        ... "Please increase Hop length or choose a larger preset."
+        ... "Please decrease Hop length or choose a larger preset."
 endif
 
 # ---- INFO ----
 clearinfo
-writeInfoLine:  "=== Spectral Noise Shaping v1.3 ==="
-appendInfoLine: "Folder:     ", input_folder$
+writeInfoLine:  "=== Spectral Noise Shaping v1.4.1 ==="
+appendInfoLine: "Folder:     ", inputDirectory$
 appendInfoLine: "Duration:   ", fixed$(duration, 2), " s"
 appendInfoLine: "Variation:  ", fixed$(variation, 2)
 appendInfoLine: "Chunk size: ", string$(effective_chunk), " samples (", fixed$(1000 * effective_chunk / sample_rate, 1), " ms)"
@@ -245,6 +262,7 @@ cmd$ = cmd$ + " --hop_length " + string$(hop_length)
 cmd$ = cmd$ + " --variation "  + string$(variation)
 cmd$ = cmd$ + " --profile_csv """ + profileCSVJ$ + """"
 cmd$ = cmd$ + " --envelope_csv """ + envelopeCSVJ$ + """"
+cmd$ = cmd$ + " --summary_csv """ + summaryCSVJ$ + """"
 
 if effective_chunk <> n_fft
     cmd$ = cmd$ + " --chunk_size " + string$(effective_chunk)
@@ -290,51 +308,66 @@ if fileReadable(statsTxt$)
 endif
 
 ###############################################################################
-# VISUALIZATION — actual mechanism: learned profile/envelope vs generated result
+# VISUALIZATION — what was learned from the corpus and what was generated
 ###############################################################################
 
-if draw_visualization and fileReadable(profileCSV$) and fileReadable(envelopeCSV$)
-    appendInfoLine: "[3/3] Creating mechanism visualization..."
+if draw_visualization and fileReadable(profileCSV$) and fileReadable(envelopeCSV$) and fileReadable(summaryCSV$)
+    appendInfoLine: "[3/3] Creating corpus-to-result visualization..."
 
     profileTable = Read Table from comma-separated file: profileCSV$
     selectObject: profileTable
     nProfileRows = Get number of rows
+
     envelopeTable = Read Table from comma-separated file: envelopeCSV$
     selectObject: envelopeTable
     nEnvelopeRows = Get number of rows
 
+    # Run-level metadata belongs to its own one-row table.
+    summaryTable = Read Table from comma-separated file: summaryCSV$
+    selectObject: summaryTable
+    corpusFiles = Get value: 1, "files_used"
+    corpusDurVis = Get value: 1, "corpus_duration_s"
+    profileCountVis = Get value: 1, "profile_bank_size"
+    corpusCentroid = Get value: 1, "corpus_centroid_hz"
+    outputCentroid = Get value: 1, "output_centroid_hz"
+    spectralMatch = Get value: 1, "spectral_match"
+    envelopeMatch = Get value: 1, "envelope_match"
+
     Erase all
     Select outer viewport: 0, 8, 0, 8
 
-    # Title strip
-    Select outer viewport: 0, 8, 0, 0.48
+    # Header band
+    Select outer viewport: 0, 8, 0, 0.55
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.70, "half", "##Spectral Noise Shaping##"
+    Text: 0.5, "centre", 0.72, "half", "##Spectral Noise Shaping##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
-    Text: 0.5, "centre", -1.20, "half",
-        ... "variation=" + fixed$(variation, 2)
-        ... + "  |  fft=" + string$(n_fft)
+    Text: 0.5, "centre", -1.24, "half",
+        ... "Corpus character -> shaped stereo noise  |  variation=" + fixed$(variation, 2)
         ... + "  |  chunk=" + string$(effective_chunk)
         ... + " (" + fixed$(1000 * effective_chunk / sample_rate, 1) + " ms)"
-        ... + "  |  seed=" + string$(seed)
 
-    # Process diagram
-    Select outer viewport: 0, 8, 0.52, 1.18
+    # Corpus / result summary: user-facing process, not algorithm diagram
+    Select outer viewport: 0, 8, 0.64, 1.42
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.965, 0.965, 0.975}", 0, 1, 0, 1
     Font size: 7
     Colour: "Black"
-    Text: 0.03, "left", 0.68, "half", "CORPUS  ->  active spectral shapes + RMS envelope  ->  white-noise phase  ->  OLA  ->  stereo"
+    Text: 0.03, "left", 0.70, "half",
+        ... "##Corpus learned##  " + string$(round(corpusFiles)) + " files  |  "
+        ... + fixed$(corpusDurVis, 1) + " s  |  " + string$(round(profileCountVis)) + " spectral snapshots"
     Font size: 6
     Colour: "{0.30, 0.30, 0.38}"
-    Text: 0.03, "left", 0.28, "half", "|Y(k)| = (1-v) mean(k) + v profile(k)   ;   y(t) <- y(t) * envelope(t)"
+    Text: 0.03, "left", 0.28, "half",
+        ... "Spectral centre " + fixed$(corpusCentroid, 0) + " -> " + fixed$(outputCentroid, 0) + " Hz"
+        ... + "  |  spectrum match " + fixed$(100 * spectralMatch, 1) + "%"
+        ... + "  |  envelope match " + fixed$(100 * envelopeMatch, 1) + "%"
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
 
-    # Learned spectral shape vs generated mean spectrum, log-frequency
+    # Learned spectral character vs generated mean spectrum
     fMax = sample_rate / 2
     if fMax > 20000
         fMax = 20000
@@ -342,8 +375,8 @@ if draw_visualization and fileReadable(profileCSV$) and fileReadable(envelopeCSV
     fMin = 50
     xMin = log10(fMin)
     xMax = log10(fMax)
-    Select outer viewport: 0, 8, 1.26, 3.48
-    Select inner viewport: 0.68, 7.68, 1.40, 3.34
+    Select outer viewport: 0, 8, 1.54, 3.44
+    Select inner viewport: 0.68, 7.68, 1.68, 3.30
     Axes: xMin, xMax, 0, 1
     Paint rectangle: "{0.985, 0.985, 0.985}", xMin, xMax, 0, 1
 
@@ -372,7 +405,6 @@ if draw_visualization and fileReadable(profileCSV$) and fileReadable(envelopeCSV
     Colour: "Black"
     Line width: 1
     Draw inner box
-    Select inner viewport: 0.68, 7.68, 1.40, 3.34
     Axes: xMin, xMax, 0, 1
     Font size: 6
     for tickI from 1 to 8
@@ -407,11 +439,11 @@ if draw_visualization and fileReadable(profileCSV$) and fileReadable(envelopeCSV
     endfor
     Font size: 7
     Text left: "yes", "Norm. magnitude"
-    Text top: "no", "Learned spectral shape (blue) vs generated mean spectrum (red)"
+    Text top: "no", "Spectral character: corpus (blue) -> generated noise (red)"
 
-    # Learned temporal envelope vs generated RMS
-    Select outer viewport: 0, 8, 3.58, 5.25
-    Select inner viewport: 0.68, 7.68, 3.70, 5.12
+    # Learned temporal shape vs generated stereo-energy envelope
+    Select outer viewport: 0, 8, 3.56, 5.12
+    Select inner viewport: 0.68, 7.68, 3.69, 4.99
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.985, 0.985, 0.985}", 0, 1, 0, 1
     havePrev = 0
@@ -436,52 +468,50 @@ if draw_visualization and fileReadable(profileCSV$) and fileReadable(envelopeCSV
     Colour: "Black"
     Line width: 1
     Draw inner box
-    Select inner viewport: 0.68, 7.68, 3.70, 5.12
     Axes: 0, 1, 0, 1
     Font size: 7
     Text left: "yes", "Norm. level"
     Text bottom: "yes", "Normalised time"
-    Text top: "no", "Learned RMS envelope (blue) vs generated RMS (red)"
+    Text top: "no", "Temporal shape: corpus (blue) -> generated stereo energy (red)"
 
     # Output waveform on explicit fixed scale
-    Select outer viewport: 0, 8, 5.35, 6.75
-    Select inner viewport: 0.68, 7.68, 5.47, 6.62
+    Select outer viewport: 0, 8, 5.23, 6.62
+    Select inner viewport: 0.68, 7.68, 5.35, 6.49
     selectObject: resultObj
     Colour: "{0.15, 0.50, 0.35}"
     Draw: 0, 0, -1, 1, "no", "Curve"
     Colour: "Black"
     Draw inner box
-    Select inner viewport: 0.68, 7.68, 5.47, 6.62
     Axes: 0, dur_out, -1, 1
     Font size: 7
     Text left: "yes", "Amplitude"
     Text bottom: "yes", "Time (s)"
-    Text top: "no", "Generated stereo waveform (fixed -1..1 scale)"
+    Text top: "no", "Generated stereo result"
 
-    # Summary bar
-    Select outer viewport: 0, 8, 6.86, 7.56
+    # Compact musical summary
+    Select outer viewport: 0, 8, 6.74, 7.55
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
     Font size: 7
     Colour: "Black"
-    Text: 0.02, "left", 0.68, "half", "##spectral noise shaped##  — spectrum and envelope learned separately"
+    Text: 0.02, "left", 0.69, "half", "##Result##  shaped noise inherits the corpus spectrum and temporal contour"
     Font size: 6
     Colour: "{0.30, 0.30, 0.30}"
-    Text: 0.02, "left", 0.25, "half",
-        ... "FFT=" + string$(n_fft)
-        ... + "  chunk=" + string$(effective_chunk)
-        ... + "  hop=" + string$(hop_length)
-        ... + "  variation=" + fixed$(variation, 2)
-        ... + "  duration=" + fixed$(dur_out, 2) + " s"
+    Text: 0.02, "left", 0.27, "half",
+        ... "Variation " + fixed$(variation, 2)
+        ... + "  |  " + fixed$(dur_out, 2) + " s stereo"
+        ... + "  |  " + string$(sr_out) + " Hz"
+        ... + "  |  spectrum " + fixed$(100 * spectralMatch, 1) + "%"
+        ... + "  |  envelope " + fixed$(100 * envelopeMatch, 1) + "%"
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
 
-    removeObject: profileTable, envelopeTable
+    removeObject: profileTable, envelopeTable, summaryTable
     Font size: 10
     Colour: "Black"
     Line width: 1
 else
-    appendInfoLine: "[3/3] Visualization skipped or QC CSV unavailable."
+    appendInfoLine: "[3/3] Visualization skipped or QC summary unavailable."
 endif
 
 # ===========================================================================
