@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.9 (2026) - Target macro-envelope transfer
+# Version: 1.10.3 (2026) - Native Orchidea DB profile compatibility
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -13,7 +13,7 @@
 #   Exports the selected Sound to a temp WAV, passes it to the
 #   Python backend (tinysol_retrieval.py) which:
 #     1. Loads pre-computed .db descriptor files (mfcc, specenv,
-#        moments, specpeaks, spectrum) — no full corpus recompute.
+#        moments, specpeaks) — no full corpus recompute.
 #     2. Parses TinySOL filenames to build a rich metadata index.
 #     3. Analyses the target sound and computes comparable descriptors.
 #     4. Retrieves the closest orchestral analogues by weighted
@@ -21,6 +21,40 @@
 #     5. Optionally blends 2-4 samples for a richer texture.
 #     6. Returns a rendered WAV + a ranked results text file.
 #   Praat then imports the WAV and displays the results summary.
+#
+# Changelog v1.10.3 (2026):
+#   - DB COMPATIBILITY: Python resolves descriptor vector lengths directly from
+#     the installed TinySOL/Orchidea .db files. Official profiles such as
+#     specenv=1024 and specpeaks=120 no longer fail against AudioTools compact
+#     dimensions; target analysis is generated at the database-native length.
+#   - No zero-padding or silent descriptor disabling is used.
+#
+# Changelog v1.10.2 (2026):
+#   - VIS: replaced the technical pipeline/descriptor display with a user-facing
+#     orchestration view: selected-sound profile -> instrument choices -> rendered
+#     result. Source duration/channels/rate/level/pitch are shown alongside the
+#     ranked TinySOL choices (instrument, family, note, dynamic); retrieval score
+#     is deliberately secondary. Frame mode labels the ranking as most-used
+#     choices across the target.
+#
+# Changelog v1.10.1 (2026):
+#   - FORM: compact first dialog keeps corpus/constraint and musical retrieval
+#     controls visible on smaller screens; frame/DSP/descriptor/gating controls
+#     moved to optional Edit details (defaults unchanged). Presets are applied
+#     before the details dialog so technical values can be inspected/overridden.
+#   - VIS: rebuilt around the actual retrieval process used across AudioTools:
+#     target analysis + legal TinySOL domain -> weighted distance -> ranking ->
+#     render/envelope transfer -> measured output. Top retrieved entries and
+#     envelope-correlation QC are shown from the backend results file.
+#
+# Changelog v1.10 (2026):
+#   - CORRECTNESS: backend validates active .db descriptor dimensions and never
+#     silently zero-pads vectors; v1.10.3 extends this to native DB dimensions.
+#   - CORRECTNESS: every candidate must contain every active descriptor; rankings
+#     are no longer comparable scores built from different feature subsets.
+#   - CORRECTNESS: target descriptor analysis is standardised to TinySOL's
+#     44.1 kHz corpus rate while output preserves the target's own rate/length.
+#   - PERFORMANCE: unused spectrum .db is no longer loaded.
 #
 # Changelog v1.9 (2026):
 #   - MUSICAL: optional Envelope_follow transfers the target's smoothed macro-RMS
@@ -144,21 +178,18 @@ endproc
 
 @cleanUpTempFiles
 
-# ---- FORM ----
-form TinySOL Orchestration Retrieval v1.9
-    # ── Preset  ───────────────────────────────────────────────────────
+# ---- COMPACT FORM ----
+form TinySOL Orchestration Retrieval v1.10.3
     optionmenu Preset: 1
         option Custom  (use fields as-is)
         option REF-whole  (whole-file reference preset)
         option REF-frame  (frame-based reference preset)
         option REF-orchids  (Orchidea-architecture preset)
-        option Speech  (speech / vocal input — no harmonic matching)
+        option Speech  (speech / vocal input)
 
-    # ── Corpus paths ─────────────────────────────────────────────────
     sentence DB_directory         D:/old D/waves/TinySOL_2020
     sentence Corpus_root          D:/old D/waves/TinySOL_2020/TinySOL
 
-    # ── Instrument / family constraints ──────────────────────────────
     optionmenu Instrument_families: 1
         option All families
         option Brass only
@@ -168,14 +199,9 @@ form TinySOL Orchestration Retrieval v1.9
         option Brass + Winds
         option Strings + Winds
         option Keyboards only
-
-    sentence Specific_instruments 
-
-    # ── Pitch range (MIDI) ───────────────────────────────────────────
+    sentence Specific_instruments (empty = all)
     integer Min_MIDI_pitch 36
     integer Max_MIDI_pitch 96
-
-    # ── Dynamics ────────────────────────────────────────────────────
     optionmenu Preferred_dynamics: 3
         option pp
         option p
@@ -185,67 +211,56 @@ form TinySOL Orchestration Retrieval v1.9
         option mf + ff
         option All dynamics
 
-    # ── Analysis mode ────────────────────────────────────────────────
     optionmenu Analysis_mode: 1
         option Whole file  (average timbre)
         option Frame-based  (follows pitch + dynamics)
-
-    integer Frame_size_ms 150
-    integer Hop_size_ms 75
-    integer Pitch_tolerance_semitones 2
-    boolean Pitch_pan_in_stereo 0
-
-    # ── Retrieval & render ───────────────────────────────────────────
-    integer Number_of_results 8
-
     optionmenu Render_mode: 1
-        option best              (single best match)
-        option blend             (top-3 rank-weighted mix)
-        option top2              (top-2 equal mix)
-        option top3              (top-3 equal mix)
-        option top4              (top-4 equal mix)
-
-    real Render_gain 0.8
+        option best  (single best match)
+        option blend  (top-3 rank-weighted mix)
+        option top2  (top-2 equal mix)
+        option top3  (top-3 equal mix)
+        option top4  (top-4 equal mix)
     real Envelope_follow 0.85
 
-    # ── Descriptor weights  (relative; normalized internally) ─────────
-    real MFCC_weight    0.25
-    real Specenv_weight 0.20
-    real Moments_weight 0.05
-    real Specpeaks_weight 0.15
-    real Harmonic_weight 0.35
-
+    boolean Edit_details 0
     boolean Draw_visualization 1
     boolean Play_result 1
-    boolean Stereo_output 0
-    boolean Speech_mode 0
-    # ── Match quality gate ───────────────────────────────────────────
-    real Silence_threshold 2.0
 endform
 
-# Sanitize input paths from the UI to ensure forward slashes
-dB_directory$ = replace_regex$(dB_directory$, "\\", "/", 0)
-corpus_root$  = replace_regex$(corpus_root$, "\\", "/", 0)
+# ---- ADVANCED DEFAULTS ----
+# These preserve the v1.9 behaviour when Edit details is not opened.
+frame_size_ms = 150
+hop_size_ms = 75
+pitch_tolerance_semitones = 2
+pitch_pan_in_stereo = 0
+number_of_results = 8
+render_gain = 0.8
+mFCC_weight = 0.25
+specenv_weight = 0.20
+moments_weight = 0.05
+specpeaks_weight = 0.15
+harmonic_weight = 0.35
+stereo_output = 0
+speech_mode = 0
+silence_threshold = 2.0
 
 # ---- APPLY PRESET ----
+# Presets are applied before Edit details so the second dialog exposes the
+# actual technical values that will be rendered and can override them knowingly.
 if preset = 2
-    analysisStr$             = "whole_file"
     analysis_mode            = 1
     mFCC_weight              = 0.25
     specenv_weight           = 0.20
     moments_weight           = 0.05
     specpeaks_weight         = 0.15
     harmonic_weight          = 0.35
-    dynStr$                  = "mf,ff"
     preferred_dynamics       = 6
     render_mode              = 1
-    renderStr$               = "best"
     stereo_output            = 0
     pitch_pan_in_stereo      = 0
-    draw_visualization       = 1
     silence_threshold        = 1.0
+    speech_mode              = 0
 elsif preset = 3
-    analysisStr$             = "frame_based"
     analysis_mode            = 2
     frame_size_ms            = 150
     hop_size_ms              = 75
@@ -255,50 +270,72 @@ elsif preset = 3
     moments_weight           = 0.05
     specpeaks_weight         = 0.15
     harmonic_weight          = 0.35
-    dynStr$                  = "mf,ff"
     preferred_dynamics       = 6
     render_mode              = 1
-    renderStr$               = "best"
     stereo_output            = 0
     pitch_pan_in_stereo      = 0
-    draw_visualization       = 1
     silence_threshold        = 1.0
+    speech_mode              = 0
 elsif preset = 4
-    analysisStr$             = "whole_file"
     analysis_mode            = 1
     mFCC_weight              = 0.20
     specenv_weight           = 0.30
     moments_weight           = 0.05
     specpeaks_weight         = 0.10
     harmonic_weight          = 0.35
-    dynStr$                  = "mf,ff"
     preferred_dynamics       = 6
     render_mode              = 1
-    renderStr$               = "best"
     stereo_output            = 0
     pitch_pan_in_stereo      = 0
-    draw_visualization       = 1
     silence_threshold        = 1.0
-endif
-
-if preset = 5
-    analysisStr$             = "whole_file"
+    speech_mode              = 0
+elsif preset = 5
     analysis_mode            = 1
     mFCC_weight              = 0.45
     specenv_weight           = 0.30
     moments_weight           = 0.10
     specpeaks_weight         = 0.15
     harmonic_weight          = 0.00
-    dynStr$                  = "mf,ff"
     preferred_dynamics       = 6
     render_mode              = 1
-    renderStr$               = "best"
     stereo_output            = 0
     pitch_pan_in_stereo      = 0
-    draw_visualization       = 1
     silence_threshold        = 2.0
     speech_mode              = 1
 endif
+
+if edit_details
+    beginPause: "TinySOL Retrieval v1.10.1 - Details"
+        comment: "Frame analysis"
+        integer: "Frame size (ms)", frame_size_ms
+        integer: "Hop size (ms)", hop_size_ms
+        integer: "Pitch tolerance (semitones)", pitch_tolerance_semitones
+        boolean: "Pitch pan in stereo", pitch_pan_in_stereo
+
+        comment: "Retrieval / render"
+        integer: "Number of ranked results", number_of_results
+        real: "Render gain", render_gain
+        boolean: "Stereo output", stereo_output
+
+        comment: "Descriptor weights (relative)"
+        real: "MFCC weight", mFCC_weight
+        real: "Spectral-envelope weight", specenv_weight
+        real: "Moments weight", moments_weight
+        real: "Spectral-peaks weight", specpeaks_weight
+        real: "Harmonic weight", harmonic_weight
+
+        comment: "Quality / special mode"
+        real: "Silence threshold (2 = disabled)", silence_threshold
+        boolean: "Speech mode", speech_mode
+    clicked = endPause: "Cancel", "Run", 2, 1
+    if clicked = 1
+        exitScript: "Cancelled."
+    endif
+endif
+
+# Sanitize input paths from the UI to ensure forward slashes
+dB_directory$ = replace_regex$(dB_directory$, "\\", "/", 0)
+corpus_root$  = replace_regex$(corpus_root$, "\\", "/", 0)
 
 # ---- CLAMP numerical inputs ----
 if min_MIDI_pitch < 0
@@ -453,7 +490,7 @@ endif
 
 # ---- INFO header ----
 clearinfo
-writeInfoLine:  "=== TinySOL Orchestration Retrieval v1.9 ==="
+writeInfoLine:  "=== TinySOL Orchestration Retrieval v1.10.3 ==="
 appendInfoLine: "Input:   ", soundName$
 appendInfoLine: "DB dir:  ", dB_directory$
 appendInfoLine: "Corpus:  ", corpus_root$
@@ -659,25 +696,47 @@ rms_out   = Get root-mean-square: 0, 0
 appendInfoLine: "[5/5] Reading retrieval results..."
 appendInfoLine: ""
 
-bestMatch$     = "?"
-bestScore$     = "?"
-nCandidates$   = "?"
-renderMode$    = "?"
-chosenCount$   = "?"
-silenceFlag$   = ""
+bestMatch$       = "?"
+bestScore$       = "?"
+rank2Match$      = "?"
+rank2Score$      = "?"
+rank3Match$      = "?"
+rank3Score$      = "?"
+rank4Match$      = "?"
+rank4Score$      = "?"
+nCandidates$     = "?"
+renderMode$      = "?"
+chosenCount$     = "?"
+envCorrBefore$   = "?"
+envCorrAfter$    = "?"
+rank1Usage$      = "?"
+rank2Usage$      = "?"
+rank3Usage$      = "?"
+rank4Usage$      = "?"
+silenceFlag$     = ""
+resultText$      = ""
 
 if fileReadable(tempResults$)
     resultText$ = readFile$(tempResults$)
 
-    # Extract scalar stats using the parseStatLine procedure
     @parseStatLine: resultText$, "n_candidates="
     nCandidates$ = parseStatLine.result$
-
     @parseStatLine: resultText$, "render_mode="
     renderMode$ = parseStatLine.result$
-
     @parseStatLine: resultText$, "chosen_count="
     chosenCount$ = parseStatLine.result$
+    @parseStatLine: resultText$, "envelope_corr_before="
+    envCorrBefore$ = parseStatLine.result$
+    @parseStatLine: resultText$, "envelope_corr_after="
+    envCorrAfter$ = parseStatLine.result$
+    @parseStatLine: resultText$, "rank1_usage_pct="
+    rank1Usage$ = parseStatLine.result$
+    @parseStatLine: resultText$, "rank2_usage_pct="
+    rank2Usage$ = parseStatLine.result$
+    @parseStatLine: resultText$, "rank3_usage_pct="
+    rank3Usage$ = parseStatLine.result$
+    @parseStatLine: resultText$, "rank4_usage_pct="
+    rank4Usage$ = parseStatLine.result$
 
     @parseStatLine: resultText$, "silence_rendered="
     silenceRendered$ = parseStatLine.result$
@@ -693,66 +752,55 @@ if fileReadable(tempResults$)
         endif
     endif
 
-    # Parse top-ranked match from the CSV section
-    csvStart = index(resultText$, newline$ + "1,")
-    if csvStart > 0
-        lineStart = csvStart + 1
-        tailText$ = mid$(resultText$, lineStart, length(resultText$) - lineStart + 1)
-        nlPos = index(tailText$, newline$)
-        if nlPos > 0
-            firstLine$ = left$(tailText$, nlPos - 1)
-        else
-            firstLine$ = tailText$
-        endif
+    @parseRankLine: resultText$, 1
+    bestMatch$ = parseRankLine.match$
+    bestScore$ = parseRankLine.score$
+    rank1Family$ = parseRankLine.family$
+    rank1Inst$ = parseRankLine.inst$
+    rank1Note$ = parseRankLine.note$
+    rank1Dyn$ = parseRankLine.dyn$
+    @parseRankLine: resultText$, 2
+    rank2Match$ = parseRankLine.match$
+    rank2Score$ = parseRankLine.score$
+    rank2Family$ = parseRankLine.family$
+    rank2Inst$ = parseRankLine.inst$
+    rank2Note$ = parseRankLine.note$
+    rank2Dyn$ = parseRankLine.dyn$
+    @parseRankLine: resultText$, 3
+    rank3Match$ = parseRankLine.match$
+    rank3Score$ = parseRankLine.score$
+    rank3Family$ = parseRankLine.family$
+    rank3Inst$ = parseRankLine.inst$
+    rank3Note$ = parseRankLine.note$
+    rank3Dyn$ = parseRankLine.dyn$
+    @parseRankLine: resultText$, 4
+    rank4Match$ = parseRankLine.match$
+    rank4Score$ = parseRankLine.score$
+    rank4Family$ = parseRankLine.family$
+    rank4Inst$ = parseRankLine.inst$
+    rank4Note$ = parseRankLine.note$
+    rank4Dyn$ = parseRankLine.dyn$
+endif
 
-        nCommas = 0
-        fieldCount = 0
-        fieldStr$ = firstLine$
 
-        # field 1 = rank
-        p = index(fieldStr$, ",")
-        if p > 0
-            f1$ = left$(fieldStr$, p - 1)
-            fieldStr$ = mid$(fieldStr$, p + 1, length(fieldStr$) - p)
-        endif
-        # field 2 = score
-        p = index(fieldStr$, ",")
-        if p > 0
-            bestScore$ = left$(fieldStr$, p - 1)
-            fieldStr$ = mid$(fieldStr$, p + 1, length(fieldStr$) - p)
-        endif
-        # field 3 = family
-        p = index(fieldStr$, ",")
-        if p > 0
-            bf$ = left$(fieldStr$, p - 1)
-            fieldStr$ = mid$(fieldStr$, p + 1, length(fieldStr$) - p)
-        endif
-        # field 4 = instrument
-        p = index(fieldStr$, ",")
-        if p > 0
-            bi$ = left$(fieldStr$, p - 1)
-            fieldStr$ = mid$(fieldStr$, p + 1, length(fieldStr$) - p)
-        endif
-        # field 5 = note
-        p = index(fieldStr$, ",")
-        if p > 0
-            bn$ = left$(fieldStr$, p - 1)
-            fieldStr$ = mid$(fieldStr$, p + 1, length(fieldStr$) - p)
-        endif
-        # field 6 = midi  (skip)
-        p = index(fieldStr$, ",")
-        if p > 0
-            fieldStr$ = mid$(fieldStr$, p + 1, length(fieldStr$) - p)
-        endif
-        # field 7 = dynamic
-        p = index(fieldStr$, ",")
-        if p > 0
-            bd$ = left$(fieldStr$, p - 1)
-            fieldStr$ = mid$(fieldStr$, p + 1, length(fieldStr$) - p)
-        endif
-
-        bestMatch$ = bf$ + " " + bi$ + " " + bn$ + " " + bd$
-    endif
+# Safe defaults for visualization when a results file is missing or incomplete.
+if bestMatch$ = "?"
+    rank1Family$ = "?"
+    rank1Inst$ = "?"
+    rank1Note$ = "?"
+    rank1Dyn$ = "?"
+    rank2Family$ = "?"
+    rank2Inst$ = "?"
+    rank2Note$ = "?"
+    rank2Dyn$ = "?"
+    rank3Family$ = "?"
+    rank3Inst$ = "?"
+    rank3Note$ = "?"
+    rank3Dyn$ = "?"
+    rank4Family$ = "?"
+    rank4Inst$ = "?"
+    rank4Note$ = "?"
+    rank4Dyn$ = "?"
 endif
 
 # ===========================================================================
@@ -761,8 +809,7 @@ endif
 if draw_visualization
     appendInfoLine: "Drawing visualization..."
 
-    # Representative real input channel: strongest RMS channel, avoiding
-    # phase-cancelling mono fold-down.  Use the strongest result channel too.
+    # Representative real channels: strongest RMS input and output channels.
     analysisChannel = 1
     bestVizRms = -1
     for ch from 1 to nChannels
@@ -806,6 +853,7 @@ if draw_visualization
         vizOut = selected("Sound")
     endif
 
+    # Shared waveform amplitude scale.
     selectObject: vizIn
     inPeak = Get absolute extremum: 0, 0, "none"
     selectObject: vizOut
@@ -814,158 +862,299 @@ if draw_visualization
     if wavePeak < 0.000001
         wavePeak = 1
     endif
-    specCeil = min(10000, sr / 2)
+
+    # User-facing source profile. Pitch is descriptive only; retrieval continues
+    # to use the backend's own validated analysis.
+    sourcePitch$ = "No stable pitch"
+    pitchCeiling = min(3000, 0.45 * sr)
+    if pitchCeiling > 50
+        selectObject: vizIn
+        sourcePitchObj = To Pitch: 0.0, 50, pitchCeiling
+        selectObject: sourcePitchObj
+        sourcePitchHz = Get quantile: 0, 0, 0.5, "Hertz"
+        if sourcePitchHz <> undefined
+            sourceMidi = 69 + 12 * ln(sourcePitchHz / 440) / ln(2)
+            sourcePitch$ = fixed$(sourcePitchHz, 1) + " Hz  (~MIDI " + fixed$(sourceMidi, 1) + ")"
+        endif
+        removeObject: sourcePitchObj
+    endif
+
+    if rms_orig > 0
+        sourceLevelDb = 20 * ln(rms_orig) / ln(10)
+        sourceLevel$ = fixed$(sourceLevelDb, 1) + " dBFS RMS"
+    else
+        sourceLevel$ = "silence"
+    endif
+    if rms_out > 0
+        outputLevelDb = 20 * ln(rms_out) / ln(10)
+        outputLevel$ = fixed$(outputLevelDb, 1) + " dBFS RMS"
+    else
+        outputLevel$ = "silence"
+    endif
+
+    displaySoundName$ = replace$(soundName$, "_", " ", 0)
+    if instrument_families = 1
+        familyViz$ = "All families"
+    elsif instrument_families = 5
+        familyViz$ = "Brass + Strings"
+    elsif instrument_families = 6
+        familyViz$ = "Brass + Winds"
+    elsif instrument_families = 7
+        familyViz$ = "Strings + Winds"
+    else
+        familyViz$ = familyStr$
+    endif
+
+    # How many ranked whole-file choices actually enter the selected render mode.
+    usedRanks = 1
+    if analysis_mode = 1
+        if render_mode = 2
+            usedRanks = 3
+        elsif render_mode = 3
+            usedRanks = 2
+        elsif render_mode = 4
+            usedRanks = 3
+        elsif render_mode = 5
+            usedRanks = 4
+        endif
+    endif
 
     Erase all
-    Select outer viewport: 0, 8, 0, 8
+    Select outer viewport: 0, 8, 0, 7.2
 
     # ----------------------------------------------------------
-    # Title
+    # Header
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 0, 0.65
+    Select outer viewport: 0, 8, 0, 0.58
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##TinySOL Orchestration Retrieval v1.9##"
-    Font size: 7
-    Colour: "{0.35, 0.35, 0.52}"
-    Text: 0.5, "centre", -1.22, "half",
-        ... soundName$ + "  |  " + analysisStr$
-        ... + "  |  " + renderStr$
-        ... + "  |  " + familyStr$
+    Text: 0.5, "centre", 0.72, "half", "##TinySOL Orchestration Retrieval##"
+    Font size: 6.3
+    Colour: "{0.35, 0.35, 0.48}"
+    Text: 0.5, "centre", -1.24, "half",
+        ... displaySoundName$ + "  |  search: " + familyViz$ + "  |  MIDI "
+        ... + string$(min_MIDI_pitch) + "-" + string$(max_MIDI_pitch)
 
     # ----------------------------------------------------------
-    # Input waveform — explicit shared scale
+    # SELECTED SOUND: waveform + compact profile card
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 0.70, 1.55
-    Select inner viewport: 0.55, 7.65, 0.75, 1.50
+    Select outer viewport: 0, 5.15, 0.72, 2.18
+    Select inner viewport: 0.55, 4.98, 0.82, 2.05
     selectObject: vizIn
-    Colour: "{0.55, 0.55, 0.55}"
+    Colour: "{0.53, 0.53, 0.53}"
     Draw: 0, 0, -wavePeak, wavePeak, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "Input ch" + string$(analysisChannel)
-    Text top: "no", "Target waveform  [shared amplitude scale]"
+    Text top: "no", "Selected sound"
+    Text left: "yes", "Amplitude"
+    Text bottom: "yes", "Time (s)"
+
+    Select outer viewport: 5.25, 8, 0.72, 2.18
+    Select inner viewport: 5.35, 7.88, 0.82, 2.05
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.96, 0.96, 0.96}", 0, 1, 0, 1
+    Colour: "Black"
+    Font size: 7.2
+    Text: 0.05, "left", 0.88, "half", "##Sound profile##"
+    Font size: 5.8
+    Colour: "{0.28, 0.28, 0.28}"
+    Text: 0.05, "left", 0.68, "half", "Duration   " + fixed$(dur, 2) + " s"
+    Text: 0.05, "left", 0.51, "half", "Channels   " + string$(nChannels) + "   |   " + string$(sr) + " Hz"
+    Text: 0.05, "left", 0.34, "half", "Level      " + sourceLevel$
+    Text: 0.05, "left", 0.17, "half", "Pitch      " + sourcePitch$
+    Colour: "Black"
+    Draw rectangle: 0, 1, 0, 1
 
     # ----------------------------------------------------------
-    # Output waveform — same scale
+    # INSTRUMENT CHOICES: musical result of retrieval
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 1.55, 2.40
-    Select inner viewport: 0.55, 7.65, 1.60, 2.35
+    Select outer viewport: 0, 8, 2.34, 4.45
+    Select inner viewport: 0.45, 7.75, 2.46, 4.32
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.975, 0.975, 0.975}", 0, 1, 0, 1
+    Colour: "Black"
+    Font size: 8
+    if analysis_mode = 2
+        Text: 0.02, "left", 0.92, "half", "##Instrument choices across the sound##"
+        Font size: 5.3
+        Colour: "{0.36, 0.36, 0.36}"
+        Text: 0.98, "right", 0.92, "half", "ranked by frame usage"
+    else
+        Text: 0.02, "left", 0.92, "half", "##Instrument choices##"
+        Font size: 5.3
+        Colour: "{0.36, 0.36, 0.36}"
+        Text: 0.98, "right", 0.92, "half", "highlighted = used in render"
+    endif
+
+    # Four user-facing choice cards. Colour indicates participation in the render,
+    # not descriptor value; scores remain secondary text only.
+    c1x0 = 0.02
+    c1x1 = 0.245
+    c2x0 = 0.265
+    c2x1 = 0.49
+    c3x0 = 0.51
+    c3x1 = 0.735
+    c4x0 = 0.755
+    c4x1 = 0.98
+    cy0 = 0.12
+    cy1 = 0.78
+
+    if analysis_mode = 2 or usedRanks >= 1
+        Paint rectangle: "{0.90, 0.96, 0.93}", c1x0, c1x1, cy0, cy1
+    else
+        Paint rectangle: "{0.95, 0.95, 0.95}", c1x0, c1x1, cy0, cy1
+    endif
+    if analysis_mode = 2 or usedRanks >= 2
+        Paint rectangle: "{0.90, 0.96, 0.93}", c2x0, c2x1, cy0, cy1
+    else
+        Paint rectangle: "{0.95, 0.95, 0.95}", c2x0, c2x1, cy0, cy1
+    endif
+    if analysis_mode = 2 or usedRanks >= 3
+        Paint rectangle: "{0.90, 0.96, 0.93}", c3x0, c3x1, cy0, cy1
+    else
+        Paint rectangle: "{0.95, 0.95, 0.95}", c3x0, c3x1, cy0, cy1
+    endif
+    if analysis_mode = 2 or usedRanks >= 4
+        Paint rectangle: "{0.90, 0.96, 0.93}", c4x0, c4x1, cy0, cy1
+    else
+        Paint rectangle: "{0.95, 0.95, 0.95}", c4x0, c4x1, cy0, cy1
+    endif
+
+    # Card borders
+    Colour: "{0.45, 0.45, 0.45}"
+    Draw rectangle: c1x0, c1x1, cy0, cy1
+    Draw rectangle: c2x0, c2x1, cy0, cy1
+    Draw rectangle: c3x0, c3x1, cy0, cy1
+    Draw rectangle: c4x0, c4x1, cy0, cy1
+
+    # Rank 1
+    Colour: "Black"
+    Font size: 6.2
+    Text: c1x0 + 0.018, "left", 0.70, "half", "#1"
+    Font size: 8.0
+    Text: 0.5 * (c1x0 + c1x1), "centre", 0.57, "half", rank1Inst$
+    Font size: 5.3
+    Colour: "{0.32, 0.32, 0.32}"
+    Text: 0.5 * (c1x0 + c1x1), "centre", 0.43, "half", rank1Family$
+    Text: 0.5 * (c1x0 + c1x1), "centre", 0.30, "half", rank1Note$ + "   " + rank1Dyn$
+    if analysis_mode = 2 and rank1Usage$ <> "?"
+        Text: 0.5 * (c1x0 + c1x1), "centre", 0.18, "half", rank1Usage$ + "% of matched frames"
+    else
+        Text: 0.5 * (c1x0 + c1x1), "centre", 0.18, "half", "distance " + bestScore$
+    endif
+
+    # Rank 2
+    Colour: "Black"
+    Font size: 6.2
+    Text: c2x0 + 0.018, "left", 0.70, "half", "#2"
+    Font size: 8.0
+    Text: 0.5 * (c2x0 + c2x1), "centre", 0.57, "half", rank2Inst$
+    Font size: 5.3
+    Colour: "{0.32, 0.32, 0.32}"
+    Text: 0.5 * (c2x0 + c2x1), "centre", 0.43, "half", rank2Family$
+    Text: 0.5 * (c2x0 + c2x1), "centre", 0.30, "half", rank2Note$ + "   " + rank2Dyn$
+    if analysis_mode = 2 and rank2Usage$ <> "?"
+        Text: 0.5 * (c2x0 + c2x1), "centre", 0.18, "half", rank2Usage$ + "% of matched frames"
+    else
+        Text: 0.5 * (c2x0 + c2x1), "centre", 0.18, "half", "distance " + rank2Score$
+    endif
+
+    # Rank 3
+    Colour: "Black"
+    Font size: 6.2
+    Text: c3x0 + 0.018, "left", 0.70, "half", "#3"
+    Font size: 8.0
+    Text: 0.5 * (c3x0 + c3x1), "centre", 0.57, "half", rank3Inst$
+    Font size: 5.3
+    Colour: "{0.32, 0.32, 0.32}"
+    Text: 0.5 * (c3x0 + c3x1), "centre", 0.43, "half", rank3Family$
+    Text: 0.5 * (c3x0 + c3x1), "centre", 0.30, "half", rank3Note$ + "   " + rank3Dyn$
+    if analysis_mode = 2 and rank3Usage$ <> "?"
+        Text: 0.5 * (c3x0 + c3x1), "centre", 0.18, "half", rank3Usage$ + "% of matched frames"
+    else
+        Text: 0.5 * (c3x0 + c3x1), "centre", 0.18, "half", "distance " + rank3Score$
+    endif
+
+    # Rank 4
+    Colour: "Black"
+    Font size: 6.2
+    Text: c4x0 + 0.018, "left", 0.70, "half", "#4"
+    Font size: 8.0
+    Text: 0.5 * (c4x0 + c4x1), "centre", 0.57, "half", rank4Inst$
+    Font size: 5.3
+    Colour: "{0.32, 0.32, 0.32}"
+    Text: 0.5 * (c4x0 + c4x1), "centre", 0.43, "half", rank4Family$
+    Text: 0.5 * (c4x0 + c4x1), "centre", 0.30, "half", rank4Note$ + "   " + rank4Dyn$
+    if analysis_mode = 2 and rank4Usage$ <> "?"
+        Text: 0.5 * (c4x0 + c4x1), "centre", 0.18, "half", rank4Usage$ + "% of matched frames"
+    else
+        Text: 0.5 * (c4x0 + c4x1), "centre", 0.18, "half", "distance " + rank4Score$
+    endif
+
+    Colour: "Black"
+    Draw rectangle: 0, 1, 0, 1
+
+    # ----------------------------------------------------------
+    # RENDERED RESULT: waveform + concise result card
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 5.15, 4.62, 6.08
+    Select inner viewport: 0.55, 4.98, 4.72, 5.95
     selectObject: vizOut
     Colour: "{0.15, 0.50, 0.35}"
     Draw: 0, 0, -wavePeak, wavePeak, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "Output ch" + string$(resultChannel)
+    Text top: "no", "Rendered result  [same amplitude scale]"
+    Text left: "yes", "Amplitude"
     Text bottom: "yes", "Time (s)"
-    Text top: "no", "Retrieved render  [same amplitude scale]"
 
-    # ----------------------------------------------------------
-    # Input spectrogram
-    # ----------------------------------------------------------
-    Select outer viewport: 0, 4.1, 2.50, 3.90
-    Select inner viewport: 0.55, 3.85, 2.60, 3.80
-    selectObject: vizIn
-    To Spectrogram: 0.02, specCeil, 0.005, 20, "Gaussian"
-    specOrig = selected("Spectrogram")
-    Paint: 0, 0, 0, specCeil, 100, "yes", 50, 6, 0, "no"
-    Colour: "Black"
-    Draw inner box
-    Font size: 7
-    Text left: "yes", "Hz"
-    Text bottom: "yes", "Time (s)"
-    Text top: "no", "Target spectrogram ch" + string$(analysisChannel) + " (auto-levelled)"
-    removeObject: specOrig
-
-    # ----------------------------------------------------------
-    # Output spectrogram
-    # ----------------------------------------------------------
-    Select outer viewport: 4.1, 8, 2.50, 3.90
-    Select inner viewport: 4.40, 7.65, 2.60, 3.80
-    selectObject: vizOut
-    To Spectrogram: 0.02, specCeil, 0.005, 20, "Gaussian"
-    specRes = selected("Spectrogram")
-    Paint: 0, 0, 0, specCeil, 100, "yes", 50, 6, 0, "no"
-    Colour: "Black"
-    Draw inner box
-    Font size: 7
-    Text left: "yes", "Hz"
-    Text bottom: "yes", "Time (s)"
-    Text top: "no", "Retrieved spectrogram ch" + string$(resultChannel) + " (auto-levelled)"
-    removeObject: specRes
-
-    # ----------------------------------------------------------
-    # Retrieval results panel
-    # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 4.02, 5.42
-    Select inner viewport: 0.55, 7.65, 4.08, 5.36
+    Select outer viewport: 5.25, 8, 4.62, 6.08
+    Select inner viewport: 5.35, 7.88, 4.72, 5.95
     Axes: 0, 1, 0, 1
-    Paint rectangle: "{0.94, 0.94, 0.96}", 0, 1, 0, 1
-
-    Font size: 7
+    Paint rectangle: "{0.94, 0.97, 0.95}", 0, 1, 0, 1
     Colour: "Black"
-    Text: 0.02, "left", 0.91, "half", "##Retrieval Results##"
-    Font size: 6
-    Colour: "{0.30, 0.30, 0.30}"
-    Text: 0.02, "left", 0.74, "half",
-        ... "Best match:  " + bestMatch$ + "   score=" + bestScore$ + silenceFlag$
-
+    Font size: 7.2
+    Text: 0.05, "left", 0.88, "half", "##Rendered orchestration##"
+    Font size: 5.7
+    Colour: "{0.28, 0.28, 0.28}"
     if analysis_mode = 2
-        Text: 0.02, "left", 0.57, "half",
-            ... "Frames: " + nCandidates$
-            ... + "  |  Matched: " + chosenCount$
-            ... + "  |  pitch tol: " + string$(pitch_tolerance_semitones) + " st"
-            ... + "  |  Gain: " + fixed$(render_gain, 2) + "  |  Env: " + fixed$(envelope_follow, 2)
+        Text: 0.05, "left", 0.68, "half", "Frames matched   " + chosenCount$ + " / " + nCandidates$
+        Text: 0.05, "left", 0.51, "half", "Primary choice   " + rank1Inst$ + "  " + rank1Note$ + "  " + rank1Dyn$
     else
-        Text: 0.02, "left", 0.57, "half",
-            ... "Candidates: " + nCandidates$
-            ... + "  |  Layers: " + chosenCount$
-            ... + "  |  Mode: " + renderMode$
-            ... + "  |  Gain: " + fixed$(render_gain, 2) + "  |  Env: " + fixed$(envelope_follow, 2)
+        Text: 0.05, "left", 0.68, "half", "Render           " + renderMode$
+        Text: 0.05, "left", 0.51, "half", "Primary choice   " + rank1Inst$ + "  " + rank1Note$ + "  " + rank1Dyn$
     endif
-
-    Text: 0.02, "left", 0.40, "half",
-        ... "Families: " + familyStr$
-        ... + "  |  Dynamics: " + dynDisplay$
-        ... + "  |  MIDI: " + string$(min_MIDI_pitch) + "-" + string$(max_MIDI_pitch)
-
-    Text: 0.02, "left", 0.23, "half",
-        ... "Weights: mfcc=" + fixed$(mFCC_weight, 2)
-        ... + " specenv=" + fixed$(specenv_weight, 2)
-        ... + " moments=" + fixed$(moments_weight, 2)
-        ... + " specpeaks=" + fixed$(specpeaks_weight, 2)
-        ... + " harmonic=" + fixed$(harmonic_weight, 2)
-
-    Text: 0.02, "left", 0.08, "half",
-        ... "Flow: target descriptors -> hard candidate domain -> weighted distance -> rank -> render"
+    Text: 0.05, "left", 0.34, "half", "Duration         " + fixed$(dur_out, 2) + " s"
+    Text: 0.05, "left", 0.17, "half", "Level            " + outputLevel$
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
 
     # ----------------------------------------------------------
-    # Summary panel
+    # Small footer: only information useful for interpretation
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 5.52, 6.22
-    Select inner viewport: 0.55, 7.65, 5.58, 6.16
+    Select outer viewport: 0, 8, 6.22, 6.92
+    Select inner viewport: 0.45, 7.75, 6.30, 6.84
     Axes: 0, 1, 0, 1
-    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
-    Font size: 7
-    Colour: "Black"
-    Text: 0.02, "left", 0.80, "half", "##Summary##"
-    Font size: 6
-    Colour: "{0.30, 0.30, 0.30}"
-    Text: 0.02, "left", 0.47, "half",
-        ... "Target: " + fixed$(dur, 2) + "s  RMS=" + fixed$(rms_orig, 4)
-        ... + "  |  Output: " + fixed$(dur_out, 2) + "s  RMS=" + fixed$(rms_out, 4)
-    Text: 0.02, "left", 0.20, "half",
-        ... "Analysis ch " + string$(analysisChannel)
-        ... + " -> display output ch " + string$(resultChannel)
-        ... + "  |  silence threshold=" + fixed$(silence_threshold, 2)
-        ... + " (2=disabled)"
-    Colour: "Black"
-    Draw rectangle: 0, 1, 0, 1
+    Font size: 5.6
+    Colour: "{0.34, 0.34, 0.34}"
+    if analysis_mode = 2
+        Text: 0.02, "left", 0.66, "half",
+            ... "Frame-based retrieval  |  frame " + string$(frame_size_ms) + " ms  |  hop "
+            ... + string$(hop_size_ms) + " ms  |  pitch tolerance +/-" + string$(pitch_tolerance_semitones) + " st"
+    else
+        Text: 0.02, "left", 0.66, "half",
+            ... "Whole-file retrieval  |  " + nCandidates$ + " legal TinySOL candidates  |  preferred dynamics: " + dynDisplay$
+    endif
+    if envelope_follow > 0
+        Text: 0.02, "left", 0.26, "half",
+            ... "Target envelope follow " + fixed$(envelope_follow, 2) + "  |  output " + string$(nChRes) + " channel(s)" + silenceFlag$
+    else
+        Text: 0.02, "left", 0.26, "half",
+            ... "No target-envelope transfer  |  output " + string$(nChRes) + " channel(s)" + silenceFlag$
+    endif
 
     removeObject: vizIn, vizOut
 
@@ -1011,6 +1200,75 @@ endif
 # ===========================================================================
 # Procedures
 # ===========================================================================
+procedure parseRankLine: .text$, .rank
+    .match$ = "?"
+    .score$ = "?"
+    .family$ = "?"
+    .inst$ = "?"
+    .note$ = "?"
+    .dyn$ = "?"
+    .needle$ = newline$ + string$(.rank) + ","
+    .pos = index(.text$, .needle$)
+    if .pos = 0
+        .needle$ = unicode$(10) + string$(.rank) + ","
+        .pos = index(.text$, .needle$)
+    endif
+    if .pos > 0
+        .lineStart = .pos + 1
+        .tail$ = mid$(.text$, .lineStart, length(.text$) - .lineStart + 1)
+        .nl = index(.tail$, newline$)
+        if .nl > 0
+            .line$ = left$(.tail$, .nl - 1)
+        else
+            .line$ = .tail$
+        endif
+
+        .field$ = .line$
+        # rank
+        .p = index(.field$, ",")
+        if .p > 0
+            .field$ = mid$(.field$, .p + 1, length(.field$) - .p)
+        endif
+        # score
+        .p = index(.field$, ",")
+        if .p > 0
+            .score$ = left$(.field$, .p - 1)
+            .field$ = mid$(.field$, .p + 1, length(.field$) - .p)
+        endif
+        # family
+        .p = index(.field$, ",")
+        if .p > 0
+            .family$ = left$(.field$, .p - 1)
+            .field$ = mid$(.field$, .p + 1, length(.field$) - .p)
+        endif
+        # instrument
+        .p = index(.field$, ",")
+        if .p > 0
+            .inst$ = left$(.field$, .p - 1)
+            .field$ = mid$(.field$, .p + 1, length(.field$) - .p)
+        endif
+        # note
+        .p = index(.field$, ",")
+        if .p > 0
+            .note$ = left$(.field$, .p - 1)
+            .field$ = mid$(.field$, .p + 1, length(.field$) - .p)
+        endif
+        # midi skip
+        .p = index(.field$, ",")
+        if .p > 0
+            .field$ = mid$(.field$, .p + 1, length(.field$) - .p)
+        endif
+        # dynamic
+        .p = index(.field$, ",")
+        if .p > 0
+            .dyn$ = left$(.field$, .p - 1)
+        else
+            .dyn$ = .field$
+        endif
+        .match$ = .family$ + " " + .inst$ + " " + .note$ + " " + .dyn$
+    endif
+endproc
+
 procedure parseStatLine: .text$, .key$
     .result$ = "?"
     .pos = index(.text$, .key$)

@@ -2,7 +2,7 @@
 tinysol_retrieval.py — TinySOL Orchestration Retrieval Backend
 Part of Praat AudioTools plugin
 Author: Shai Cohen, Department of Music, Bar-Ilan University
-Version: 1.9
+Version: 1.10.3
 
 Usage (called by Praat via TinySOL_Retrieval.praat, not directly):
     python tinysol_retrieval.py  target.wav  params.txt  output.wav  results.txt
@@ -23,6 +23,29 @@ params.txt is a simple key=value file written by Praat:
                                top2/3/4   = equal mix of N layers
     render_gain=0.8
     envelope_follow=0.85
+
+
+Changes in v1.10.3 (native .db profile compatibility):
+    - Official/legacy Orchidea TinySOL descriptor databases are accepted at their
+      native vector lengths instead of requiring the AudioTools compact profile.
+      The target descriptor extractor adopts the vector length observed in each
+      active .db file (for example specenv=1024) and computes a descriptor of the
+      same family and dimensionality.  No zero-padding or truncation is used.
+    - Mixed row lengths inside one .db still fail clearly; moments remains the
+      four-value centroid/spread/skewness/kurtosis descriptor.
+    - Frame-based analysis uses the same resolved database profile as whole-file
+      analysis, so per-frame and corpus vectors remain dimensionally consistent.
+
+Changes in v1.10 (descriptor-contract correctness):
+    - Descriptor .db files are validated before retrieval.  Candidates must
+      contain every active descriptor, and vector lengths must agree exactly at
+      scoring time; silent zero-padding is never used.
+    - The unused spectrum .db is no longer loaded or attached to every corpus
+      entry; it never participated in scoring.
+    - Descriptor analysis is standardised to TinySOL's 44100 Hz corpus rate.
+      The delivered WAV still uses the target's original sample rate and length.
+    - Parameter validation rejects unknown descriptor names, invalid analysis /
+      render modes, non-positive frame/hop sizes, and reversed MIDI limits.
 
 Changes in v1.9 (macro-envelope transfer):
     - Optional envelope_follow (0..1, default 0.85) transfers the target's
@@ -142,7 +165,7 @@ Changes in v1.1:
 
 Architecture:
     Stage 1  — Parse parameters
-    Stage 2  — Load .db files (lazy, cached in memory)
+    Stage 2  — Load active .db descriptor files + resolve native feature profile
     Stage 3  — Parse TinySOL filename metadata
     Stage 4  — Build unified entry index
     Stage 4b — Build candidate domain (hard-constraint filter, Orchidea-style)
@@ -164,7 +187,10 @@ import math
 # Constants
 # ─────────────────────────────────────────────────────────────────────────────
 
-DB_NAMES = ("mfcc", "specenv", "moments", "specpeaks", "spectrum")
+COMPACT_DESCRIPTOR_DIMS = {"mfcc": 20, "specenv": 24, "moments": 4, "specpeaks": 16}
+DB_NAMES = tuple(COMPACT_DESCRIPTOR_DIMS.keys())
+DESCRIPTOR_SAMPLE_RATE = 44100
+KNOWN_WEIGHT_NAMES = set(DB_NAMES) | {"harmonic"}
 
 # Canonical dynamic order for comparison / normalisation
 DYN_ORDER = {"ppp": 0, "pp": 1, "p": 2, "mp": 3, "mf": 4, "f": 5, "ff": 6, "fff": 7}
@@ -331,6 +357,23 @@ def parse_params(params_path):
     if sum(max(0.0, float(v)) for v in params["_descriptor_weights"].values()) <= 0.0:
         raise ValueError("At least one descriptor weight must be > 0")
 
+    unknown = sorted(set(params["_descriptor_weights"]) - KNOWN_WEIGHT_NAMES)
+    if unknown:
+        raise ValueError("Unknown descriptor weight name(s): %s" % ", ".join(unknown))
+    if params["_analysis_mode"] not in ("whole_file", "frame_based"):
+        raise ValueError("analysis_mode must be whole_file or frame_based")
+    if params["render_mode"] not in ("best", "blend", "top2", "top3", "top4"):
+        raise ValueError("render_mode must be best, blend, top2, top3, or top4")
+    if params["_frame_size_ms"] <= 0 or params["_hop_size_ms"] <= 0:
+        raise ValueError("frame_size_ms and hop_size_ms must be > 0")
+    if params["_pitch_tolerance"] < 0:
+        raise ValueError("pitch_tolerance must be >= 0")
+    if params["_min_midi"] > params["_max_midi"]:
+        raise ValueError("min_midi must be <= max_midi")
+    params["_render_gain"] = max(0.0, float(params["_render_gain"]))
+    params["_n_results"] = max(1, int(params["_n_results"]))
+    params["_max_layers"] = max(1, int(params["_max_layers"]))
+
     return params
 
 
@@ -362,6 +405,7 @@ class DbStore:
         self.stem_index   = {}   # db_name -> {basename_stem:  vec}
         self.headers      = {}   # db_name -> header string
         self._sample_path = {}   # db_name -> first raw path (diagnostics)
+        self.dimensions   = {}   # db_name -> set of vector lengths seen
 
     def load(self, db_dir, name):
         """Load one .db file (e.g. 'mfcc') from db_dir."""
@@ -378,6 +422,7 @@ class DbStore:
         n_loaded  = 0
         n_skipped = 0
         first_raw = ""
+        dims_seen = set()
 
         with open(path, "r", encoding="utf-8", errors="replace") as fh:
             for lineno, raw in enumerate(fh, 1):
@@ -406,6 +451,7 @@ class DbStore:
                 stem      = _path_stem(raw_path)
                 full_tbl[norm_full] = vec
                 stem_tbl[stem]      = vec   # last writer wins — OK for TinySOL
+                dims_seen.add(int(vec.size))
                 n_loaded += 1
                 if not first_raw:
                     first_raw = raw_path
@@ -414,8 +460,10 @@ class DbStore:
         self.stem_index[name]   = stem_tbl
         self.headers[name]      = header
         self._sample_path[name] = first_raw
-        print("  [DB] Loaded %-10s: %d entries  (skipped %d)  sample='%s'"
-              % (name, n_loaded, n_skipped,
+        self.dimensions[name]   = dims_seen
+        dim_text = "/".join(str(d) for d in sorted(dims_seen)) if dims_seen else "?"
+        print("  [DB] Loaded %-10s: %d entries  dim=%s  (skipped %d)  sample='%s'"
+              % (name, n_loaded, dim_text, n_skipped,
                  os.path.basename(first_raw) if first_raw else "?"))
 
     def get(self, name, abs_path):
@@ -442,6 +490,72 @@ class DbStore:
         hits = sum(1 for p in sample_abs_paths if self.get(name, p) is not None)
         return hits, len(sample_abs_paths)
 
+
+def _active_db_descriptors(params):
+    """Active pre-computed descriptor names (harmonic is computed on the fly)."""
+    return [name for name in DB_NAMES
+            if float(params["_descriptor_weights"].get(name, 0.0)) > 0.0]
+
+
+def validate_descriptor_contract(db_store, params):
+    """Resolve the descriptor profile from the active TinySOL .db files.
+
+    AudioTools historically used a compact profile (20/24/4/16), while official
+    Orchidea/SOL databases may store higher-dimensional vectors (notably a
+    1024-value spectral envelope).  The correct invariant is not a particular
+    hard-coded length: target and corpus must use the SAME descriptor family and
+    vector length.  We therefore adopt each database's observed length and make
+    the target extractor produce that length directly.  We never zero-pad or
+    truncate vectors merely to silence a mismatch.
+
+    Returns a complete descriptor-profile dict.  Inactive descriptors retain
+    compact defaults because they do not participate in scoring.
+    """
+    active = _active_db_descriptors(params)
+    profile = dict(COMPACT_DESCRIPTOR_DIMS)
+
+    for name in active:
+        table = db_store.full_index.get(name, {})
+        if not table:
+            raise ValueError(
+                "Active descriptor '%s' has no loaded TinySOL.%s.db file/rows."
+                % (name, name))
+        dims = db_store.dimensions.get(name, set())
+        if len(dims) != 1:
+            raise ValueError(
+                "TinySOL.%s.db contains inconsistent vector lengths: %s"
+                % (name, sorted(dims)))
+        observed = int(next(iter(dims)))
+
+        if name == "moments":
+            if observed != 4:
+                raise ValueError(
+                    "TinySOL.moments.db has %d values per row; this descriptor "
+                    "must contain the four spectral moments (centroid, spread, "
+                    "skewness, kurtosis)." % observed)
+        elif name == "mfcc":
+            if observed < 1 or observed > 64:
+                raise ValueError("Unsupported MFCC vector length: %d" % observed)
+        elif name == "specenv":
+            if observed < 4 or observed > 2048:
+                raise ValueError("Unsupported spectral-envelope vector length: %d" % observed)
+        elif name == "specpeaks":
+            if observed < 1 or observed > 512:
+                raise ValueError("Unsupported spectral-peaks vector length: %d" % observed)
+
+        profile[name] = observed
+
+    if active:
+        parts = []
+        for name in active:
+            dim = profile[name]
+            base = COMPACT_DESCRIPTOR_DIMS[name]
+            tag = "native" if dim != base else "compact"
+            parts.append("%s=%d(%s)" % (name, dim, tag))
+        print("  [DB] Descriptor profile: %s" % ", ".join(parts))
+    else:
+        print("  [DB] No pre-computed timbral descriptor is active; harmonic-only scoring.")
+    return profile
 
 def _normalise_path(p):
     """Canonical lowercase forward-slash form, stripped of whitespace."""
@@ -686,7 +800,7 @@ def _analysis_mono(audio):
     return x[:, ch], ch
 
 
-def analyse_target(audio_path):
+def analyse_target(audio_path, descriptor_profile=None):
     """
     Compute the same descriptors that are stored in the .db files
     so we can compare them to corpus entries.
@@ -701,9 +815,20 @@ def analyse_target(audio_path):
     import numpy as np
     import soundfile as sf
 
-    audio, sr = sf.read(audio_path, always_2d=False)
-    audio = np.asarray(audio, dtype=np.float32)
-    audio, analysis_ch = _analysis_mono(audio)
+    audio_raw, sr = sf.read(audio_path, always_2d=False)
+    audio_raw = np.asarray(audio_raw, dtype=np.float32)
+    original_n_samples = int(audio_raw.shape[0])
+    audio, analysis_ch = _analysis_mono(audio_raw)
+
+    # Descriptor databases are tied to TinySOL's 44.1 kHz corpus rate.  Analyse
+    # the target at that same rate, but keep the ORIGINAL sr/length for rendering.
+    analysis_sr = int(sr)
+    if analysis_sr != DESCRIPTOR_SAMPLE_RATE:
+        from scipy.signal import resample_poly
+        from math import gcd
+        g = gcd(int(DESCRIPTOR_SAMPLE_RATE), analysis_sr)
+        audio = resample_poly(audio, DESCRIPTOR_SAMPLE_RATE // g, analysis_sr // g).astype(np.float32)
+        analysis_sr = DESCRIPTOR_SAMPLE_RATE
 
     # Work in float64 for precision
     x = audio.astype(np.float64)
@@ -714,25 +839,32 @@ def analyse_target(audio_path):
     frames = _stft_frames(x, n_fft, hop)   # (n_bins, n_frames)
     power  = np.abs(frames) ** 2           # power spectrum
 
+    profile = dict(COMPACT_DESCRIPTOR_DIMS)
+    if descriptor_profile:
+        profile.update(descriptor_profile)
     result = {}
 
-    # ── MFCC (20 coefficients, averaged over frames) ──────────────────
-    mfcc_vec = _compute_mfcc(power, sr, n_fft, n_mels=20, n_mfcc=20)
+    # ── MFCC ───────────────────────────────────────────────────────────
+    n_mfcc = int(profile["mfcc"])
+    n_mels = max(20, n_mfcc)
+    mfcc_vec = _compute_mfcc(power, analysis_sr, n_fft,
+                             n_mels=n_mels, n_mfcc=n_mfcc)
     result["mfcc"] = mfcc_vec.astype(np.float32)
 
-    # ── Spectral envelope (specenv): mean power per linear band ─────
-    specenv_vec = _compute_specenv(power, sr, n_fft, n_bands=24)
+    # ── Spectral envelope ──────────────────────────────────────────────
+    # For an official 1024-value .db this becomes 1024 contiguous log-power
+    # bands from the same 44.1-kHz spectral grid; compact AudioTools DBs keep 24.
+    specenv_vec = _compute_specenv(
+        power, analysis_sr, n_fft, n_bands=int(profile["specenv"]))
     result["specenv"] = specenv_vec.astype(np.float32)
 
-    # ── Moments (spectral centroid, spread, skewness, kurtosis) ──────
-    moments_vec = _compute_moments(power, sr, n_fft)
+    # ── Moments (spectral centroid, spread, skewness, kurtosis) ───────
+    moments_vec = _compute_moments(power, analysis_sr, n_fft)
     result["moments"] = moments_vec.astype(np.float32)
 
-    # ── Spectral peaks (specpeaks): log-amplitude of N strongest peaks ──
-    # Matches the .db specpeaks descriptor for corpus entries.
-    # Fixed-length vector: log-power at the N strongest frequency peaks.
-    # Cosine distance then measures how similar the peak structures are.
-    specpeaks_vec = _compute_specpeaks(power, sr, n_fft, n_peaks=16)
+    # ── Spectral peaks ────────────────────────────────────────────────
+    specpeaks_vec = _compute_specpeaks(
+        power, analysis_sr, n_fft, n_peaks=int(profile["specpeaks"]))
     result["specpeaks"] = specpeaks_vec.astype(np.float32)
 
     # ── Pitch detection (median F0 across analysis frames) ───────────
@@ -747,7 +879,7 @@ def analyse_target(audio_path):
         seg = x[s:s + pitch_frame_size]
         if len(seg) < pitch_frame_size:
             seg = np.pad(seg, (0, pitch_frame_size - len(seg)))
-        f0 = _detect_f0(seg, sr)
+        f0 = _detect_f0(seg, analysis_sr)
         if f0 is not None:
             f0_values.append(f0)
 
@@ -765,19 +897,19 @@ def analyse_target(audio_path):
     partials_amp = []
     if median_f0 is not None:
         mean_power = power.mean(axis=1)
-        freqs = np.linspace(0, sr / 2.0, len(mean_power))
+        freqs = np.linspace(0, analysis_sr / 2.0, len(mean_power))
         noise_floor = float(np.mean(mean_power)) * 0.1
         # Search for peaks at harmonic multiples of F0
         for h in range(1, 17):  # up to 16th harmonic
             fh = h * median_f0
-            if fh >= sr / 2.0 - 100:
+            if fh >= analysis_sr / 2.0 - 100:
                 break
             # Find the strongest bin within ±15% of expected harmonic
             lo_hz = fh * 0.85
             hi_hz = fh * 1.15
-            lo_bin = max(0, int(lo_hz / (sr / 2.0) * (len(mean_power) - 1)))
+            lo_bin = max(0, int(lo_hz / (analysis_sr / 2.0) * (len(mean_power) - 1)))
             hi_bin = min(len(mean_power) - 1,
-                         int(hi_hz / (sr / 2.0) * (len(mean_power) - 1)))
+                         int(hi_hz / (analysis_sr / 2.0) * (len(mean_power) - 1)))
             if lo_bin >= hi_bin:
                 continue
             region = mean_power[lo_bin:hi_bin + 1]
@@ -795,10 +927,9 @@ def analyse_target(audio_path):
         if total_amp > 0:
             partials_amp = [a / total_amp for a in partials_amp]
 
-    # If no pitch was detected (speech, noise, etc.) keep partials empty
-    # so callers can detect the unvoiced case cleanly.  An empty list with a
-    # non-zero harmonic weight would score 1.0 (worst) instead of the neutral
-    # 0.5 that None triggers in harmonic_contribution_distance().
+    # If no pitch was detected (speech, noise, etc.) keep partials empty so
+    # callers can detect the unvoiced case cleanly.  The whole-file caller turns
+    # this into target_partials=None, which omits harmonic scoring for that target.
     if n_voiced == 0:
         partials_hz  = []
         partials_amp = []
@@ -814,7 +945,7 @@ def analyse_target(audio_path):
         "target_rms": float(np.sqrt(np.mean(x ** 2))) if len(x) else 0.0,
     }
 
-    return result, sr, len(audio), pitch_info
+    return result, int(sr), original_n_samples, pitch_info
 
 
 # ── Low-level DSP helpers ────────────────────────────────────────────────────
@@ -899,20 +1030,32 @@ def _compute_mfcc(power, sr, n_fft, n_mels=20, n_mfcc=20):
 
 
 def _compute_specenv(power, sr, n_fft, n_bands=24):
-    """
-    Spectral envelope: log-energy in n_bands linearly-spaced frequency bands.
+    """Spectral envelope as log mean-power over equal linear-frequency bands.
+
+    ``n_bands`` is resolved from the active database profile.  Equal-frequency
+    edges use all available FFT bins and avoid the old integer-band-size
+    remainder problem.  The caller guarantees enough FFT bins for the requested
+    database dimension.
     """
     import numpy as np
-    n_bins = power.shape[0]
-    mean_power = power.mean(axis=1)
-    band_size = max(1, n_bins // n_bands)
-    env = np.zeros(n_bands)
+    mean_power = np.asarray(power, dtype=np.float64).mean(axis=1)
+    n_bins = int(mean_power.size)
+    n_bands = int(n_bands)
+    if n_bands < 1:
+        raise ValueError("specenv n_bands must be >= 1")
+    if n_bands > n_bins:
+        raise ValueError(
+            "specenv profile requests %d values but this FFT provides only %d bins"
+            % (n_bands, n_bins))
+    edges = np.linspace(0, n_bins, n_bands + 1, dtype=int)
+    env = np.empty(n_bands, dtype=np.float64)
     for b in range(n_bands):
-        lo = b * band_size
-        hi = min(lo + band_size, n_bins)
+        lo = int(edges[b])
+        hi = int(edges[b + 1])
+        if hi <= lo:
+            hi = min(n_bins, lo + 1)
         env[b] = np.log(np.mean(mean_power[lo:hi]) + 1e-10)
     return env
-
 
 def _compute_moments(power, sr, n_fft):
     """
@@ -1093,15 +1236,13 @@ def moments_distance(a, b):
     return euclidean_distance_normalised(a_norm, b_norm)
 
 
-def _pad_or_trim(a, b):
-    """Make two vectors the same length (pad shorter with zeros)."""
-    import numpy as np
-    la, lb = len(a), len(b)
-    if la == lb:
-        return a, b
-    if la < lb:
-        return np.pad(a, (0, lb - la)), b
-    return a, np.pad(b, (0, la - lb))
+def _require_same_length(name, a, b):
+    """Return vectors only when they represent the same descriptor dimension."""
+    if len(a) != len(b):
+        raise ValueError(
+            "Descriptor length mismatch for %s: target=%d corpus=%d"
+            % (name, len(a), len(b)))
+    return a, b
 
 
 def harmonic_contribution_distance(target_partials_hz, target_partials_amp,
@@ -1162,9 +1303,6 @@ def score_entry(entry, target_descs, weights, preferred_dyns, min_midi, max_midi
     """
     import numpy as np
 
-    if not entry.descriptors:
-        return None, {}
-
     dist_parts = {}
     total_w    = 0.0
     total_d    = 0.0
@@ -1188,8 +1326,8 @@ def score_entry(entry, target_descs, weights, preferred_dyns, min_midi, max_midi
         c_vec = entry.descriptors.get(db_name)
         if t_vec is None or c_vec is None:
             continue
-        tv, cv = _pad_or_trim(t_vec.astype(np.float64),
-                              c_vec.astype(np.float64))
+        tv, cv = _require_same_length(
+            db_name, t_vec.astype(np.float64), c_vec.astype(np.float64))
         if db_name == "moments":
             d = moments_distance(tv, cv)
         elif db_name == "specenv":
@@ -1246,7 +1384,7 @@ def build_candidate_domain(entries, params):
       - Instrument family membership (allowed_families)
       - Specific instrument filter  (allowed_instruments)
       - MIDI pitch range            [min_midi, max_midi]
-      - Non-empty descriptor set    (entry has at least one .db vector)
+      - Complete active descriptor set (every positive-weight .db vector)
 
     Soft preferences (dynamics, pitch proximity to target) are NOT handled here
     — they remain as scoring penalties in score_entry(), because they depend on
@@ -1258,6 +1396,7 @@ def build_candidate_domain(entries, params):
     allowed_inst = {_norm_label(x) for x in params["_allowed_instruments"] if x}
     min_midi     = params["_min_midi"]
     max_midi     = params["_max_midi"]
+    required_desc = set(_active_db_descriptors(params))
 
     domain = []
     n_fam_reject  = 0
@@ -1277,12 +1416,12 @@ def build_candidate_domain(entries, params):
         if e.midi < min_midi or e.midi > max_midi:
             n_midi_reject += 1
             continue
-        if not e.descriptors:
+        if required_desc and not required_desc.issubset(e.descriptors.keys()):
             n_nodesc += 1
             continue
         domain.append(e)
 
-    print("  [DOMAIN] %d legal candidates  (rejected: fam=%d inst=%d midi=%d nodesc=%d)"
+    print("  [DOMAIN] %d legal candidates  (rejected: fam=%d inst=%d midi=%d incomplete_desc=%d)"
           % (len(domain), n_fam_reject, n_inst_reject, n_midi_reject, n_nodesc))
     return domain
 
@@ -1733,12 +1872,12 @@ def _detect_f0(frame, sr, min_hz=40.0, max_hz=3000.0, voiced_thresh=0.35):
     return float(sr) / max(lag, 1e-12)
 
 
-def _analyse_frame(frame, sr, n_fft):
+def _analyse_frame(frame, sr, n_fft, descriptor_profile=None):
     """
     Compute the same descriptor set as analyse_target() but for a single frame.
-    Uses a smaller n_fft suited to the frame length so the vector dimensions
-    (20 MFCCs, 24 specenv bands, 4 moments, 16 specpeaks) stay identical to
-    the .db entries.
+    Uses the database-resolved descriptor profile so official/legacy TinySOL
+    databases and AudioTools compact databases are both dimensionally matched.
+    Caller supplies audio at DESCRIPTOR_SAMPLE_RATE.
     """
     import numpy as np
 
@@ -1746,11 +1885,19 @@ def _analyse_frame(frame, sr, n_fft):
     frames = _stft_frames(frame, n_fft, hop)
     power  = np.abs(frames) ** 2
 
+    profile = dict(COMPACT_DESCRIPTOR_DIMS)
+    if descriptor_profile:
+        profile.update(descriptor_profile)
+    n_mfcc = int(profile["mfcc"])
     return {
-        "mfcc":      _compute_mfcc(power, sr, n_fft, n_mels=20, n_mfcc=20).astype(np.float32),
-        "specenv":   _compute_specenv(power, sr, n_fft, n_bands=24).astype(np.float32),
-        "moments":   _compute_moments(power, sr, n_fft).astype(np.float32),
-        "specpeaks": _compute_specpeaks(power, sr, n_fft, n_peaks=16).astype(np.float32),
+        "mfcc": _compute_mfcc(power, sr, n_fft,
+                              n_mels=max(20, n_mfcc),
+                              n_mfcc=n_mfcc).astype(np.float32),
+        "specenv": _compute_specenv(power, sr, n_fft,
+                                    n_bands=int(profile["specenv"])).astype(np.float32),
+        "moments": _compute_moments(power, sr, n_fft).astype(np.float32),
+        "specpeaks": _compute_specpeaks(power, sr, n_fft,
+                                        n_peaks=int(profile["specpeaks"])).astype(np.float32),
     }
 
 
@@ -1834,7 +1981,8 @@ def analyse_frames(audio_path, frame_size_ms, hop_size_ms):
 
 def retrieve_frame(domain, frame_info, params, whole_file_descs,
                    last_voiced_midi=None, prefer_path=None,
-                   frame_audio=None, frame_sr=None, frame_n_fft=2048):
+                   frame_audio=None, frame_sr=None, frame_n_fft=2048,
+                   descriptor_profile=None):
     """
     Find the best-matching corpus entry for a single analysis frame.
 
@@ -1880,7 +2028,7 @@ def retrieve_frame(domain, frame_info, params, whole_file_descs,
     # Fall back to whole-file descriptors if audio is not supplied.
     if frame_audio is not None and len(frame_audio) >= 64:
         try:
-            frame_descs = _analyse_frame(frame_audio, frame_sr, frame_n_fft)
+            frame_descs = _analyse_frame(frame_audio, frame_sr, frame_n_fft, descriptor_profile)
         except Exception:
             frame_descs = whole_file_descs   # safe fallback
     else:
@@ -2144,6 +2292,20 @@ def write_frame_results(out_path, frame_matches, params, target_sr, target_len, 
                 e.dyn, e.variant, e.tech, e.abs_path,
             ))
         f.write("\n")
+        # User-facing selection statistics for Praat visualization.  Ranking is
+        # by usage in frame mode, so expose that directly instead of forcing the
+        # UI to present descriptor distance as the primary musical result.
+        for rank in range(1, 5):
+            if rank <= len(ranked):
+                key = ranked[rank - 1]
+                count = int(usage[key])
+                pct = 100.0 * count / max(1, n_matched)
+            else:
+                count = 0
+                pct = 0.0
+            f.write("rank%d_usage_count=%d\n" % (rank, count))
+            f.write("rank%d_usage_pct=%.1f\n" % (rank, pct))
+        f.write("\n")
         f.write("=== Frame Stats ===\n")
         f.write("total_frames=%d\n"      % n_frames)
         f.write("matched_frames=%d\n"    % n_matched)
@@ -2276,8 +2438,9 @@ def _run_pipeline(target_wav, params_file, out_wav, results_txt):
     # ── Stage 2: Load .db files ──────────────────────────────────────────
     print("[2/8] Loading .db descriptor files ...")
     db_store = DbStore()
-    for name in DB_NAMES:
+    for name in _active_db_descriptors(params):
         db_store.load(db_dir, name)
+    descriptor_profile = validate_descriptor_contract(db_store, params)
 
     # ── Stage 3+4: Build corpus index ────────────────────────────────────
     print("[3/8] Scanning corpus and building index ...")
@@ -2316,13 +2479,25 @@ def _run_pipeline(target_wav, params_file, out_wav, results_txt):
         # Per-frame descriptors are computed from the actual audio slice
         # inside retrieve_frame(), allowing timbral variation frame-to-frame.
         print("[4b/8] Computing whole-file target descriptors (fallback) ...")
-        target_descs_wf, _, _, _ = analyse_target(target_wav)
+        target_descs_wf, _, _, _ = analyse_target(target_wav, descriptor_profile)
         print("  Descriptors: %s" % list(target_descs_wf.keys()))
 
-        # Load raw audio once so retrieve_frame can slice per-frame audio
+        # Load raw audio once for envelope/output-time work, plus a separate
+        # 44.1 kHz copy for descriptor slices so frame descriptors live in the
+        # same frequency coordinate system as TinySOL's .db vectors.
         _raw_audio, _raw_sr = load_audio(target_wav)
+        _desc_audio, _ = load_audio(target_wav, target_sr=DESCRIPTOR_SAMPLE_RATE)
         import numpy as np
-        _raw_x = _raw_audio.astype(np.float64)
+        _desc_x = _desc_audio.astype(np.float64)
+        _desc_frame_size = max(64, int(round(params["_frame_size_ms"] *
+                                              DESCRIPTOR_SAMPLE_RATE / 1000.0)))
+        # The native specenv profile may be 1024 values.  Ensure the frame FFT
+        # exposes at least that many positive-frequency bins; _stft_frames pads
+        # short audio slices safely when n_fft exceeds the physical frame length.
+        _desc_n_fft = max(2048, 2 * int(descriptor_profile.get("specenv", 24)))
+        if _desc_n_fft % 2:
+            _desc_n_fft += 1
+        _desc_n_fft = min(_desc_n_fft, 8192)
 
         # ── Stage 4c: Build candidate domain (Orchidea-style, done ONCE) ──
         # Hard constraints (family, instrument, MIDI range) are applied here
@@ -2364,15 +2539,18 @@ def _run_pipeline(target_wav, params_file, out_wav, results_txt):
                 unvoiced_run = 0
             # Slice the raw audio for this frame so retrieve_frame can compute
             # per-frame descriptors (captures timbre variation across the target)
-            f_start = fi["start"]
-            f_end   = f_start + frame_size
-            frame_audio_slice = _raw_x[f_start:min(f_end, len(_raw_x))]
+            # Descriptor slice is selected by TIME from the 44.1 kHz analysis
+            # copy; render scheduling continues to use the original sample rate.
+            d_start = int(round(fi["time_s"] * DESCRIPTOR_SAMPLE_RATE))
+            d_end   = d_start + _desc_frame_size
+            frame_audio_slice = _desc_x[d_start:min(d_end, len(_desc_x))]
 
             match = retrieve_frame(frame_domain, fi, params,
                                    target_descs_wf, last_voiced_midi,
                                    frame_audio=frame_audio_slice,
-                                   frame_sr=_raw_sr,
-                                   frame_n_fft=min(2048, frame_size))
+                                   frame_sr=DESCRIPTOR_SAMPLE_RATE,
+                                   frame_n_fft=_desc_n_fft,
+                                   descriptor_profile=descriptor_profile)
 
             # Apply persistence: if the previous winner is still a valid
             # candidate, check if it would win with a persistence bonus.
@@ -2384,8 +2562,9 @@ def _run_pipeline(target_wav, params_file, out_wav, results_txt):
                                                 target_descs_wf, last_voiced_midi,
                                                 prefer_path=prev_entry_path,
                                                 frame_audio=frame_audio_slice,
-                                                frame_sr=_raw_sr,
-                                                frame_n_fft=min(2048, frame_size))
+                                                frame_sr=DESCRIPTOR_SAMPLE_RATE,
+                                                frame_n_fft=_desc_n_fft,
+                                                descriptor_profile=descriptor_profile)
                     if prev_match is not None:
                         prev_score = prev_match[0]
                         bonus = min(persist_bonus * persist_count, 0.10)
@@ -2479,15 +2658,15 @@ def _run_pipeline(target_wav, params_file, out_wav, results_txt):
 
         # ── Stage 5: Analyse target ──────────────────────────────────────
         print("[4/8] Analysing target WAV ...")
-        target_descs, target_sr, target_len, pitch_info = analyse_target(target_wav)
+        target_descs, target_sr, target_len, pitch_info = analyse_target(target_wav, descriptor_profile)
         print("  Descriptors computed: %s" % list(target_descs.keys()))
         print("  Analysis channel: %d" % pitch_info.get("analysis_channel", 1))
 
         target_midi = pitch_info["midi"]
         # Build target partials for harmonic contribution scoring.
-        # Use None (not an empty list) when unvoiced — harmonic_contribution_distance()
-        # returns the neutral 0.5 for None, but 1.0 (worst) for an empty list with
-        # a non-zero weight, which would unfairly penalise all corpus entries.
+        # Use None when unvoiced. score_entry() then omits the harmonic term and
+        # renormalises the remaining active timbral weights, giving true timbre-only
+        # matching instead of assigning an arbitrary harmonic penalty.
         target_partials = None
         if pitch_info["partials_hz"] and pitch_info["partials_amp"]:
             target_partials = list(zip(pitch_info["partials_hz"],
@@ -2513,7 +2692,9 @@ def _run_pipeline(target_wav, params_file, out_wav, results_txt):
                           target_partials=target_partials)
         print("  Candidates after filtering: %d" % len(scored))
 
-        n_with_desc = sum(1 for e in entries if e.descriptors)
+        _req_desc = set(_active_db_descriptors(params))
+        n_with_desc = sum(1 for e in entries
+                          if (not _req_desc or _req_desc.issubset(e.descriptors.keys())))
 
         _af = set(params["_allowed_families"])
         _ai = set(params["_allowed_instruments"])
