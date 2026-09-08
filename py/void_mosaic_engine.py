@@ -1,24 +1,22 @@
 """
-void_mosaic_engine.py - Latent Void Mosaic Engine v1.5.4
+void_mosaic_engine.py - Latent Void Mosaic Engine v1.5.5
 Part of Praat AudioTools plugin
 Author: Shai Cohen, Department of Music, Bar-Ilan University
-Version: 1.5.4 (2026) - Analysis and synthesis stay at 22050 Hz (unchanged cost
-         and unchanged void geometry); the finished signal is resampled ONCE to
-         44100 Hz immediately before it is written, so the deliverable is a
-         standard-rate file. Peak normalization and the edge fades now happen
-         AFTER the resample, because polyphase interpolation can overshoot the
-         pre-resample peak. The map CSV additionally carries the void ->
-         selected-grain pairing, and the stats file reports how many grains hit
-         the Max Pitch Shift ceiling.
-         (1.5.3: stable-I/O build with lightweight visualization data; DSP and
-         selection logic from v1.5.2 unchanged; bounded corpus/void map export
-         and output-time stamps in the grain CSV.)
+Version: 1.5.5 (2026) - Corrected void geometry and pitch semantics. Random
+         probes now stay inside the corpus-observed marginal feature bounds,
+         so "deep voids" describe unoccupied combinations of observed acoustic
+         ranges rather than arbitrary points outside the corpus box. F0 uses
+         pYIN voiced/unvoiced decisions (20-cent resolution) instead of treating
+         every YIN estimate as pitched, and raw void F0 is preserved up to the
+         analysis ceiling before octave-folding into the chosen register.
+         (1.5.4: 22050 Hz analysis/synthesis with one final 44100 Hz resample;
+         post-resample normalization/fades; paired map export and shift-ceiling
+         QC.)
 License: MIT
 """
 
 import argparse
 import csv
-import glob
 import math
 import os
 import sys
@@ -68,13 +66,19 @@ def extract_6d_features(y, sr):
     flatness = np.mean(librosa.feature.spectral_flatness(y=y))
     rolloff = np.mean(librosa.feature.spectral_rolloff(y=y, sr=sr))
     zcr = np.mean(librosa.feature.zero_crossing_rate(y=y))
-    
+
+    # pYIN supplies an explicit voiced/unvoiced decision. Plain YIN always
+    # returns a candidate pitch, which makes noise/percussive grains look voiced
+    # and can trigger large, musically meaningless pitch shifts.
     try:
-        f0_arr = librosa.yin(y, fmin=50, fmax=2000, sr=sr)
-        f0 = np.nanmean(f0_arr) if not np.all(np.isnan(f0_arr)) else 0.0
+        f0_arr, voiced_flag, _ = librosa.pyin(
+            y, fmin=50, fmax=2000, sr=sr, resolution=0.2
+        )
+        valid = voiced_flag & np.isfinite(f0_arr)
+        f0 = float(np.mean(f0_arr[valid])) if np.any(valid) else 0.0
     except Exception:
         f0 = 0.0
-        
+
     return np.array([rms, centroid, flatness, rolloff, zcr, f0], dtype=np.float32)
 
 def extract_features_grids(y, sr, n_fft=2048, hop=512):
@@ -83,9 +87,10 @@ def extract_features_grids(y, sr, n_fft=2048, hop=512):
     Returns per-STFT-frame arrays (rms, centroid, flatness, rolloff, zcr, f0)
     plus the STFT hop length, so each grain can be aggregated from the frames
     that cover it. This computes ONE STFT per file (shared by the spectral
-    features) and runs yin once per file, instead of 6 separate transforms
-    per grain -- ~40-50x faster on a real corpus, with musically equivalent
-    (not bit-identical) feature values.
+    features) and runs pYIN once per file, instead of repeating the full
+    analysis per grain. pYIN is deliberately run at 20-cent resolution so it
+    can reject unvoiced material without turning pitch analysis into the main
+    runtime bottleneck.
     """
     S = np.abs(librosa.stft(y, n_fft=n_fft, hop_length=hop))
     centroid = librosa.feature.spectral_centroid(S=S, sr=sr)[0]
@@ -95,9 +100,17 @@ def extract_features_grids(y, sr, n_fft=2048, hop=512):
     zcr = librosa.feature.zero_crossing_rate(
         y, frame_length=n_fft, hop_length=hop)[0]
     try:
-        f0 = librosa.yin(y, fmin=50, fmax=2000, sr=sr, hop_length=hop)
-        f0 = np.nan_to_num(f0, nan=0.0)
+        f0_track, voiced_flag, _ = librosa.pyin(
+            y, fmin=50, fmax=2000, sr=sr, hop_length=hop, resolution=0.2
+        )
+        f0 = np.where(voiced_flag & np.isfinite(f0_track), f0_track, 0.0).astype(np.float32)
+        # Keep the pitch grid aligned with the STFT-derived feature grids.
+        if len(f0) < S.shape[1]:
+            f0 = np.pad(f0, (0, S.shape[1] - len(f0)))
+        elif len(f0) > S.shape[1]:
+            f0 = f0[:S.shape[1]]
     except Exception:
+        # A failed pitch tracker is safer as "unvoiced" than as a fabricated F0.
         f0 = np.zeros(S.shape[1], dtype=np.float32)
     return rms, centroid, flatness, rolloff, zcr, f0, hop
 
@@ -231,18 +244,20 @@ def main():
     num_voids = len(grain_lengths)
 
     # ── 1. Corpus Extraction ──
-    # Case-insensitive filesystems return the same file for "*.wav" and
-    # "*.WAV", so dedupe by normalized absolute path. Sorted for reproducibility.
-    exts = ("*.wav", "*.flac", "*.aif", "*.aiff")
+    # Walk once and test the extension case-insensitively. This catches mixed-case
+    # names such as .Wav/.FlAc on case-sensitive filesystems without duplicate globs.
+    valid_exts = {".wav", ".flac", ".aif", ".aiff"}
     audio_files = []
     seen_paths = set()
-    for ext in exts:
-        for pat in (ext, ext.upper()):
-            for p in glob.glob(os.path.join(args.corpus, '**', pat), recursive=True):
-                key = os.path.normcase(os.path.abspath(p))
-                if key not in seen_paths:
-                    seen_paths.add(key)
-                    audio_files.append(p)
+    for root, _, names in os.walk(args.corpus):
+        for name in names:
+            if os.path.splitext(name)[1].lower() not in valid_exts:
+                continue
+            p = os.path.join(root, name)
+            key = os.path.normcase(os.path.abspath(p))
+            if key not in seen_paths:
+                seen_paths.add(key)
+                audio_files.append(p)
     audio_files.sort()
 
     if not audio_files:
@@ -255,12 +270,17 @@ def main():
     corpus_file_paths = []
     
     stft_hop = 512
+    # Descriptors use the nominal grain duration, but rendering can request a
+    # longer jittered grain. Keep only source anchors that can supply the longest
+    # grain scheduled for this render, so positive jitter never creates a padded
+    # silent tail at the end of a source file.
+    required_source_samples = max(grain_samples, max(grain_lengths))
     for f_path in audio_files:
         try:
             y, sr = librosa.load(f_path, sr=target_sr, mono=True)
-            if len(y) < grain_samples:
+            if len(y) < required_source_samples:
                 continue
-            
+
             corpus_file_paths.append(f_path)
             file_idx = len(corpus_file_paths) - 1
             
@@ -269,9 +289,10 @@ def main():
                 extract_features_grids(y, target_sr, hop=stft_hop)
             n_frames = len(cen_f)
             
-            # +1: a file whose length is exactly grain_samples must still
-            # yield one grain (len>=grain_samples guaranteed by the skip above).
-            num_grains = (len(y) - grain_samples) // hop_samples + 1
+            # +1: include the last anchor that can still supply every jittered
+            # render length scheduled in this run. The descriptor itself remains
+            # the nominal grain-sized window beginning at that anchor.
+            num_grains = (len(y) - required_source_samples) // hop_samples + 1
             for i in range(num_grains):
                 start = i * hop_samples
                 # STFT frames covering this grain
@@ -313,9 +334,13 @@ def main():
     corpus_z = (corpus_matrix - means) / stds
     
     # ── 2. Void Mapping ──
-    min_bounds = np.min(corpus_z, axis=0) - 1.0
-    max_bounds = np.max(corpus_z, axis=0) + 1.0
-    
+    # Search for negative space INSIDE the acoustic ranges the corpus actually
+    # exhibits. Expanding the z-box beyond the corpus makes the farthest probes
+    # collapse toward arbitrary exterior corners; those are trivially empty,
+    # not informative "voids" between observed feature combinations.
+    min_bounds = np.min(corpus_z, axis=0)
+    max_bounds = np.max(corpus_z, axis=0)
+
     num_probes = 40000
     probes_z = np.random.uniform(min_bounds, max_bounds, size=(num_probes, 6))
 
@@ -357,17 +382,20 @@ def main():
     selected_voids_physical = (selected_voids_z * stds) + means
 
     # ── Clamp void targets to physically valid acoustics ──
-    # Voids are sampled in a z-box expanded past the corpus, so inverting the
-    # standardization can produce impossible coordinates (negative Hz, flatness
-    # or ZCR outside 0..1). Clamp the physical targets that feed mutation and
-    # the Matter Map; the z-space voids used for grain *selection* stay as-is.
+    # Probes now stay within the corpus-observed marginal ranges, so these
+    # clamps are defensive numerical guards rather than a repair for deliberate
+    # extrapolation. The z-space voids used for grain selection stay unchanged.
     nyq = target_sr / 2.0
     selected_voids_physical[:, 0] = np.maximum(selected_voids_physical[:, 0], 0.0)       # rms
     selected_voids_physical[:, 1] = np.clip(selected_voids_physical[:, 1], 0.0, nyq)     # centroid
     selected_voids_physical[:, 2] = np.clip(selected_voids_physical[:, 2], 0.0, 1.0)     # flatness
     selected_voids_physical[:, 3] = np.clip(selected_voids_physical[:, 3], 0.0, nyq)     # rolloff
     selected_voids_physical[:, 4] = np.clip(selected_voids_physical[:, 4], 0.0, 1.0)     # zcr
-    selected_voids_physical[:, 5] = np.clip(selected_voids_physical[:, 5], 0.0, args.max_pitch)  # f0
+    # Preserve the raw acoustic F0 coordinate up to the feature-analysis ceiling.
+    # Do NOT clip to the chosen vocal-register ceiling here: mutate_grain() must
+    # see the raw target so octave folding can preserve its pitch class/register
+    # relation before Max Pitch Shift is applied.
+    selected_voids_physical[:, 5] = np.clip(selected_voids_physical[:, 5], 0.0, 2000.0)  # f0
 
     # The visualization map is written AFTER synthesis (see below), because a
     # void is only half the picture: the informative pair is the void target
@@ -397,6 +425,7 @@ def main():
     grain_records = []
     rests_generated = 0
     grains_clipped = 0        # grains whose required shift hit the max_shift ceiling
+    unvoiced_selected = 0     # selected source grains with no reliable pYIN F0
     void_pairs = []           # (void_centroid, void_rolloff, grain_centroid, grain_rolloff)
     used_grain_keys = set()   # (file_idx, start_sample) -> genuinely distinct grains
 
@@ -466,6 +495,8 @@ def main():
         meta = corpus_metadata[best_idx]
         used_grain_keys.add((meta['file_idx'], meta['start_sample']))
         c_phys = corpus_matrix[best_idx]
+        if c_phys[5] <= 20:
+            unvoiced_selected += 1
 
         y_full = get_source_audio(meta['file_idx'])
         start_samp = meta['start_sample']
@@ -673,6 +704,8 @@ def main():
         f.write(f"Distinct source grains: {len(used_grain_keys)}\n")
         f.write(f"Distinct source files: {distinct_files}\n")
         f.write(f"Voids meeting spacing: {voids_spaced} of {num_voids}\n")
+        f.write("Void search domain: observed corpus marginal bounds\n")
+        f.write(f"Selected unvoiced grains: {unvoiced_selected}\n")
         f.write(f"Grains at max shift: {grains_clipped}\n")
         if voids_fallback > 0:
             f.write(f"Voids backfilled (spacing not guaranteed): {voids_fallback}\n")

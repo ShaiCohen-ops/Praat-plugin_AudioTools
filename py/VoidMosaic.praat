@@ -2,8 +2,8 @@
 # Praat AudioTools - VoidMosaic.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
-# Version: 1.5.4 (2026) - Stable Praat-7 I/O, 44100 Hz delivery, corrected
-#          Picture frame handling in the panel legends
+# Version: 1.5.5 (2026) - Corrected void geometry and pitch semantics;
+#          stable Praat-7 I/O and 44100 Hz delivery retained
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -12,13 +12,15 @@
 #
 #   Combines the spatial negative-space mapping of the Void Sieve
 #   with the real audio extraction of the Corpus Mosaic. Charts deep
-#   acoustic voids in a 6-D feature space (RMS, centroid, flatness,
-#   rolloff, ZCR, F0), then for each void selects the nearest real
-#   corpus grain in that full 6-D space and nudges it TOWARD the void
-#   along two axes -- pitch (folded toward the chosen register, as far as the
-#   Max Pitch Shift limit allows) and loudness. The four spectral axes shape
-#   selection, not mutation; the Matter Map plots the selected void targets,
-#   not re-measured post-mutation grains.
+#   acoustic voids inside the corpus-observed marginal ranges of a 6-D feature
+#   space (RMS, centroid, flatness, rolloff, ZCR, F0). For each void it selects
+#   a nearby real corpus grain in that full 6-D space; Source Variety can add a
+#   short-term recency penalty, so the chosen grain need not be the mathematically
+#   nearest one. The grain is then mutated along two axes -- pitch (octave-folded
+#   toward the chosen register, as far as Max Pitch Shift allows) and loudness.
+#   The four spectral axes shape selection only, not mutation; the Matter Map
+#   shows void/grain pairings in a 2-D projection, not spectral motion performed
+#   by the renderer.
 #
 #   Analysis and synthesis run at 22050 Hz; the engine resamples the finished
 #   signal once to 44100 Hz before writing it, so the imported Sound is a
@@ -28,7 +30,7 @@
 # Python engine: void_mosaic_engine.py
 # ============================================================
 
-form "Latent Void Mosaic v1.5.4"
+form "Latent Void Mosaic v1.5.5"
     comment ── Corpus Configuration ──
     comment (Leave blank to pick a folder with a dialog)
     sentence Corpus_folder 
@@ -281,7 +283,7 @@ endproc
 
 # ---- Dependency probe: same synchronous runSystem_nocheck pattern used elsewhere ----
 clearinfo
-writeInfoLine: "=== Latent Void Mosaic v1.5.4 ==="
+writeInfoLine: "=== Latent Void Mosaic v1.5.5 ==="
 appendInfoLine: "Corpus:        ", corpusDir$
 appendInfoLine: "Preset:        ", presetName$
 appendInfoLine: "Target Length: ", target_Duration_s, " seconds"
@@ -395,7 +397,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##Latent Void Mosaic v1.5.4##"
+    Text: 0.5, "centre", 0.68, "half", "##Latent Void Mosaic v1.5.5##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.48}"
     Text: 0.5, "centre", -1.22, "half", presetName$ + "  |  register=" + registerName$ + "  |  output ch" + string$(vizChannel)
@@ -437,18 +439,23 @@ if draw_visualization
         # a connector running off the panel edge would be misleading.
         for mr from 1 to nMapRows
             selectObject: mapTable
+            typ$ = Get value: mr, "type"
             cx = Get value: mr, "centroid"
             ry = Get value: mr, "rolloff"
-            sx = Get value: mr, "src_centroid"
-            sy = Get value: mr, "src_rolloff"
-            if sx <= 0 or sy <= 0
-                sx = cx
-                sy = ry
+            cMin = min(cMin, cx)
+            cMax = max(cMax, cx)
+            rMin = min(rMin, ry)
+            rMax = max(rMax, ry)
+            if typ$ = "V"
+                # Zero is a valid centroid/rolloff for a silent source grain;
+                # the row type, not a zero sentinel, tells us whether endpoints exist.
+                sx = Get value: mr, "src_centroid"
+                sy = Get value: mr, "src_rolloff"
+                cMin = min(cMin, sx)
+                cMax = max(cMax, sx)
+                rMin = min(rMin, sy)
+                rMax = max(rMax, sy)
             endif
-            cMin = min(cMin, cx, sx)
-            cMax = max(cMax, cx, sx)
-            rMin = min(rMin, ry, sy)
-            rMax = max(rMax, ry, sy)
         endfor
         if cMax - cMin < 1
             cMax = cMin + 1
@@ -469,8 +476,9 @@ if draw_visualization
         Paint rectangle: "{0.97, 0.97, 0.98}", mapX0, mapX1, mapY0, mapY1
 
         # Connectors first, so the dots sit on top of them. Each line joins the
-        # void target to the real corpus grain that was actually selected for
-        # it: the line IS the nudge the engine performed, in these two axes.
+        # void target to the real corpus grain selected for it. This is a 2-D
+        # projection of the SELECTION GAP only: centroid and rolloff are not
+        # mutated by the renderer.
         Colour: "{0.78, 0.70, 0.80}"
         Line width: 1
         for mr from 1 to nMapRows
@@ -481,9 +489,7 @@ if draw_visualization
                 ry = Get value: mr, "rolloff"
                 sx = Get value: mr, "src_centroid"
                 sy = Get value: mr, "src_rolloff"
-                if sx > 0 and sy > 0
-                    Draw line: sx, sy, cx, ry
-                endif
+                Draw line: sx, sy, cx, ry
             endif
         endfor
         @restoreMapFrame
@@ -527,10 +533,10 @@ if draw_visualization
         @restoreMapFrame
         Font size: 6
         Colour: "{0.35, 0.35, 0.35}"
-        Text: mapX0 + 0.03 * (mapX1 - mapX0), "left", mapY1 - 0.06 * (mapY1 - mapY0), "half", "grey corpus   purple void targets   line = grain -> void nudge"
+        Text: mapX0 + 0.03 * (mapX1 - mapX0), "left", mapY1 - 0.06 * (mapY1 - mapY0), "half", "grey corpus   purple void targets   line = selected grain / void pairing"
     endif
 
-    # Panel 3: measured pitch-mutation trace from the actual grain schedule.
+    # Panel 3: scheduled pitch-mutation trace from the actual grain schedule.
     Select outer viewport: 4.10, 8, 2.18, 5.15
     Select inner viewport: 4.42, 7.65, 2.30, 5.02
     pitchY0 = 24
@@ -597,12 +603,12 @@ if draw_visualization
     Draw inner box
     Text left: "yes", "MIDI"
     Text bottom: "yes", "Output time (s)"
-    Text top: "no", "Pitch mutation trace"
+    Text top: "no", "Pitch mutation schedule"
     # Same frame caveat as the map panel: restore before any world-coordinate Text.
     @restorePitchFrame
     Font size: 6
     Colour: "{0.35, 0.35, 0.35}"
-    Text: 0.03 * outDur, "left", 102, "half", "grey source   purple folded target   black reachable output   green band = target register"
+    Text: 0.03 * outDur, "left", 102, "half", "grey source   purple folded target   black expected post-shift F0   green band = target register"
 
     # Panel 4: mechanism + QC summary
     Select outer viewport: 0, 8, 5.30, 7.45
@@ -614,8 +620,8 @@ if draw_visualization
     Text: 0.03, "left", 0.88, "half", "##Mechanism##"
     Font size: 7
     Colour: "{0.28, 0.28, 0.28}"
-    Text: 0.03, "left", 0.68, "half", "corpus grains -> 6-D standardization -> random probes -> deepest sparse voids -> nearest real grains"
-    Text: 0.03, "left", 0.49, "half", "selected grain -> pitch folded to register (bounded by Max Shift) + RMS mutation -> overlap-add mosaic"
+    Text: 0.03, "left", 0.68, "half", "6-D corpus z-space -> probes inside observed ranges -> deepest sparse voids -> nearby source grains"
+    Text: 0.03, "left", 0.49, "half", "Source Variety may repel recent grains -> octave-folded pitch + RMS mutation -> overlap-add"
     @parseStatLine: statsText$, "Acoustic grains mutated: "
     numGrains$ = parseStatLine.result$
     @parseStatLine: statsText$, "Distinct source files: "
@@ -631,7 +637,7 @@ if draw_visualization
     @parseStatLine: statsText$, "Output rate: "
     oRate$ = parseStatLine.result$
     Text: 0.03, "left", 0.28, "half", "QC: grains=" + numGrains$ + "   source files=" + filesUsed$ + "   spaced voids=" + spaced$ + "   grains at shift ceiling=" + clipped$ + "   render=" + timeUsed$ + " s"
-    Text: 0.03, "left", 0.10, "half", "Built at " + aRate$ + " Hz, delivered at " + oRate$ + " Hz (no added bandwidth). Map is a 2-D projection; the pitch trace is the schedule actually rendered."
+    Text: 0.03, "left", 0.10, "half", "Built at " + aRate$ + " Hz, delivered at " + oRate$ + " Hz (no added bandwidth). Map = selection projection; black pitch points are expected from the applied shift, not re-measured F0."
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
 
