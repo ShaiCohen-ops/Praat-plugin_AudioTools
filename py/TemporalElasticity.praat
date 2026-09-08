@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.2.1 (2026) - Windows console compatibility hotfix
+# Version: 1.3.1 (2026) - visualization spacing pass
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -17,6 +17,21 @@
 #
 # Dependencies (Python):
 #   pip install numpy soundfile
+#
+# Python backend: latent_time_warp.py.  The separate stretch.py engine belongs
+# to HPSS_Phase_Vocoder and is not called by Temporal Elasticity.
+#
+# v1.3.1 visualization pass:
+#   - Dedicated vertical bands prevent panel titles and axis labels from colliding.
+#   - Title/subtitle now remain inside their own header band.
+#   - Existing visualization content and semantic colour mapping are preserved.
+#
+# v1.3 correctness pass:
+#   - Sigma is relative to observed latent geometry in the Python backend.
+#   - Effective z-dimension is capped by event count (N-1).
+#   - Python dependency probing now requires a successful import probe.
+#   - Fallback segmentation respects non-zero Sound start times.
+#   - Varispeed reconstruction no longer clips requested warp rate at 192 kHz.
 #
 # ============================================================
 
@@ -113,7 +128,7 @@ endproc
 @cleanUpTempFiles
 
 # ---- FORM ----
-form Temporal Elasticity v1.2.1
+form Temporal Elasticity v1.3.1
     comment ── Preset ───────────────────────────────────────────────────
     optionmenu Preset: 1
         option Custom
@@ -335,12 +350,14 @@ endif
 # ---- CAPTURE ORIGINAL STATS ----
 selectObject: sound
 dur = Get total duration
+soundStart = Get start time
+soundEnd = Get end time
 sr  = Get sampling frequency
 nChannels = Get number of channels
 
 # ---- INFO HEADER ----
 clearinfo
-writeInfoLine:  "=== Temporal Elasticity v1.2.1 ==="
+writeInfoLine:  "=== Temporal Elasticity v1.3 ==="
 appendInfoLine: "Input:   ", soundName$
 appendInfoLine: "Preset:  ", presetName$
 appendInfoLine: "Mode:    ", modeStr$, "  Method: ", methodStr$
@@ -361,49 +378,60 @@ appendFileLine: probePy$, "    with open(r'" + probeMarkerJ$ + "', 'w') as f: f.
 appendFileLine: probePy$, "except ImportError:"
 appendFileLine: probePy$, "    sys.exit(1)"
 
+# Probe the OS-preferred command first, then generic fallbacks.  Keep an
+# explicit success flag: a non-empty command string is not proof that Python
+# actually launched or that numpy/soundfile are installed.
+preferredPython$ = pythonCmd$
 if windows
-    nCandidates = 4
-    candidate1$ = "python"
-    candidate2$ = "py"
-    candidate3$ = "py -3"
-    candidate4$ = "python3"
-else
-    nCandidates = 3
-    candidate1$ = "python3"
+    nCandidates = 5
+    candidate1$ = preferredPython$
     candidate2$ = "python"
     candidate3$ = "py"
-    candidate4$ = ""
+    candidate4$ = "py -3"
+    candidate5$ = "python3"
+else
+    nCandidates = 4
+    candidate1$ = preferredPython$
+    candidate2$ = "python3"
+    candidate3$ = "python"
+    candidate4$ = "py"
+    candidate5$ = ""
 endif
 
+pythonFound = 0
 for iCand from 1 to nCandidates
-    if iCand = 1
-        tryCmd$ = candidate1$
-    elsif iCand = 2
-        tryCmd$ = candidate2$
-    elsif iCand = 3
-        tryCmd$ = candidate3$
-    else
-        tryCmd$ = candidate4$
-    endif
+    if pythonFound = 0
+        if iCand = 1
+            tryCmd$ = candidate1$
+        elsif iCand = 2
+            tryCmd$ = candidate2$
+        elsif iCand = 3
+            tryCmd$ = candidate3$
+        elsif iCand = 4
+            tryCmd$ = candidate4$
+        else
+            tryCmd$ = candidate5$
+        endif
 
-    if fileReadable(probeMarker$)
-        deleteFile: probeMarker$
-    endif
+        if fileReadable(probeMarker$)
+            deleteFile: probeMarker$
+        endif
 
-    runSystem_nocheck: tryCmd$ + " """ + probePyJ$ + """"
+        runSystem_nocheck: tryCmd$ + " """ + probePyJ$ + """"
 
-    if fileReadable(probeMarker$)
-        pythonCmd$ = tryCmd$
-        deleteFile: probeMarker$
-        iCand = nCandidates + 1 ; Break early
+        if fileReadable(probeMarker$)
+            pythonCmd$ = tryCmd$
+            pythonFound = 1
+            deleteFile: probeMarker$
+        endif
     endif
 endfor
 
 deleteFile: probePy$
 
-if pythonCmd$ = ""
+if pythonFound = 0
     @cleanUpTempFiles
-    exitScript: "Cannot find Python 3 installation with required packages." + newline$ + "Tried: python3, python, py" + newline$ + "Please install: pip install numpy soundfile"
+    exitScript: "Cannot find Python 3 installation with required packages." + newline$ + "Tried the preferred interpreter plus python3/python/py fallbacks." + newline$ + "Please install: pip install numpy soundfile"
 endif
 
 appendInfoLine: "  Python found: ", pythonCmd$
@@ -466,9 +494,9 @@ appendInfoLine: "  Events: ", nEvents
 if nEvents < 2
     appendInfoLine: "  Warning: fewer than 2 events — using 0.25 s fallback grid"
     nEvents = 0
-    t = 0
-    while t < dur - 0.001
-        tEnd = min(t + 0.25, dur)
+    t = soundStart
+    while t < soundEnd - 0.001
+        tEnd = min(t + 0.25, soundEnd)
         if tEnd - t >= 0.02
             nEvents = nEvents + 1
             evStart_'nEvents' = t
@@ -633,7 +661,10 @@ elsif reconstruction_method = 2
         # Varispeed reconstruction: reinterpret the existing samples at a
         # shifted sampling frequency (this changes duration/pitch), THEN
         # sinc-resample to the original SR while preserving that new duration.
-        warpSr = max(1000, min(192000, sr * od / (nd + 1e-9)))
+        # No arbitrary 192 kHz ceiling: the scale range is already bounded by
+        # the latent engine, and clipping warpSr would make high-SR sources miss
+        # their requested duration (e.g. strong compression at 96/192 kHz).
+        warpSr = sr * od / (nd + 1e-9)
         selectObject: part
         Override sampling frequency: warpSr
         normalized = Resample: sr, 50
@@ -798,22 +829,25 @@ if draw_visualization
     outVizPeak = Get absolute extremum: 0, 0, "Sinc70"
     sharedVizPeak = max(origVizPeak, outVizPeak) * 1.05 + 1e-6
 
+    # The visualization uses dedicated header / title / axis bands.  Do not
+    # tighten these viewports without checking a rendered Picture: the spacing
+    # is intentional and prevents adjacent panel annotations from colliding.
     Erase all
-    Select outer viewport: 0, 8, 0, 8
+    Select outer viewport: 0, 8, 0, 9.2
 
-    # === Title ===
-    Select outer viewport: 0, 8, 0, 0.5
+    # === Header band ===
+    Select outer viewport: 0, 8, 0, 0.58
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.6, "half", "##Temporal Elasticity — Latent Time Warping##"
-    Font size: 9
+    Text: 0.5, "centre", 0.72, "half", "##Temporal Elasticity — Latent Time Warping##"
+    Font size: 8
     Colour: "{0.4, 0.4, 0.5}"
-    Text: 0.5, "centre", -1.16, "half", soundName$ + " | " + presetName$ + " | " + modeStr$ + " | " + methodStat$ + " | z=" + zDimStat$
+    Text: 0.5, "centre", -1.20, "half", soundName$ + " | " + presetName$ + " | " + modeStr$ + " | " + methodStat$ + " | z=" + zDimStat$
 
     # === Original waveform ===
-    Select outer viewport: 0, 8, 0.6, 1.4
-    Select inner viewport: 0.6, 7.7, 0.65, 1.35
+    Select outer viewport: 0, 8, 0.72, 1.70
+    Select inner viewport: 0.6, 7.7, 0.88, 1.60
     selectObject: vizOrig
     Colour: "{0.5, 0.5, 0.5}"
     Draw: 0, 0, -sharedVizPeak, sharedVizPeak, "no", "Curve"
@@ -824,8 +858,8 @@ if draw_visualization
     Text top: "no", fixed$(dur, 2) + " s"
 
     # === Output waveform ===
-    Select outer viewport: 0, 8, 1.4, 2.2
-    Select inner viewport: 0.6, 7.7, 1.45, 2.15
+    Select outer viewport: 0, 8, 1.82, 2.84
+    Select inner viewport: 0.6, 7.7, 1.98, 2.64
     selectObject: vizOut
     Colour: "{0.3, 0.6, 0.5}"
     Draw: 0, 0, -sharedVizPeak, sharedVizPeak, "no", "Curve"
@@ -834,11 +868,11 @@ if draw_visualization
     Font size: 7
     Text left: "yes", "Warped"
     Text bottom: "yes", "Time (s)"
-    Text top: "no", fixed$(measuredOutputDur, 2) + " s measured  (planned event sum: " + newDurStat$ + " s)"
+    Text top: "no", "Rendered " + fixed$(measuredOutputDur, 2) + " s | planned event sum " + newDurStat$ + " s"
 
     # === Latent map (actual mechanism) ===
-    Select outer viewport: 0, 8, 2.3, 3.65
-    Select inner viewport: 0.6, 7.7, 2.4, 3.55
+    Select outer viewport: 0, 8, 3.04, 4.50
+    Select inner viewport: 0.6, 7.7, 3.22, 4.26
     z0min = z0Arr[1]
     z0max = z0Arr[1]
     z1min = z1Arr[1]
@@ -868,7 +902,7 @@ if draw_visualization
         Draw line: z0Arr[i], z1Arr[i], z0Arr[i + 1], z1Arr[i + 1]
     endfor
     for i from 1 to nRows
-        Select inner viewport: 0.6, 7.7, 2.4, 3.55
+        Select inner viewport: 0.6, 7.7, 3.22, 4.26
         Axes: z0lo, z0hi, z1lo, z1hi
         if scaleArr[i] < 0.98
             pointCol$ = "{0.20,0.42,0.88}"
@@ -879,7 +913,7 @@ if draw_visualization
         endif
         Paint circle: pointCol$, z0Arr[i], z1Arr[i], 0.11
     endfor
-    Select inner viewport: 0.6, 7.7, 2.4, 3.55
+    Select inner viewport: 0.6, 7.7, 3.22, 4.26
     Axes: z0lo, z0hi, z1lo, z1hi
     Colour: "Black"
     Draw inner box
@@ -889,8 +923,8 @@ if draw_visualization
     Text top: "no", "Latent trajectory — effective scale: blue compress · red stretch"
 
     # === Output spectrogram ===
-    Select outer viewport: 0, 8, 3.65, 5.0
-    Select inner viewport: 0.6, 7.7, 3.75, 4.90
+    Select outer viewport: 0, 8, 4.74, 6.20
+    Select inner viewport: 0.6, 7.7, 4.92, 5.96
     vizFmax = min(8000, sr / 2 - 1)
     selectObject: vizOut
     To Spectrogram: 0.005, vizFmax, 0.002, 20, "Gaussian"
@@ -905,8 +939,8 @@ if draw_visualization
     removeObject: specOut
 
     # === Scale per event bar chart ===
-    Select outer viewport: 0, 8, 5.1, 6.4
-    Select inner viewport: 0.6, 7.7, 5.2, 6.3
+    Select outer viewport: 0, 8, 6.44, 7.80
+    Select inner viewport: 0.6, 7.7, 6.62, 7.56
 
     smin = scaleArr[1]
     smax = scaleArr[1]
@@ -944,8 +978,8 @@ if draw_visualization
     Text top: "no", "Scale per event  (blue=compress · red=stretch · line=1.0)"
 
     # === Summary panel ===
-    Select outer viewport: 0, 8, 6.5, 7.5
-    Select inner viewport: 0.6, 7.7, 6.6, 7.4
+    Select outer viewport: 0, 8, 8.04, 9.10
+    Select inner viewport: 0.6, 7.7, 8.14, 9.00
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.95, 0.95, 0.95}", 0, 1, 0, 1
     Font size: 7
@@ -956,7 +990,7 @@ if draw_visualization
     Text: 0.02, "left", 0.60, "half",
         ... "Events: " + nEvStat$ +
         ... " | Latent: " + methodStat$ + " z=" + zDimStat$ +
-        ... " | Loss: " + lossInitStat$ + " → " + lossFinalStat$
+        ... " | Fit metric: " + lossInitStat$ + " → " + lossFinalStat$
     Text: 0.02, "left", 0.38, "half",
         ... "Field: " + modeStat$ +
         ... " | Rules: " + rulesStat$ +
@@ -985,7 +1019,7 @@ appendInfoLine: "Output:    ", output_name$
 appendInfoLine: "Preset:    ", presetName$
 appendInfoLine: "Events:    ", nEvStat$, " | Latent: ", methodStat$, " z=", zDimStat$
 appendInfoLine: "Field:     ", modeStat$, " | Rules: ", rulesStat$
-appendInfoLine: "Loss:      ", lossInitStat$, " → ", lossFinalStat$
+appendInfoLine: "Fit metric:", lossInitStat$, " → ", lossFinalStat$
 appendInfoLine: "Duration:  event sum ", origDurStat$, " s → ", newDurStat$, " s; rendered ", fixed$(measuredOutputDur, 3), " s"
 appendInfoLine: "Scale:     [", scaleMinStat$, ", ", scaleMaxStat$, "]  mean=", scaleMeanStat$
 

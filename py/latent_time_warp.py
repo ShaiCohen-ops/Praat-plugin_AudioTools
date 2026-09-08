@@ -1,5 +1,5 @@
 """
-latent_time_warp.py - Temporal Elasticity / Latent Time Warping Engine v1.2
+latent_time_warp.py - Temporal Elasticity / Latent Time Warping Engine v1.3
 
 Part of Praat AudioTools plugin
 Author: Shai Cohen, Department of Music, Bar-Ilan University
@@ -26,6 +26,13 @@ Temporal field modes:
 
 No PyTorch. No TensorFlow. No sklearn. No internet.
 Dependencies: numpy, soundfile (for patch reading)
+
+v1.3 correctness pass:
+    - Sigma in gravitational/turbulence modes is now relative to median latent
+      distance, removing arbitrary autoencoder coordinate scaling.
+    - Effective latent dimensionality is capped at min(features, N-1).
+    - Cluster count no longer changes gravitational depth; turbulence is
+      normalised against the number of random field centres.
 """
 
 import sys
@@ -33,7 +40,7 @@ import os
 import csv
 import math
 
-VERSION       = "1.2.1"
+VERSION       = "1.3"
 
 # Windows/Praat may launch Python with a legacy console encoding such as cp1252.
 # Status text must never abort the engine merely because a character cannot be
@@ -333,6 +340,10 @@ def learn_latent(features, z_dim, n_iter, seed, method="ae"):
     N, D = features.shape
     if N == 0:
         raise ValueError("no events available for latent analysis")
+    # A dataset with N events has at most N-1 independent centred directions.
+    # Prevent an over-complete latent space from creating arbitrary empty axes.
+    if N > 1:
+        z_dim = max(1, min(int(z_dim), D, N - 1))
     mu_n = features.mean(0)
     sg_raw = features.std(0)
     # Near-constant dimensions must not be inflated by division through an
@@ -366,6 +377,34 @@ def learn_latent(features, z_dim, n_iter, seed, method="ae"):
     meta = {"method": "ae", "norm_mu": mu_n.tolist(), "norm_sg": sg_n.tolist()}
     return Z.astype(np.float64), losses, meta
 
+
+
+def _latent_distance_scale(Z, max_points=256):
+    """Robust scalar reference for distance-based latent fields.
+
+    Autoencoder coordinates have an arbitrary global scale: encoder and decoder
+    weights can rescale inversely without changing reconstruction.  Gravitational
+    and turbulence kernels therefore interpret Sigma relative to the observed
+    latent geometry, using the median non-zero pairwise distance of at most 256
+    evenly sampled events.  This preserves geometry while making presets portable.
+    """
+    import numpy as np
+    Z = np.asarray(Z, dtype=np.float64)
+    n = len(Z)
+    if n < 2:
+        return 1.0
+    if n > max_points:
+        idx = np.linspace(0, n - 1, max_points, dtype=int)
+        Q = Z[idx]
+    else:
+        Q = Z
+    diffs = Q[:, None, :] - Q[None, :, :]
+    d = np.sqrt(np.sum(diffs ** 2, axis=2))
+    vals = d[np.triu_indices(len(Q), 1)]
+    vals = vals[vals > 1e-12]
+    if vals.size == 0:
+        return 1.0
+    return float(np.median(vals))
 
 # ===========================================================================
 # Stage 3 - Temporal Field Construction
@@ -415,10 +454,16 @@ def build_temporal_field(Z, mode, seed,
 
     if mode == "gravitational":
         centers, _ = _find_cluster_centers(Z, n_clusters, seed)
-        scales = np.ones(N)
+        # Sigma is dimensionless: 1.0 means one median inter-event distance.
+        # This removes the arbitrary global scale of AE coordinates.
+        sigma_abs = max(1e-9, sigma * _latent_distance_scale(Z))
+        # Cluster count controls field topology, not total depth: use the
+        # strongest well at each event instead of summing overlapping wells.
+        response = np.zeros(N, dtype=np.float64)
         for center in centers:
             d2 = np.sum((Z - center) ** 2, axis=1)
-            scales += amplitude * np.exp(-d2 / (2 * sigma ** 2 + 1e-12))
+            response = np.maximum(response, np.exp(-d2 / (2 * sigma_abs ** 2 + 1e-12)))
+        scales = 1.0 + amplitude * response
 
     elif mode == "inversion":
         # Local spacing is the mean distance to k nearest neighbours. Small
@@ -438,11 +483,24 @@ def build_temporal_field(Z, mode, seed,
         centers = Z[rng.randint(0, N, size=n_noise)]
         strength = amplitude * (float(turbulence_strength) / 0.3)
         amps = rng.uniform(-strength, strength, size=n_noise)
-        sig_t = max(1e-6, sigma * 0.5)
-        scales = np.ones(N)
+        sig_t = max(1e-9, sigma * 0.5 * _latent_distance_scale(Z))
+        # Normalised radial blend keeps turbulence depth independent of the
+        # number of random centres / events in the source.
+        num = np.zeros(N, dtype=np.float64)
+        den = np.zeros(N, dtype=np.float64)
         for center, a in zip(centers, amps):
             d2 = np.sum((Z - center) ** 2, axis=1)
-            scales += a * np.exp(-d2 / (2 * sig_t ** 2 + 1e-12))
+            k = np.exp(-d2 / (2 * sig_t ** 2 + 1e-12))
+            num += a * k
+            den += k
+        delta = np.where(den > 1e-12, num / den, 0.0)
+        # Turbulence should redistribute local time rather than inherit a random
+        # global stretch/compression bias from the finite set of field centres.
+        delta -= float(np.mean(delta))
+        peak_delta = float(np.max(np.abs(delta))) if delta.size else 0.0
+        if peak_delta > strength and peak_delta > 1e-12:
+            delta *= strength / peak_delta
+        scales = 1.0 + delta
 
     elif mode == "gradient":
         Zc = Z - Z.mean(axis=0)
