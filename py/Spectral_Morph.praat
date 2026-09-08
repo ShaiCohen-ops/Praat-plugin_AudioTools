@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 5.5 (2026)
+# Version: 5.7.2 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -13,21 +13,60 @@
 #   Praat handles UI, export, import, visualization.
 #
 #   Morph modes (Python):
-#   1. Log magnitude     - geometric interp, preserves A phase
-#   2. Full complex      - blends magnitude AND phase
+#   1. Log magnitude     - energy-stable geometric interpolation, preserves A phase
+#   2. Full complex      - blends magnitude AND phase at fixed bins
 #   3. Formant/envelope  - cepstral envelope morph, A excitation
+#   4. Continuous trajectory - transports spectral energy through log frequency
 #
-#   Length handling (v5.0+, when durations of A and B differ):
-#   1. Silence pad (default) - shorter signal is zero-padded to
-#      match longer. v5.2 silence blend makes this transition
-#      smoothly in all three morph modes.
-#   2. Trim to shorter - longer is truncated to match shorter.
-#   3. Time stretch (v4.x legacy) - linear time-domain interp.
+#   Length handling (when durations of A and B differ):
+#   1. Pitch-preserving align (default) - phase-vocoder stretches the shorter
+#      source to the longer timeline before morphing; no endpoint bounce.
+#   2. Silence pad (legacy tail) - keeps the longer source untouched but can
+#      return toward it when target B ends first.
+#   3. Trim to shorter - no alignment artifacts, but longer content is lost.
+#   4. Time stretch legacy - linear resample; changes pitch.
 #
 # Citation:
 #   Cohen, S. (2026). Praat AudioTools.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
+#
+# Changelog v5.7.2:
+#   PAIRING / RUNTIME:
+#   - Praat now verifies that spectral_morph.py exposes backend API 572 before
+#     running. This prevents an updated wrapper from silently calling an older
+#     installed v5.5 backend, which rejects the new PV-align length mode 4.
+#   - If the plugin backend is incompatible, Praat also checks the current
+#     default directory for a compatible spectral_morph.py; otherwise it exits
+#     before the form with an explicit instruction to replace BOTH files.
+#
+# Changelog v5.7:
+#   CORE / MUSICAL:
+#   - New default length handling: pitch-preserving phase-vocoder alignment.
+#     Both sources now span the complete morph timeline, so a shorter target B
+#     cannot trigger the v5.5 silence guard to fade back toward A.
+#   - Log-magnitude mode now preserves the smoothly interpolated spectral L2
+#     energy. This removes the large mid-morph level collapse that previously
+#     made the later return to direct A especially conspicuous.
+#   - The existing Silence pad / Trim / legacy resample modes remain available.
+#   - Continuous spectral trajectory remains available as an experimental
+#     frequency-transport alternative; energy-stable Log magnitude is the
+#     default because it is perceptually smoother on the Cello/Horn regression
+#     test and does not introduce transport-phase beating.
+#   QA:
+#   - Tested with Praat 7.0.02 on Cello.wav (4.447 s) -> Horn.wav (2.647 s).
+#     At Horn's original endpoint the new default keeps w_morph=1 and
+#     w_a_direct=0; v5.5 forced w_morph=0, w_a_direct=1 (audible return to A).
+#
+# Changelog v5.6:
+#   MUSICAL / CORE:
+#   - New Continuous spectral trajectory mode (mode 4). Spectral energy moves
+#     through intermediate log-frequency positions instead of merely fading
+#     between stationary FFT bins. Distinct sustained pitches therefore form a
+#     continuous audible trajectory rather than A disappearing while B appears.
+#   - Continuous trajectory was introduced as an alternative morph mode.
+#   - v5.7 supersedes the v5.6 default choices after regression listening/QA.
+#   - Existing modes 1-3 remain available unchanged.
 # Changelog v5.5:
 #   AUDIO:
 #   - Silence guard is now tied only to artificial length-padding boundaries.
@@ -207,16 +246,43 @@ nameB$ = selected$("Sound", 2)
 pluginDirRaw$ = preferencesDirectory$ + "/plugin_AudioTools/"
 pluginDir$ = replace_regex$(pluginDirRaw$, "\\", "/", 0)
 
-pythonScript$ = pluginDir$ + "py/spectral_morph.py"
+# v5.7.2: wrapper/backend are a versioned pair.  The v5.7+ default uses
+# length_mode=4 (pitch-preserving PV alignment), which v5.5 backends reject.
+# Never silently run a newer wrapper against an older installed backend.
+requiredBackendToken$ = "SPECTRAL_MORPH_BACKEND_API = 572"
+pluginPython$ = pluginDir$ + "py/spectral_morph.py"
+localPython$  = defaultDirectory$ + "/spectral_morph.py"
+pythonScript$ = ""
+oldBackendPath$ = ""
 
-if not fileReadable(pythonScript$)
-    pythonScript$ = defaultDirectory$ + "/spectral_morph.py"
+if fileReadable(pluginPython$)
+    backendText$ = readFile$(pluginPython$)
+    if index(backendText$, requiredBackendToken$) > 0
+        pythonScript$ = pluginPython$
+    else
+        oldBackendPath$ = pluginPython$
+    endif
 endif
 
-if not fileReadable(pythonScript$)
-    exitScript: "Cannot find Python script: spectral_morph.py" + newline$
-        ... + "Expected at: " + pluginDir$ + "py/" + newline$
-        ... + "or next to this script."
+if pythonScript$ = "" and fileReadable(localPython$)
+    backendText$ = readFile$(localPython$)
+    if index(backendText$, requiredBackendToken$) > 0
+        pythonScript$ = localPython$
+    elsif oldBackendPath$ = ""
+        oldBackendPath$ = localPython$
+    endif
+endif
+
+if pythonScript$ = ""
+    msg$ = "Spectral Morph v5.7.2 requires spectral_morph.py v5.7.2 (backend API 572)." + newline$
+        ... + "Replace BOTH Spectral_Morph.praat and spectral_morph.py."
+    if oldBackendPath$ <> ""
+        msg$ = msg$ + newline$ + newline$ + "Incompatible backend found at:" + newline$ + oldBackendPath$
+    else
+        msg$ = msg$ + newline$ + newline$ + "Expected at:" + newline$ + pluginDir$ + "py/spectral_morph.py"
+            ... + newline$ + "or:" + newline$ + localPython$
+    endif
+    exitScript: msg$
 endif
 
 pythonScriptJ$ = replace_regex$(pythonScript$, "\\", "/", 0)
@@ -337,32 +403,34 @@ if pythonCmd$ = ""
 endif
 
 # ---- FORM ----
-form Spectral Morph v5.5
-    comment A = top selected Sound; B = lower selected Sound (Swap if needed)
+form Spectral Morph v5.7.2
+    comment A is the top selected Sound; B is the lower selected Sound
     boolean Swap_A_and_B 0
     optionmenu Preset: 1
         option Custom
-        option Tonal Sustained (instruments, pads)
-        option Percussive (drums, impacts)
-        option Voice / Formant Morph
-        option Texture Blend (ambience, noise)
-        option Fast Preview (low quality, quick)
+        option Tonal Sustained
+        option Percussive
+        option Voice Formant Morph
+        option Texture Blend
+        option Fast Preview
     real Start_morph_s 0
     real End_morph_s 0
     optionmenu Curve_type: 2
         option Linear
-        option Cosine (smooth S-curve)
-        option Full mix (fixed blend, no transition)
+        option Cosine smooth S-curve
+        option Full mix fixed blend
     real Mix_amount 0.5
     positive Window_ms 60
     optionmenu Morph_mode: 1
-        option Log magnitude (preserve A phase)
-        option Full complex (blend phase too)
-        option Formant / envelope (CDP-style)
+        option Log magnitude energy-stable
+        option Full complex
+        option Formant envelope
+        option Continuous spectral trajectory
     optionmenu Length_handling: 1
-        option Silence pad (no pitch change)
+        option Pitch-preserving align
+        option Silence pad legacy
         option Trim to shorter
-        option Time stretch (v4.x legacy, pitches shorter)
+        option Time stretch legacy
     boolean Draw_visualization 1
     boolean Play_output 1
     boolean Debug 0
@@ -437,7 +505,7 @@ effectiveWindowMs = 1000 * fftSamples / srA
 #   min(durA, durB). The morph region is clamped relative to
 #   this duration, and the visualization uses it as the time
 #   axis for the morph-curve and output-spectrogram panels.
-if length_handling = 2
+if length_handling = 3
     commonDuration = min(durA, durB)
 else
     commonDuration = max(durA, durB)
@@ -456,14 +524,17 @@ endif
 
 # ---- MODE LABELS ----
 if morph_mode = 1
-    modeLabel$ = "Log magnitude"
+    modeLabel$ = "Log magnitude (energy-stable)"
     modeShort$ = "log"
 elsif morph_mode = 2
     modeLabel$ = "Full complex"
     modeShort$ = "complex"
-else
+elsif morph_mode = 3
     modeLabel$ = "Formant/envelope"
     modeShort$ = "envelope"
+else
+    modeLabel$ = "Continuous spectral trajectory"
+    modeShort$ = "trajectory"
 endif
 if curve_type = 2
     curveLabel$ = "Cosine"
@@ -473,16 +544,22 @@ else
     curveLabel$ = "Linear"
 endif
 if length_handling = 1
-    lengthLabel$ = "Silence-pad"
+    lengthLabel$ = "PV-align (pitch-preserving)"
+    lengthModeCode = 4
 elsif length_handling = 2
+    lengthLabel$ = "Silence-pad (legacy tail)"
+    lengthModeCode = 1
+elsif length_handling = 3
     lengthLabel$ = "Trim-to-shorter"
+    lengthModeCode = 2
 else
     lengthLabel$ = "Time-stretch(legacy)"
+    lengthModeCode = 3
 endif
 
 # ---- INFO ----
 clearinfo
-writeInfoLine:  "=== Spectral Morph v5.5 ==="
+writeInfoLine:  "=== Spectral Morph v5.7.2 ==="
 appendInfoLine: "A:        ", nameA$, "  (", fixed$(durA, 2), " s,  SR ", srA, ")"
 appendInfoLine: "B:        ", nameB$, "  (", fixed$(durB, 2), " s,  SR ", srB, ")"
 appendInfoLine: "Preset:   ", presetName$
@@ -511,7 +588,7 @@ Save as WAV file: tempB$
 # ===========================================================================
 appendInfoLine: "[2/4] Running Python morphing engine..."
 
-# v5.0: pass length_handling as the 10th positional argument
+# v5.7: pass mapped lengthModeCode as the 10th positional argument
 # (10th after script name; Python's len(sys.argv) == 11).
 runSystem_nocheck: pythonCmd$ + " """ + pythonScriptJ$ + """"
     ... + " """ + tempAJ$ + """"
@@ -523,7 +600,7 @@ runSystem_nocheck: pythonCmd$ + " """ + pythonScriptJ$ + """"
     ... + " " + string$(morph_mode)
     ... + " " + string$(curve_type)
     ... + " " + fixed$(mix_amount, 4)
-    ... + " " + string$(length_handling)
+    ... + " " + string$(lengthModeCode)
     ... + " " + string$(debug)
     ... + " > """ + tempLogJ$ + """ 2>&1"
 
@@ -762,8 +839,8 @@ if draw_visualization
     # Shows the actual interpolation trajectory over output time,
     # with the morph region highlighted.
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 4.68, 5.55
-    Select inner viewport: 0.55, 7.72, 4.75, 5.48
+    Select outer viewport: 0, 8, 4.68, 5.50
+    Select inner viewport: 0.55, 7.72, 4.75, 5.30
 
     Axes: 0, commonDuration, -0.05, 1.1
     Paint rectangle: "{0.97, 0.97, 0.97}", 0, commonDuration, -0.05, 1.1
@@ -846,8 +923,8 @@ if draw_visualization
     # ----------------------------------------------------------
     # PANEL D: OUTPUT SPECTROGRAM
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 5.62, 6.55
-    Select inner viewport: 0.55, 7.72, 5.69, 6.48
+    Select outer viewport: 0, 8, 5.63, 6.60
+    Select inner viewport: 0.55, 7.72, 5.72, 6.38
 
     selectObject: monoOut_viz
     To Spectrogram: 0.005, vizMaxHz, 0.01, 20, "Gaussian"
@@ -865,8 +942,8 @@ if draw_visualization
     # ----------------------------------------------------------
     # PANEL E: SUMMARY BAR  (suite standard light grey)
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 6.62, 7.30
-    Select inner viewport: 0.55, 7.72, 6.68, 7.24
+    Select outer viewport: 0, 8, 6.82, 7.68
+    Select inner viewport: 0.55, 7.72, 6.90, 7.58
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
 

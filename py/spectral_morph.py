@@ -3,23 +3,59 @@ spectral_morph.py  -  CDP-style spectral morphing via phase vocoder
 
 Part of Praat AudioTools plugin
 Author: Shai Cohen, Department of Music, Bar-Ilan University
-Version: 5.5 (2026)
+Version: 5.7.2 (2026)
 
 Usage:
     python spectral_morph.py soundA.wav soundB.wav output.wav
            window_s start_morph_s end_morph_s morph_mode curve_type
            [mix_amount] [length_mode] [debug]
 
-    morph_mode  : 1 = log-magnitude (A phase)
+    morph_mode  : 1 = energy-stable log-magnitude (A phase)
                   2 = full complex (blend phase)
                   3 = spectral envelope / formant morph (cepstral)
+                  4 = continuous spectral trajectory (log-frequency transport)
     curve_type  : 1 = linear   2 = cosine S-curve   3 = full mix (fixed ratio)
     mix_amount  : 0.0-1.0 (only used with curve_type 3, default 0.5)
-    length_mode : 1 = silence-pad shorter to match longer (DEFAULT)
+    length_mode : 1 = silence-pad shorter to match longer (legacy tail)
                   2 = trim longer to match shorter
                   3 = linear time-stretch shorter to match longer
                       (v4.x legacy; pitches the shorter input)
+                  4 = phase-vocoder align shorter to longer (RECOMMENDED;
+                      pitch-preserving, prevents endpoint bounce)
     debug       : 0 = off, 1 = write per-frame CSV next to output WAV
+
+
+
+Changelog v5.7.2:
+    - Added SPECTRAL_MORPH_BACKEND_API = 572 so the Praat wrapper can verify
+      that it is paired with a backend that supports PV-align length_mode 4.
+      DSP is unchanged from v5.7.
+
+Changelog v5.7:
+    - Added length_mode 4: PITCH-PRESERVING PHASE-VOCODER ALIGNMENT. The
+      shorter source is stretched to the longer source duration before the
+      morph, so both A and B remain defined across the complete morph path.
+      This fixes the directional bounce of silence-pad mode when target B is
+      shorter: v5.5 deliberately faded back to direct A as B entered padding.
+    - The new alignment is the recommended partner for energy-stable
+      log-magnitude morphing. It preserves pitch and full output duration while
+      retaining every source's complete temporal evolution.
+    - Existing length modes 1-3 remain available for compatibility.
+
+Changelog v5.6:
+    - Added morph_mode 4: CONTINUOUS SPECTRAL TRAJECTORY. Instead of
+      interpolating amplitudes at fixed FFT bins, one-dimensional monotone
+      spectral transport moves magnitude mass continuously in log-frequency.
+      A 220-Hz component becoming 440 Hz therefore travels through intermediate
+      frequencies instead of fading out at 220 while 440 fades in.
+    - Mode 4 uses a phase-coherent synthesis state across STFT frames, with
+      short circular phase handoffs near m=0 and m=1 so the endpoints remain
+      anchored to the real source phases.
+    - Transport energy is normalised to the geometric interpolation of the
+      source spectral L2 norms, avoiding the severe mid-morph level collapse
+      of geometric log-magnitude interpolation on disjoint spectra.
+    - Existing modes 1-3 are unchanged for users who want classic
+      log-magnitude, complex, or formant-envelope cross-synthesis.
 
 Changelog v5.5:
     - Silence guard is now tied to ARTIFICIAL silence-padding boundaries,
@@ -97,6 +133,9 @@ import sys
 import os
 import math
 
+# Machine-readable wrapper/backend compatibility token.
+SPECTRAL_MORPH_BACKEND_API = 572
+
 
 def check_dependencies():
     """Verify required packages are installed with clear error messages."""
@@ -144,6 +183,122 @@ def resample_linear(x, new_len):
     return np.interp(old_idx, np.arange(len(x)), x).astype(np.float32)
 
 
+def _pv_forward_stft(y, n_fft, hop):
+    """Centered Hann STFT used only for pitch-preserving length alignment."""
+    import numpy as np
+    y = np.asarray(y, dtype=np.float64)
+    win = hann(n_fft).astype(np.float64)
+    n_pad = n_fft // 2
+    y_pad = np.concatenate([
+        np.zeros(n_pad, dtype=np.float64), y,
+        np.zeros(n_pad + n_fft, dtype=np.float64)
+    ])
+    n_frames = max(1, (len(y_pad) - n_fft) // hop + 1)
+    S = np.zeros((n_fft // 2 + 1, n_frames), dtype=np.complex128)
+    for fi in range(n_frames):
+        st = fi * hop
+        S[:, fi] = np.fft.rfft(y_pad[st:st + n_fft] * win)
+    return S
+
+
+def _pv_inverse_stft(S, hop, target_len):
+    """OLA-normalised inverse STFT with exact target length."""
+    import numpy as np
+    n_bins, n_frames = S.shape
+    n_fft = (n_bins - 1) * 2
+    win = hann(n_fft).astype(np.float64)
+    win_sq = win * win
+    n_pad = n_fft // 2
+    buf_len = n_frames * hop + n_fft
+    out_buf = np.zeros(buf_len, dtype=np.float64)
+    norm_buf = np.zeros(buf_len, dtype=np.float64)
+    for fi in range(n_frames):
+        st = fi * hop
+        frame = np.fft.irfft(S[:, fi], n=n_fft).real * win
+        out_buf[st:st + n_fft] += frame
+        norm_buf[st:st + n_fft] += win_sq
+    safe = norm_buf > 1e-10
+    out_buf[safe] /= norm_buf[safe]
+    out_buf[~safe] = 0.0
+    out = out_buf[n_pad:]
+    if len(out) >= target_len:
+        out = out[:target_len]
+    else:
+        out = np.pad(out, (0, target_len - len(out)))
+    return out.astype(np.float32)
+
+
+def phase_vocoder_align_to_length(x, target_len, n_fft):
+    """Pitch-preserving time alignment to exactly ``target_len`` samples.
+
+    This is a conventional phase-vocoder stretch used only to make two source
+    timelines coextensive before spectral morphing.  Unlike the legacy linear
+    resample it changes duration without changing the FFT-bin frequencies.
+    """
+    import numpy as np
+    x = np.asarray(x, dtype=np.float32)
+    target_len = int(target_len)
+    if target_len <= 0:
+        return np.zeros(0, dtype=np.float32)
+    if len(x) == target_len:
+        return x.copy()
+    if len(x) < 2:
+        return np.pad(x, (0, max(0, target_len - len(x))))[:target_len].astype(np.float32)
+
+    stretch = target_len / float(len(x))
+    n_fft = int(max(64, n_fft))
+    # Keep the alignment STFT sensible for very short sources.
+    while n_fft > 64 and n_fft > 2 * len(x):
+        n_fft //= 2
+    n_fft = max(64, n_fft)
+    hop = max(1, n_fft // 4)
+
+    S = _pv_forward_stft(x, n_fft, hop)
+    n_bins, n_frames_in = S.shape
+    if n_frames_in < 2:
+        # Pathological short input: preserving pitch is not meaningful; hold the
+        # tiny signal rather than frequency-resampling it.
+        reps = int(np.ceil(target_len / float(max(1, len(x)))))
+        return np.tile(x, reps)[:target_len].astype(np.float32)
+
+    n_frames_out = max(1, int(math.ceil(n_frames_in * stretch)))
+    mag = np.abs(S)
+    phase = np.angle(S)
+    omega = 2.0 * np.pi * np.arange(n_bins, dtype=np.float64) / n_fft * hop
+
+    dp = np.diff(phase, axis=1) - omega[:, None]
+    dp -= 2.0 * np.pi * np.round(dp / (2.0 * np.pi))
+    inst = omega[:, None] + dp
+
+    Sout = np.zeros((n_bins, n_frames_out), dtype=np.complex128)
+    ph_acc = phase[:, 0].copy()
+    for fo in range(n_frames_out):
+        fi_f = fo / stretch
+        fi_lo = min(int(fi_f), n_frames_in - 1)
+        fi_hi = min(fi_lo + 1, n_frames_in - 1)
+        alpha = fi_f - fi_lo
+        mout = (1.0 - alpha) * mag[:, fi_lo] + alpha * mag[:, fi_hi]
+        Sout[:, fo] = mout * np.exp(1j * ph_acc)
+        if fi_lo < inst.shape[1]:
+            ifreq = (1.0 - alpha) * inst[:, fi_lo]
+            if fi_hi < inst.shape[1]:
+                ifreq += alpha * inst[:, fi_hi]
+            ph_acc += ifreq
+        else:
+            ph_acc += omega
+
+    out = _pv_inverse_stft(Sout, hop, target_len)
+
+    # Preserve the source's overall RMS through alignment. Phase-vocoder OLA
+    # can otherwise lose several dB at larger stretch factors, making the
+    # morph trajectory drift in loudness for reasons unrelated to timbre.
+    rms_in = float(np.sqrt(np.mean(x.astype(np.float64) ** 2) + 1e-30))
+    rms_out = float(np.sqrt(np.mean(out.astype(np.float64) ** 2) + 1e-30))
+    if rms_in > 1e-12 and rms_out > 1e-12:
+        out = (out * (rms_in / rms_out)).astype(np.float32)
+    return out
+
+
 def morph_curve(t, t0, t1, curve_type, mix_amount=0.5):
     """Return morph factor 0..1 at time t given region [t0, t1]."""
     if curve_type == 3:  # full mix — fixed ratio throughout
@@ -175,22 +330,139 @@ def spectral_envelope(mag, order=60):
     return np.exp(env_log).astype(np.float32)
 
 
+
+def _circular_phase_interp(a, b, w):
+    """Shortest-path circular interpolation between phase arrays."""
+    import numpy as np
+    w = float(max(0.0, min(1.0, w)))
+    delta = np.angle(np.exp(1j * (b.astype(np.float64) - a.astype(np.float64))))
+    return (a.astype(np.float64) + w * delta).astype(np.float32)
+
+
+def spectral_transport_magnitude(mag_a, mag_b, m):
+    """Displacement interpolation of spectra along log frequency.
+
+    This is a 1-D monotone optimal-transport coupling of positive-frequency
+    magnitude mass. Because the coupling is monotone, harmonic energy does not
+    randomly cross in frequency. Each coupled mass element moves on a
+    log-frequency path, which is perceptually appropriate for pitch:
+        f(m) = f_A ** (1-m) * f_B ** m
+
+    Magnitude is deposited between neighbouring FFT bins, then globally
+    rescaled to the geometric interpolation of the two spectral L2 norms.
+    Endpoints are exact in magnitude (m=0 -> A, m=1 -> B).
+    """
+    import numpy as np
+
+    m = float(max(0.0, min(1.0, m)))
+    a = np.asarray(mag_a, dtype=np.float64)
+    b = np.asarray(mag_b, dtype=np.float64)
+    if len(a) != len(b):
+        raise ValueError("spectral transport requires equal FFT grids")
+    if m <= 1e-12:
+        return a.astype(np.float32, copy=True)
+    if m >= 1.0 - 1e-12:
+        return b.astype(np.float32, copy=True)
+
+    n = len(a)
+    out = np.zeros(n, dtype=np.float64)
+
+    # DC has no meaningful log-frequency coordinate.
+    out[0] = (1.0 - m) * a[0] + m * b[0]
+    if n <= 1:
+        return out.astype(np.float32)
+
+    aa = np.maximum(a[1:], 0.0)
+    bb = np.maximum(b[1:], 0.0)
+    sum_a = float(aa.sum())
+    sum_b = float(bb.sum())
+
+    # If either spectrum is effectively silent, transport has no target/source
+    # distribution. A linear magnitude bridge is the continuous safe fallback.
+    if sum_a <= 1e-20 or sum_b <= 1e-20:
+        return ((1.0 - m) * a + m * b).astype(np.float32)
+
+    pa = aa / sum_a
+    pb = bb / sum_b
+    total_mass = math.exp(
+        (1.0 - m) * math.log(sum_a + 1e-30)
+        + m * math.log(sum_b + 1e-30)
+    )
+
+    # Monotone 1-D transport coupling (two-pointer CDF matching).
+    i = 0
+    j = 0
+    rem_a = float(pa[0])
+    rem_b = float(pb[0])
+    na = len(pa)
+    nb = len(pb)
+
+    while i < na and j < nb:
+        mass = rem_a if rem_a < rem_b else rem_b
+        if mass > 0.0:
+            # Positive-frequency FFT bins are 1..N. Since bin frequency is
+            # proportional to bin index, log-frequency interpolation can be
+            # performed directly on the positive bin numbers.
+            bin_a = float(i + 1)
+            bin_b = float(j + 1)
+            pos = math.exp(
+                (1.0 - m) * math.log(bin_a) + m * math.log(bin_b)
+            )
+            k0 = int(math.floor(pos))
+            frac = pos - k0
+            amp = mass * total_mass
+
+            if 0 <= k0 < n:
+                out[k0] += amp * (1.0 - frac)
+            if frac > 0.0 and 0 <= k0 + 1 < n:
+                out[k0 + 1] += amp * frac
+
+        rem_a -= mass
+        rem_b -= mass
+
+        if rem_a <= 1e-15:
+            i += 1
+            if i < na:
+                rem_a = float(pa[i])
+        if rem_b <= 1e-15:
+            j += 1
+            if j < nb:
+                rem_b = float(pb[j])
+
+    # Keep frame energy on a smooth path. Classic fixed-bin geometric
+    # interpolation can collapse badly when A and B occupy different bins;
+    # this L2 target avoids that perceptual "hole" without normalising upward
+    # to an arbitrary fixed peak.
+    norm_a = float(np.linalg.norm(a))
+    norm_b = float(np.linalg.norm(b))
+    desired = math.exp(
+        (1.0 - m) * math.log(norm_a + 1e-30)
+        + m * math.log(norm_b + 1e-30)
+    )
+    norm_out = float(np.linalg.norm(out))
+    if norm_out > 1e-20:
+        out *= desired / norm_out
+
+    return np.maximum(out, 0.0).astype(np.float32)
+
+
+
 # ---------------------------------------------------------------- main morph -
 
 def align_lengths(a, b, length_mode):
     """
     Make a and b the same length according to length_mode.
 
-    length_mode = 1 (default): silence-pad shorter to match longer.
-                  No pitch change. Shorter signal naturally goes silent
-                  at its end; the morph continues into the longer signal's
-                  later content.
+    length_mode = 1: silence-pad shorter to match longer.
+                  No pitch change, but if target B is shorter the legacy
+                  endpoint guard can audibly return toward A.
     length_mode = 2: trim longer to match shorter. Both signals active
                   throughout; loses content from the longer one.
     length_mode = 3 (legacy v4.x): linear time-stretch shorter to match longer.
                   Pitches the shorter signal because linear time-domain
                   interpolation is a crude resample. Retained for users
                   who relied on this behavior in v4.x.
+    length_mode = 4: handled before this function with phase-vocoder alignment.
     """
     import numpy as np
 
@@ -234,13 +506,15 @@ def spectral_morph_channel(a, b, sr, window_s, start_morph_s, end_morph_s,
     start_morph_s, end_morph_s : float
         Morph region boundaries.
     morph_mode : int
-        1=log-magnitude, 2=full-complex, 3=formant/envelope.
+        1=energy-stable log-magnitude, 2=full-complex, 3=formant/envelope,
+        4=continuous spectral trajectory.
     curve_type : int
         1=linear, 2=cosine, 3=full-mix.
     mix_amount : float
         Fixed blend ratio for curve_type 3.
     length_mode : int
-        1=silence-pad (default), 2=trim, 3=legacy time-stretch.
+        1=silence-pad, 2=trim, 3=legacy resample,
+        4=phase-vocoder align (recommended).
     debug_log : list or None
         If a list is passed, per-frame debug rows are appended to it.
 
@@ -255,15 +529,28 @@ def spectral_morph_channel(a, b, sr, window_s, start_morph_s, end_morph_s,
     wsize = max(wsize, 64)
     hop = wsize // 4
 
-    # v5.5: preserve original lengths before any alignment.  The silence
-    # guard must respond only to artificial zero-padding, not to naturally
-    # quiet/trailing-silent musical content inside either source.
+    # Preserve original lengths before alignment.
     orig_len_a = len(a)
     orig_len_b = len(b)
 
-    # v5.0: length alignment dispatched to align_lengths() with mode select
-    a, b = align_lengths(a, b, length_mode)
-    len_out = len(a)
+    # v5.7: recommended pitch-preserving alignment. Both sources span the
+    # complete output timeline, so an earlier endpoint cannot trigger a return
+    # to the other source. Existing modes 1-3 remain unchanged.
+    if length_mode == 4:
+        len_out = max(orig_len_a, orig_len_b)
+        if orig_len_a < len_out:
+            print("    PV-align A: %.3f s -> %.3f s (x%.3f, pitch-preserving)" %
+                  (orig_len_a / float(sr), len_out / float(sr),
+                   len_out / float(max(1, orig_len_a))))
+            a = phase_vocoder_align_to_length(a, len_out, wsize)
+        if orig_len_b < len_out:
+            print("    PV-align B: %.3f s -> %.3f s (x%.3f, pitch-preserving)" %
+                  (orig_len_b / float(sr), len_out / float(sr),
+                   len_out / float(max(1, orig_len_b))))
+            b = phase_vocoder_align_to_length(b, len_out, wsize)
+    else:
+        a, b = align_lengths(a, b, length_mode)
+        len_out = len(a)
 
     win = hann(wsize)
     win_sq = win ** 2
@@ -275,6 +562,7 @@ def spectral_morph_channel(a, b, sr, window_s, start_morph_s, end_morph_s,
         boundary_a = min(orig_len_a, len_out)
         boundary_b = min(orig_len_b, len_out)
     else:
+        # Trim, legacy stretch and v5.7 PV-align all have coextensive sources.
         boundary_a = len_out
         boundary_b = len_out
     boundary_a_pad = boundary_a + wsize // 2
@@ -288,6 +576,15 @@ def spectral_morph_channel(a, b, sr, window_s, start_morph_s, end_morph_s,
     b_pad = np.pad(b, (wsize // 2, wsize), mode="constant")
 
     nan_warned = False
+
+    # v5.6 mode-4 phase state. Each FFT bin advances coherently at its own
+    # center frequency. Energy can therefore travel between bins without the
+    # frame-to-frame random/borrowed phase jumps that make a morph sound like
+    # alternating crossfades.
+    transport_phase = None
+    transport_phase_advance = (
+        2.0 * np.pi * np.arange(wsize // 2 + 1, dtype=np.float64) * hop / wsize
+    )
 
     frame_idx = 0
     while True:
@@ -347,8 +644,15 @@ def spectral_morph_channel(a, b, sr, window_s, start_morph_s, end_morph_s,
                 return 0.0
             return 1.0 - (bnd_pad - center) / float(pre_ramp)
 
-        a_sil = sil_from_boundary(boundary_a_pad)
-        b_sil = sil_from_boundary(boundary_b_pad)
+        if length_mode == 1:
+            a_sil = sil_from_boundary(boundary_a_pad)
+            b_sil = sil_from_boundary(boundary_b_pad)
+        else:
+            # No artificial padding boundary exists in trim, legacy stretch or
+            # PV-align modes. Keep diagnostics semantically honest and the
+            # differential endpoint guard fully inactive.
+            a_sil = 0.0
+            b_sil = 0.0
 
         # v5.3: DIFFERENTIAL blend weights. Earlier (v5.2 multiplicative)
         # formulation (1-a_sil)(1-b_sil) etc. activated whenever EITHER
@@ -379,10 +683,23 @@ def spectral_morph_channel(a, b, sr, window_s, start_morph_s, end_morph_s,
             w_b_direct = 0.0
 
         if morph_mode == 1:
-            # --- log-magnitude interpolation, keep A phase ---
+            # --- energy-stable log-magnitude interpolation, keep A phase ---
             log_a = np.log(mag_a + 1e-8)
             log_b = np.log(mag_b + 1e-8)
             mag_morph = np.exp((1 - m) * log_a + m * log_b)
+
+            # v5.7: geometric fixed-bin interpolation can collapse in level when
+            # A and B occupy different bins. Preserve the interpolated spectral
+            # L2 energy while leaving the geometric spectral shape intact.
+            norm_a = float(np.linalg.norm(mag_a))
+            norm_b = float(np.linalg.norm(mag_b))
+            desired_norm = math.exp(
+                (1.0 - m) * math.log(norm_a + 1e-30)
+                + m * math.log(norm_b + 1e-30)
+            )
+            actual_norm = float(np.linalg.norm(mag_morph))
+            if actual_norm > 1e-20:
+                mag_morph = mag_morph * (desired_norm / actual_norm)
 
             mag_out = (w_morph * mag_morph
                        + w_a_direct * mag_a
@@ -405,7 +722,7 @@ def spectral_morph_channel(a, b, sr, window_s, start_morph_s, end_morph_s,
                 np.exp(1j * (pha_b - pha_a).astype(np.float64))
             ).astype(np.float32)
 
-        else:
+        elif morph_mode == 3:
             # --- spectral envelope / formant morph (CDP-style) ---
             env_a = spectral_envelope(mag_a)
             env_b = spectral_envelope(mag_b)
@@ -425,6 +742,58 @@ def spectral_morph_channel(a, b, sr, window_s, start_morph_s, end_morph_s,
                 pha_out = pha_b
             else:
                 pha_out = pha_a
+
+        else:
+            # --- v5.6 continuous spectral trajectory ---
+            # Move spectral magnitude MASS through log frequency instead of
+            # changing only the amplitudes of stationary FFT bins.
+            mag_morph = spectral_transport_magnitude(mag_a, mag_b, m)
+            mag_out = mag_morph.copy()
+
+            if transport_phase is None:
+                transport_phase = pha_a.astype(np.float64).copy()
+            else:
+                transport_phase = (
+                    transport_phase + transport_phase_advance + np.pi
+                ) % (2.0 * np.pi) - np.pi
+
+            phase_transport = transport_phase.astype(np.float32)
+
+            # Anchor the trajectory to the real endpoint phases over the first
+            # and last 8% of the morph. This keeps m=0 audibly A and m=1 audibly
+            # B while retaining phase coherence through the central trajectory.
+            edge = 0.08
+            if m <= 0.0:
+                pha_out = pha_a
+            elif m < edge:
+                u_edge = m / edge
+                u_edge = 0.5 - 0.5 * math.cos(math.pi * u_edge)
+                pha_out = _circular_phase_interp(pha_a, phase_transport, u_edge)
+            elif m > 1.0 - edge:
+                u_edge = (m - (1.0 - edge)) / edge
+                u_edge = 0.5 - 0.5 * math.cos(math.pi * u_edge)
+                pha_out = _circular_phase_interp(phase_transport, pha_b, u_edge)
+            elif m >= 1.0:
+                pha_out = pha_b
+            else:
+                pha_out = phase_transport
+
+            # Silence-pad behaviour should stay musically safe. If one source
+            # is artificially absent, the existing differential guard fades
+            # toward the surviving direct spectrum rather than transporting
+            # spectral mass into or out of mathematical silence.
+            if abs(delta) > 1e-12:
+                mag_out = (w_morph * mag_out
+                           + w_a_direct * mag_a
+                           + w_b_direct * mag_b)
+                if delta < 0:
+                    pha_out = _circular_phase_interp(
+                        pha_out, pha_b, min(1.0, -delta)
+                    )
+                else:
+                    pha_out = _circular_phase_interp(
+                        pha_out, pha_a, min(1.0, delta)
+                    )
 
         # v5.3: numerical safety. Catch any NaN/Inf that the log/exp
         # arithmetic might have produced. nan_to_num replaces in place.
@@ -459,7 +828,7 @@ def spectral_morph_channel(a, b, sr, window_s, start_morph_s, end_morph_s,
                 "mag_out_mean": float(mag_out.mean()),
                 "mag_out_peak": float(mag_out.max()) if mag_out.size > 0 else 0.0,
             }
-            if morph_mode == 1 or morph_mode == 3:
+            if morph_mode in (1, 3, 4):
                 # v5.5: report the ACTUAL differential weights used above.
                 row["w_morph"] = w_morph
                 row["w_a_direct"] = w_a_direct
@@ -570,9 +939,9 @@ def main():
         print("Usage: python spectral_morph.py soundA.wav soundB.wav output.wav "
               "window_s start_morph_s end_morph_s morph_mode curve_type "
               "[mix_amount] [length_mode] [debug]")
-        print("  morph_mode:  1=log-mag  2=full-complex  3=formant/envelope")
+        print("  morph_mode:  1=log-mag  2=full-complex  3=formant/envelope  4=continuous-trajectory")
         print("  curve_type:  1=linear   2=cosine   3=full-mix (needs mix_amount 0-1)")
-        print("  length_mode: 1=silence-pad (default)  2=trim  3=legacy time-stretch")
+        print("  length_mode: 1=silence-pad  2=trim  3=legacy resample  4=PV align (recommended)")
         print("  debug:       0=off (default)  1=write per-frame CSV next to output")
         sys.exit(1)
 
@@ -602,14 +971,14 @@ def main():
             sys.exit(1)
 
     # Validate parameters
-    if morph_mode not in (1, 2, 3):
-        print("ERROR: morph_mode must be 1, 2, or 3", file=sys.stderr)
+    if morph_mode not in (1, 2, 3, 4):
+        print("ERROR: morph_mode must be 1, 2, 3, or 4", file=sys.stderr)
         sys.exit(1)
     if curve_type not in (1, 2, 3):
         print("ERROR: curve_type must be 1, 2, or 3", file=sys.stderr)
         sys.exit(1)
-    if length_mode not in (1, 2, 3):
-        print("ERROR: length_mode must be 1, 2, or 3", file=sys.stderr)
+    if length_mode not in (1, 2, 3, 4):
+        print("ERROR: length_mode must be 1, 2, 3, or 4", file=sys.stderr)
         sys.exit(1)
     mix_amount = max(0.0, min(1.0, mix_amount))
     if window_s <= 0:
@@ -656,10 +1025,12 @@ def main():
     audio_a = np.asarray(audio_a, dtype=np.float32)
     audio_b = np.asarray(audio_b, dtype=np.float32)
 
-    mode_names = {1: "log-magnitude", 2: "full-complex", 3: "formant/envelope"}
+    mode_names = {1: "log-magnitude", 2: "full-complex", 3: "formant/envelope",
+                  4: "continuous spectral trajectory"}
     curve_names = {1: "linear", 2: "cosine", 3: f"full-mix({mix_amount:.2f})"}
     length_names = {1: "silence-pad", 2: "trim-to-shorter",
-                    3: "time-stretch (v4.x legacy)"}
+                    3: "time-stretch (v4.x legacy)",
+                    4: "phase-vocoder align"}
     effective_wsize = max(next_pow2(int(window_s * sr_a)), 64)
     effective_ms = 1000.0 * effective_wsize / sr_a
     print(f"  Mode: {mode_names.get(morph_mode, '?')} | "
