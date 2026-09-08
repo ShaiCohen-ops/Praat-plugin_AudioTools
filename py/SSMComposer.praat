@@ -3,6 +3,12 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
+# Version: 1.5 (2026) - finite-corpus navigation + time-domain + user visualization
+#   v1.5: finite-corpus tabu is made safe engine-side; fallback segmentation
+#   respects the Sound's real xmin; visualization is simplified around the
+#   musical process (source events -> structural map -> chosen path/reuse ->
+#   reconstructed output) instead of duplicate before/after spectrograms.
+#
 # Version: 1.4 (2026) - SSM reliability + analysis-channel + visualization QA
 #   v1.4: strongest-RMS analysis channel (no anti-phase fold cancellation);
 #   Python feature/metric fixes; neutral transform parameters are exact identity;
@@ -216,7 +222,7 @@ endproc
 # skips the dialog entirely (the preset supplies all values), so the whole
 # thing fits a laptop screen. No field was removed and no default changed;
 # this is a layout change only (the Corpus_Concatenative_Codec v1.9 pattern).
-form SSM Morph Composer v1.4
+form SSM Morph Composer v1.5
     comment ── Preset (choose Custom to edit all parameters) ──
     optionmenu Preset: 1
         option Custom
@@ -228,7 +234,7 @@ form SSM Morph Composer v1.4
         option Frozen texture
         option Spectral labyrinth
     comment ── Output ──
-    boolean Draw_SSM 0
+    boolean Draw_SSM 1
     boolean Draw_visualization 1
     boolean Play_result 1
 endform
@@ -528,12 +534,14 @@ endif
 
 # ---- ORIGINAL STATS ----
 selectObject: origSound
-dur = Get total duration
-sr  = Get sampling frequency
+dur      = Get total duration
+sr       = Get sampling frequency
+srcStart = Get start time
+srcEnd   = Get end time
 
 # ---- INFO HEADER ----
 clearinfo
-writeInfoLine:  "=== SSM Morph Composer v1.4 ==="
+writeInfoLine:  "=== SSM Morph Composer v1.5 ==="
 appendInfoLine: "Input:   ", origName$
 appendInfoLine: "Preset:  ", presetName$
 appendInfoLine: "Mode:    ", modeStr$
@@ -678,8 +686,8 @@ if nEvents < 4
     appendInfoLine: "  Warning: fewer than 4 events — four-part fallback grid"
     nEvents = 4
     for iEv from 1 to 4
-        evStart_'iEv' = (iEv - 1) * dur / 4
-        evEnd_'iEv'   = iEv * dur / 4
+        evStart_'iEv' = srcStart + (iEv - 1) * dur / 4
+        evEnd_'iEv'   = srcStart + iEv * dur / 4
     endfor
     appendInfoLine: "  Grid events: ", nEvents
 endif
@@ -861,6 +869,7 @@ modeStat$   = "?"
 metricStat$ = "?"
 tempStat$   = "?"
 tabuStat$   = "?"
+requestedTabuStat$ = "?"
 nPlanStat$  = "?"
 plannedDurStat$ = "?"
 entrStat$   = "?"
@@ -889,10 +898,16 @@ if fileReadable(statsTxt$)
     modeStat$ = parseStatLine.result$
     @parseStatLine: statsText$, "metric="
     metricStat$ = parseStatLine.result$
+    @parseStatLine: statsText$, "requested_metric="
+    requestedMetricStat$ = parseStatLine.result$
+    @parseStatLine: statsText$, "effective_metric="
+    effectiveMetricStat$ = parseStatLine.result$
     @parseStatLine: statsText$, "temperature="
     tempStat$ = parseStatLine.result$
     @parseStatLine: statsText$, "tabu_length="
     tabuStat$ = parseStatLine.result$
+    @parseStatLine: statsText$, "requested_tabu_length="
+    requestedTabuStat$ = parseStatLine.result$
     @parseStatLine: statsText$, "plan_length="
     nPlanStat$ = parseStatLine.result$
     @parseStatLine: statsText$, "planned_event_duration="
@@ -942,64 +957,57 @@ if draw_visualization
 
     Erase all
     if needSsmPanels
-        Select outer viewport: 0, 8, 0, 9.1
+        Select outer viewport: 0, 8, 0, 8.7
     else
-        Select outer viewport: 0, 8, 0, 8
+        Select outer viewport: 0, 8, 0, 6.7
     endif
 
-    # === Title (v1.2: house geometry) ===
+    # === Header ===
     Select outer viewport: 0, 8, 0, 0.5
     Select inner viewport: 0, 8, 0, 0.5
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.72, "half", "##SSM Morph Composer v1.4##"
+    Text: 0.5, "centre", 0.72, "half", "##SSM Morph Composer v1.5##"
     Font size: 7
     Colour: "{0.4, 0.4, 0.5}"
     Text: 0.5, "centre", 0.24, "half",
-        ... origName$ + " | " + presetName$ + " | " + modeStr$ + " | " + metricStr$
-        ... + " | events=" + nEvStat$ + " | plan=" + nPlanStat$
+        ... origName$ + " | " + presetName$ + " | " + modeStr$ + " | metric " + effectiveMetricStat$
+        ... + " | " + string$(nEvents) + " source events -> " + string$(nPlan) + " output events"
 
-    # === SSM matrices — the ENGINE'S REAL matrices (v1.2) ===
-    # The old display rebuilt a different MFCC-based SSM (always
-    # cosine) and painted an unmodified COPY as "after transform".
-    # Both panels now read the matrices the engine actually used.
+    # === Structural map: engine matrices, not a reconstructed proxy ===
     if needSsmPanels and fileReadable(ssmOrigTxt$) and fileReadable(ssmModTxt$)
-
         Read Matrix from raw text file: ssmOrigTxt$
         ssmMatOrig = selected("Matrix")
         Read Matrix from raw text file: ssmModTxt$
         ssmMatMod = selected("Matrix")
 
-        # v1.4: one fixed display mapping for before/after. Independent min-max
-        # stretches made a small transform look as strong as a large one.
-        Select outer viewport: 0, 4, 0.6, 2.5
+        Select outer viewport: 0, 4, 0.6, 2.45
         selectObject: ssmMatOrig
         Paint cells: 0, 0, 0, 0, 0, 1
         Colour: "Black"
         Draw inner box
         Font size: 7
-        Text top: "no", "SSM original (" + metricStr$ + ") [0..1 engine scale]"
-        Text bottom: "yes", "Event"
-        Text left: "yes", "Event"
+        Text top: "no", "Source similarity structure"
+        Text bottom: "yes", "Source event"
+        Text left: "yes", "Source event"
 
-        Select outer viewport: 4, 8, 0.6, 2.5
+        Select outer viewport: 4, 8, 0.6, 2.45
         selectObject: ssmMatMod
         Paint cells: 0, 0, 0, 0, 0, 1
         Colour: "Black"
         Draw inner box
         Font size: 7
-        Text top: "no", "SSM after " + modeStr$ + " (amount " + fixed$(transform_amount, 2) + ") [same 0..1 scale]"
-        Text bottom: "yes", "Event"
+        Text top: "no", "After " + modeStr$ + "  (amount " + fixed$(transform_amount, 2) + ")"
+        Text bottom: "yes", "Source event"
 
         removeObject: ssmMatOrig, ssmMatMod
-
-        ssmShift = 2.0
+        ssmShift = 1.95
     else
         ssmShift = 0.0
     endif
 
-    # Representative real channel for comparable waveform/spectrogram panels.
+    # Representative channel only for display. Reconstruction remains multichannel.
     selectObject: origSound
     if nChannels > 1
         vizOrig = Extract one channel: analysisChannel
@@ -1022,20 +1030,19 @@ if draw_visualization
     if wavePeak < 0.000001
         wavePeak = 1
     endif
-    specCeil = min(8000, sr / 2)
 
-    # === Original waveform + event boundaries ===
-    Select outer viewport: 0, 8, 0.6 + ssmShift, 1.45 + ssmShift
-    Select inner viewport: 0.6, 7.7, 0.65 + ssmShift, 1.40 + ssmShift
+    # === 1. Source material and segmentation ===
+    Select outer viewport: 0, 8, 0.60 + ssmShift, 1.55 + ssmShift
+    Select inner viewport: 0.65, 7.7, 0.68 + ssmShift, 1.47 + ssmShift
     selectObject: vizOrig
     Colour: "{0.5, 0.5, 0.55}"
     Draw: 0, 0, -wavePeak, wavePeak, "no", "Curve"
-    Axes: 0, dur, -wavePeak, wavePeak
+    Axes: srcStart, srcEnd, -wavePeak, wavePeak
     Colour: "{0.75, 0.35, 0.35}"
     Line width: 1
     for iEv from 1 to nEvents
         evT = evStart_'iEv'
-        if evT > 0 and evT < dur
+        if evT > srcStart and evT < srcEnd
             Draw line: evT, -0.9 * wavePeak, evT, 0.9 * wavePeak
         endif
     endfor
@@ -1043,96 +1050,92 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "Original ch" + string$(analysisChannel)
-    Text top: "no", fixed$(dur, 2) + " s  |  " + string$(nEvents) + " events"
+    Text top: "no", "1. Source segmented into " + string$(nEvents) + " events  |  analysis ch" + string$(analysisChannel)
+    Text bottom: "yes", "Source time (s)"
 
-    # === Output waveform ===
-    Select outer viewport: 0, 8, 1.45 + ssmShift, 2.3 + ssmShift
-    Select inner viewport: 0.6, 7.7, 1.50 + ssmShift, 2.25 + ssmShift
+    # === 2. Navigation path through source events ===
+    Select outer viewport: 0, 8, 1.75 + ssmShift, 2.75 + ssmShift
+    Select inner viewport: 0.65, 7.7, 1.83 + ssmShift, 2.67 + ssmShift
+    Axes: 1, max(2, nPlan), 1, max(2, nEvents)
+    Paint rectangle: "{0.96, 0.96, 0.98}", 1, max(2, nPlan), 1, max(2, nEvents)
+    Colour: "{0.2, 0.5, 0.75}"
+    Line width: 1
+    if nPlan > 1
+        for iRow from 2 to nPlan
+            Draw line: iRow - 1, planArr[iRow - 1], iRow, planArr[iRow]
+        endfor
+    endif
+    Line width: 1
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text top: "no", "2. Chosen event path  |  normalized entropy " + normEntrStat$ + "  |  coverage " + covStat$
+    Text left: "yes", "Source event"
+    Text bottom: "yes", "Output step"
+
+    # === 3. Which source events actually dominate the result ===
+    usageCount# = zero#(nEvents)
+    maxUsage = 0
+    for iRow from 1 to nPlan
+        evIdx = planArr[iRow]
+        if evIdx >= 1 and evIdx <= nEvents
+            usageCount#[evIdx] = usageCount#[evIdx] + 1
+            if usageCount#[evIdx] > maxUsage
+                maxUsage = usageCount#[evIdx]
+            endif
+        endif
+    endfor
+    if maxUsage < 1
+        maxUsage = 1
+    endif
+
+    Select outer viewport: 0, 8, 2.95 + ssmShift, 3.90 + ssmShift
+    Select inner viewport: 0.65, 7.7, 3.03 + ssmShift, 3.82 + ssmShift
+    Axes: 0.5, nEvents + 0.5, 0, maxUsage * 1.12
+    Paint rectangle: "{0.97, 0.97, 0.98}", 0.5, nEvents + 0.5, 0, maxUsage * 1.12
+    Colour: "{0.45, 0.55, 0.75}"
+    for iEv from 1 to nEvents
+        Paint rectangle: "{0.45, 0.55, 0.75}", iEv - 0.38, iEv + 0.38, 0, usageCount#[iEv]
+    endfor
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text top: "no", "3. Source-event reuse  |  unique " + uniqueStat$ + " / " + nEvStat$ + "  |  repetition " + repStat$
+    Text left: "yes", "Uses"
+    Text bottom: "yes", "Source event"
+
+    # === 4. Reconstructed audio ===
+    Select outer viewport: 0, 8, 4.10 + ssmShift, 5.05 + ssmShift
+    Select inner viewport: 0.65, 7.7, 4.18 + ssmShift, 4.97 + ssmShift
     selectObject: vizOut
     Colour: "{0.2, 0.5, 0.75}"
     Draw: 0, 0, -wavePeak, wavePeak, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "Output ch" + string$(analysisChannel)
-    Text bottom: "yes", "Time (s)"
-    Text top: "no", fixed$(actualOutputDur, 2) + " s (audio)  |  " + nPlanStat$ + " events  (" + modeStr$ + ")"
+    Text top: "no", "4. Reconstructed result  |  " + fixed$(actualOutputDur, 2) + " s  |  crossfade " + fixed$(xfadeEff * 1000, 1) + " ms"
+    Text bottom: "yes", "Output time (s)"
 
-    # === Original spectrogram ===
-    Select outer viewport: 0, 8, 2.4 + ssmShift, 3.6 + ssmShift
-    Select inner viewport: 0.6, 7.7, 2.50 + ssmShift, 3.50 + ssmShift
-    selectObject: vizOrig
-    To Spectrogram: 0.005, specCeil, 0.002, 20, "Gaussian"
-    specOrig = selected("Spectrogram")
-    Paint: 0, 0, 0, specCeil, 100, "yes", 50, 6, 0, "no"
-    Colour: "Black"
-    Draw inner box
-    Font size: 7
-    Text left: "yes", "Freq (Hz)"
-    Text top: "no", "Original spectrogram ch" + string$(analysisChannel) + " (auto-levelled)"
-    removeObject: specOrig
-
-    # === Output spectrogram ===
-    Select outer viewport: 0, 8, 3.6 + ssmShift, 4.8 + ssmShift
-    Select inner viewport: 0.6, 7.7, 3.70 + ssmShift, 4.70 + ssmShift
-    selectObject: vizOut
-    To Spectrogram: 0.005, specCeil, 0.002, 20, "Gaussian"
-    specOut = selected("Spectrogram")
-    Paint: 0, 0, 0, specCeil, 100, "yes", 50, 6, 0, "no"
-    Colour: "Black"
-    Draw inner box
-    Font size: 7
-    Text left: "yes", "Freq (Hz)"
-    Text bottom: "yes", "Time (s)"
-    Text top: "no", "Output spectrogram ch" + string$(analysisChannel) + " (auto-levelled)"
-    removeObject: specOut
-
-    # === Event path line ===
-    Select outer viewport: 0, 8, 4.9 + ssmShift, 5.9 + ssmShift
-    Select inner viewport: 0.6, 7.7, 5.00 + ssmShift, 5.80 + ssmShift
-    Axes: 0, nPlan, 0, nEvents
-    Paint rectangle: "{0.96, 0.96, 0.98}", 0, nPlan, 0, nEvents
-    Colour: "{0.2, 0.5, 0.75}"
-    Line width: 1
-    for iRow from 2 to nPlan
-        Draw line: iRow - 2, planArr[iRow - 1] - 1, iRow - 1, planArr[iRow] - 1
-    endfor
-    Line width: 1
-    Colour: "Black"
-    Draw inner box
-    Font size: 7
-    Text left: "yes", "Event"
-    Text bottom: "yes", "Step"
-    Text top: "no", "Event path  (entropy=" + entrStat$ + ", norm=" + normEntrStat$ + " | motif contrast " + motifContrastOrigStat$ + "->" + motifContrastModStat$ + ")"
-
-    # === Summary panel ===
-    Select outer viewport: 0, 8, 6.0 + ssmShift, 7.0 + ssmShift
-    Select inner viewport: 0.6, 7.7, 6.10 + ssmShift, 6.90 + ssmShift
+    # === Musical summary: only decisions that help interpret the result ===
+    Select outer viewport: 0, 8, 5.25 + ssmShift, 6.20 + ssmShift
+    Select inner viewport: 0.65, 7.7, 5.33 + ssmShift, 6.12 + ssmShift
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.95, 0.95, 0.95}", 0, 1, 0, 1
     Font size: 7
     Colour: "Black"
-    Text: 0.02, "left", 0.86, "half", "##Run statistics##"
+    Text: 0.02, "left", 0.82, "half", "##What changed##"
     Font size: 6
     Colour: "{0.3, 0.3, 0.3}"
-    Text: 0.02, "left", 0.64, "half",
-        ... "Events: " + nEvStat$ + " | Features: " + featDimsStat$ + "/5 | Analysis ch: " + string$(analysisChannel) +
-        ... " | Mode: " + modeStat$ + " | Metric: " + metricStat$ + " | Temp: " + tempStat$
-    Text: 0.02, "left", 0.43, "half",
-        ... "Plan: " + nPlanStat$ + " | Output: " + fixed$(actualOutputDur, 2) + " s (planned " + plannedDurStat$ + ")" +
-        ... " | Unique: " + uniqueStat$ + " | Coverage: " + covStat$
-    Text: 0.02, "left", 0.22, "half",
-        ... "Entropy: " + entrStat$ + " (norm " + normEntrStat$ + ") | Frobenius: " + froStat$ +
-        ... " | Path sim orig/mod: " + psOrigStat$ + "/" + psModStat$
-    Text: 0.02, "left", 0.04, "half",
-        ... "Motif contrast: " + motifContrastOrigStat$ + "->" + motifContrastModStat$ + " | Teleports: " + telStat$ +
-        ... " | Chrono jump: " + chronoStat$ + " | Runs: " + runStat$
+    Text: 0.02, "left", 0.58, "half",
+        ... "Structure: " + modeStat$ + " amount " + fixed$(transform_amount, 2) + " | Path similarity " + psOrigStat$ + " -> " + psModStat$
+    Text: 0.02, "left", 0.36, "half",
+        ... "Navigation: temp " + tempStat$ + " | tabu " + tabuStat$ + " (requested " + requestedTabuStat$ + ") | teleports " + telStat$
+    Text: 0.02, "left", 0.14, "half",
+        ... "Motif contrast " + motifContrastOrigStat$ + " -> " + motifContrastModStat$ + " | mean chronological jump " + chronoStat$
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
 
     removeObject: vizOrig, vizOut
-
     Font size: 10
     Colour: "Black"
 else
@@ -1148,6 +1151,7 @@ appendInfoLine: "=== COMPLETE ==="
 appendInfoLine: "Output:       ", output_name$
 appendInfoLine: "Preset:       ", presetName$
 appendInfoLine: "Mode:         ", modeStat$
+appendInfoLine: "Metric:       ", requestedMetricStat$, " requested / ", effectiveMetricStat$, " effective"
 appendInfoLine: "Events:       ", nEvStat$, " | Analysis ch: ", analysisChannel, " | Features: ", featDimsStat$, "/5"
 appendInfoLine: "Plan:         ", nPlanStat$, " steps"
 appendInfoLine: "Output dur:   ", fixed$(actualOutputDur, 2), " s (audio; planned ", plannedDurStat$, " s)"

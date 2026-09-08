@@ -6,6 +6,15 @@ Author: Shai Cohen, Department of Music, Bar-Ilan University
 
 Called by SSMComposer.praat — not run directly.
 
+Version 1.5 (2026) — finite-corpus navigation safety:
+  * Tabu length is clamped after the event count is known so at least one
+    non-current destination always remains legal; small corpora no longer fall
+    through to unrestricted random choices/self-repeats when tabu >= N-1.
+  * Stats report both requested_tabu_length and effective tabu_length.
+  * Cosine retrieval automatically falls back to Euclidean when the retained
+    feature geometry is one-dimensional or numerically saturated; requested and
+    effective metrics are both reported.
+
 Version 1.4 (2026) — feature/SSM reliability + navigation repairs:
   * Multichannel feature extraction uses the strongest RMS channel instead of
     averaging channels (anti-phase stereo no longer becomes silence).
@@ -886,23 +895,62 @@ def main():
     if N < 4:
         print("    WARNING: only %d events — navigation will be trivial." % N)
 
+    # v1.5: keep tabu meaningful for finite corpora. If tabu >= N-1, every
+    # alternative can become forbidden and the old fallback discarded the tabu
+    # set entirely (even allowing immediate self-repeats). N-2 guarantees that
+    # at least one non-current destination remains legal whenever N >= 2.
+    requested_tabu_length = int(args.tabu_length)
+    effective_tabu_length = min(requested_tabu_length, max(0, N - 2))
+    if effective_tabu_length != requested_tabu_length:
+        print("    WARNING: tabu length %d reduced to %d for %d events." %
+              (requested_tabu_length, effective_tabu_length, N))
+
     patch_dir = args.patch_dir if args.patch_dir else os.path.dirname(args.events_csv)
-    X         = load_features(events, patch_dir, args.patch_prefix)
-    print("    Feature matrix: %s" % str(X.shape))
-    X, feature_keep = robust_normalize(X, metric=args.metric, return_keep=True)
+    X_raw     = load_features(events, patch_dir, args.patch_prefix)
+    print("    Feature matrix: %s" % str(X_raw.shape))
+
+    requested_metric = args.metric
+    effective_metric = requested_metric
+    X, feature_keep = robust_normalize(X_raw, metric=requested_metric, return_keep=True)
     effective_feature_dims = int(np.sum(feature_keep))
     print("    Effective feature dimensions: %d/5" % effective_feature_dims)
 
     # ── Stage 2: Build SSM ────────────────────────────────────────────────
-    print("  [SSM 2/5] Building SSM (%s, N=%d)..." % (args.metric, N))
-    SSM_orig = build_ssm(X, metric=args.metric)
+    # v1.5: cosine in one retained positive dimension is mathematically
+    # degenerate (all non-zero scalars have cosine=1). Use Euclidean instead.
+    if requested_metric == "cosine" and effective_feature_dims < 2:
+        effective_metric = "euclidean"
+        X, feature_keep = robust_normalize(X_raw, metric=effective_metric, return_keep=True)
+        effective_feature_dims = int(np.sum(feature_keep))
+        print("    NOTE: cosine geometry is degenerate with %d effective dimension; "
+              "using Euclidean for the SSM." % effective_feature_dims)
+
+    print("  [SSM 2/5] Building SSM (%s, N=%d)..." % (effective_metric, N))
+    SSM_orig = build_ssm(X, metric=effective_metric)
     print("    SSM range: [%.3f, %.3f]" % (SSM_orig.min(), SSM_orig.max()))
     _off = ~np.eye(SSM_orig.shape[0], dtype=bool)
     ssm_offdiag_std = float(SSM_orig[_off].std())
-    if args.metric == "cosine" and ssm_offdiag_std < 0.05:
-        print("    WARNING: cosine SSM nearly saturated "
-              "(off-diag std %.4f) — events barely discriminated; "
-              "consider --metric euclidean" % ssm_offdiag_std)
+
+    # A higher-dimensional cosine field can still collapse if all event vectors
+    # are nearly collinear. Retry Euclidean once before declaring the corpus
+    # structurally featureless.
+    if effective_metric == "cosine" and ssm_offdiag_std < 1e-6:
+        X_euc, keep_euc = robust_normalize(X_raw, metric="euclidean", return_keep=True)
+        S_euc = build_ssm(X_euc, metric="euclidean")
+        euc_std = float(S_euc[_off].std())
+        if euc_std > ssm_offdiag_std + 1e-6:
+            effective_metric = "euclidean"
+            X = X_euc
+            feature_keep = keep_euc
+            effective_feature_dims = int(np.sum(feature_keep))
+            SSM_orig = S_euc
+            ssm_offdiag_std = euc_std
+            print("    NOTE: cosine SSM was numerically saturated; using Euclidean "
+                  "(off-diag std %.4f)." % ssm_offdiag_std)
+
+    if ssm_offdiag_std < 0.05:
+        print("    WARNING: SSM has low contrast (off-diag std %.4f); "
+              "events may be weakly discriminated." % ssm_offdiag_std)
 
     # ── Stage 3: Apply transformation ────────────────────────────────────
     print("  [SSM 3/5] Applying transformation: %s..." % args.mode)
@@ -924,12 +972,12 @@ def main():
 
     # ── Stage 4: Navigate path ────────────────────────────────────────────
     print("  [SSM 4/5] Navigating path (length=%d, temp=%.2f, tabu=%d)..." %
-          (args.output_events, args.temperature, args.tabu_length))
+          (args.output_events, args.temperature, effective_tabu_length))
     event_path, n_teleports = navigate_path(
         SSM_mod,
         output_length=args.output_events,
         temperature=args.temperature,
-        tabu_length=args.tabu_length,
+        tabu_length=effective_tabu_length,
         seed=args.seed,
         teleport_prob=args.teleport_prob,
         visit_lambda=args.visit_lambda,
@@ -941,9 +989,13 @@ def main():
     metrics = compute_metrics(event_path, events, SSM_orig, SSM_mod, n_teleports)
     metrics["ssm_offdiag_std"] = round(ssm_offdiag_std, 4)
     metrics["effective_feature_dims"] = effective_feature_dims
+    metrics["requested_metric"] = requested_metric
+    metrics["effective_metric"] = effective_metric
+    metrics["requested_tabu_length"] = requested_tabu_length
+    metrics["effective_tabu_length"] = effective_tabu_length
     write_plan(args.plan_csv, event_path)
-    write_stats(args.stats_txt, events, args.mode, args.metric,
-                args.temperature, args.tabu_length, args.seed, metrics, args)
+    write_stats(args.stats_txt, events, args.mode, effective_metric,
+                args.temperature, effective_tabu_length, args.seed, metrics, args)
 
     print("OK: %s" % args.plan_csv)
     print("    Planned events:  %.2f s (audio is shorter by the overlaps)" % metrics["planned_event_duration"])
