@@ -3,13 +3,17 @@
 # Script:      Spatial_Panner.praat
 # Author:      Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
-# Version:     2.3 (2026) - Unified Cross-Platform Version
+# Version:     2.4.1 (2026) - Unified Cross-Platform Version
 # License:     MIT License
 # Repository:  https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
 #   Modernized Spatial Panner with robust path handling and 
 #   dependency probing. Opens a Python GUI for 2D trajectory editing.
+# Changelog v2.4.1:
+#   - Restored automatic Play after the rendered multichannel Sound is imported.
+#   - Python v2.4 keeps endpoint times fixed and keeps the GUI header synchronized
+#     with the selected speaker count.
 # ============================================================
 
 # ---- SELECTION CHECK ----
@@ -139,7 +143,7 @@ endif
 # Stage 1 — Execution
 # ===========================================================================
 clearinfo
-appendInfoLine: "=== Spatial Panner v2.3 ==="
+appendInfoLine: "=== Spatial Panner v2.4.1 ==="
 appendInfoLine: "Input:  ", inputName$
 appendInfoLine: "Python: ", pythonCmd$
 appendInfoLine: ""
@@ -200,5 +204,6 @@ endif
 @cleanUpFiles
 appendInfoLine: ""
 appendInfoLine: "Done."
+appendInfoLine: "Result imported as a ", nch, "-channel Sound."
 selectObject: resultSound
 Play

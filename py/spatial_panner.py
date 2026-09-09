@@ -4,7 +4,7 @@
 # Script:      spatial_panner.py
 # Author:      Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
-# Version:     2.3 (2026)
+# Version:     2.4 (2026)
 # License:     MIT License
 #
 # Description:
@@ -18,7 +18,7 @@
 #     time — seconds, 0..duration
 #     x, y — unit circle coordinates, -1..+1
 #   Sorted by time. Always has anchors at t=0 and t=duration.
-#   Interpolation: linear between consecutive points.
+#   Interpolation: PCHIP by default (optional linear mode), projected to the stage circle.
 #
 # Speaker model:
 #   speakers : list of (label, angle_deg, radius)
@@ -42,6 +42,14 @@
 #   pip install numpy soundfile scipy
 #   tkinter — standard Python
 #   Optional audition: pip install sounddevice
+#
+# Changelog v2.4 (2026):
+#   - Keep start/end anchor TIMES fixed at 0 and duration; double-click editing is
+#     now restricted to interior trajectory points, preserving the trajectory invariant
+#   - Speaker-count changes update the header immediately (4/6/8-channel output)
+#   - Stage path preview now includes the exact final anchor instead of stopping one
+#     display sample early
+#   - Validate non-empty audio on load
 #
 # Changelog v2.3 (2026):
 #   - Add explicit Audition output-device selector with host API and channel count
@@ -263,6 +271,10 @@ def preset_figure8(duration, rotations=1, radius=0.85):
 def load_audio(path):
     audio, sr = sf.read(path, always_2d=True, dtype="float32")
     audio = np.nan_to_num(audio, nan=0.0, posinf=0.0, neginf=0.0)
+    if audio.ndim != 2 or audio.shape[0] < 1 or audio.shape[1] < 1:
+        raise ValueError("input audio must contain at least one sample and one channel")
+    if int(sr) < 1:
+        raise ValueError("input audio has an invalid sample rate")
     return audio.astype(np.float32, copy=False), int(sr)
 
 
@@ -591,10 +603,13 @@ class StageCanvas(tk.Canvas):
         idx = self._hit(e.x, e.y)
         if idx is None:
             return
+        # Start/end anchors define the trajectory domain. Their spatial position
+        # is editable, but their times must remain exactly 0 and duration.
+        if idx == 0 or idx == len(self.traj) - 1:
+            return
         pt    = self.traj[idx]
-        t_min = 0.0 if idx == 0 else self.traj[idx - 1][0] + 0.001
-        t_max = self.duration if idx == len(self.traj) - 1 \
-                else self.traj[idx + 1][0] - 0.001
+        t_min = self.traj[idx - 1][0] + 0.001
+        t_max = self.traj[idx + 1][0] - 0.001
         new_t = simpledialog.askfloat(
             "Edit time",
             f"Time for point {idx}  (range {t_min:.3f} – {t_max:.3f} s):",
@@ -671,10 +686,10 @@ class StageCanvas(tk.Canvas):
             return
         # Draw the path exactly as it will be rendered (linear or PCHIP)
         # so the canvas is WYSIWYG with the motion.
-        n_draw  = 160
-        sr_draw = n_draw / max(self.duration, 1e-6)
-        sx, sy  = interp_trajectory(self.traj, n_draw, sr_draw,
-                                    smooth=self.smooth)
+        n_draw = 160
+        evaluate = make_trajectory_evaluator(self.traj, smooth=self.smooth)
+        t_draw = np.linspace(0.0, self.duration, n_draw, endpoint=True)
+        sx, sy = evaluate(t_draw)
         coords = []
         for i in range(n_draw):
             px, py = unit_to_stage(sx[i], sy[i])
@@ -810,11 +825,12 @@ class SpatialPannerApp:
         # ── Header ────────────────────────────────────────────
         hdr = tk.Frame(self.root, bg="#12121e", pady=6)
         hdr.pack(fill="x", padx=12)
-        fname = os.path.basename(input_path)
+        self._input_display_name = os.path.basename(input_path)
+        self._input_channel_label = ch_label
+        self.header_var = tk.StringVar()
+        self._update_header()
         tk.Label(hdr,
-                 text=f"  {fname}   {self.duration:.2f}s   "
-                      f"{self.sr}Hz   {ch_label}   "
-                      f"→ {len(self.speakers)}-ch output",
+                 textvariable=self.header_var,
                  bg="#12121e", fg="#9090c0",
                  font=("Courier", 10)).pack(side="left")
         tk.Label(hdr,
@@ -1009,6 +1025,13 @@ class SpatialPannerApp:
         # Populate the optional playback-device list after all widgets exist.
         self.root.after(20, self._refresh_audio_devices)
 
+    def _update_header(self):
+        self.header_var.set(
+            f"  {self._input_display_name}   {self.duration:.2f}s   "
+            f"{self.sr}Hz   {self._input_channel_label}   "
+            f"→ {len(self.speakers)}-ch output"
+        )
+
     # ── event handlers ────────────────────────────────────────
 
     def _on_stage_change(self, e=None):
@@ -1044,7 +1067,7 @@ class SpatialPannerApp:
         self.stage.speakers = self.speakers
         self.stage.draw()
         self._refresh_spk_list()
-        # Update header
+        self._update_header()
         self.status_var.set(
             f"Speaker layout changed to {n} speakers."
         )
