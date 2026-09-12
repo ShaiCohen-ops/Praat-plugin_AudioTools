@@ -3,6 +3,22 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
+# Version: 1.11.0 (2026) - Reusable Draw contours
+#   v1.11.0 keeps the RealTier editor as the interactive Draw interface, but
+#   no longer lets the gesture disappear when the editor closes. Every Draw
+#   run is converted to a compact normalized time->brightness contour file
+#   and saved persistently under preferencesDirectory$/corpus/draw_contours/.
+#   Draw can also load one of these contour files directly, bypassing the
+#   editor for exact replay, batch work, controlled comparisons, or a future
+#   gesture library. The synthesis path itself is otherwise unchanged.
+# Version: 1.10.0 (2026) - Single corpus-source path + internal transactional corpus cache
+#   v1.10.0 removes Corpus_index from the user form. The user supplies only
+#   the corpus audio source; the analysed corpus is stored internally at
+#   preferencesDirectory$/corpus/current_corpus. Build/auto-build calls the
+#   backend with --atomic, so a complete new corpus is built in staging and
+#   replaces the previous analysis only after success. A failed rebuild leaves
+#   the previous successful corpus intact.
+# Version: 1.9.3.1 (2026) - Default corpus index path set to C:/Users/User/Praat/corpus/my_corpus
 # Version: 1.9.3 (2026) - Fixed Build mode never cleaning up on success
 #   v1.9.3: same class of bug as v1.9.2, but in Build corpus mode: the
 #   success branch (index found on disk) printed its confirmation and fell
@@ -11,7 +27,7 @@
 #   never creates tempInput$/tempOutput$/tempMeta$/tempTG$/tempTier$, so
 #   only the log - and rarely tempCrash$ - could ever be present here, but
 #   nothing removed even those). Fixed by adding the same @cleanUpTempFiles
-#   call as the failure branch already had. The corpus index itself is not
+#   call as the failure branch already had. The internal corpus cache itself is not
 #   affected - it was never part of cleanUpTempFiles's file list.
 # Version: 1.9.2 (2026) - Fixed Draw mode never cleaning up on success
 #   v1.9.2: Draw mode's success path went straight from importing the result
@@ -41,7 +57,7 @@
 # Version: 1.9 (2026) - Shortened the form to fit smaller screens
 #   v1.9: the single form used to show all ~25 fields from every mode at
 #   once, which no longer fit on a laptop screen. The form now only asks for
-#   Mode/Codec/Corpus paths/Import_textgrid/Play_result; right after it, a
+#   Mode/Codec/Corpus audio source/Import_textgrid/Play_result; right after it, a
 #   short beginPause/endPause dialog (or two, for Match and Gesture rhyme)
 #   shows only the fields relevant to the chosen Mode. No field was removed
 #   and no default value changed - this is a layout change only.
@@ -85,7 +101,7 @@
 #   new Sound, with an optional TextGrid marking which corpus grain each
 #   sub-window came from.
 #
-#   You must build a corpus index once (Mode = Build corpus) before matching.
+#   You build/replace the analysed corpus once (Mode = Build / replace corpus) before matching.
 #
 #   GESTURE RHYME mode (Mode = Gesture rhyme) re-voices an ABSTRACT kinetic
 #   gesture - accelerating clicks, a bouncing ball, an explosive attack
@@ -102,11 +118,11 @@
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 # ============================================================
 
-form Corpus Concatenative Synthesis (codec) v1.9.3
+form Corpus Concatenative Synthesis (codec) v1.11.0
     comment ── Mode ──
     optionmenu Mode: 1
         option Match (synthesise from corpus)
-        option Build corpus index
+        option Build / replace corpus
         option Draw (brightness contour -> corpus)
         option Gesture rhyme (hashed bigram kinetics)
     comment ── Codec (only used when BUILDING the index; match reuses the corpus codec) ──
@@ -114,10 +130,9 @@ form Corpus Concatenative Synthesis (codec) v1.9.3
         option dac
         option encodec
         option mock
-    comment ── Corpus paths ──
-    sentence Corpus_index my_corpus
-    comment Target audio (folder or file) - used to BUILD or AUTO-BUILD the index:
-    sentence Corpus_audio C:/Users/User/Desktop/target_sounds
+    comment ── Corpus audio source ──
+    comment Folder or file analysed by Build; Match auto-builds it only if no corpus exists yet:
+    sentence Corpus_audio C:/Users/user/Praat_Corpus_Audio
     boolean Import_textgrid 1
     boolean Play_result 1
 endform
@@ -140,6 +155,8 @@ hop_ms = 75
 # Draw mode
 draw_duration_s = 4.0
 grain_rate_ms = 80
+draw_source = 1
+contour_file$ = ""
 
 # Matching preset + matching (Match mode; some also shared by Draw/Gesture)
 match_preset = 1
@@ -182,7 +199,7 @@ if mode = 1
     endPause: "Continue", 1
 
     beginPause: "Match mode (3/3): auto-build grains"
-        comment: "Only used if Corpus_index doesn't exist yet and gets auto-built (the"
+        comment: "Only used if no corpus has been built yet and Match auto-builds it (the"
         comment: "corpus has no rhythm of its own, so it needs its own grain/hop size):"
         positive: "Grain ms", grain_ms
         positive: "Hop ms", hop_ms
@@ -190,7 +207,7 @@ if mode = 1
 
 elsif mode = 2
     # ---- BUILD CORPUS MODE ----
-    beginPause: "Build corpus index: grain settings"
+    beginPause: "Build / replace corpus: grain settings"
         comment: "Corpus grains (the corpus has no rhythm of its own):"
         positive: "Grain ms", grain_ms
         positive: "Hop ms", hop_ms
@@ -198,9 +215,16 @@ elsif mode = 2
 
 elsif mode = 3
     # ---- DRAW MODE ----
-    beginPause: "Draw mode: output length + grain rate"
+    beginPause: "Draw mode: gesture source + synthesis"
+        optionMenu: "Draw source", draw_source
+            option: "Interactive RealTier"
+            option: "Contour file"
+        sentence: "Contour file", contour_file$
+        comment: "Interactive: leave Contour file empty; the normalized gesture is auto-saved."
+        comment: "Contour file: paste a previously saved corpus_draw_contour path; its own duration is reused."
         positive: "Draw duration s", draw_duration_s
         positive: "Grain rate ms", grain_rate_ms
+        comment: "Draw duration applies to Interactive RealTier; saved contours replay their stored duration."
         comment: "Crossfade / repeat penalty:"
         positive: "Crossfade ms", crossfade_ms
         real: "Repeat penalty", repeat_penalty
@@ -324,7 +348,22 @@ if macintosh
         python_exe$ = "python3"
     endif
 elsif windows
-    python_exe$ = "python"
+    # Prefer the dedicated codec environment. Build the path from USERPROFILE
+    # so the script is not tied to one Windows account name.
+    userProfile$ = environment$("USERPROFILE")
+    if userProfile$ <> ""
+        userProfile$ = replace$(userProfile$, "\", "/", 0)
+        codecPython$ = userProfile$ + "/praat_codec_env/Scripts/python.exe"
+    else
+        codecPython$ = ""
+    endif
+    if codecPython$ <> "" and fileReadable(codecPython$)
+        python_exe$ = codecPython$
+    else
+        # Compatibility fallback for installations that have not created
+        # praat_codec_env yet.
+        python_exe$ = "python"
+    endif
 else
     python_exe$ = "python3"
 endif
@@ -339,13 +378,18 @@ if not fileReadable(backend_script$)
         ... + "Expected at: " + pluginDir$ + "py/  or next to this script."
 endif
 
-# Corpus index location
-if startsWith(corpus_index$, "/") or index(corpus_index$, ":") > 0
-    corpusIndexPath$ = corpus_index$
-else
-    corpusDir$ = "C:/Users/User/Praat/corpus/"
-    corpusIndexPath$ = corpusDir$ + corpus_index$
-endif
+# Internal corpus cache location. This is intentionally NOT exposed in the
+# form: the user chooses only the audio source. One successful Build replaces
+# the previous analysed corpus. Using preferencesDirectory$ keeps this portable
+# across users/platforms (on this Windows machine it resolves to
+# C:/Users/user/AppData/Roaming/Praat/corpus/current_corpus).
+corpusDir$ = preferencesDirectory$ + "/corpus/"
+createDirectory: corpusDir$
+# Persistent Draw gestures live beside (not inside) the replaceable corpus index.
+# They are intentional user data, so cleanUpTempFiles never touches them.
+drawContourDir$ = corpusDir$ + "draw_contours/"
+createDirectory: drawContourDir$
+corpusIndexPath$ = corpusDir$ + "current_corpus"
 # Normalise to forward slashes so the path PYTHON writes and the path PRAAT
 # checks are byte-identical (preferencesDirectory$ can return backslashes).
 corpusIndexPath$ = replace_regex$(corpusIndexPath$, "\\", "/", 0)
@@ -354,8 +398,8 @@ corpusIndexPath$ = replace_regex$(corpusIndexPath$, "\\", "/", 0)
 # These are deleted at the START of every run AND again at the END of a
 # successful Match run (see cleanUpTempFiles), so nothing lingers once a run
 # finishes. Rather than leaving them buried in the OS temp folder, put them
-# right next to the corpus index - e.g. if Corpus_index points into
-# target_sounds, these land there too automatically.
+# right next to the internal corpus cache, so they stay inside Praat's own
+# corpus working area rather than beside user-owned source audio.
 slashPos = rindex(corpusIndexPath$, "/")
 if slashPos > 0
     tempDir$ = left$(corpusIndexPath$, slashPos)
@@ -378,6 +422,11 @@ tempTG$     = tempDir$ + "ccc_output_" + runTag$ + ".TextGrid"
 tempTier$   = tempDir$ + "ccc_curve_" + runTag$ + ".RealTier"
 tempLog$    = tempDir$ + "ccc_pylog_" + runTag$ + ".txt"
 probeMarker$ = tempDir$ + "ccc_probe_" + runTag$ + ".txt"
+tempBuildMarker$ = tempDir$ + "ccc_build_ok_" + runTag$ + ".txt"
+# Persistent, normalized Draw trajectory actually used by this run. Unlike the
+# RealTier scratch export, this is NOT deleted at cleanup: it is the reusable
+# compositional gesture / reproducibility record.
+usedContour$ = drawContourDir$ + "draw_contour_" + runTag$ + ".txt"
 
 # The Python backend also writes a CRASH DUMP with a FIXED name (no run tag,
 # since main()'s top-level exception handler doesn't know about runTag$) to
@@ -412,7 +461,7 @@ tempCrash$  = tempDir$ + "corpus_concat_crash.txt"
 # ccc_output_<runTag$>.wav has already been read into a Praat Sound object,
 # so the on-disk copy (and the meta/TextGrid/log that went with it) is just
 # leftover scratch, not data. Build mode never reaches that second call: it
-# doesn't produce any ccc_* files in the first place, only the corpus index
+# doesn't produce any ccc_* files in the first place, only the internal corpus cache
 # itself.
 
 procedure cleanUpTempFiles
@@ -436,6 +485,9 @@ procedure cleanUpTempFiles
     endif
     if fileReadable(probeMarker$)
         deleteFile: probeMarker$
+    endif
+    if fileReadable(tempBuildMarker$)
+        deleteFile: tempBuildMarker$
     endif
     if fileReadable(tempCrash$)
         deleteFile: tempCrash$
@@ -469,31 +521,21 @@ endproc
 # BUILD CORPUS MODE
 # ============================================================
 if mode = 2
-    appendInfoLine: "=== Building corpus index ==="
+    appendInfoLine: "=== Building / replacing corpus ==="
     appendInfoLine: "Codec: ", codec$
     appendInfoLine: "Target audio: ", corpus_audio$
-    appendInfoLine: "Index: ", corpusIndexPath$
+    appendInfoLine: "Internal corpus cache: ", corpusIndexPath$
     appendInfoLine: "This may take a while (encoding every grain)..."
 
     buildCmd$ = python_exe$ + " " + backend_script$ + " build-corpus --codec " + codec$
         ... + " --corpus-audio " + corpus_audio$ + " --index " + corpusIndexPath$
         ... + " --grain-ms " + string$(grain_ms) + " --hop-ms " + string$(hop_ms)
+        ... + " --atomic"
 
-    # IMPORTANT: if an OLD index already exists at this path, a build that
-    # FAILS (wrong corpus_audio path, missing codec dependency, any Python
-    # exception) leaves that old file completely untouched - it's still
-    # "readable" on disk even though THIS run never wrote it. Checking only
-    # fileReadable() afterwards can't tell "freshly built" apart from "old
-    # file nothing touched", so it would print success and silently send you
-    # into Match mode against stale data. Fix: delete the old index files
-    # (and the old grains folder) BEFORE running build-corpus, so afterwards
-    # fileReadable() can only be true if THIS run actually wrote them.
-    if fileReadable(corpusIndexPath$ + ".json")
-        deleteFile: corpusIndexPath$ + ".json"
-    endif
-    if fileReadable(corpusIndexPath$ + "_feats.npy")
-        deleteFile: corpusIndexPath$ + "_feats.npy"
-    endif
+    # Transactional rebuild: the backend builds the complete new corpus in a
+    # sibling staging directory. Only after JSON + feature matrix + grain audio
+    # all exist does it replace the live corpus. If building fails, the previous
+    # successful corpus stays untouched and Match can continue using it.
 
     # runSubprocess hands each argument to Python directly (no shell), so
     # there is no quoting to get wrong; nocheck stops Praat from halting the
@@ -505,11 +547,14 @@ if mode = 2
         ... "--index", corpusIndexPath$,
         ... "--grain-ms", string$(grain_ms),
         ... "--hop-ms", string$(hop_ms),
+        ... "--atomic",
+        ... "--success-marker", tempBuildMarker$,
         ... "--log", tempLog$
 
-    if fileReadable(corpusIndexPath$ + ".json")
+    if fileReadable(tempBuildMarker$) and fileReadable(corpusIndexPath$ + ".json")
         appendInfoLine: ""
-        appendInfoLine: "Corpus index built: ", corpusIndexPath$, ".json"
+        appendInfoLine: "Corpus analysis built/replaced successfully."
+        appendInfoLine: "Internal cache: ", corpusIndexPath$, ".json"
         appendInfoLine: "You can now run Match mode on a selected Sound."
         # Only tempLog$ (and, rarely, tempCrash$) can exist at this point -
         # build mode never touches tempInput$/tempOutput$/tempMeta$/tempTG$/
@@ -523,67 +568,98 @@ if mode = 2
         appendInfoLine: buildCmd$
         @showPyLog
         @cleanUpTempFiles
-        exitScript: "Corpus build failed - no index produced." + newline$
+        exitScript: "Corpus build failed - the new analysis was not installed." + newline$
             ... + "The Python error is printed in the Info window above." + newline$
-            ... + "Note: any PREVIOUS index at this path was deleted before this attempt,"
-            ... + newline$ + "so Match mode will also fail until a build succeeds - this is"
-            ... + newline$ + "intentional, so a failed rebuild can never be mistaken for a fresh one."
+            ... + "If a previous successful corpus existed, it was left intact and can still be used by Match."
     endif
     # build mode ends here
     goto END
 endif
 
 # ============================================================
-# DRAW MODE - draw a brightness contour; the corpus voices it
+# DRAW MODE - a brightness contour navigates the corpus
+# The RealTier editor remains the interactive interface, but the actual control
+# representation is now explicit and persistent: time -> normalized brightness.
+# A saved contour can be loaded directly for exact replay / batch work.
 # ============================================================
 if mode = 3
-    # index must exist (draw needs the corpus's per-grain brightness)
+    # index must exist (Draw needs the corpus's per-grain brightness)
     if not fileReadable(corpusIndexPath$ + ".json")
-        exitScript: "No corpus index found at: " + corpusIndexPath$ + ".json" + newline$
-            ... + "Build a corpus first (Build mode, or run Match once to auto-build)."
+        exitScript: "No analysed corpus is available yet." + newline$
+            ... + "Run Build / replace corpus first (or run Match once to auto-build)."
     endif
 
-    # Create an empty RealTier for the user to draw on. The value axis is the
-    # brightness target: low = dark/low corpus grains, high = bright/high ones.
-    Create RealTier: "ccc_curve", 0, draw_duration_s
-    tier = selected("RealTier")
-    # Seed two anchor points so the editor has a visible 0..1 value range to
-    # draw within (an empty tier gives the editor no vertical scale). The user
-    # can drag, delete, or add to these freely - only the curve SHAPE matters,
-    # since the Python side normalises the drawn values to their own range.
-    Add point: 0, 0
-    Add point: draw_duration_s, 1
+    drawSourceArg$ = ""
+    drawSourcePath$ = ""
+    drawBackendDuration$ = "0"
 
-    # Let the user draw. Editing the RealTier opens the draw window; the pause
-    # lets them add/drag points before we read the curve back.
-    View & Edit
-    beginPause: "Draw your brightness contour"
-        comment: "Draw a curve in the RealTier editor (click to add points,"
-        comment: "drag to shape). Value axis = brightness: low picks dark/low"
-        comment: "corpus grains, high picks bright/high ones."
-        comment: "Click Continue when your gesture is ready."
-    endPause: "Continue", 1
+    if draw_source = 1
+        # ---- INTERACTIVE REALTIER ----
+        # Create a RealTier exactly as before. Its raw values are only an editor
+        # convenience; the backend normalises them and writes the exact reusable
+        # control trajectory to usedContour$.
+        Create RealTier: "ccc_curve", 0, draw_duration_s
+        tier = selected("RealTier")
+        Add point: 0, 0
+        Add point: draw_duration_s, 1
 
-    selectObject: tier
-    Save as text file: tempTier$
-    removeObject: tier
+        View & Edit
+        beginPause: "Draw your brightness contour"
+            comment: "Draw a curve in the RealTier editor (click to add points,"
+            comment: "drag to shape). Value axis = brightness: low picks dark/low"
+            comment: "corpus grains, high picks bright/high ones."
+            comment: "Click Continue when your gesture is ready."
+        endPause: "Continue", 1
 
-    if not fileReadable(tempTier$)
-        exitScript: "Could not export the drawn RealTier."
+        selectObject: tier
+        Save as text file: tempTier$
+        removeObject: tier
+
+        if not fileReadable(tempTier$)
+            exitScript: "Could not export the drawn RealTier."
+        endif
+
+        drawSourceArg$ = "--tier"
+        drawSourcePath$ = tempTier$
+        drawBackendDuration$ = string$(draw_duration_s)
+
+    else
+        # ---- SAVED CONTOUR FILE ----
+        # This bypasses the editor entirely. The file stores the normalized
+        # time->brightness trajectory that a previous Draw run actually used.
+        if contour_file$ = ""
+            exitScript: "Draw source is Contour file, but no contour file path was supplied."
+        endif
+        if not fileReadable(contour_file$)
+            exitScript: "Cannot read Draw contour file:" + newline$ + contour_file$
+        endif
+        drawSourceArg$ = "--contour"
+        drawSourcePath$ = contour_file$
+        # 0 tells the backend to preserve the contour file's stored duration.
+        drawBackendDuration$ = "0"
     endif
 
     appendInfoLine: "=== Draw mode (brightness contour) ==="
     appendInfoLine: "Corpus: ", corpusIndexPath$
-    appendInfoLine: "Duration: ", string$(draw_duration_s), " s   Grain rate: ", string$(grain_rate_ms), " ms"
+    if draw_source = 1
+        appendInfoLine: "Gesture source: Interactive RealTier"
+        appendInfoLine: "Duration: ", string$(draw_duration_s), " s   Grain rate: ", string$(grain_rate_ms), " ms"
+    else
+        appendInfoLine: "Gesture source: saved contour file"
+        appendInfoLine: "Contour: ", contour_file$
+        appendInfoLine: "Duration: stored in contour file   Grain rate: ", string$(grain_rate_ms), " ms"
+    endif
+    appendInfoLine: "Normalized contour copy: ", usedContour$
     appendInfoLine: "Synthesising..."
 
     nocheck runSubprocess: python_exe$, backend_script$, "draw",
-        ... "--tier", tempTier$,
+        ... drawSourceArg$, drawSourcePath$,
+        ... "--contour-out", usedContour$,
         ... "--output", tempOutput$,
         ... "--index", corpusIndexPath$,
         ... "--metadata", tempMeta$,
         ... "--textgrid", tempTG$,
-        ... "--duration", string$(draw_duration_s),
+        ... "--duration", drawBackendDuration$,
         ... "--grain-rate-ms", string$(grain_rate_ms),
         ... "--xfade-ms", string$(crossfade_ms),
         ... "--repeat-penalty", string$(repeat_penalty),
@@ -596,21 +672,26 @@ if mode = 3
             ... + "Any Python error is shown in the Info window above."
     endif
 
+    if not fileReadable(usedContour$)
+        @showPyLog
+        @cleanUpTempFiles
+        exitScript: "Draw synthesis produced audio but did not save its normalized contour." + newline$
+            ... + "The run was stopped because the Draw gesture would not be reproducible."
+    endif
+
     Read from file: tempOutput$
     drawResult = selected("Sound")
     Rename: "drawn_concat"
     appendInfoLine: "Imported result: drawn_concat"
+    appendInfoLine: "Reusable Draw contour saved: ", usedContour$
 
     if import_textgrid and fileReadable(tempTG$)
         Read from file: tempTG$
         Rename: "drawn_grains"
     endif
 
-    # Clean the scratch files (tier/output/meta/TextGrid/log/probe). This was
-    # previously missing on the success path - every Draw run silently left
-    # ccc_curve_<tag>.RealTier, ccc_output_<tag>.wav/.TextGrid, ccc_meta_<tag>.json
-    # and ccc_pylog_<tag>.txt behind in the corpus folder forever, since only
-    # the failure branch above cleaned up.
+    # Scratch RealTier/output/meta/TextGrid/log files are temporary. The saved
+    # normalized contour under draw_contours/ is intentional persistent data.
     @cleanUpTempFiles
 
     if play_result
@@ -641,9 +722,8 @@ if mode = 4
 
     # Existing index REQUIRED - gesture mode never builds the corpus.
     if not fileReadable(corpusIndexPath$ + ".json")
-        exitScript: "Gesture rhyme needs an existing corpus index." + newline$
-            ... + "None found at: " + corpusIndexPath$ + ".json" + newline$
-            ... + "Build one first (Build corpus index mode); gesture mode never builds."
+        exitScript: "Gesture rhyme needs an analysed corpus." + newline$
+            ... + "Run Build / replace corpus first; gesture mode never builds."
     endif
 
     selectObject: source
@@ -714,8 +794,8 @@ if mode = 4
         exitScript: "Gesture rhyme failed - no output WAV produced." + newline$
             ... + "The Python error is shown in the Info window above." + newline$
             ... + "Common causes: missing corpus index (.json / _feats.npy), missing" + newline$
-            ... + "grain audio files, an OBSOLETE index schema (rebuild it - Build corpus" + newline$
-            ... + "index mode), or source too short."
+            ... + "grain audio files, an OBSOLETE index schema (rebuild it with Build / replace" + newline$
+            ... + "corpus), or source too short."
     endif
 
     Read from file: tempOutput$
@@ -758,27 +838,27 @@ endif
 source = selected("Sound")
 sourceName$ = selected$("Sound")
 
-# Corpus index needed for matching. If it doesn't exist yet, build it now
-# (one-time slow pass: encodes every corpus grain). Subsequent runs reuse the
-# saved index and are fast.
+# An analysed corpus is needed for matching. If none exists yet, build it now
+# from the single Corpus_audio source field. Subsequent runs reuse the internal
+# cache and are fast until the user explicitly runs Build / replace corpus.
 if not fileReadable(corpusIndexPath$ + ".json")
     if corpus_audio$ = "" or not (fileReadable(corpus_audio$) or fileReadable(corpus_audio$ + "/"))
         # corpus_audio may be a folder; fileReadable on a folder is unreliable,
         # so only hard-fail when the field is clearly empty.
         if corpus_audio$ = ""
-            exitScript: "No corpus index found and no target audio given." + newline$
-                ... + "Set 'Corpus audio' to your target sound(s)/folder so the index can be built,"
-                ... + newline$ + "or run in 'Build corpus index' mode first."
+            exitScript: "No analysed corpus exists and no corpus audio source was given." + newline$
+                ... + "Set 'Corpus audio' to your target sound(s)/folder, or run Build / replace corpus first."
         endif
     endif
 
-    appendInfoLine: "=== No corpus index found - building it now (one time) ==="
+    appendInfoLine: "=== No analysed corpus found - building it now (one time) ==="
     appendInfoLine: "Target audio: ", corpus_audio$
     appendInfoLine: "This encodes every grain and may take a while..."
 
     autoBuildCmd$ = python_exe$ + " " + backend_script$ + " build-corpus --codec " + codec$
         ... + " --corpus-audio " + corpus_audio$ + " --index " + corpusIndexPath$
         ... + " --grain-ms " + string$(grain_ms) + " --hop-ms " + string$(hop_ms)
+        ... + " --atomic"
 
     nocheck runSubprocess: python_exe$, backend_script$,
         ... "build-corpus",
@@ -787,21 +867,23 @@ if not fileReadable(corpusIndexPath$ + ".json")
         ... "--index", corpusIndexPath$,
         ... "--grain-ms", string$(grain_ms),
         ... "--hop-ms", string$(hop_ms),
+        ... "--atomic",
+        ... "--success-marker", tempBuildMarker$,
         ... "--log", tempLog$
 
-    if not fileReadable(corpusIndexPath$ + ".json")
+    if not fileReadable(tempBuildMarker$) or not fileReadable(corpusIndexPath$ + ".json")
         appendInfoLine: ""
         appendInfoLine: "Command that was run:"
         appendInfoLine: autoBuildCmd$
         appendInfoLine: ""
-        appendInfoLine: "Expected index at: ", corpusIndexPath$, ".json"
+        appendInfoLine: "Expected internal cache at: ", corpusIndexPath$, ".json"
         @showPyLog
         @cleanUpTempFiles
-        exitScript: "Auto-build of the corpus index failed - no index produced." + newline$
+        exitScript: "Auto-build of the corpus failed - no new corpus was installed." + newline$
             ... + "The exact command and Python error are printed in the Info window above." + newline$
             ... + "Compare that command to one that works in a terminal."
     endif
-    appendInfoLine: "Corpus index built: ", corpusIndexPath$, ".json"
+    appendInfoLine: "Corpus analysis built: ", corpusIndexPath$, ".json"
     appendInfoLine: "(future runs will reuse it and start immediately)"
     appendInfoLine: ""
 endif
@@ -816,7 +898,7 @@ endif
 appendInfoLine: "=== Corpus Concatenative Synthesis ==="
 appendInfoLine: "Source: ", sourceName$
 appendInfoLine: "Codec requested: ", codec$, " (the corpus index's OWN codec is always used if it differs - see the Python warning below if so)"
-appendInfoLine: "Corpus: ", corpusIndexPath$
+appendInfoLine: "Internal corpus cache: ", corpusIndexPath$
 appendInfoLine: "Preset: ", presetName$
 
 # ---- BUILD COMMAND ----
@@ -856,8 +938,8 @@ if not fileReadable(tempOutput$)
     @cleanUpTempFiles
     exitScript: "Python backend failed - no output WAV produced." + newline$
         ... + "The Python error is printed in the Info window above." + newline$
-        ... + "Common causes: codec not installed (encodec/dac), corpus index missing," + newline$
-        ... + "an OBSOLETE index schema (rebuild it - Build corpus index mode), or" + newline$
+        ... + "Common causes: codec not installed (encodec/dac), analysed corpus missing," + newline$
+        ... + "an OBSOLETE index schema (rebuild it with Build / replace corpus), or" + newline$
         ... + "source selection too short."
 endif
 
@@ -882,8 +964,8 @@ endif
 
 # ---- CLEANUP (run is done; Praat now holds the result in memory, so the
 # on-disk scratch copies - input/output/meta/TextGrid/log/probe - are no
-# longer needed. Only the corpus index (my_corpus.json / _feats.npy /
-# _grains/) survives, since that's what's needed to run again.) ----
+# longer needed. Only the internal corpus cache (current_corpus.json /
+# _feats.npy / _grains/) survives, since that's what's needed to run again.) ----
 @cleanUpTempFiles
 
 # ---- PLAY ----

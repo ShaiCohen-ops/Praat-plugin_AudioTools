@@ -3,6 +3,18 @@
 # Praat AudioTools - corpus_concat_codec.py
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
+# Version: 1.6 (2026)
+#   v1.6: Draw contours are now serializable and reloadable. Draw accepts either
+#   a Praat RealTier (--tier, backward compatible) or a compact human-readable
+#   contour file (--contour). The exact normalized time->brightness trajectory
+#   actually used by the synthesis can be written with --contour-out, making
+#   Draw runs reproducible and suitable for batch processing / gesture libraries.
+# Version: 1.5 (2026)
+#   v1.5: build-corpus gained optional --atomic transactional replacement.
+#   A new corpus is built completely in a staging directory and only promoted
+#   over the live index after JSON, feature matrix, and grain folder all exist.
+#   If encoding/building fails, the previous successful corpus remains intact.
+#   The index also records the user-supplied corpus_audio specification.
 # Version: 1.4 (2026)
 #   v1.4 fix pass: per-codebook bigram bucketing (was pooling all codebooks
 #   into 64 shared, alias-prone buckets - see token_bigrams); onset
@@ -798,7 +810,7 @@ def _resolve_grain_path(index_path_prefix, grain_audio):
     return grain_audio  # last resort - let the caller's own error fire
 
 
-def build_corpus(args):
+def _build_corpus_impl(args):
     codec = make_codec(args.codec)
     cb = getattr(codec, "codebook_size", 1024)
 
@@ -900,6 +912,7 @@ def build_corpus(args):
     n_cb_used = n_codebooks_at_build or 1
     index_out = {
         "schema_version": CURRENT_SCHEMA_VERSION,
+        "corpus_audio_spec": args.corpus_audio,
         "codec": codec.name,
         "sample_rate": codec.sample_rate,
         "codebook_size": cb,
@@ -926,6 +939,111 @@ def build_corpus(args):
         json.dump(index_out, f, indent=1)
     sys.stdout.write("Built corpus index: %d grains from %d files -> %s.json\n"
                      % (len(grains_meta), len(files), args.index))
+
+
+def _remove_artifact(path):
+    """Remove one corpus artefact (file or directory) if it exists."""
+    if os.path.isdir(path):
+        _rmtree_retry(path)
+    elif os.path.exists(path):
+        os.remove(path)
+
+
+def _atomic_build_corpus(args):
+    """Build into a sibling staging directory, then replace the live corpus.
+
+    The staging prefix keeps the SAME basename as the final prefix so the
+    relative grain paths written into index.json remain valid after promotion.
+    Existing live artefacts are first moved to a backup directory. If any
+    promotion step fails, the backup is restored before the error is re-raised.
+    """
+    import copy
+    import time
+
+    final_prefix = os.path.abspath(args.index)
+    parent = os.path.dirname(final_prefix) or os.getcwd()
+    base = os.path.basename(final_prefix)
+    os.makedirs(parent, exist_ok=True)
+
+    tag = "%d_%d" % (os.getpid(), int(time.time() * 1000))
+    stage_dir = os.path.join(parent, ".%s_build_%s" % (base, tag))
+    backup_dir = os.path.join(parent, ".%s_backup_%s" % (base, tag))
+    os.makedirs(stage_dir, exist_ok=False)
+
+    stage_prefix = os.path.join(stage_dir, base)
+    staged = [stage_prefix + ".json",
+              stage_prefix + "_feats.npy",
+              stage_prefix + "_grains"]
+    live = [final_prefix + ".json",
+            final_prefix + "_feats.npy",
+            final_prefix + "_grains"]
+    backup = [os.path.join(backup_dir, os.path.basename(x)) for x in live]
+
+    staged_args = copy.copy(args)
+    staged_args.index = stage_prefix
+    staged_args.atomic = False
+
+    try:
+        _build_corpus_impl(staged_args)
+        missing = [x for x in staged if not os.path.exists(x)]
+        if missing:
+            raise RuntimeError("staged corpus build is incomplete; missing: %s"
+                               % ", ".join(missing))
+
+        os.makedirs(backup_dir, exist_ok=False)
+        moved_old = []
+        moved_new = []
+        try:
+            # Preserve the old live corpus until every staged artefact exists.
+            for src, dst in zip(live, backup):
+                if os.path.exists(src):
+                    os.replace(src, dst)
+                    moved_old.append((dst, src))
+
+            # Promote the complete new corpus. Same filesystem => rename/replace.
+            for src, dst in zip(staged, live):
+                os.replace(src, dst)
+                moved_new.append(dst)
+        except Exception:
+            # Roll back any partial promotion, then restore the previous corpus.
+            for path in reversed(moved_new):
+                try:
+                    _remove_artifact(path)
+                except Exception:
+                    pass
+            for src, dst in reversed(moved_old):
+                if os.path.exists(src):
+                    os.replace(src, dst)
+            raise
+
+        sys.stdout.write("Promoted corpus index atomically -> %s.json\n"
+                         % final_prefix)
+
+    finally:
+        # Staging/backup are never part of the live corpus. Cleanup failure here
+        # should not invalidate an otherwise successful promotion.
+        for d in (stage_dir, backup_dir):
+            if os.path.isdir(d):
+                try:
+                    _rmtree_retry(d)
+                except Exception as e:
+                    sys.stderr.write("WARNING: could not remove temporary build "
+                                     "directory %s (%s)\n" % (d, e))
+
+
+def build_corpus(args):
+    if getattr(args, "atomic", False):
+        _atomic_build_corpus(args)
+    else:
+        _build_corpus_impl(args)
+
+    marker = getattr(args, "success_marker", None)
+    if marker:
+        marker_parent = os.path.dirname(os.path.abspath(marker))
+        if marker_parent:
+            os.makedirs(marker_parent, exist_ok=True)
+        with open(marker, "w") as f:
+            f.write("ok\n")
 
 
 # ============================================================
@@ -1240,6 +1358,10 @@ def match(args):
                      % (len(src_grains), len(used), len(out) / sr, args.output))
 
 
+DRAW_CONTOUR_MAGIC = "corpus_draw_contour"
+DRAW_CONTOUR_FORMAT_VERSION = 1
+
+
 def read_realtier(path):
     """Parse a Praat RealTier text file into sorted (time, value) points.
     Returns (xmin, xmax, [(t, v), ...]). Tolerant of whitespace/ordering."""
@@ -1248,27 +1370,27 @@ def read_realtier(path):
     xmin = 0.0
     xmax = 1.0
     pending_t = None
-    with open(path, "r") as f:
+    with open(path, "r", encoding="utf-8-sig") as f:
         for line in f:
             line = line.strip()
             if line.startswith("xmin") and "=" in line and not times:
                 try:
-                    xmin = float(line.split("=")[1])
+                    xmin = float(line.split("=", 1)[1])
                 except ValueError:
                     pass
             elif line.startswith("xmax") and "=" in line and pending_t is None and not times:
                 try:
-                    xmax = float(line.split("=")[1])
+                    xmax = float(line.split("=", 1)[1])
                 except ValueError:
                     pass
             elif line.startswith("number") and "=" in line:
                 try:
-                    pending_t = float(line.split("=")[1])
+                    pending_t = float(line.split("=", 1)[1])
                 except ValueError:
                     pending_t = None
             elif line.startswith("value") and "=" in line and pending_t is not None:
                 try:
-                    v = float(line.split("=")[1])
+                    v = float(line.split("=", 1)[1])
                     times.append(pending_t)
                     values.append(v)
                 except ValueError:
@@ -1281,11 +1403,151 @@ def read_realtier(path):
     return xmin, xmax, pts
 
 
+def _collapse_contour_points(points, duration):
+    """Sort points, clamp time/value to the serialized Draw domain, and let the
+    last point win when several rows share the same time."""
+    rows = []
+    for order, (t, v) in enumerate(points):
+        t = float(t)
+        v = float(v)
+        if not (np.isfinite(t) and np.isfinite(v)):
+            continue
+        if -1e-9 <= t <= duration + 1e-9:
+            rows.append((min(max(t, 0.0), duration), min(max(v, 0.0), 1.0), order))
+    rows.sort(key=lambda r: (r[0], r[2]))
+    out = []
+    for t, v, _ in rows:
+        if out and abs(out[-1][0] - t) < 1e-9:
+            out[-1] = (t, v)
+        else:
+            out.append((t, v))
+    return out
+
+
+def read_draw_contour(path):
+    """Read the persistent, human-readable Draw representation:
+
+        format corpus_draw_contour 1
+        duration 4.000000
+        [CURVE]
+        0.000000 0.100000
+        1.250000 0.800000
+
+    Values are the NORMALIZED brightness target actually used by Draw (0=dark,
+    1=bright). Two-column rows, commas/tabs, and '#' comments are accepted so
+    files can also be handwritten or generated externally.
+    """
+    duration = None
+    points = []
+    in_curve = False
+    seen_format = False
+    with open(path, "r", encoding="utf-8-sig") as f:
+        for lineno, raw in enumerate(f, 1):
+            line = raw.split("#", 1)[0].strip()
+            if not line:
+                continue
+            up = line.upper()
+            if up == "[CURVE]":
+                in_curve = True
+                continue
+            if not in_curve:
+                key, _, rest = line.partition(" ")
+                key = key.lower()
+                if key == "format":
+                    parts = rest.split()
+                    if len(parts) < 2 or parts[0] != DRAW_CONTOUR_MAGIC:
+                        raise ValueError("contour file line %d: unsupported format" % lineno)
+                    version = int(parts[1])
+                    if version != DRAW_CONTOUR_FORMAT_VERSION:
+                        raise ValueError(
+                            "contour format version %d is not supported (expected %d)"
+                            % (version, DRAW_CONTOUR_FORMAT_VERSION))
+                    seen_format = True
+                elif key == "duration":
+                    duration = float(rest.split()[0])
+                continue
+            parts = line.replace(",", " ").replace("\t", " ").split()
+            if len(parts) < 2:
+                raise ValueError("contour file line %d needs time and value" % lineno)
+            try:
+                points.append((float(parts[0]), float(parts[1])))
+            except ValueError:
+                raise ValueError("contour file line %d is not numeric: %r"
+                                 % (lineno, raw.strip()))
+
+    if not seen_format:
+        raise ValueError("not a Praat AudioTools Draw contour file (missing format line)")
+    if duration is None:
+        duration = max((p[0] for p in points), default=0.0)
+    if duration <= 0:
+        raise ValueError("contour duration must be > 0")
+    points = _collapse_contour_points(points, float(duration))
+    if not points:
+        raise ValueError("contour has no usable points")
+    return float(duration), points
+
+
+def write_draw_contour(path, duration, points, source=""):
+    """Write the normalized compositional control representation used by Draw.
+    This deliberately stores only the gesture (time -> brightness), not synthesis
+    parameters; run parameters remain in the normal metadata / project manifest."""
+    parent = os.path.dirname(os.path.abspath(path))
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    points = _collapse_contour_points(points, float(duration))
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
+        f.write("# Praat AudioTools - Corpus Concatenative Codec Draw contour\n")
+        f.write("# time_s normalized_brightness   (0=dark, 1=bright)\n")
+        if source:
+            f.write("# source: %s\n" % source)
+        f.write("format %s %d\n" % (DRAW_CONTOUR_MAGIC, DRAW_CONTOUR_FORMAT_VERSION))
+        f.write("duration %.6f\n" % float(duration))
+        f.write("[CURVE]\n")
+        for t, v in points:
+            f.write("%.6f %.6f\n" % (t, v))
+
+
+def _normalise_realtier_contour(path, duration_override=0.0):
+    """Convert an interactive RealTier to the persistent Draw representation.
+    Time is remapped to [0,duration]; values are normalised by the tier's own
+    min/max exactly as legacy Draw did, so existing interactive behaviour is
+    unchanged. The returned points are therefore the exact normalized control
+    representation that the synthesis will use."""
+    xmin, xmax, pts = read_realtier(path)
+    if not pts:
+        raise ValueError("Drawn curve has no points")
+    tier_duration = xmax - xmin
+    duration = float(duration_override) if duration_override > 0 else tier_duration
+    if duration <= 0:
+        duration = 1.0
+
+    raw_t = np.asarray([p[0] for p in pts], dtype=np.float64)
+    raw_v = np.asarray([p[1] for p in pts], dtype=np.float64)
+    vmin, vmax = float(raw_v.min()), float(raw_v.max())
+    if vmax - vmin > 1e-9:
+        norm_v = (raw_v - vmin) / (vmax - vmin)
+    else:
+        norm_v = np.full_like(raw_v, 0.5)
+
+    if tier_duration > 1e-12:
+        norm_t = (raw_t - xmin) / tier_duration * duration
+    else:
+        norm_t = np.linspace(0.0, duration, raw_t.size)
+    points = _collapse_contour_points(zip(norm_t, norm_v), duration)
+    return duration, points
+
+
+def _stretch_contour(points, old_duration, new_duration):
+    if new_duration <= 0 or abs(new_duration - old_duration) < 1e-12:
+        return old_duration, list(points)
+    scale = new_duration / old_duration
+    return new_duration, [(t * scale, v) for t, v in points]
+
+
 def draw(args):
-    """Brightness-contour synthesis. A drawn RealTier curve (time -> level in
-    roughly [0,1]) is sampled at a fixed grain rate; at each step the corpus
-    grain whose (log) brightness best matches the drawn level is placed, then
-    crossfaded. No input sound - the gesture is drawn, the corpus voices it."""
+    """Brightness-contour synthesis from either an interactive Praat RealTier or
+    a persistent Draw contour file. The synthesis itself always operates on the
+    same explicit normalized time->brightness representation."""
     with open(args.index + ".json") as f:
         index = json.load(f)
     sr = index["sample_rate"]
@@ -1305,25 +1567,42 @@ def draw(args):
     cmin, cmax = float(logc.min()), float(logc.max())
     bright = (logc - cmin) / (cmax - cmin + 1e-9)
 
-    xmin, xmax, pts = read_realtier(args.tier)
-    if len(pts) < 1:
-        sys.stderr.write("Drawn curve has no points.\n")
+    # ---- explicit Draw control representation ----
+    # Backward-compatible interactive path: RealTier values are normalized exactly
+    # as before, then converted into a reusable time->brightness contour.
+    if bool(args.tier) == bool(args.contour):
+        sys.stderr.write(
+            "Draw requires exactly one gesture source: --tier (Praat RealTier) "
+            "or --contour (saved Draw contour file).\n")
         sys.exit(4)
 
-    duration = args.duration if args.duration > 0 else (xmax - xmin)
-    if duration <= 0:
-        duration = 1.0
+    try:
+        if args.contour:
+            source_kind = "contour_file"
+            source_path = args.contour
+            source_duration, points = read_draw_contour(args.contour)
+            duration, points = _stretch_contour(
+                points, source_duration,
+                float(args.duration) if args.duration > 0 else source_duration)
+        else:
+            source_kind = "realtier"
+            source_path = args.tier
+            duration, points = _normalise_realtier_contour(args.tier, args.duration)
+    except Exception as e:
+        sys.stderr.write("Could not read Draw contour: %s\n" % e)
+        sys.exit(4)
 
-    # sample the drawn curve at the fixed grain rate (linear interp; clamp ends)
-    pt_t = np.array([p[0] for p in pts])
-    pt_v = np.array([p[1] for p in pts])
-    # normalise drawn values to [0,1] using the curve's own range, so the
-    # gesture's shape is what matters, not the absolute numbers the user drew
-    vmin, vmax = float(pt_v.min()), float(pt_v.max())
-    if vmax - vmin > 1e-9:
-        pt_v = (pt_v - vmin) / (vmax - vmin)
-    else:
-        pt_v = np.full_like(pt_v, 0.5)
+    if args.contour_out:
+        try:
+            write_draw_contour(args.contour_out, duration, points, source=source_kind)
+        except Exception as e:
+            sys.stderr.write("Could not save normalized Draw contour: %s\n" % e)
+            sys.exit(4)
+
+    # From here on, Draw no longer cares where the gesture came from. It samples
+    # the serialized representation directly at the fixed grain rate.
+    pt_t = np.array([p[0] for p in points], dtype=np.float64)
+    pt_v = np.array([p[1] for p in points], dtype=np.float64)
 
     step = max(0.001, args.grain_rate_ms / 1000.0)
     n_steps = max(1, int(round(duration / step)))
@@ -1333,9 +1612,8 @@ def draw(args):
     last_choice = -1
     for k in range(n_steps):
         t = k * step
-        # drawn level at this time (map t back into the tier's own x-range)
-        tier_t = xmin + (t / duration) * (xmax - xmin)
-        level = float(np.interp(tier_t, pt_t, pt_v))
+        # normalized brightness target at this output time
+        level = float(np.interp(t, pt_t, pt_v))
         # nearest-brightness grain
         dist = np.abs(bright - level)
         if args.repeat_penalty > 0 and 0 <= last_choice < len(dist):
@@ -1368,6 +1646,14 @@ def draw(args):
                 "n_steps": n_steps,
                 "grain_rate_ms": args.grain_rate_ms,
                 "output_duration_s": round(len(out) / sr, 4),
+                "contour_source": source_kind,
+                "contour_source_file": os.path.abspath(source_path),
+                "contour_source_sha256": _sha256_file(source_path),
+                "normalized_contour_file": (os.path.abspath(args.contour_out)
+                                              if args.contour_out else None),
+                "normalized_contour_sha256": (_sha256_file(args.contour_out)
+                                                  if args.contour_out else None),
+                "contour_points": len(points),
                 "grains": used,
             }, f, indent=1)
 
@@ -1815,6 +2101,11 @@ def main():
     b.add_argument("--grain-ms", type=float, default=150.0)
     b.add_argument("--hop-ms", type=float, default=75.0)
     b.add_argument("--silence-floor", type=float, default=1e-3)
+    b.add_argument("--atomic", action="store_true",
+                   help="build in a staging directory and replace the live corpus "
+                        "only after the complete build succeeds")
+    b.add_argument("--success-marker", default=None,
+                   help="optional file written only after a successful build/promotion")
     b.set_defaults(func=build_corpus)
 
     m = sub.add_parser("match", parents=[common], help="encode source, match corpus, reconstruct")
@@ -1859,8 +2150,13 @@ def main():
     m.set_defaults(func=match)
 
     dr = sub.add_parser("draw", parents=[common],
-                        help="brightness-contour synthesis from a drawn RealTier")
-    dr.add_argument("--tier", required=True, help="RealTier text file (drawn curve)")
+                        help="brightness-contour synthesis from a RealTier or saved contour")
+    dr.add_argument("--tier", default=None,
+                    help="Praat RealTier text file (interactive/backward-compatible source)")
+    dr.add_argument("--contour", default=None,
+                    help="saved corpus_draw_contour file (reproducible/batch source)")
+    dr.add_argument("--contour-out", default=None,
+                    help="optional path for the normalized time->brightness contour actually used")
     dr.add_argument("--output", required=True, help="output WAV")
     dr.add_argument("--index", required=True, help="corpus index path prefix")
     dr.add_argument("--metadata", default=None, help="optional JSON metadata path")
