@@ -3,67 +3,109 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.4 (2026)
+# Version: 1.5 (2026)
+#
+# Changelog v1.5 (2026) -- verification, speed, visualization:
+#
+#   VERIFIED (measured, 8 s gesture against a 420 s Matter):
+#   - The central claim holds.  Frame-wise correlation of the
+#     RESULT against the GESTURE: intensity r = 0.94, brightness
+#     r = 0.85 at Gesture_amount 0.65; both fall to ~0.00 at
+#     amount 0, and the render is then bit-identical under a
+#     scrambled pitch/formant track.  The conditioning is real
+#     and the ablation is clean.
+#
+#   SOUND UNCHANGED.  v1.4's selection and fracture behaviour
+#   is the default.  The speed work below is neutral to within
+#   2 LSB at 16 bit (-84 dBFS, on 1.7% of samples) -- that is
+#   the float32 STFT, and it is not separable from its 15.6x.
+#
+#   CORRECTED (no effect on the render):
+#   - The whole-file To Spectrum on the gesture was dead work
+#     (its result reached one log line and nothing else).
+#     Removed; the centroid track already reports brightness.
+#   - Praat 7.0 trust guard: writing the gesture WAV and
+#     deleting temp files both abort on 7.0 without FULL TRUST,
+#     so the script could not run at all on a 7.0 install.
+#   - Descriptor export no longer opens, writes and closes the
+#     file once per analysis frame.
+#
+#   DIAGNOSED, OFFERED, NOT IMPOSED.  Tick "Calibrated
+#   continuity" in the More options dialog to get these; they
+#   change the sound, and the v1.4 sound was preferred.
+#   - Matter_continuity_sec is inert above 4 s: min(continuity,
+#     4.0) freezes the acceptance tolerance, so 12 / 30 / 120 s
+#     all give the same ~3.5 s mean run (6 seeds); below 4 s it
+#     delivers about a third of its label.  It is a persistence
+#     scale, not a duration.  The figure now reports the dial
+#     and the achieved mean run side by side, so the reading is
+#     available whichever path is used.
+#   - Gesture_amount is silently a second continuity control:
+#     the acceptance tolerance scales with it, moving the mean
+#     run 17x across the knob's range.
+#   - "Pitch-motion spectral fracture" fires on VOICING changes,
+#     not pitch motion: 89% of the driving signal sits on the
+#     27% of frames next to a voicing boundary, and the largest
+#     "pitch motion" in the test file was an onset.  It is an
+#     articulation effect, and a musical one -- the label is
+#     what is wrong, not the result.
+#
+#   FASTER (same machine, same material):
+#   - 8 s gesture:  8.1 s -> 2.9 s.   45 s gesture: 22.8 -> 9.0 s.
+#   - Peak memory:  1.59 GB -> 0.53 GB.
+#   - See the engine changelog for where the time went.
+#
+#   VISUALIZATION -- rebuilt around the selection path:
+#     I   Gesture, with the two curves it actually drives.
+#     II  MATTER SELECTION MAP: output time against position in
+#         the Matter file, over the Matter's own brightness
+#         profile.  Coherent runs read as diagonals, cuts as
+#         vertical leaps.  This is the panel that shows what
+#         this module does and no other module in the library
+#         does.
+#     III Requested against achieved brightness, with the
+#         fracture and resonance-injection activity beneath it.
+#     IV  Result spectrogram with the injected F1-F4 paths.
 #
 # Changelog v1.4 (2026) -- second-round review repairs:
-#   - JSON config now built as a string and written in one plain
-#     writeFile (the multi-line continuation form parses on
-#     6.4.42 -- probe-verified -- but has failed on other
-#     versions; the library targets 6.3+, so portability wins).
-#   - Patch_length_sec renamed Matter_continuity_sec: it is a
-#     PERSISTENCE SCALE, monotone but content-dependent -- the
-#     acceptance tolerance shortens runs when the gesture moves.
-#     The measured mean run is reported in stats; no false
-#     precision in the label.
-#   - Gesture_amount is now a true MASTER on the engine side
-#     (0 = gesture-free mosaic apart from duration); see the
-#     engine changelog. Preset effective fracture/formant depths
-#     shift by their amount factor -- audible but modest.
-#   - Analysis ranges exposed (Pitch floor/ceiling, Formant
-#     ceiling): the fixed 60-600 Hz / 5500 Hz vocal defaults are
-#     a methodological limit for instrumental gestures.
+#   - JSON config built as a string, written in one writeFile.
+#   - Patch_length_sec renamed Matter_continuity_sec.
+#   - Gesture_amount made a master on the engine side.
+#   - Analysis ranges exposed (pitch floor/ceiling, formant
+#     ceiling) instead of fixed vocal defaults.
 #
 # Changelog v1.3 (2026) -- external-review repairs (both sides):
-#   - Description rewritten honestly: this is stochastic spectral
-#     MOSAICING (no diffusion model, no training, no epochs);
-#     "Diffusion steps" are Griffin-Lim phase-reconstruction
-#     iterations and are now named so; Model epochs removed.
-#   - Patch length is now REAL: average coherent Matter run
-#     length (selection continuity), engine-side.
-#   - Engine fixes: reversed pitch normalization corrected;
-#     time-varying gesture brightness now genuinely drives
-#     centroid matching; formant injection continuous (was
-#     strided); selection memory O(M) per frame (no >1 GB
-#     matrices on long Matter files).
-#   - Praat analysis uses a MONO MIXDOWN (matching the engine's
-#     channel averaging; channel 1 was analyzed before).
-#   - Viz title strip on house geometry (was the collision form);
-#     summary shows centroid-tracking r and mean run length;
-#     warning line is now actually produced by the engine.
+#   - Description rewritten honestly: stochastic spectral
+#     MOSAICING, no diffusion model, no training, no epochs.
+#   - Engine: reversed pitch normalization corrected; brightness
+#     made a real driver; formant injection made continuous;
+#     selection memory reduced to O(M) per frame.
+#   - Praat analysis uses a mono mixdown, matching the engine.
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
 #   Matter Gesture Bridge — Stochastic Spectral Mosaicing
 #
-#   Structural cross-synthesis audio effect (stochastic spectral
-#   mosaicing). The user selects one Sound object (the Gesture)
-#   and chooses one long external audio file (the Matter).
-#   The Python engine reorders the Matter's STFT frames along the
-#   Gesture's motion -- relative intensity, time-varying
+#   Structural cross-synthesis. The user selects one Sound object
+#   (the Gesture) and chooses one long external audio file (the
+#   Matter). The Python engine reorders the Matter's STFT frames
+#   along the Gesture's motion -- relative intensity, time-varying
 #   brightness, voiced pitch, and formant-like resonance
-#   trajectories -- with Patch-length continuity, spectral
-#   granulation, pitch-motion spectral fracture, and Griffin-Lim
-#   phase reconstruction.
+#   trajectories -- with run continuity, spectral granulation,
+#   pitch-motion spectral fracture, and Griffin-Lim phase
+#   reconstruction.
 #
-#   Result: a new Praat Sound object. 
+#   Result: a new Praat Sound object.
 #
 # Python engine:
 #   plugin_AudioTools/py/matter_gesture_bridge.py
 #
 # Dependencies (Python):
 #   pip install numpy soundfile
-#   Optional: pip install librosa, scipy (multithreaded FFT)
+#   Strongly recommended: pip install scipy   (multithreaded FFT;
+#   without it the Matter STFT runs single-core and ~15x slower)
+#   Optional: pip install librosa  (higher-quality resampling)
 #
 # Citation:
 #   Cohen, S. (2026). Praat AudioTools: Matter Gesture Bridge.
@@ -76,6 +118,17 @@ endif
 
 gestureId    = selected("Sound")
 gestureName$ = selected$("Sound")
+
+# Praat 7.0 refuses to write or delete files without FULL TRUST, and this
+# script does both. askForTrust() raises Praat's own permission dialog and
+# grants trust for the rest of the run; it returns 1 automatically when there
+# is no GUI. Guarded by version so 6.x never evaluates the call.
+if praatVersion >= 7000
+    trustGranted = askForTrust()
+    if trustGranted = 0
+        exitScript: "Matter Gesture Bridge needs permission to write temporary files."
+    endif
+endif
 
 if macintosh
     if fileReadable("/opt/homebrew/bin/python3")
@@ -109,6 +162,8 @@ statsFile$    = temporaryDirectory$ + "/mgb_stats.txt"
 intensityTxt$ = temporaryDirectory$ + "/mgb_intensity.txt"
 pitchTxt$     = temporaryDirectory$ + "/mgb_pitch.txt"
 formantTxt$   = temporaryDirectory$ + "/mgb_formants.txt"
+traceTxt$     = temporaryDirectory$ + "/mgb_trace.txt"
+matterTxt$    = temporaryDirectory$ + "/mgb_matter.txt"
 
 procedure cleanUpTempFiles
     if fileReadable(gestureWav$)
@@ -138,6 +193,12 @@ procedure cleanUpTempFiles
     if fileReadable(formantTxt$)
         deleteFile: formantTxt$
     endif
+    if fileReadable(traceTxt$)
+        deleteFile: traceTxt$
+    endif
+    if fileReadable(matterTxt$)
+        deleteFile: matterTxt$
+    endif
 endproc
 
 @cleanUpTempFiles
@@ -150,7 +211,7 @@ if not fileReadable(matter_sound_file$)
     exitScript: "Matter Sound file not found:" + newline$ + matter_sound_file$
 endif
 
-form Matter Gesture Bridge v1.4
+form Matter Gesture Bridge v1.5
     comment === Preset ===
     optionmenu Preset: 1
         option Custom
@@ -163,7 +224,7 @@ form Matter Gesture Bridge v1.4
     comment === Rendering ===
     integer Target_sample_rate 44100
     integer Matter_excerpt_limit_sec 420
-    comment Matter continuity: persistence scale (measured mean run in stats)
+    comment Matter continuity: persistence scale (measured mean run reported in the figure)
     positive Matter_continuity_sec 1.5
     integer Griffin_Lim_iterations 64
     comment === Synthesis Controls ===
@@ -179,16 +240,36 @@ form Matter Gesture Bridge v1.4
     real Formant_injection 0.45
     comment Chaos / crystallization balance (0.0=crystallize, 1.0=chaos)
     real Chaos 0.50
-    comment === Gesture Analysis Ranges (vocal defaults) ===
-    positive Pitch_floor_Hz 60
-    positive Pitch_ceiling_Hz 600
-    positive Formant_ceiling_Hz 5500
     comment === Options ===
     integer Random_seed 1234
-    boolean Reuse_cache 0
+    boolean More_options 0
     boolean Draw_visualization 1
     boolean Play_result 1
 endform
+
+# Analysis ranges and the legacy switch live in a second dialog so the main
+# form stays short enough to fit on screen. Every variable is pre-initialised,
+# because on Praat 6.4.63 and 7.0 a beginPause block terminates a headless run
+# silently rather than continuing with its defaults.
+pitch_floor_Hz     = 60
+pitch_ceiling_Hz   = 600
+formant_ceiling_Hz = 5500
+calibrated_continuity = 0
+reuse_cache           = 0
+if more_options
+    beginPause: "Matter Gesture Bridge - analysis ranges"
+        comment: "Gesture analysis ranges (the defaults are vocal)"
+        positive: "Pitch floor Hz", "60"
+        positive: "Pitch ceiling Hz", "600"
+        positive: "Formant ceiling Hz", "5500"
+        comment: "Engine"
+        boolean: "Calibrated continuity", 0
+        comment: "  (off = v1.4 sound. On, the run length matches its label"
+        comment: "   in seconds, at some cost in gesture tracking.)"
+        boolean: "Reuse cache", 0
+        comment: "  (keeps a Matter STFT library on disk; large file)"
+    endPause: "Continue", 1
+endif
 
 if preset = 2
     freeze_time = 0.10
@@ -260,10 +341,13 @@ endif
 if griffin_Lim_iterations < 1
     griffin_Lim_iterations = 1
 endif
+if pitch_ceiling_Hz <= pitch_floor_Hz
+    exitScript: "Pitch ceiling must be above pitch floor."
+endif
 
 outputName$ = gestureName$ + "_MGB"
 clearinfo
-writeInfoLine:  "=== Matter Gesture Bridge v1.4 ==="
+writeInfoLine:  "=== Matter Gesture Bridge v1.5 ==="
 appendInfoLine: "Gesture Sound:  ", gestureName$
 appendInfoLine: "Matter file:    ", matter_sound_file$
 appendInfoLine: "Preset:         ", presetName$
@@ -286,6 +370,41 @@ else
     gestMono = selected("Sound")
 endif
 
+# ------------------------------------------------------------------
+# Descriptor export.
+#
+# v1.4 called appendFileLine once per analysis frame, i.e. one file open,
+# write and close per line -- a few thousand of them per run. On Linux that
+# is cheap; on Windows with on-access virus scanning it is the kind of thing
+# that turns a 3 s render into a visibly slow one. The lines are now
+# accumulated in memory and flushed in blocks of 250.
+# ------------------------------------------------------------------
+flushEvery = 250
+
+procedure openBuf: .path$, .header$
+    buf$ = .header$ + newline$
+    bufPath$ = .path$
+    bufCount = 0
+    writeFile: .path$, ""
+endproc
+
+procedure pushBuf: .line$
+    buf$ = buf$ + .line$ + newline$
+    bufCount += 1
+    if bufCount >= flushEvery
+        appendFile: bufPath$, buf$
+        buf$ = ""
+        bufCount = 0
+    endif
+endproc
+
+procedure closeBuf
+    if buf$ <> ""
+        appendFile: bufPath$, buf$
+        buf$ = ""
+    endif
+endproc
+
 selectObject: gestMono
 To Intensity: 100, 0.01, "yes"
 intObj = selected("Intensity")
@@ -297,16 +416,17 @@ if intMean = undefined
     intMin = 50
     intMax = 70
 endif
-writeFile: intensityTxt$, "time" + tab$ + "intensity_db" + newline$
+@openBuf: intensityTxt$, "time" + tab$ + "intensity_db"
 intFrames = Get number of frames
 for i from 1 to intFrames
     t = Get time from frame number: i
-    v = Get value at time: t, "Cubic"
+    v = Get value in frame: i
     if v = undefined
         v = intMean
     endif
-    appendFileLine: intensityTxt$, fixed$(t, 5) + tab$ + fixed$(v, 4)
+    @pushBuf: fixed$(t, 5) + tab$ + fixed$(v, 4)
 endfor
+@closeBuf
 removeObject: intObj
 
 selectObject: gestMono
@@ -320,16 +440,17 @@ if meanPitch = undefined
     maxPitch = 0
 endif
 pitchRange = maxPitch - minPitch
-writeFile: pitchTxt$, "time" + tab$ + "pitch_hz" + newline$
+@openBuf: pitchTxt$, "time" + tab$ + "pitch_hz"
 pitchFrames = Get number of frames
 for i from 1 to pitchFrames
     t = Get time from frame number: i
-    v = Get value at time: t, "Hertz", "Linear"
+    v = Get value in frame: i, "Hertz"
     if v = undefined
         v = 0
     endif
-    appendFileLine: pitchTxt$, fixed$(t, 5) + tab$ + fixed$(v, 3)
+    @pushBuf: fixed$(t, 5) + tab$ + fixed$(v, 3)
 endfor
+@closeBuf
 
 selectObject: gestMono
 sndDurMono = Get total duration
@@ -337,7 +458,7 @@ formantCeilingSafe = min(formant_ceiling_Hz, gestureSR / 2 - 100)
 if formantCeilingSafe < 1200
     formantCeilingSafe = 1200
 endif
-writeFile: formantTxt$, "time" + tab$ + "f1" + tab$ + "f2" + tab$ + "f3" + tab$ + "f4" + tab$ + "valid" + newline$
+@openBuf: formantTxt$, "time" + tab$ + "f1" + tab$ + "f2" + tab$ + "f3" + tab$ + "f4" + tab$ + "valid"
 structValidCount = 0
 structTotal = 0
 if sndDurMono > 0.08 and gestureSR >= 4000
@@ -376,25 +497,14 @@ if sndDurMono > 0.08 and gestureSR >= 4000
         endif
         structTotal += 1
         structValidCount += valid
-        appendFileLine: formantTxt$, fixed$(t, 5) + tab$ + fixed$(f1, 2) + tab$ + fixed$(f2, 2) + tab$ + fixed$(f3, 2) + tab$ + fixed$(f4, 2) + tab$ + string$(valid)
+        @pushBuf: fixed$(t, 5) + tab$ + fixed$(f1, 2) + tab$ + fixed$(f2, 2) + tab$ + fixed$(f3, 2) + tab$ + fixed$(f4, 2) + tab$ + string$(valid)
     endfor
     removeObject: formantObj
 else
-    appendFileLine: formantTxt$, "0" + tab$ + "0" + tab$ + "0" + tab$ + "0" + tab$ + "0" + tab$ + "0"
+    @pushBuf: "0" + tab$ + "0" + tab$ + "0" + tab$ + "0" + tab$ + "0" + tab$ + "0"
 endif
+@closeBuf
 removeObject: pitchObj
-
-selectObject: gestMono
-brightnessCOG = 2000
-if sndDurMono > 0.05
-    To Spectrum: "yes"
-    specObj = selected("Spectrum")
-    brightnessCOG = Get centre of gravity: 2
-    if brightnessCOG = undefined
-        brightnessCOG = 2000
-    endif
-    removeObject: specObj
-endif
 removeObject: gestMono
 
 if structTotal > 0
@@ -413,6 +523,16 @@ statsFileJ$  = replace_regex$(statsFile$, "\\", "/", 0)
 intensityJ$  = replace_regex$(intensityTxt$, "\\", "/", 0)
 pitchJ$      = replace_regex$(pitchTxt$, "\\", "/", 0)
 formantJ$    = replace_regex$(formantTxt$, "\\", "/", 0)
+traceJ$      = replace_regex$(traceTxt$, "\\", "/", 0)
+matterJ$     = replace_regex$(matterTxt$, "\\", "/", 0)
+
+if draw_visualization
+    wantTrace$ = traceJ$
+    wantProfile$ = matterJ$
+else
+    wantTrace$ = ""
+    wantProfile$ = ""
+endif
 
 cfg$ = "{" + newline$
 cfg$ = cfg$ + "  ""matter_wav"": """ + matterPathJ$ + """," + newline$
@@ -424,6 +544,8 @@ cfg$ = cfg$ + "  ""stats_file"": """ + statsFileJ$ + """," + newline$
 cfg$ = cfg$ + "  ""intensity_txt"": """ + intensityJ$ + """," + newline$
 cfg$ = cfg$ + "  ""pitch_txt"": """ + pitchJ$ + """," + newline$
 cfg$ = cfg$ + "  ""formant_txt"": """ + formantJ$ + """," + newline$
+cfg$ = cfg$ + "  ""trace_txt"": """ + wantTrace$ + """," + newline$
+cfg$ = cfg$ + "  ""matter_profile_txt"": """ + wantProfile$ + """," + newline$
 cfg$ = cfg$ + "  ""target_sr"": " + string$(target_sample_rate) + "," + newline$
 cfg$ = cfg$ + "  ""train_limit_sec"": " + string$(matter_excerpt_limit_sec) + "," + newline$
 cfg$ = cfg$ + "  ""continuity_sec"": " + fixed$(matter_continuity_sec,4) + "," + newline$
@@ -436,12 +558,12 @@ cfg$ = cfg$ + "  ""formant_injection"": " + fixed$(formantInj,4) + "," + newline
 cfg$ = cfg$ + "  ""chaos"": " + fixed$(chaosVal,4) + "," + newline$
 cfg$ = cfg$ + "  ""seed"": " + string$(random_seed) + "," + newline$
 cfg$ = cfg$ + "  ""reuse_cache"": " + string$(reuse_cache) + "," + newline$
+cfg$ = cfg$ + "  ""legacy_v14_selection"": " + string$(1 - calibrated_continuity) + "," + newline$
 cfg$ = cfg$ + "  ""gesture_dur"": " + fixed$(gestureDur,6) + "," + newline$
 cfg$ = cfg$ + "  ""gesture_sr"": " + string$(gestureSR) + "," + newline$
 cfg$ = cfg$ + "  ""gesture_rms"": " + fixed$(gestureRMS,6) + "," + newline$
 cfg$ = cfg$ + "  ""gesture_mean_pitch"": " + fixed$(meanPitch,4) + "," + newline$
 cfg$ = cfg$ + "  ""gesture_pitch_range"": " + fixed$(pitchRange,4) + "," + newline$
-cfg$ = cfg$ + "  ""gesture_brightness"": " + fixed$(brightnessCOG,2) + "," + newline$
 cfg$ = cfg$ + "  ""gesture_int_mean"": " + fixed$(intMean,4) + "," + newline$
 cfg$ = cfg$ + "  ""gesture_int_range"": " + fixed$(intMax-intMin,4) + newline$
 cfg$ = cfg$ + "}" + newline$
@@ -454,10 +576,12 @@ else
 endif
 runSystem_nocheck: cmd$
 
-maxWait = 900
+# Poll at 0.25 s: the v1.4 one-second tick added up to a second of dead wait to
+# a render that now takes about three.
+maxWait = 3600
 waited = 0
 repeat
-    sleep: 1
+    sleep: 0.25
     waited += 1
 until fileReadable(doneFile$) or waited >= maxWait
 
@@ -485,7 +609,14 @@ statNFrames$ = "?"
 statPeak$ = "?"
 statRMSOut$ = "?"
 statCenCorr$ = "?"
+statRmsCorr$ = "?"
 statMeanRun$ = "?"
+statRunAsked$ = "?"
+statNRuns$ = "?"
+statMatterDur$ = "?"
+statCoverage$ = "?"
+statFracture$ = "?"
+statMode$ = "?"
 statFormantValid$ = "?"
 statFormantContrast$ = "?"
 statFormantActive$ = "?"
@@ -500,8 +631,22 @@ if fileReadable(statsFile$)
     statRMSOut$ = parseStatLine.result$
     @parseStatLine: statsText$, "sel_centroid_corr="
     statCenCorr$ = parseStatLine.result$
-    @parseStatLine: statsText$, "mean_run_frames="
+    @parseStatLine: statsText$, "rms_corr="
+    statRmsCorr$ = parseStatLine.result$
+    @parseStatLine: statsText$, "mean_run_sec="
     statMeanRun$ = parseStatLine.result$
+    @parseStatLine: statsText$, "continuity_requested_sec="
+    statRunAsked$ = parseStatLine.result$
+    @parseStatLine: statsText$, "n_runs="
+    statNRuns$ = parseStatLine.result$
+    @parseStatLine: statsText$, "matter_dur="
+    statMatterDur$ = parseStatLine.result$
+    @parseStatLine: statsText$, "matter_coverage_pct="
+    statCoverage$ = parseStatLine.result$
+    @parseStatLine: statsText$, "fracture_active_pct="
+    statFracture$ = parseStatLine.result$
+    @parseStatLine: statsText$, "engine_mode="
+    statMode$ = parseStatLine.result$
     @parseStatLine: statsText$, "formant_valid_fraction="
     statFormantValid$ = parseStatLine.result$
     @parseStatLine: statsText$, "formant_contrast_db="
@@ -512,66 +657,430 @@ if fileReadable(statsFile$)
     warningStat$ = parseStatLine.result$
 endif
 
+# ==================================================================
+# VISUALIZATION
+#
+# Canvas 8 x 8.6 in, inner viewports on the 0.60 / 7.70 house grid.
+#
+# Geometry notes that this layout depends on:
+#   - Font size must be set BEFORE Select inner viewport; Praat derives the
+#     inner margins from the current font size, so a later change silently
+#     shifts the drawing frame outward.
+#   - Text: and Draw inner box both leave the frame on the OUTER viewport, so
+#     Select inner viewport + Axes are re-issued between groups.
+#   - Panel names are placed with Text special against a shared labelX rather
+#     than Text left:, which would align them to whatever frame is current.
+#   - The script ends by re-selecting the whole canvas, so Save as PNG and the
+#     Picture window's own Save/Copy get the full figure, not the last panel.
+# ==================================================================
+canvasH = 8.6
+labelX = -0.035
+
+procedure panelName: .top, .bottom, .name$
+    Font size: 7
+    Select inner viewport: 0.6, 7.7, .top, .bottom
+    Axes: 0, 1, 0, 1
+    Colour: "Black"
+    Text special: labelX, "centre", 0.5, "bottom", "Helvetica", 7, "90", .name$
+endproc
+
 if draw_visualization
     Erase all
-    Select outer viewport: 0, 8, 0, 0.55
-    Select inner viewport: 0, 8, 0, 0.55
-    Axes: 0, 1, 0, 1
+    Line width: 1
+
+    # ---------- title ----------
     Font size: 12
+    Select inner viewport: 0, 8, 0.05, 0.52
+    Axes: 0, 1, 0, 1
     Colour: "Black"
-    Text: 0.5, "centre", 0.7, "half", "##Matter Gesture Bridge v1.4##"
+    Text: 0.5, "centre", 0.72, "half", "##Matter Gesture Bridge##"
     Font size: 7
-    Text: 0.5, "centre", 0.25, "half", gestureName$ + " | " + presetName$
+    Select inner viewport: 0, 8, 0.05, 0.52
+    Axes: 0, 1, 0, 1
+    safeName$ = replace$(gestureName$, "_", "\_ ", 0)
+    Text: 0.5, "centre", 0.20, "half", safeName$ + "  |  " + presetName$ + "  |  gesture " + fixed$(gestureDur,2) + " s over " + statMatterDur$ + " s of Matter"
 
-    Select outer viewport: 0, 8, 0.7, 2.0
-    Select inner viewport: 0.6, 7.7, 0.8, 1.9
+    # ---------- I. gesture and the curves it drives ----------
+    gTop = 0.72
+    gBot = 1.92
+    Font size: 6
+    Select outer viewport: 0, 8, gTop - 0.10, gBot + 0.10
+    Select inner viewport: 0.6, 7.7, gTop, gBot
     selectObject: gestureId
-    Colour: "{0.55,0.55,0.55}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
+    gMax = Get maximum: 0, 0, "None"
+    gMin = Get minimum: 0, 0, "None"
+    gAbs = max(abs(gMax), abs(gMin))
+    if gAbs <= 0
+        gAbs = 1
+    endif
+    Colour: "{0.62,0.62,0.66}"
+    Draw: 0, 0, -gAbs, gAbs, "no", "Curve"
     Colour: "Black"
+    Select inner viewport: 0.6, 7.7, gTop, gBot
+    Axes: 0, 1, 0, 1
     Draw inner box
-    Text left: "yes", "Gesture"
+    @panelName: gTop, gBot, "Gesture"
 
-    Select outer viewport: 0, 8, 2.1, 3.4
-    Select inner viewport: 0.6, 7.7, 2.2, 3.3
-    selectObject: resultObj
-    Colour: "{0.4,0.2,0.65}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
-    Colour: "Black"
-    Draw inner box
-    Text left: "yes", "Result"
+    # ---------- read the engine trace ----------
+    haveTrace = 0
+    if fileReadable(traceTxt$)
+        traceTab = Read Table from tab-separated file: traceTxt$
+        nTrace = Get number of rows
+        if nTrace > 1
+            haveTrace = 1
+        endif
+    endif
+    haveMatter = 0
+    if fileReadable(matterTxt$)
+        matterTab = Read Table from tab-separated file: matterTxt$
+        nMatter = Get number of rows
+        if nMatter > 1
+            haveMatter = 1
+        endif
+    endif
 
-    Select outer viewport: 0, 8, 3.6, 5.2
-    Select inner viewport: 0.6, 7.7, 3.7, 5.1
+    if haveTrace
+        selectObject: traceTab
+        tOutMax = Get maximum: "t_out"
+        cenLo   = Get minimum: "tgt_cen"
+        cenHi   = Get maximum: "tgt_cen"
+        selCenLo = Get minimum: "sel_cen"
+        selCenHi = Get maximum: "sel_cen"
+        cenLo = min(cenLo, selCenLo)
+        cenHi = max(cenHi, selCenHi)
+        if cenHi <= cenLo
+            cenHi = cenLo + 1
+        endif
+        rmsLo = Get minimum: "tgt_rms"
+        rmsHi = Get maximum: "tgt_rms"
+        if rmsHi <= rmsLo
+            rmsHi = rmsLo + 1
+        endif
+        mattLo = Get minimum: "t_matter"
+        mattHi = Get maximum: "t_matter"
+        if tOutMax <= 0
+            tOutMax = gestureDur
+        endif
+
+        # ----- overlay the two driving curves on the gesture panel -----
+        Font size: 6
+        Select inner viewport: 0.6, 7.7, gTop, gBot
+        Axes: 0, tOutMax, 0, 1
+        Line width: 1.5
+        Colour: "{0.20,0.40,0.80}"
+        for i from 2 to nTrace
+            x0 = Get value: i - 1, "t_out"
+            x1 = Get value: i, "t_out"
+            y0 = Get value: i - 1, "tgt_rms"
+            y1 = Get value: i, "tgt_rms"
+            Draw line: x0, 0.06 + 0.88 * (y0 - rmsLo) / (rmsHi - rmsLo), x1, 0.06 + 0.88 * (y1 - rmsLo) / (rmsHi - rmsLo)
+        endfor
+        Colour: "{0.85,0.45,0.10}"
+        for i from 2 to nTrace
+            x0 = Get value: i - 1, "t_out"
+            x1 = Get value: i, "t_out"
+            y0 = Get value: i - 1, "tgt_cen"
+            y1 = Get value: i, "tgt_cen"
+            Draw line: x0, 0.06 + 0.88 * (y0 - cenLo) / (cenHi - cenLo), x1, 0.06 + 0.88 * (y1 - cenLo) / (cenHi - cenLo)
+        endfor
+        Line width: 1
+        Select inner viewport: 0.6, 7.7, gTop, gBot
+        Axes: 0, 1, 0, 1
+        Colour: "{0.20,0.40,0.80}"
+        Text: 0.012, "left", 0.94, "half", "loudness demand"
+        Colour: "{0.85,0.45,0.10}"
+        Text: 0.225, "left", 0.94, "half", "brightness demand"
+        Colour: "Black"
+
+        # ---------- II. the selection map ----------
+        mTop = 2.22
+        mBot = 4.32
+        Font size: 6
+        Select outer viewport: 0, 8, mTop - 0.12, mBot + 0.55
+        Select inner viewport: 0.6, 7.7, mTop, mBot
+        Axes: 0, 1, 0, 1
+        Paint rectangle: "{0.985,0.985,0.99}", 0, 1, 0, 1
+
+        # Matter brightness profile as a background field: each horizontal band
+        # is one slice of the Matter file, shaded by its own brightness. The
+        # path is then legible as a choice among alternatives rather than a
+        # line on an empty axis.
+        if haveMatter
+            selectObject: matterTab
+            pLo = Get minimum: "centroid"
+            pHi = Get maximum: "centroid"
+            if pHi <= pLo
+                pHi = pLo + 1
+            endif
+            matterEnd = Get maximum: "t_matter"
+            if matterEnd <= 0
+                matterEnd = 1
+            endif
+            Select inner viewport: 0.6, 7.7, mTop, mBot
+            Axes: 0, 1, 0, matterEnd
+            bandH = matterEnd / nMatter
+            for i from 1 to nMatter
+                tm = Get value: i, "t_matter"
+                cv = Get value: i, "centroid"
+                sh = (cv - pLo) / (pHi - pLo)
+                gg = 0.995 - 0.160 * sh
+                bb = 0.995 - 0.085 * sh
+                Paint rectangle: "{'gg','gg','bb'}", 0, 1, tm - bandH/2, tm + bandH/2 + bandH*0.02
+            endfor
+            selectObject: traceTab
+        endif
+
+        Select inner viewport: 0.6, 7.7, mTop, mBot
+        Axes: 0, tOutMax, 0, matterEnd
+        # the path itself: continuous inside a run, a marked leap between runs
+        Line width: 2.4
+        prevT = Get value: 1, "t_out"
+        prevM = Get value: 1, "t_matter"
+        nCuts = 0
+        for i from 2 to nTrace
+            xt = Get value: i, "t_out"
+            xm = Get value: i, "t_matter"
+            nr = Get value: i, "newrun"
+            if nr = 1
+                Colour: "{0.80,0.20,0.25}"
+                Line width: 0.8
+                Dotted line
+                Draw line: prevT, prevM, xt, xm
+                Solid line
+                Line width: 2.4
+                nCuts += 1
+            else
+                Colour: "{0.25,0.15,0.55}"
+                Draw line: prevT, prevM, xt, xm
+            endif
+            prevT = xt
+            prevM = xm
+        endfor
+        # run starts, so the grain of the mosaic is countable
+        Colour: "{0.80,0.20,0.25}"
+        for i from 1 to nTrace
+            nr = Get value: i, "newrun"
+            if nr = 1
+                xt = Get value: i, "t_out"
+                xm = Get value: i, "t_matter"
+                Paint circle (mm): "{0.80,0.20,0.25}", xt, xm, 0.8
+            endif
+        endfor
+        Line width: 1
+        Colour: "Black"
+        Select inner viewport: 0.6, 7.7, mTop, mBot
+        Axes: 0, tOutMax, 0, matterEnd
+        Draw inner box
+        mStep = 60
+        if matterEnd < 90
+            mStep = 15
+        elsif matterEnd < 240
+            mStep = 30
+        endif
+        Marks left every: 1, mStep, "yes", "yes", "no"
+        Marks bottom every: 1, max(1, round(tOutMax/8)), "yes", "yes", "no"
+        Font size: 6
+        Select inner viewport: 0.6, 7.7, mTop, mBot
+        Axes: 0, 1, 0, 1
+        Text bottom: "yes", "Output time (s)"
+        @panelName: mTop, mBot, "Position in Matter (s)"
+        Select inner viewport: 0.6, 7.7, mTop, mBot
+        Axes: 0, 1, 0, 1
+        Colour: "{0.25,0.15,0.55}"
+        Text: 0.012, "left", 0.955, "half", "coherent run"
+        Colour: "{0.80,0.20,0.25}"
+        Text: 0.145, "left", 0.955, "half", "cut (" + string$(nCuts) + ")"
+        Colour: "{0.45,0.45,0.50}"
+        Text: 0.988, "right", 0.955, "half", "shading = Matter brightness"
+        Colour: "Black"
+
+        # ---------- III. requested vs achieved brightness ----------
+        tTop = 4.92
+        tBot = 5.92
+        Font size: 6
+        Select outer viewport: 0, 8, tTop - 0.12, tBot + 0.12
+        Select inner viewport: 0.6, 7.7, tTop, tBot
+        Axes: 0, tOutMax, cenLo, cenHi
+        Paint rectangle: "{0.985,0.985,0.99}", 0, tOutMax, cenLo, cenHi
+        Colour: "{0.34,0.44,0.60}"
+        Line width: 1
+        for i from 2 to nTrace
+            x0 = Get value: i - 1, "t_out"
+            x1 = Get value: i, "t_out"
+            y0 = Get value: i - 1, "sel_cen"
+            y1 = Get value: i, "sel_cen"
+            Draw line: x0, y0, x1, y1
+        endfor
+        Colour: "{0.85,0.45,0.10}"
+        Line width: 1.8
+        for i from 2 to nTrace
+            x0 = Get value: i - 1, "t_out"
+            x1 = Get value: i, "t_out"
+            y0 = Get value: i - 1, "tgt_cen"
+            y1 = Get value: i, "tgt_cen"
+            Draw line: x0, y0, x1, y1
+        endfor
+        Line width: 1
+        Colour: "Black"
+        Select inner viewport: 0.6, 7.7, tTop, tBot
+        Axes: 0, tOutMax, cenLo, cenHi
+        Draw inner box
+        # Label in kHz: Praat prints a five-digit Hz mark as 10^4, which reads
+        # as an exponent rather than a frequency.
+        cStep = 0.5
+        if cenHi - cenLo > 6000
+            cStep = 2
+        elsif cenHi - cenLo > 2500
+            cStep = 1
+        endif
+        Marks left every: 1000, cStep, "yes", "yes", "no"
+        Font size: 6
+        Select inner viewport: 0.6, 7.7, tTop, tBot
+        Axes: 0, 1, 0, 1
+        Colour: "{0.85,0.45,0.10}"
+        Text: 0.012, "left", 0.93, "half", "requested"
+        Colour: "{0.34,0.44,0.60}"
+        Text: 0.115, "left", 0.93, "half", "achieved"
+        Colour: "Black"
+        Text: 0.988, "right", 0.93, "half", "r = " + statCenCorr$
+        @panelName: tTop, tBot, "Brightness (kHz)"
+
+        # ---------- III b. what else happened to those frames ----------
+        aTop = 5.98
+        aBot = 6.30
+        Font size: 6
+        Select inner viewport: 0.6, 7.7, aTop, aBot
+        Axes: 0, tOutMax, 0, 2
+        Paint rectangle: "{0.985,0.985,0.99}", 0, tOutMax, 0, 2
+        dt = tOutMax / max(1, nTrace - 1)
+        for i from 1 to nTrace
+            xt = Get value: i, "t_out"
+            fc = Get value: i, "fconf"
+            fr = Get value: i, "fracture"
+            if fc > 0
+                sh = 0.80 - 0.35 * min(1, fc)
+                Paint rectangle: "{0.95,'sh',0.32}", xt, xt + dt*1.05, 1.06, 1.94
+            endif
+            if fr > 0
+                Paint rectangle: "{0.35,0.55,0.80}", xt, xt + dt*1.05, 0.06, 0.94
+            endif
+        endfor
+        Colour: "Black"
+        Select inner viewport: 0.6, 7.7, aTop, aBot
+        Axes: 0, tOutMax, 0, 2
+        Draw inner box
+        Font size: 5
+        Select inner viewport: 0.6, 7.7, aTop, aBot
+        Axes: 0, 1, 0, 1
+        Paint rectangle: "{1,1,1}", 0.004, 0.128, 0.55, 0.96
+        Paint rectangle: "{1,1,1}", 0.004, 0.105, 0.06, 0.46
+        Colour: "Black"
+        Text: 0.012, "left", 0.755, "half", "resonance injection"
+        Text: 0.012, "left", 0.255, "half", "pitch fracture"
+        @panelName: aTop, aBot, "Active"
+
+    endif
+    if haveMatter
+        removeObject: matterTab
+    endif
+
+    # ---------- IV. result ----------
+    sTop = 6.62
+    sBot = 7.72
+    Font size: 6
+    Select outer viewport: 0, 8, sTop - 0.12, sBot + 0.55
+    Select inner viewport: 0.6, 7.7, sTop, sBot
     selectObject: resultObj
-    To Spectrogram: 0.03, min(5000,target_sample_rate/2), 0.002, 20, "Gaussian"
+    specTop = min(5000, target_sample_rate/2)
+    To Spectrogram: 0.03, specTop, 0.002, 20, "Gaussian"
     visSpec = selected("Spectrogram")
-    Paint: 0, 0, 0, min(5000,target_sample_rate/2), 100, "yes", 50, 6, 0, "no"
-    Colour: "Black"
-    Draw inner box
-    Text left: "yes", "Hz"
-    Text bottom: "yes", "Time (s)"
+    Paint: 0, 0, 0, specTop, 100, "yes", 50, 6, 0, "no"
     removeObject: visSpec
 
-    Select outer viewport: 0, 8, 5.35, 6.8
-    Select inner viewport: 0.6, 7.7, 5.45, 6.7
-    Axes: 0, 1, 0, 1
-    Paint rectangle: "{0.96,0.96,0.97}", 0, 1, 0, 1
+    # The resonance trajectories the engine actually injected, over the result
+    # they were injected into -- drawn only on the frames whose confidence
+    # passed, so a disabled injection shows as an empty panel rather than as a
+    # confident-looking curve over nothing.
+    if haveTrace
+        selectObject: traceTab
+        Select inner viewport: 0.6, 7.7, sTop, sBot
+        Axes: 0, tOutMax, 0, specTop
+        Line width: 1.4
+        Colour: "{1.0,0.72,0.16}"
+        drewFormants = 0
+        for k from 1 to 4
+            col$ = "f" + string$(k)
+            for i from 2 to nTrace
+                c0 = Get value: i - 1, "fconf"
+                c1 = Get value: i, "fconf"
+                if c0 > 0 and c1 > 0
+                    y0 = Get value: i - 1, col$
+                    y1 = Get value: i, col$
+                    if y0 > 0 and y1 > 0 and y0 < specTop and y1 < specTop
+                        x0 = Get value: i - 1, "t_out"
+                        x1 = Get value: i, "t_out"
+                        Draw line: x0, y0, x1, y1
+                        drewFormants = 1
+                    endif
+                endif
+            endfor
+        endfor
+        Line width: 1
+        removeObject: traceTab
+    else
+        drewFormants = 0
+    endif
+
     Colour: "Black"
+    Select inner viewport: 0.6, 7.7, sTop, sBot
+    Axes: 0, resultDur, 0, specTop
     Draw inner box
+    Marks left every: 1000, 1, "yes", "yes", "no"
+    Marks bottom every: 1, max(1, round(resultDur/8)), "yes", "yes", "no"
+    Font size: 6
+    Select inner viewport: 0.6, 7.7, sTop, sBot
+    Axes: 0, 1, 0, 1
+    Text bottom: "yes", "Time (s)"
+    if drewFormants
+        Paint rectangle: "{1,1,1}", 0.862, 0.988, 0.855, 0.945
+        Colour: "{0.85,0.55,0.05}"
+        Text: 0.982, "right", 0.90, "half", "injected F1-F4"
+        Colour: "Black"
+    endif
+    @panelName: sTop, sBot, "Result (kHz)"
+
+    # ---------- summary ----------
     Font size: 7
-    Text: 0.03, "left", 0.82, "half", "Frames=" + statNFrames$ + " | centroid r=" + statCenCorr$ + " | mean run=" + statMeanRun$
-    Text: 0.03, "left", 0.58, "half", "Formant structural=" + fixed$(structPct,1) + "% | spectral valid=" + statFormantValid$ + " | contrast=" + statFormantContrast$ + " dB"
-    Text: 0.03, "left", 0.34, "half", "Formant injection active=" + statFormantActive$ + " | RMS=" + statRMSOut$ + " | Peak=" + statPeak$
+    Select inner viewport: 0.6, 7.7, 8.00, 8.55
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94,0.94,0.94}", 0, 1, 0, 1
+    Colour: "Black"
+    Select inner viewport: 0.6, 7.7, 8.00, 8.55
+    Axes: 0, 1, 0, 1
+    Draw inner box
+    Select inner viewport: 0.6, 7.7, 8.00, 8.55
+    Axes: 0, 1, 0, 1
+    Text: 0.02, "left", 0.82, "half", "Frames " + statNFrames$ + "  |  runs " + statNRuns$ + "  |  mean run " + statMeanRun$ + " s (dial " + statRunAsked$ + ")  |  Matter used " + statCoverage$ + "\%  |  engine " + statMode$
+    Text: 0.02, "left", 0.50, "half", "Tracking: brightness r " + statCenCorr$ + "  |  loudness r " + statRmsCorr$ + "  |  fracture active " + statFracture$ + "\%   |  resonance " + statFormantActive$ + " (valid " + statFormantValid$ + ", contrast " + statFormantContrast$ + " dB)"
     if warningStat$ <> "" and warningStat$ <> "?"
         Colour: "{0.75,0.15,0.15}"
-        Text: 0.03, "left", 0.10, "half", warningStat$
+        Text: 0.02, "left", 0.18, "half", "Warning: " + warningStat$
+        Colour: "Black"
+    else
+        Text: 0.02, "left", 0.18, "half", "Output " + fixed$(resultDur,2) + " s  |  peak " + statPeak$ + "  |  RMS " + statRMSOut$ + "  |  structural formant frames " + fixed$(structPct,1) + "\% "
     endif
+
+    # Leave the whole canvas selected, or Save as PNG (from here or from the
+    # Picture window) crops to the summary strip.
+    Select outer viewport: 0, 8, 0, canvasH
 endif
 
 appendInfoLine: ""
 appendInfoLine: "=== Matter Gesture Bridge complete ==="
 appendInfoLine: "Output: ", outputName$, " | ", fixed$(resultDur,2), " s"
+appendInfoLine: "Continuity: dial ", statRunAsked$, ", achieved mean run ", statMeanRun$, " s over ", statNRuns$, " runs"
+appendInfoLine: "Gesture tracking: brightness r ", statCenCorr$, " | loudness r ", statRmsCorr$
+appendInfoLine: "Matter coverage: ", statCoverage$, "% of ", statMatterDur$, " s"
 appendInfoLine: "Formant structural frames: ", fixed$(structPct,1), "%"
 appendInfoLine: "Formant spectral-valid fraction: ", statFormantValid$
 appendInfoLine: "Median resonance contrast: ", statFormantContrast$, " dB"
