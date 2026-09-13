@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.6 (2026) - Structural stereo spatialization + process map
+# Version: 1.7 (2026) - True hierarchy + truthful preset/process telemetry
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -13,6 +13,16 @@
 #   A PyTorch three-level hierarchical model (EventEncoder,
 #   PhraseEncoder, SectionPlanner) generates a recomposition
 #   plan. Audio is re-rendered from the original source material.
+#
+# Changelog v1.7:
+#   - Pairs with hierarchical_recomposition.py v1.7: the hierarchy is now
+#     genuinely event -> phrase -> section -> plan, and the plan is strongly
+#     conditioned by source descriptors while retaining seeded neural variation.
+#   - Preset-specific mechanisms, full source coverage, local phase-safe fold-down,
+#     and target-duration completion are reflected by exported telemetry.
+#   - The process map adds real section spans, labels sampled plan rows with their
+#     actual phrase indices, and reports effective preset parameters rather than
+#     the form values that presets override.
 #
 # Changelog v1.6:
 #   - The static five-box "plan generator" diagram is replaced by the plan the
@@ -142,7 +152,7 @@ endproc
 @cleanUpTempFiles
 
 # ---- FORM ----
-form Hierarchical Neural Recomposition v1.6
+form Hierarchical Neural Recomposition v1.7
     comment === Preset ===
     optionmenu Preset: 1
         option Custom
@@ -250,7 +260,7 @@ rms_orig  = Get root-mean-square: 0, 0
 
 # ---- INFO HEADER ----
 clearinfo
-writeInfoLine:  "=== Hierarchical Neural Recomposition v1.6 ==="
+writeInfoLine:  "=== Hierarchical Neural Recomposition v1.7 ==="
 appendInfoLine: "Input:   ", soundName$
 appendInfoLine: "Preset:  ", presetName$
 appendInfoLine: ""
@@ -266,6 +276,9 @@ appendInfoLine: "Fragmentation:         ", fragmentation
 appendInfoLine: "Overlap amount:        ", overlap_amount
 appendInfoLine: "Formal surprise:       ", formal_surprise
 appendInfoLine: "Seed:                  ", random_seed
+if presetName$ <> "Custom"
+    appendInfoLine: "Note: preset values override the corresponding form controls in the engine."
+endif
 appendInfoLine: ""
 
 # ---- PYTHON DEPENDENCY VALIDATION ----
@@ -377,6 +390,17 @@ nPlanCols = 0
 nPlanRowsAll = 0
 nMapOps = 0
 planSpread$ = "?"
+usedTarget = target_duration
+usedCoherence = phrase_coherence
+usedContrast = section_contrast
+usedMemory = memory_strength
+usedRepetition = repetition
+usedFragmentation = fragmentation
+usedOverlap = overlap_amount
+usedSurprise = formal_surprise
+contentEnd = dur_out
+trailingSilence = 0
+nSectionViz = 0
 
 procedure parseStatLine: .text$, .key$
     .pos = index(.text$, .key$)
@@ -432,6 +456,46 @@ if fileReadable(tempStats$)
     if parseStatLine.result$ <> "?"
         nSpatialOps = number(parseStatLine.result$)
     endif
+    @parseStatLine: statsText$, "used_target_duration="
+    if parseStatLine.result$ <> "?"
+        usedTarget = number(parseStatLine.result$)
+    endif
+    @parseStatLine: statsText$, "used_coherence="
+    if parseStatLine.result$ <> "?"
+        usedCoherence = number(parseStatLine.result$)
+    endif
+    @parseStatLine: statsText$, "used_contrast="
+    if parseStatLine.result$ <> "?"
+        usedContrast = number(parseStatLine.result$)
+    endif
+    @parseStatLine: statsText$, "used_memory="
+    if parseStatLine.result$ <> "?"
+        usedMemory = number(parseStatLine.result$)
+    endif
+    @parseStatLine: statsText$, "used_repetition="
+    if parseStatLine.result$ <> "?"
+        usedRepetition = number(parseStatLine.result$)
+    endif
+    @parseStatLine: statsText$, "used_fragmentation="
+    if parseStatLine.result$ <> "?"
+        usedFragmentation = number(parseStatLine.result$)
+    endif
+    @parseStatLine: statsText$, "used_overlap="
+    if parseStatLine.result$ <> "?"
+        usedOverlap = number(parseStatLine.result$)
+    endif
+    @parseStatLine: statsText$, "used_surprise="
+    if parseStatLine.result$ <> "?"
+        usedSurprise = number(parseStatLine.result$)
+    endif
+    @parseStatLine: statsText$, "content_end_s="
+    if parseStatLine.result$ <> "?"
+        contentEnd = number(parseStatLine.result$)
+    endif
+    @parseStatLine: statsText$, "trailing_silence_s="
+    if parseStatLine.result$ <> "?"
+        trailingSilence = number(parseStatLine.result$)
+    endif
 
     @parseStatLine: statsText$, "plan_repetition_mean="
     if parseStatLine.result$ <> "?"
@@ -457,6 +521,24 @@ if fileReadable(tempStats$)
     if parseStatLine.result$ <> "?"
         planBraid = number(parseStatLine.result$)
     endif
+
+    @parseStatLine: statsText$, "n_section_viz="
+    if parseStatLine.result$ <> "?"
+        nSectionViz = number(parseStatLine.result$)
+    endif
+    for iS from 0 to nSectionViz - 1
+        @parseStatLine: statsText$, "section_" + string$(iS) + "="
+        srow$ = parseStatLine.result$
+        c1 = index(srow$, ",")
+        rest$ = mid$(srow$, c1 + 1, length(srow$) - c1)
+        c2 = index(rest$, ",")
+        rest2$ = mid$(rest$, c2 + 1, length(rest$) - c2)
+        c3 = index(rest2$, ",")
+        secStart_'iS' = number(left$(srow$, c1 - 1))
+        secEnd_'iS' = number(left$(rest$, c2 - 1))
+        secP0_'iS' = number(left$(rest2$, c3 - 1))
+        secP1_'iS' = number(mid$(rest2$, c3 + 1, length(rest2$) - c3))
+    endfor
 
     @parseStatLine: statsText$, "n_event_viz="
     if parseStatLine.result$ <> "?"
@@ -605,6 +687,11 @@ if fileReadable(tempStats$)
         planCol_'iC'$ = parseStatLine.result$
     endfor
     for iR from 0 to nPlanViz - 1
+        planRowIndex_'iR' = iR
+        @parseStatLine: statsText$, "plan_row_index_" + string$(iR) + "="
+        if parseStatLine.result$ <> "?"
+            planRowIndex_'iR' = number(parseStatLine.result$)
+        endif
         @parseStatLine: statsText$, "plan_row_" + string$(iR) + "="
         prow$ = parseStatLine.result$
         for iC from 0 to nPlanCols - 1
@@ -691,20 +778,20 @@ if draw_visualization
     yWa = 0.80
     yWb = 1.45
     yHa = 1.47
-    yHb = 1.95
+    yHb = 2.09
 
-    yPa = 2.62
-    yPb = 4.35
+    yPa = 2.76
+    yPb = 4.49
     if hasPlan = 0
-        yPa = 2.62
-        yPb = 2.62
+        yPa = 2.76
+        yPb = 2.76
     endif
 
-    yOpsA = 5.00
-    yOpsB = 5.95
+    yOpsA = 5.14
+    yOpsB = 6.09
     if hasPlan = 0
-        yOpsA = 2.75
-        yOpsB = 3.70
+        yOpsA = 2.89
+        yOpsB = 3.84
     endif
 
     yPanA = yOpsB + 0.02
@@ -773,43 +860,49 @@ if draw_visualization
     # --- 1b: event and phrase spans ------------------------------------------
     Font size: 7
     Select inner viewport: vizL, vizR, yHa, yHb
-    Axes: 0, axisDur, 0, 2
-    Paint rectangle: "{1.00, 1.00, 1.00}", 0, axisDur, 0, 2
+    Axes: 0, axisDur, 0, 3
+    Paint rectangle: "{1.00, 1.00, 1.00}", 0, axisDur, 0, 3
     for iE from 0 to nEventViz - 1
-        Paint rectangle: "{0.80, 0.86, 0.95}", evStart_'iE', evEnd_'iE', 1.12, 1.82
+        Paint rectangle: "{0.80, 0.86, 0.95}", evStart_'iE', evEnd_'iE', 2.12, 2.82
         Colour: "{0.35, 0.45, 0.62}"
-        Draw rectangle: evStart_'iE', evEnd_'iE', 1.12, 1.82
+        Draw rectangle: evStart_'iE', evEnd_'iE', 2.12, 2.82
     endfor
     for iP from 0 to nPhraseViz - 1
-        Paint rectangle: "{0.87, 0.87, 0.91}", phStart_'iP', phEnd_'iP', 0.18, 0.88
+        Paint rectangle: "{0.87, 0.87, 0.91}", phStart_'iP', phEnd_'iP', 1.18, 1.88
         Colour: "{0.35, 0.35, 0.45}"
-        Draw rectangle: phStart_'iP', phEnd_'iP', 0.18, 0.88
+        Draw rectangle: phStart_'iP', phEnd_'iP', 1.18, 1.88
+    endfor
+    for iS from 0 to nSectionViz - 1
+        Paint rectangle: "{0.92, 0.87, 0.78}", secStart_'iS', secEnd_'iS', 0.18, 0.88
+        Colour: "{0.50, 0.38, 0.22}"
+        Draw rectangle: secStart_'iS', secEnd_'iS', 0.18, 0.88
     endfor
     Colour: "Black"
     Select inner viewport: vizL, vizR, yHa, yHb
-    Axes: 0, axisDur, 0, 2
+    Axes: 0, axisDur, 0, 3
     if nPhraseViz <= 16
         Font size: 5.5
         Select inner viewport: vizL, vizR, yHa, yHb
-        Axes: 0, axisDur, 0, 2
+        Axes: 0, axisDur, 0, 3
         Colour: "{0.30, 0.30, 0.38}"
         for iP from 0 to nPhraseViz - 1
-            Text: (phStart_'iP' + phEnd_'iP') / 2, "centre", 0.53, "half", "P" + string$(phIndex_'iP' + 1)
+            Text: (phStart_'iP' + phEnd_'iP') / 2, "centre", 1.53, "half", "P" + string$(phIndex_'iP' + 1)
         endfor
         Colour: "Black"
     endif
     Font size: 7
     Select inner viewport: vizL, vizR, yHa, yHb
-    Axes: 0, axisDur, 0, 2
+    Axes: 0, axisDur, 0, 3
     Draw inner box
-    One mark left: 1.47, "no", "yes", "no", "events"
-    One mark left: 0.53, "no", "yes", "no", "phrases"
+    One mark left: 2.47, "no", "yes", "no", "events"
+    One mark left: 1.53, "no", "yes", "no", "phrases"
+    One mark left: 0.53, "no", "yes", "no", "sections"
     Marks bottom every: 1, snapT, "yes", "yes", "no"
     Text bottom: "yes", "Source time (s)"
 
     # --- 2: the generated plan -----------------------------------------------
     if hasPlan
-        @caption: vizL, vizR, yPa, yPb, "2  The plan the seeded generator produced - one column per phrase, one row per compositional slot (darker = higher)"
+        @caption: vizL, vizR, yPa, yPb, "2  Source-conditioned seeded plan - sampled phrase columns x compositional slots (darker = higher)"
         Font size: 5.5
         Select inner viewport: vizL, vizR, yPa, yPb
         Axes: 0, nPlanViz, 0, nPlanCols
@@ -837,18 +930,16 @@ if draw_visualization
             @sanitize: planCol_'iC'$
             One mark left: nPlanCols - iC - 0.5, "no", "yes", "no", sanitize.out$
         endfor
-        if nPlanViz <= 24
-            for iR from 0 to nPlanViz - 1
-                One mark bottom: iR + 0.5, "no", "yes", "no", "P" + string$(iR + 1)
-            endfor
-        else
-            @snapStep: nPlanViz, 8
-            Marks bottom every: 1, snapStep.step, "yes", "yes", "no"
-        endif
+        labelEvery = max(1, ceiling(nPlanViz / 10))
+        for iR from 0 to nPlanViz - 1
+            if iR = 0 or iR = nPlanViz - 1 or iR - labelEvery * floor(iR / labelEvery) = 0
+                One mark bottom: iR + 0.5, "no", "yes", "no", "P" + string$(planRowIndex_'iR' + 1)
+            endif
+        endfor
         Font size: 6
         Select inner viewport: vizL, vizR, yPa, yPb
         Axes: 0, 1, 0, 1
-        Text bottom: "yes", "Phrase  (plan row, after user-parameter modulation)"
+        Text bottom: "yes", "Phrase index  (plan row after descriptor conditioning + effective controls)"
     endif
 
     # --- 3: scheduled operations by type -------------------------------------
@@ -915,7 +1006,7 @@ if draw_visualization
 
     # --- 5: where each operation's material came from ------------------------
     if hasMap
-        @caption: vizL, vizR, yMapA, yMapB, "5  Source of every scheduled operation - a flat run is a held source position, a jump down is a recall"
+        @caption: vizL, vizR, yMapA, yMapB, "5  Source mapping of scheduled operations - each segment maps output time to its source span; returns reveal recall/repetition"
         Font size: 7
         Select inner viewport: vizL, vizR, yMapA, yMapB
         Axes: 0, axisDur, 0, axisDur
@@ -984,8 +1075,8 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Text: 0.015, "left", 0.755, "half", "Hierarchy: " + nEvStat$ + " events to " + nPhStat$
         ... + " phrases to " + nSecStat$ + " sections"
-        ... + "   coherence " + fixed$(phrase_coherence, 2)
-        ... + ", fragmentation " + fixed$(fragmentation, 2)
+        ... + "   coherence " + fixed$(usedCoherence, 2)
+        ... + ", fragmentation " + fixed$(usedFragmentation, 2)
         ... + "   mean density " + densityStat$ + ", mean brightness " + brightStat$
     planTxt$ = "Plan: " + modelTxt$ + ", seed " + string$(random_seed)
     if hasPlan
@@ -999,22 +1090,24 @@ if draw_visualization
         ... + ", stretch " + fixed$(planStretch, 2)
         ... + ", memory " + fixed$(planMemory, 2)
         ... + ", braid " + fixed$(planBraid, 2)
+        ... + "   controls memory " + fixed$(usedMemory, 2) + ", repetition " + fixed$(usedRepetition, 2)
     Text: 0.015, "left", 0.485, "half", "Operations: " + string$(nOpsTotal) + " total"
         ... + "   place " + string$(nOpPlace) + ", repeat " + string$(nOpRepeat)
         ... + ", fragment " + string$(nOpFragment) + ", recall " + string$(nOpRecall)
         ... + ", braid " + string$(nOpBraid) + ", echo " + string$(nOpEcho)
         ... + ", invert " + string$(nOpInvert)
     opDrawn$ = string$(nOpViz) + " of " + string$(nOpsTotal)
-    Text: 0.015, "left", 0.350, "half", "Rendering: target ratio x" + fixed$(target_duration, 2)
-        ... + ", overlap " + fixed$(overlap_amount, 2)
-        ... + ", surprise " + fixed$(formal_surprise, 2)
+    Text: 0.015, "left", 0.350, "half", "Rendering: effective target ratio x" + fixed$(usedTarget, 2)
+        ... + ", overlap " + fixed$(usedOverlap, 2)
+        ... + ", surprise " + fixed$(usedSurprise, 2)
         ... + "   analysis " + monoTxt$
         ... + "   " + opDrawn$ + " operations drawn"
     Text: 0.015, "left", 0.215, "half", "Output: " + string$(outputChannels) + " ch, " + spatialTxt$
         ... + ", " + string$(nSpatialOps) + " panned operations, pan " + fixed$(panMin, 2)
         ... + " to " + fixed$(panMax, 2)
     Text: 0.015, "left", 0.080, "half", "Level: duration " + fixed$(dur, 2) + " to " + fixed$(dur_out, 2)
-        ... + " s   RMS " + fixed$(rms_orig, 4) + " to " + fixed$(rms_out, 4)
+        ... + " s, content to " + fixed$(contentEnd, 2) + " s"
+        ... + "   tail " + fixed$(trailingSilence, 3) + " s   RMS " + fixed$(rms_orig, 4) + " to " + fixed$(rms_out, 4)
     if hasPlan = 0 or hasMap = 0
         Colour: "{0.70, 0.35, 0.10}"
         Text: 0.985, "right", 0.90, "half", "stages 2 and 5 need engine v1.5 or newer"

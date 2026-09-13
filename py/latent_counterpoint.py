@@ -3,7 +3,17 @@ latent_counterpoint.py — The Latent Counterpoint
 
 Part of Praat AudioTools plugin
 Author: Shai Cohen, Department of Music, Bar-Ilan University
-Version: 1.4 (2026)
+Version: 1.5 (2026)
+
+Changelog v1.5:
+    - Engine/report version synchronized with the Praat v1.5 frontend.
+    - Event analysis uses the same phase-safe multichannel fold-down as rendering.
+    - Autoencoder reporting now tracks clean reconstruction loss, separate from
+      the denoising noise schedule used for training.
+    - Physics step count compensates conservatively for adaptive splice overlap,
+      so requested duration is filled with rendered material rather than zero pad.
+    - Visualization exports describe selected-event paths, not continuous agent
+      trajectories; Florid is defined as peripheral/atypical rather than "rare".
 
 Changelog v1.4:
     - Adaptive local equal-power splicing replaces global click smoothing;
@@ -32,7 +42,7 @@ Architecture:
 
 Agent profiles:
     A (Cantus):  High mass, slow, gravitates to latent center of gravity
-    B (Florid):  Low mass, fast, attracted to latent periphery (rare sounds)
+    B (Florid):  Low mass, fast, attracted to peripheral / atypical sounds
     C (Shadow):  Mirrors Cantus with temporal lag + inverted coordinates
 
 No external model downloads. No internet. No PyTorch/TensorFlow/sklearn.
@@ -137,10 +147,11 @@ def build_mel_filterbank(sr, n_fft, n_mels):
     return filterbank
 
 
-def extract_mel_patches(audio_mono, sr, events):
+def extract_mel_patches(audio, sr, events):
     """
     For each event, compute a log-mel spectrogram and resize to
-    (N_MELS × MEL_FRAMES) via padding or truncation.
+    (N_MELS × MEL_FRAMES) via padding or truncation. Multichannel events use
+    the same phase-safe fold-down policy as the reconstruction stage.
     Returns array of shape (n_events, N_MELS * MEL_FRAMES).
     """
     import numpy as np
@@ -150,14 +161,17 @@ def extract_mel_patches(audio_mono, sr, events):
     window = np.hanning(n_fft)
     mel_fb = build_mel_filterbank(sr, n_fft, N_MELS)
     patches = []
-    n_samples = len(audio_mono)
+    n_samples = len(audio) if audio.ndim == 1 else audio.shape[0]
 
     for ev in events:
         s = int(float(ev["start_time"]) * sr)
         e = int(float(ev["end_time"]) * sr)
         s = max(0, min(s, n_samples))
         e = max(s + 1, min(e, n_samples))
-        segment = audio_mono[s:e]
+        segment = audio[s:e]
+        if np.asarray(segment).ndim > 1:
+            segment, _ = _phase_safe_mono_clip(segment)
+        segment = np.asarray(segment, dtype=np.float64)
 
         n_frames = max(1, (len(segment) - n_fft) // hop + 1)
         mel_spec = np.zeros((N_MELS, n_frames))
@@ -298,7 +312,12 @@ class NumpyAutoencoder(object):
 
 
 def train_autoencoder(patches, latent_size, n_steps, seed):
-    """Train autoencoder on event patches. Returns model, losses."""
+    """
+    Train the denoising autoencoder. Returns model, noisy training losses, and
+    clean reconstruction losses measured on the unchanged normalized corpus.
+    The clean curve is the meaningful convergence diagnostic because its target
+    difficulty does not change as the injected training noise is annealed.
+    """
     import numpy as np
 
     n_events, input_dim = patches.shape
@@ -310,18 +329,21 @@ def train_autoencoder(patches, latent_size, n_steps, seed):
     sigma = np.std(patches, axis=0) + 1e-8
     X = (patches - mu) / sigma
 
-    losses = []
+    train_losses = []
+    clean_losses = []
     lr = 0.003
     noise_std = 0.3
     for step in range(n_steps):
         cn = noise_std * (1.0 - 0.5 * step / n_steps)
         cl = lr * (1.0 - 0.3 * step / n_steps)
-        loss = model.train_step(X, lr=cl, noise_std=cn, l2_reg=1e-4)
-        losses.append(loss)
+        train_loss = model.train_step(X, lr=cl, noise_std=cn, l2_reg=1e-4)
+        train_losses.append(train_loss)
+        clean_recon = model.forward(X)
+        clean_losses.append(float(np.mean((clean_recon - X) ** 2)))
 
     model._norm_mu = mu
     model._norm_sigma = sigma
-    return model, losses
+    return model, train_losses, clean_losses
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -500,7 +522,7 @@ def run_physics(agents, Z, center, periphery, dists, median_dist,
                     force += pull / d_pull * a.attraction_weight * speed * 0.3
 
             elif a.profile == AGENT_FLORID:
-                # Florid: attracted to peripheral (rare) events
+                # Florid: attracted to peripheral / atypical events
                 # Weight events by periphery score
                 weighted_d = d_to_events / (periphery + 0.1)
                 nearest = np.argmin(weighted_d)
@@ -932,8 +954,10 @@ def write_stats(path, events, agents, agent_histories, Z, center,
                     else:
                         compressed.append((ev_idx, bs, be))
 
-                # Cap at 150 blocks per agent for file size
-                n_bl = min(len(compressed), 150)
+                # Export the full rendered timeline. The Praat frontend may
+                # simplify drawing density, but the underlying blocks remain
+                # complete so the displayed time axis never stops early.
+                n_bl = len(compressed)
                 f.write("ag_%d_n_blocks=%d\n" % (ai, n_bl))
                 for bi in range(n_bl):
                     ev_idx, bs, be = compressed[bi]
@@ -958,12 +982,10 @@ def write_stats(path, events, agents, agent_histories, Z, center,
                 f.write("latent_dim=%d\n" % Zc.shape[1])
                 f.write("latent_pc_share=%.4f\n" % share)
                 f.write("lat_center=%.6f,%.6f\n" % (float(cen[0]), float(cen[1])))
-                max_lat = 400
-                if n_events <= max_lat:
-                    lat_idx = np.arange(n_events, dtype=int)
-                else:
-                    lat_idx = np.unique(
-                        np.linspace(0, n_events - 1, max_lat).astype(int))
+                # Export every projected event so selected-event paths can be
+                # reconstructed exactly even in large corpora. The frontend is
+                # free to draw a sparse background cloud for visual clarity.
+                lat_idx = np.arange(n_events, dtype=int)
                 f.write("n_lat=%d\n" % len(lat_idx))
                 for j, ei in enumerate(lat_idx):
                     f.write("lat_%d=%d,%.6f,%.6f,%.4f\n" % (
@@ -973,7 +995,8 @@ def write_stats(path, events, agents, agent_histories, Z, center,
                 pass
 
         # ── Autoencoder training curve ────────────────────────────────
-        # Two loss numbers cannot show whether the latent space converged.
+        # Export the fixed-target clean reconstruction curve; unlike the noisy
+        # training objective, it is comparable from the first step to the last.
         if losses:
             max_loss_pts = 80
             L = list(losses)
@@ -1085,21 +1108,21 @@ def main():
 
     # ---- Mel patches ----
     print("  [Py 2/7] Extracting log-mel patches...")
-    audio_mono = audio if audio.ndim == 1 else audio[:, 0]
-    patches = extract_mel_patches(audio_mono.astype(np.float64), sr, events)
+    patches = extract_mel_patches(audio, sr, events)
     print("    Patch shape: %s" % str(patches.shape))
 
     # ---- Train AE ----
     print("  [Py 3/7] Training autoencoder (%d steps, latent=%d)..." %
           (learning_steps, latent_size))
-    model, losses = train_autoencoder(patches, latent_size,
-                                      learning_steps, seed)
+    model, train_losses, clean_losses = train_autoencoder(
+        patches, latent_size, learning_steps, seed)
+    losses = clean_losses
     loss_ratio = losses[-1] / (losses[0] + 1e-12) if losses else 1.0
-    print("    Loss: %.6f → %.6f (%.1f%% reduction)" % (
+    print("    Clean reconstruction loss: %.6f → %.6f (%.1f%% reduction)" % (
         losses[0], losses[-1], (1 - loss_ratio) * 100))
 
     if loss_ratio > 0.95:
-        warnings.append("Autoencoder did not converge well")
+        warnings.append("Autoencoder clean reconstruction loss improved <5%")
 
     # ---- Encode ----
     print("  [Py 4/7] Encoding events → latent space...")
@@ -1117,12 +1140,26 @@ def main():
               (a.agent_id, AGENT_NAMES[a.profile], a.mass, a.max_speed))
 
     # ---- Physics simulation ----
-    mean_ev_dur = np.mean([float(e["end_time"]) - float(e["start_time"])
-                           for e in events])
-    # Each step selects one event per agent; compute steps from
-    # target duration / mean event duration
-    n_sim_steps = max(5, int(target_dur / mean_ev_dur))
-    n_sim_steps = min(n_sim_steps, len(events) * 12)
+    event_durs = np.asarray([max(1.0 / sr,
+        float(e["end_time"]) - float(e["start_time"])) for e in events],
+        dtype=np.float64)
+    mean_ev_dur = float(np.mean(event_durs))
+
+    # Each splice overlaps adjacent clips. Using target/mean duration therefore
+    # leaves a growing zero-padded tail. Compute a conservative lower bound on
+    # the contribution of ANY selected event after adaptive crossfade: a clip
+    # can lose at most min(XFADE_SEC, duration/4) to the overlap. This guarantees
+    # enough physics selections to cover the requested duration even if the
+    # path happens to favor the shortest events. One extra step absorbs sample
+    # rounding and keeps _concatenate_mono in its crop/release path, not zero-pad.
+    min_first = float(np.min(event_durs))
+    min_add = float(np.min(event_durs - np.minimum(XFADE_SEC, event_durs / 4.0)))
+    min_add = max(min_add, 1.0 / sr)
+    if target_dur <= min_first:
+        required_steps = 1
+    else:
+        required_steps = 1 + int(np.ceil((target_dur - min_first) / min_add))
+    n_sim_steps = max(5, required_steps + 1)
 
     print("  [Py 6/7] Running physics (%d steps, rigidity=%.2f, "
           "speed=%.2f)..." % (n_sim_steps, cp_rigidity, speed))

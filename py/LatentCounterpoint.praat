@@ -7,9 +7,12 @@
 #
 # Changelog v1.5:
 #   - The figure now shows the latent space the tool is named for: a PCA map of
-#     the event corpus with each voice's path through it, plus the autoencoder
-#     training curve and the per-step voice separation. Pairs with
-#     latent_counterpoint.py v1.5, which exports those observations only.
+#     the event corpus with each voice's selected-event path, plus clean
+#     autoencoder reconstruction loss and per-step voice separation.
+#   - Intensity segmentation now cuts at local minima (valleys between gestures)
+#     rather than at intensity maxima inside the gestures themselves.
+#   - Pairs with latent_counterpoint.py v1.5: phase-safe analysis/render fold-down,
+#     duration-aware physics step count, full timeline/latent export.
 #   - The process-architecture diagram, the QC box and the agent-profile box
 #     were three prose panels filling half the canvas; they collapse into one
 #     summary and the space goes to a per-voice event-usage matrix.
@@ -63,7 +66,7 @@
 #
 #   Agent profiles:
 #   - Cantus:  heavy, slow, gravitates to center of gravity
-#   - Florid:  light, fast, attracted to rare/peripheral sounds
+#   - Florid:  light, fast, attracted to peripheral/atypical sounds
 #   - Shadow:  mirrors Cantus with temporal lag + inverted coordinates
 #
 # Citation:
@@ -290,18 +293,21 @@ selectObject: intObj
 intMatrix = Down to Matrix
 intSound = To Sound (slice): 1
 selectObject: intSound
-ppObj = To PointProcess (extrema): 1, "yes", "no", "Sinc70"
+# Event boundaries belong in intensity valleys between gestures, not on the
+# local maxima inside the gestures.  Extrema arguments: include maxima=no,
+# include minima=yes.  minEventDur below suppresses clusters of tiny valleys.
+ppObj = To PointProcess (extrema): 1, "no", "yes", "Sinc70"
 
 selectObject: ppObj
-nPeaks = Get number of points
+nValleys = Get number of points
 
 bound_1 = 0
 bound_2 = dur
 iBound = 3
-for iPeak from 1 to nPeaks
+for iValley from 1 to nValleys
     selectObject: ppObj
-    peakT = Get time from index: iPeak
-    bound_'iBound' = peakT
+    valleyT = Get time from index: iValley
+    bound_'iBound' = valleyT
     iBound = iBound + 1
 endfor
 nBounds = iBound - 1
@@ -560,9 +566,6 @@ if fileReadable(tempStats$)
         if nBl$ <> "?"
             agNBlocks_'iAT' = number(nBl$)
         endif
-        if agNBlocks_'iAT' > 150
-            agNBlocks_'iAT' = 150
-        endif
         for iBl from 0 to agNBlocks_'iAT' - 1
             @parseStatLine: statsText$, "ag_" + string$(iAT) + "_bl_" + string$(iBl) + "="
             blRaw$ = parseStatLine.result$
@@ -602,7 +605,7 @@ if fileReadable(tempStats$)
     endif
     # latOf_ maps a source event index back to its row in the drawn map, so a
     # voice path can be traced from the timeline blocks without a second export.
-    for iEvL from 0 to 511
+    for iEvL from 0 to nEvents - 1
         latOf_'iEvL' = -1
     endfor
     for iL from 0 to nLat - 1
@@ -618,7 +621,7 @@ if fileReadable(tempStats$)
             k3 = index(r2$, ",")
             latY_'iL' = number(left$(r2$, k3 - 1))
             latP_'iL' = number(mid$(r2$, k3 + 1, length(r2$) - k3))
-            if latIdx >= 0 and latIdx <= 511
+            if latIdx >= 0 and latIdx < nEvents
                 latOf_'latIdx' = iL
             endif
             if iL = 0
@@ -752,8 +755,8 @@ endif
 #
 #   1  source with the event boundaries that were actually cut;
 #   2  the rendered result on the same scale;
-#   3  the latent space itself, with each voice's path through it;
-#   4  whether the autoencoder converged, and how far apart the voices stayed;
+#   3  the latent space itself, with each voice's selected-event path;
+#   4  clean reconstruction loss, and how far apart the voices stayed;
 #   5  which events each voice took, and the polyphonic timeline.
 ###############################################################################
 
@@ -907,7 +910,7 @@ if draw_visualization
 
     # --- 3: the latent space and the voices' paths through it ----------------
     if hasLatent
-        @caption: vizL, vizR, yLatA, yLatB, "3  The latent space the voices navigate - events as dots, each voice's path in its own colour, x marks the centre of gravity"
+        @caption: vizL, vizR, yLatA, yLatB, "3  Latent event space - dots are source events; coloured lines connect each voice's selected events; x marks the centre"
         padL = max(0.05, 0.08 * (latXhi - latXlo))
         padM = max(0.05, 0.08 * (latYhi - latYlo))
         lx1 = latXlo - padL
@@ -962,11 +965,17 @@ if draw_visualization
 
         Select inner viewport: vizL, vizR, yLatA, yLatB
         Axes: lx1, lx2, ly1, ly2
+        # All event coordinates are parsed so voice paths stay exact. For very
+        # large corpora draw a sparse background cloud only; selected-event paths
+        # still use the full mapping.
+        latDrawStride = max(1, ceiling(nLat / 800))
         for iL from 0 to nLat - 1
-            # Dot size is the event's periphery score, the quantity the Florid
-            # profile is attracted to and the Cantus profile is not.
-            dotD = 0.7 + 1.6 * min(1, max(0, latP_'iL'))
-            Paint circle (mm): "{0.62, 0.62, 0.68}", latX_'iL', latY_'iL', dotD
+            if iL - latDrawStride * floor(iL / latDrawStride) = 0
+                # Dot size is the event's periphery score, the quantity the Florid
+                # profile is attracted to and the Cantus profile is not.
+                dotD = 0.7 + 1.6 * min(1, max(0, latP_'iL'))
+                Paint circle (mm): "{0.62, 0.62, 0.68}", latX_'iL', latY_'iL', dotD
+            endif
         endfor
 
         Select inner viewport: vizL, vizR, yLatA, yLatB
@@ -1019,9 +1028,9 @@ if draw_visualization
         Text left: "yes", "latent PC2"
     endif
 
-    # --- 4: did the autoencoder converge, and how far apart did voices stay? --
+    # --- 4: clean reconstruction loss, and how far apart did voices stay? --
     if hasLoss or hasSep
-        @caption: vizL, 3.90, yCurveA, yCurveB, "4a  Autoencoder training loss"
+        @caption: vizL, 3.90, yCurveA, yCurveB, "4a  Autoencoder clean reconstruction loss"
         Font size: 7
         Select inner viewport: vizL, 3.90, yCurveA, yCurveB
         lossTop = max(1e-6, lossHi * 1.08)
@@ -1048,7 +1057,7 @@ if draw_visualization
         Select inner viewport: vizL, 3.90, yCurveA, yCurveB
         Axes: 0, 1, 0, 1
         Text bottom: "yes", "training step"
-        Text left: "yes", "reconstruction loss"
+        Text left: "yes", "clean reconstruction loss"
 
         @caption: 4.35, vizR, yCurveA, yCurveB, "4b  Simultaneous voice separation, in units of the corpus median distance"
         Font size: 7
@@ -1226,7 +1235,7 @@ if draw_visualization
     @sumRow: 1
     Text: 0.015, "left", sumRow.y, "half", "Analysis: " + nEvStat$ + " events, mean " + meanEvDur$
         ... + " s, " + totalUnique$ + " used by at least one voice"
-        ... + "   autoencoder loss " + initialLoss$ + " to " + finalLoss$
+        ... + "   clean AE loss " + initialLoss$ + " to " + finalLoss$
         ... + lossStepsTxt$ + ", " + string$(latent_size) + "-D latent"
     @sumRow: 2
     Text: 0.015, "left", sumRow.y, "half", "Counterpoint: mean separation " + meanSep$
