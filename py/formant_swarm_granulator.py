@@ -1,6 +1,13 @@
 """
-formant_swarm_granulator.py - Formant Swarm Granulator engine v1.2 (2026)
+formant_swarm_granulator.py - Formant Swarm Granulator engine v1.3 (2026)
 Validity-aware resonance feature engine for Praat AudioTools.
+
+Key change from v1.2:
+- The engine now exports the two tables the Praat front-end needs in order to
+  DRAW the process rather than only report it: a per-grain map (feature-space
+  coordinates, cluster, validity, reuse count) and the swarm schedule itself
+  (output time, source time, cluster, pan, pitch drift, gain). Audio rendering
+  is untouched; both exports are optional and the engine runs without them.
 
 Key change from v1.1:
 - Invalid / structurally implausible formant measurements are never filled with
@@ -333,7 +340,7 @@ def build_schedule(grains, X, labels, centers, density_gps, attraction,
             i, X, starts, centers, labels, usage, recent, mode,
             attraction, temporal_repulsion, density_repulsion, rng
         )
-    return schedule
+    return schedule, usage
 
 
 def extract_grain(audio, sr, start_s, dur_s):
@@ -436,8 +443,47 @@ def render_schedule(audio, sr, grains, schedule, pan_spread):
     return out, rms_src, rms_out_final
 
 
-def write_stats(path, grains, schedule, mode, labels, feature_meta, rms_in=0.0, rms_out=0.0):
+def write_map(path, grains, usage):
+    """Per-grain map: where each grain sits in the swarm's feature space, how
+    trustworthy its resonance descriptors were, and how often it was reused."""
+    usage = np.asarray(usage, dtype=np.float64)
+    with open(path, "w", encoding="utf-8", newline="") as f:
+        f.write("grain_index,start_s,dur_s,x,y,cluster,valid,confidence,"
+                "contrast_db,f1_hz,f2_hz,f3_hz,pitch_hz,usage\n")
+        for idx, g in enumerate(grains):
+            f.write("%d,%.6f,%.6f,%.5f,%.5f,%d,%d,%.4f,%.4f,%.2f,%.2f,%.2f,%.2f,%d\n" % (
+                idx, g.start, g.duration, g.x, g.y, int(g.cluster),
+                1 if g.formant_valid > 0.5 else 0, g.confidence, g.resonance_contrast,
+                g.f1, g.f2, g.f3, g.pitch,
+                int(usage[idx]) if idx < len(usage) else 0,
+            ))
+
+
+def write_sched(path, grains, schedule, pan_spread, max_rows=6000):
+    """The swarm walk itself, one row per scheduled event. Decimated if very
+    long so the Praat front-end never has to read an unbounded table."""
+    stride = max(1, int(math.ceil(len(schedule) / float(max_rows))))
+    with open(path, "w", encoding="utf-8", newline="") as f:
+        f.write("event,out_start_s,out_dur_s,grain_index,src_start_s,cluster,"
+                "pan,pitch_st,gain,x,y,stride\n")
+        for n, ev in enumerate(schedule):
+            if n % stride:
+                continue
+            g = grains[ev["grain_index"]]
+            pan = float(np.clip(ev["pan"] * pan_spread, -1.0, 1.0))
+            f.write("%d,%.6f,%.6f,%d,%.6f,%d,%.5f,%.4f,%.5f,%.5f,%.5f,%d\n" % (
+                n, ev["out_start"], ev["out_dur"], int(ev["grain_index"]),
+                g.start, int(g.cluster), pan, ev["pitch_st"], ev["gain"],
+                g.x, g.y, stride,
+            ))
+    return stride
+
+
+def write_stats(path, grains, schedule, mode, labels, feature_meta, rms_in=0.0, rms_out=0.0,
+                usage=None, peak_out=0.0, out_dur=0.0, sched_stride=1):
     valid = [g for g in grains if g.formant_valid > 0.5] if feature_meta["formant_active"] else []
+    usage = np.zeros(len(grains)) if usage is None else np.asarray(usage, dtype=np.float64)
+    unused = int((usage < 0.5).sum())
     with open(path, "w", encoding="utf-8") as f:
         f.write("mode=%s\n" % mode)
         f.write("grains=%d\n" % len(grains))
@@ -455,6 +501,13 @@ def write_stats(path, grains, schedule, mode, labels, feature_meta, rms_in=0.0, 
         f.write("mean_f3_hz=%.2f\n" % (np.mean([g.f3 for g in valid]) if valid else 0.0))
         f.write("rms_in=%.6f\n" % rms_in)
         f.write("rms_out=%.6f\n" % rms_out)
+        f.write("peak_out=%.4f\n" % peak_out)
+        f.write("output_duration_s=%.4f\n" % out_dur)
+        f.write("source_duration_s=%.4f\n" % max((g.start + g.duration for g in grains), default=0.0))
+        f.write("unused_grains=%d\n" % unused)
+        f.write("max_grain_reuse=%d\n" % int(usage.max() if len(usage) else 0))
+        f.write("median_grain_reuse=%.2f\n" % float(np.median(usage) if len(usage) else 0.0))
+        f.write("schedule_stride=%d\n" % sched_stride)
 
 
 def main():
@@ -463,6 +516,10 @@ def main():
     parser.add_argument("--input", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--stats", required=True)
+    parser.add_argument("--map", default=None,
+                        help="optional CSV: per-grain feature-space map for the figure")
+    parser.add_argument("--sched", default=None,
+                        help="optional CSV: the swarm schedule for the figure")
     parser.add_argument("--mode", default="vowel_cloud",
                         choices=["vowel_cloud", "resonance_turbulence", "migration", "counterpoint"])
     parser.add_argument("--density", type=float, default=18.0)
@@ -507,7 +564,7 @@ def main():
     labels, centers = assign_clusters(X, k=6, seed=args.seed)
 
     print("[Py 4/5] Swarm walk: %s..." % args.mode)
-    schedule = build_schedule(
+    schedule, usage = build_schedule(
         grains, X, labels, centers,
         density_gps=args.density,
         attraction=args.attraction,
@@ -521,7 +578,20 @@ def main():
     print("[Py 5/5] Rendering + stats...")
     out, rms_in, rms_out = render_schedule(audio, sr, grains, schedule, pan_spread=args.pan_spread)
     sf.write(args.output, out, sr)
-    write_stats(args.stats, grains, schedule, args.mode, labels, feature_meta, rms_in=rms_in, rms_out=rms_out)
+
+    peak_out = float(np.max(np.abs(out))) if len(out) else 0.0
+    out_dur = len(out) / float(sr) if sr else 0.0
+    stride = 1
+    if args.map:
+        write_map(args.map, grains, usage)
+        print("    Grain map: %s" % args.map)
+    if args.sched:
+        stride = write_sched(args.sched, grains, schedule, args.pan_spread)
+        print("    Schedule table: %s (stride %d)" % (args.sched, stride))
+
+    write_stats(args.stats, grains, schedule, args.mode, labels, feature_meta,
+                rms_in=rms_in, rms_out=rms_out, usage=usage, peak_out=peak_out,
+                out_dur=out_dur, sched_stride=stride)
     print("OK: %s" % args.output)
 
 

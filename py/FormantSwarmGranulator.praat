@@ -2,7 +2,7 @@
 # Praat AudioTools - FormantSwarmGranulator.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
-# Version: 1.3 (2026) - Validity-aware formant descriptors
+# Version: 1.4 (2026) - Validity-aware formant descriptors, process-narrative figure
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -18,7 +18,7 @@ endif
 sound = selected("Sound")
 soundName$ = selected$("Sound")
 
-form Formant Swarm Granulator v1.3
+form Formant Swarm Granulator v1.4
     optionmenu Swarm_mode: 1
         option vowel_cloud
         option resonance_turbulence
@@ -76,6 +76,8 @@ tempInput$ = temporaryDirectory$ + "/temp_fsg_input.wav"
 tempCSV$ = temporaryDirectory$ + "/temp_fsg_grains.csv"
 tempOutput$ = temporaryDirectory$ + "/temp_fsg_output.wav"
 tempStats$ = temporaryDirectory$ + "/temp_fsg_stats.txt"
+tempMap$ = temporaryDirectory$ + "/temp_fsg_map.csv"
+tempSched$ = temporaryDirectory$ + "/temp_fsg_sched.csv"
 probeMarker$ = temporaryDirectory$ + "/temp_fsg_pyprobe.ok"
 probeMarkerJ$ = replace_regex$(probeMarker$, "\\", "/", 0)
 
@@ -91,6 +93,12 @@ procedure cleanUpTempFiles
     endif
     if fileReadable(tempStats$)
         deleteFile: tempStats$
+    endif
+    if fileReadable(tempMap$)
+        deleteFile: tempMap$
+    endif
+    if fileReadable(tempSched$)
+        deleteFile: tempSched$
     endif
     if fileReadable(probeMarker$)
         deleteFile: probeMarker$
@@ -146,7 +154,7 @@ else
 endif
 
 clearinfo
-writeInfoLine: "=== Formant Swarm Granulator v1.3 ==="
+writeInfoLine: "=== Formant Swarm Granulator v1.4 ==="
 appendInfoLine: "Input:      ", soundName$
 appendInfoLine: "Mode:       ", swarmMode$
 appendInfoLine: "Grain:      ", fixed$(grainLengthSec * 1000, 1), " ms"
@@ -540,6 +548,21 @@ endif
 # Python swarm engine
 # -----------------------------------------------------------------------------
 appendInfoLine: "[2/2] Running validity-aware swarm engine..."
+
+# argparse aborts on an unrecognised option, so an engine older than v1.3 would
+# fail the whole run if the figure-table flags were sent blind. Read the engine
+# source and ask it what it supports before asking for anything.
+engineText$ = readFile$(pythonScript$)
+engineHasTables = 0
+if index(engineText$, "--map") > 0
+    if index(engineText$, "--sched") > 0
+        engineHasTables = 1
+    endif
+endif
+if engineHasTables = 0
+    appendInfoLine: "  Engine predates v1.3: process tables unavailable, drawing the compact figure."
+endif
+
 pythonCall$ = pythonCmd$ + " """ + pythonScript$ + """"
     ... + " --grains """ + tempCSV$ + """"
     ... + " --input """ + tempInput$ + """"
@@ -555,6 +578,9 @@ pythonCall$ = pythonCmd$ + " """ + pythonScript$ + """"
     ... + " --min_formant_ratio " + fixed$(min_reliable_formant_ratio, 4)
     ... + " --min_resonance_contrast " + fixed$(min_resonance_contrast_dB, 4)
     ... + " --seed " + string$(pythonSeed)
+if engineHasTables
+    pythonCall$ = pythonCall$ + " --map """ + tempMap$ + """" + " --sched """ + tempSched$ + """"
+endif
 runSystem: pythonCall$
 
 if not fileReadable(tempOutput$)
@@ -584,6 +610,12 @@ statMeanF2$ = "?"
 statMeanF3$ = "?"
 statRmsIn$ = "?"
 statRmsOut$ = "?"
+statPeakOut$ = "?"
+statOutDur$ = "?"
+statUnused$ = "?"
+statMaxReuse$ = "?"
+statMedReuse$ = "?"
+statStride$ = "1"
 
 if fileReadable(tempStats$)
     statsText$ = readFile$(tempStats$)
@@ -617,6 +649,18 @@ if fileReadable(tempStats$)
     statRmsIn$ = parseStatLine.result$
     @parseStatLine: statsText$, "rms_out="
     statRmsOut$ = parseStatLine.result$
+    @parseStatLine: statsText$, "peak_out="
+    statPeakOut$ = parseStatLine.result$
+    @parseStatLine: statsText$, "output_duration_s="
+    statOutDur$ = parseStatLine.result$
+    @parseStatLine: statsText$, "unused_grains="
+    statUnused$ = parseStatLine.result$
+    @parseStatLine: statsText$, "max_grain_reuse="
+    statMaxReuse$ = parseStatLine.result$
+    @parseStatLine: statsText$, "median_grain_reuse="
+    statMedReuse$ = parseStatLine.result$
+    @parseStatLine: statsText$, "schedule_stride="
+    statStride$ = parseStatLine.result$
     appendInfoLine: ""
     appendInfoLine: "--- Engine stats ---"
     appendInfoLine: statsText$
@@ -624,43 +668,559 @@ endif
 
 # -----------------------------------------------------------------------------
 # Visualization
+#
+# The figure is a narrative, read top to bottom:
+#   1. what the source is, and which of its grains earned trustworthy formant
+#      landmarks (the gate);
+#   2. what those landmarks actually were;
+#   3. the feature space the swarm inhabits, and the walk it took through it;
+#   4. how that walk maps back onto source time and onto the stereo field;
+#   5. what came out.
+# Panels 1-4 are driven by two small tables the Python engine writes next to the
+# audio. If an older engine is installed those tables are absent, and the script
+# falls back to the compact original figure rather than drawing empty panels.
 # -----------------------------------------------------------------------------
 if draw_visualization
+    vizL = 0.65
+    vizR = 7.70
+    railX = -0.043
+
+    selectObject: sound
+    srcXmin = Get start time
+    srcXmax = Get end time
+    srcHiAmp = Get maximum: 0, 0, "None"
+    srcLoAmp = Get minimum: 0, 0, "None"
+    srcAmp = max(1e-6, max(abs(srcHiAmp), abs(srcLoAmp)))
+
+    selectObject: result
+    outDur = Get total duration
+    outHiAmp = Get maximum: 0, 0, "None"
+    outLoAmp = Get minimum: 0, 0, "None"
+    outAmp = max(1e-6, max(abs(outHiAmp), abs(outLoAmp)))
+
+    # --- process tables ------------------------------------------------------
+    hasMap = 0
+    nMap = 0
+    if fileReadable(tempMap$)
+        mapTbl = Read Table from comma-separated file: tempMap$
+        nMap = Get number of rows
+        if nMap >= 2
+            hasMap = 1
+            # A single outlier grain can push the principal map's full range
+            # far enough to collapse every other grain into one blob, so the
+            # panel is framed on the central 96% and stragglers are clamped
+            # onto the border instead of setting the scale.
+            mapXlo = Get quantile: "x", 0.05
+            mapXhi = Get quantile: "x", 0.95
+            mapYlo = Get quantile: "y", 0.05
+            mapYhi = Get quantile: "y", 0.95
+            mapUseHi = Get maximum: "usage"
+            mapF3hi = Get maximum: "f3_hz"
+        else
+            removeObject: mapTbl
+        endif
+    endif
+
+    hasSched = 0
+    nSched = 0
+    if fileReadable(tempSched$)
+        schedTbl = Read Table from comma-separated file: tempSched$
+        nSched = Get number of rows
+        if nSched >= 2
+            hasSched = 1
+            schedGainHi = Get maximum: "gain"
+        else
+            removeObject: schedTbl
+        endif
+    endif
+
+    fullFigure = 0
+    if hasMap = 1 and hasSched = 1
+        fullFigure = 1
+    endif
+
+    # --- layout --------------------------------------------------------------
+    if fullFigure
+        canvasH = 11.28
+        yA1a = 0.82
+        yA1b = 1.36
+        yA2a = 1.38
+        yA2b = 1.62
+        yBa = 1.85
+        yBb = 2.75
+        yCa = 3.32
+        yCb = 5.22
+        yDa = 5.85
+        yDb = 6.75
+        yEa = 6.77
+        yEb = 7.42
+        yFa = 8.02
+        yFb = 8.57
+        yGa = 8.79
+        yGb = 9.81
+        yHa = 10.31
+        yHb = 11.11
+    else
+        canvasH = 6.40
+        yA1a = 0.90
+        yA1b = 1.70
+        yFa = 2.05
+        yFb = 2.85
+        yGa = 3.20
+        yGb = 4.55
+        yHa = 5.05
+        yHb = 6.15
+    endif
+
+    gateOn = 0
+    if statFormantActive$ = "1"
+        gateOn = 1
+    endif
+    gateTxt$ = "FORMANT SPACE DISABLED - spectral / dynamic fallback"
+    if gateOn
+        gateTxt$ = "FORMANT SPACE ACTIVE"
+    endif
+
+    @snapStep: srcXmax - srcXmin, 8
+    snapT = snapStep.step
+
     Erase all
-
-    Select outer viewport: 0, 8, 0.1, 0.65
-    Axes: 0, 1, 0, 1
-    Font size: 13
     Colour: "Black"
-    Text: 0.5, "centre", 0.62, "half", "##Formant Swarm Granulator##"
-    Font size: 7
-    Colour: "{0.35, 0.35, 0.50}"
-    Text: 0.5, "centre", -1.10, "half", soundName$ + " | " + swarmMode$
+    Line width: 1
+    Solid line
 
-    Select outer viewport: 0, 8, 0.8, 1.8
-    Select inner viewport: 0.65, 7.7, 0.9, 1.7
+    # --- title ---------------------------------------------------------------
+    @sanitize: soundName$
+    hdrName$ = sanitize.out$
+    @sanitize: replace$(swarmMode$, "_", " ", 0)
+    hdrMode$ = sanitize.out$
+
+    Font size: 13
+    Select inner viewport: vizL, vizR, 0.05, 0.62
+    Axes: 0, 1, 0, 1
+    Colour: "Black"
+    Text: 0.5, "centre", 0.74, "half", "##Formant Swarm Granulator##"
+    Font size: 7
+    Select inner viewport: vizL, vizR, 0.05, 0.62
+    Axes: 0, 1, 0, 1
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.24, "half", hdrName$ + "   |   " + hdrMode$ + "   |   " + gateTxt$
+    Colour: "Black"
+
+    # --- A1: source waveform -------------------------------------------------
+    if fullFigure
+        @caption: vizL, vizR, yA1a, yA1b, "Source and the resonance gate - which grains earned trustworthy formant landmarks"
+    else
+        @caption: vizL, vizR, yA1a, yA1b, "Source waveform"
+    endif
+    Font size: 7
+    Select inner viewport: vizL, vizR, yA1a, yA1b
     selectObject: sound
     Colour: "{0.55, 0.55, 0.55}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
+    Draw: 0, 0, -srcAmp, srcAmp, "no", "Curve"
     Colour: "Black"
+    Select inner viewport: vizL, vizR, yA1a, yA1b
+    Axes: srcXmin, srcXmax, -srcAmp, srcAmp
     Draw inner box
-    Font size: 7
-    Text left: "yes", "Original"
+    @rail: yA1a, yA1b, "Source"
 
-    Select outer viewport: 0, 8, 1.9, 2.9
-    Select inner viewport: 0.65, 7.7, 2.0, 2.8
+    if fullFigure
+        # --- A2: per-grain gate ribbon ---------------------------------------
+        Font size: 7
+        Select inner viewport: vizL, vizR, yA2a, yA2b
+        Axes: srcXmin, srcXmax, 0, 1
+        Paint rectangle: "{1.00, 1.00, 1.00}", srcXmin, srcXmax, 0, 1
+        selectObject: mapTbl
+        for i from 1 to nMap
+            gStart = Get value: i, "start_s"
+            gDur = Get value: i, "dur_s"
+            gValid = Get value: i, "valid"
+            gContr = Get value: i, "contrast_db"
+            gConf = Get value: i, "confidence"
+            cellHi = gStart + gDur
+            if i < nMap
+                iNext = i + 1
+                nextStart = Get value: iNext, "start_s"
+                cellHi = max(gStart + 0.002, min(cellHi, nextStart))
+            endif
+            if gValid < 0.5
+                ribCol$ = "{0.87, 0.87, 0.87}"
+            else
+                # Darkness = how far the measured resonance contrast clears the
+                # threshold the gate actually used. Orange = measured but not
+                # supported by the local spectrum.
+                over = (gContr - min_resonance_contrast_dB) / 3
+                if over < 0
+                    shade = min(1, max(0, (gContr + 2) / max(0.2, min_resonance_contrast_dB + 2)))
+                    ribCol$ = "{" + fixed$(0.95 - 0.10 * shade, 3) + ", " + fixed$(0.80 - 0.30 * shade, 3) + ", " + fixed$(0.62 - 0.40 * shade, 3) + "}"
+                else
+                    shade = min(1, over)
+                    ribCol$ = "{" + fixed$(0.72 - 0.57 * shade, 3) + ", " + fixed$(0.84 - 0.29 * shade, 3) + ", " + fixed$(0.94 - 0.12 * shade, 3) + "}"
+                endif
+            endif
+            confHi = 0.25 + 0.75 * min(1, max(0, gConf))
+            Paint rectangle: ribCol$, gStart + srcXmin, cellHi + srcXmin, 0, confHi
+        endfor
+        Colour: "Black"
+        Select inner viewport: vizL, vizR, yA2a, yA2b
+        Axes: srcXmin, srcXmax, 0, 1
+        Draw inner box
+        Marks bottom every: 1, snapT, "no", "yes", "no"
+        @rail: yA2a, yA2b, "Gate"
+
+        # --- B: formant landmarks --------------------------------------------
+        bCap$ = "Formant landmarks as measured - the gate rejected them, so none of this reached the swarm"
+        if gateOn
+            bCap$ = "Formant landmarks of the gated grains - dot size is descriptor confidence, dashed lines are the reliable means"
+        endif
+        @caption: vizL, vizR, yBa, yBb, bCap$
+        fMaxHz = min(nyquist, max(3000, 1.15 * mapF3hi))
+        Font size: 7
+        Select inner viewport: vizL, vizR, yBa, yBb
+        Axes: srcXmin, srcXmax, 0, fMaxHz
+        Paint rectangle: "{1.00, 1.00, 1.00}", srcXmin, srcXmax, 0, fMaxHz
+
+        # reliable means first, so the dots sit on top of them
+        Dotted line
+        Colour: "{0.72, 0.72, 0.78}"
+        if gateOn
+            meanF1 = number(statMeanF1$)
+            meanF2 = number(statMeanF2$)
+            meanF3 = number(statMeanF3$)
+            if meanF1 <> undefined and meanF1 > 0
+                Draw line: srcXmin, meanF1, srcXmax, meanF1
+            endif
+            if meanF2 <> undefined and meanF2 > 0
+                Draw line: srcXmin, meanF2, srcXmax, meanF2
+            endif
+            if meanF3 <> undefined and meanF3 > 0
+                Draw line: srcXmin, meanF3, srcXmax, meanF3
+            endif
+        endif
+        Solid line
+        Colour: "Black"
+
+        Select inner viewport: vizL, vizR, yBa, yBb
+        Axes: srcXmin, srcXmax, 0, fMaxHz
+        selectObject: mapTbl
+        for i from 1 to nMap
+            gStart = Get value: i, "start_s"
+            gDur = Get value: i, "dur_s"
+            gValid = Get value: i, "valid"
+            gConf = Get value: i, "confidence"
+            gF1 = Get value: i, "f1_hz"
+            gF2 = Get value: i, "f2_hz"
+            gF3 = Get value: i, "f3_hz"
+            tMid = srcXmin + gStart + 0.5 * gDur
+            if gValid > 0.5
+                dotD = 0.7 + 1.1 * min(1, max(0, gConf))
+                Paint circle (mm): "{0.85, 0.42, 0.18}", tMid, gF1, dotD
+                Paint circle (mm): "{0.20, 0.62, 0.38}", tMid, gF2, dotD
+                Paint circle (mm): "{0.60, 0.32, 0.70}", tMid, gF3, dotD
+            else
+                Paint rectangle: "{0.80, 0.80, 0.80}", tMid - 0.3 * gDur, tMid + 0.3 * gDur, 0.012 * fMaxHz, 0.030 * fMaxHz
+            endif
+        endfor
+
+        # legend
+        Font size: 6
+        Select inner viewport: vizL, vizR, yBa, yBb
+        Axes: 0, 1, 0, 1
+        legY = 0.93
+        Paint circle (mm): "{0.85, 0.42, 0.18}", 0.725, legY, 1.3
+        Text: 0.737, "left", legY, "half", "F1"
+        Paint circle (mm): "{0.20, 0.62, 0.38}", 0.793, legY, 1.3
+        Text: 0.805, "left", legY, "half", "F2"
+        Paint circle (mm): "{0.60, 0.32, 0.70}", 0.861, legY, 1.3
+        Text: 0.873, "left", legY, "half", "F3"
+        Paint rectangle: "{0.80, 0.80, 0.80}", 0.920, 0.935, legY - 0.022, legY + 0.022
+        Text: 0.941, "left", legY, "half", "none"
+
+        Font size: 7
+        Select inner viewport: vizL, vizR, yBa, yBb
+        Axes: srcXmin, srcXmax, 0, fMaxHz
+        Colour: "Black"
+        Draw inner box
+        @snapStep: fMaxHz, 4
+        Marks left every: 1, snapStep.step, "yes", "yes", "no"
+        Marks bottom every: 1, snapT, "yes", "yes", "no"
+        Text bottom: "yes", "Source time (s)"
+        @rail: yBa, yBb, "Hz"
+
+        # --- C left: feature space and the swarm walk -------------------------
+        @caption: vizL, 3.95, yCa, yCb, "Feature space and the swarm walk - dot size = grain reuse"
+        padX = max(0.10, 0.10 * (mapXhi - mapXlo))
+        padY = max(0.10, 0.10 * (mapYhi - mapYlo))
+        cx1 = mapXlo - padX
+        cx2 = mapXhi + padX
+        cy1 = mapYlo - padY
+        cy2 = mapYhi + padY
+        cxIn1 = cx1 + 0.015 * (cx2 - cx1)
+        cxIn2 = cx2 - 0.015 * (cx2 - cx1)
+        cyIn1 = cy1 + 0.015 * (cy2 - cy1)
+        cyIn2 = cy2 - 0.015 * (cy2 - cy1)
+
+        Font size: 7
+        Select inner viewport: vizL, 3.95, yCa, yCb
+        Axes: cx1, cx2, cy1, cy2
+        Paint rectangle: "{1.00, 1.00, 1.00}", cx1, cx2, cy1, cy2
+
+        # walk first, grains on top
+        pathStride = 1
+        if nSched > 1200
+            pathStride = ceiling(nSched / 1200)
+        endif
+        Line width: 1
+        Colour: "{0.68, 0.71, 0.82}"
+        selectObject: schedTbl
+        prevX = undefined
+        prevY = undefined
+        for i from 1 to nSched
+            if i - pathStride * floor(i / pathStride) = 0 or pathStride = 1
+                eX = Get value: i, "x"
+                eY = Get value: i, "y"
+                eX = min(cxIn2, max(cxIn1, eX))
+                eY = min(cyIn2, max(cyIn1, eY))
+                if prevX <> undefined
+                    Draw line: prevX, prevY, eX, eY
+                endif
+                prevX = eX
+                prevY = eY
+            endif
+        endfor
+
+        Select inner viewport: vizL, 3.95, yCa, yCb
+        Axes: cx1, cx2, cy1, cy2
+        offScale = 0
+        selectObject: mapTbl
+        for i from 1 to nMap
+            gX = Get value: i, "x"
+            gY = Get value: i, "y"
+            if gX < cxIn1 or gX > cxIn2 or gY < cyIn1 or gY > cyIn2
+                offScale = offScale + 1
+            endif
+            gX = min(cxIn2, max(cxIn1, gX))
+            gY = min(cyIn2, max(cyIn1, gY))
+            gClu = Get value: i, "cluster"
+            gUse = Get value: i, "usage"
+            useNorm = 0
+            if mapUseHi > 0
+                useNorm = gUse / mapUseHi
+            endif
+            if gUse < 0.5
+                @clusterCol: gClu, 0.70
+                Paint circle (mm): clusterCol.col$, gX, gY, 0.7
+            else
+                @clusterCol: gClu, 0
+                Paint circle (mm): clusterCol.col$, gX, gY, 0.9 + 1.7 * useNorm
+            endif
+        endfor
+
+        Colour: "Black"
+        Select inner viewport: vizL, 3.95, yCa, yCb
+        Axes: cx1, cx2, cy1, cy2
+        Draw inner box
+        @snapStep: cx2 - cx1, 4
+        Marks bottom every: 1, snapStep.step, "yes", "yes", "no"
+        @snapStep: cy2 - cy1, 4
+        Marks left every: 1, snapStep.step, "yes", "yes", "no"
+        Font size: 6
+        Select inner viewport: vizL, 3.95, yCa, yCb
+        Axes: 0, 1, 0, 1
+        Text bottom: "yes", "Feature axis 1  (sets pan)"
+        Text left: "yes", "Feature axis 2  (sets pitch drift)"
+        if offScale > 0
+            Paint rectangle: "{1.00, 1.00, 1.00}", 0.44, 0.995, 0.005, 0.070
+            Colour: "{0.45, 0.45, 0.55}"
+            Text: 0.985, "right", 0.038, "half", string$(offScale) + " off-scale, drawn on the border"
+            Colour: "Black"
+        endif
+
+        # --- C right: cluster budget -----------------------------------------
+        @caption: 4.40, vizR, yCa, yCb, "Cluster budget - grains (pale) vs scheduled events (solid)"
+        cg0 = 0
+        cg1 = 0
+        cg2 = 0
+        cg3 = 0
+        cg4 = 0
+        cg5 = 0
+        selectObject: mapTbl
+        for i from 1 to nMap
+            gClu = Get value: i, "cluster"
+            if gClu = 0
+                cg0 = cg0 + 1
+            elsif gClu = 1
+                cg1 = cg1 + 1
+            elsif gClu = 2
+                cg2 = cg2 + 1
+            elsif gClu = 3
+                cg3 = cg3 + 1
+            elsif gClu = 4
+                cg4 = cg4 + 1
+            else
+                cg5 = cg5 + 1
+            endif
+        endfor
+        ce0 = 0
+        ce1 = 0
+        ce2 = 0
+        ce3 = 0
+        ce4 = 0
+        ce5 = 0
+        selectObject: schedTbl
+        for i from 1 to nSched
+            eClu = Get value: i, "cluster"
+            if eClu = 0
+                ce0 = ce0 + 1
+            elsif eClu = 1
+                ce1 = ce1 + 1
+            elsif eClu = 2
+                ce2 = ce2 + 1
+            elsif eClu = 3
+                ce3 = ce3 + 1
+            elsif eClu = 4
+                ce4 = ce4 + 1
+            else
+                ce5 = ce5 + 1
+            endif
+        endfor
+
+        budMax = 1
+        for k from 0 to 5
+            @budgetShare: k
+            budMax = max(budMax, budgetShare.pool, budgetShare.play)
+        endfor
+        budMax = budMax * 1.22
+
+        Font size: 7
+        Select inner viewport: 4.40, vizR, yCa, yCb
+        Axes: 0, budMax, 0, 6
+        Paint rectangle: "{1.00, 1.00, 1.00}", 0, budMax, 0, 6
+        for k from 0 to 5
+            @budgetShare: k
+            rowTop = 6 - k
+            @clusterCol: k, 0.55
+            Paint rectangle: clusterCol.col$, 0, budgetShare.pool, rowTop - 0.44, rowTop - 0.12
+            @clusterCol: k, 0
+            Paint rectangle: clusterCol.col$, 0, budgetShare.play, rowTop - 0.82, rowTop - 0.50
+        endfor
+        Colour: "Black"
+        Select inner viewport: 4.40, vizR, yCa, yCb
+        Axes: 0, budMax, 0, 6
+        Font size: 6
+        for k from 0 to 5
+            @budgetShare: k
+            rowTop = 6 - k
+            Text: budgetShare.play + 0.02 * budMax, "left", rowTop - 0.47, "half", fixed$(budgetShare.pool, 1) + " / " + fixed$(budgetShare.play, 1)
+        endfor
+        Font size: 7
+        Select inner viewport: 4.40, vizR, yCa, yCb
+        Axes: 0, budMax, 0, 6
+        Draw inner box
+        for k from 0 to 5
+            rowTop = 6 - k
+            One mark left: rowTop - 0.47, "no", "yes", "no", "C" + string$(k)
+        endfor
+        @snapStep: budMax, 4
+        Marks bottom every: 1, snapStep.step, "yes", "yes", "no"
+        Font size: 6
+        Select inner viewport: 4.40, vizR, yCa, yCb
+        Axes: 0, 1, 0, 1
+        Text bottom: "yes", "Share of total (\% )"
+
+        # --- D: schedule, output time against source time ---------------------
+        srcPad = 0.04 * max(1e-6, srcXmax - srcXmin)
+        srcYlo = srcXmin - srcPad
+        srcYhi = srcXmax + srcPad
+        @caption: vizL, vizR, yDa, yDb, "Swarm schedule - which source moment plays when, and where it lands in the stereo field"
+        Font size: 7
+        Select inner viewport: vizL, vizR, yDa, yDb
+        Axes: 0, outDur, srcYlo, srcYhi
+        Paint rectangle: "{1.00, 1.00, 1.00}", 0, outDur, srcYlo, srcYhi
+        Dotted line
+        Colour: "{0.72, 0.72, 0.78}"
+        diagEnd = min(outDur, srcXmax - srcXmin)
+        Draw line: 0, srcXmin, diagEnd, srcXmin + diagEnd
+        Solid line
+        Select inner viewport: vizL, vizR, yDa, yDb
+        Axes: 0, outDur, srcYlo, srcYhi
+        selectObject: schedTbl
+        for i from 1 to nSched
+            eOut = Get value: i, "out_start_s"
+            eSrc = Get value: i, "src_start_s"
+            eClu = Get value: i, "cluster"
+            eGain = Get value: i, "gain"
+            gNorm = 0
+            if schedGainHi > 0
+                gNorm = eGain / schedGainHi
+            endif
+            @clusterCol: eClu, 0
+            Paint circle (mm): clusterCol.col$, eOut, srcXmin + eSrc, 0.7 + 0.9 * gNorm
+        endfor
+        Colour: "Black"
+        Select inner viewport: vizL, vizR, yDa, yDb
+        Axes: 0, outDur, srcYlo, srcYhi
+        Draw inner box
+        @snapStep: srcXmax - srcXmin, 3
+        Marks left every: 1, snapStep.step, "yes", "yes", "no"
+        @snapStep: outDur, 8
+        snapOut = snapStep.step
+        Marks bottom every: 1, snapOut, "no", "yes", "no"
+        @rail: yDa, yDb, "Source s"
+
+        # --- E: pan field ------------------------------------------------------
+        Font size: 7
+        Select inner viewport: vizL, vizR, yEa, yEb
+        Axes: 0, outDur, -1.1, 1.1
+        Paint rectangle: "{1.00, 1.00, 1.00}", 0, outDur, -1.1, 1.1
+        Dotted line
+        Colour: "{0.72, 0.72, 0.78}"
+        Draw line: 0, 0, outDur, 0
+        Solid line
+        Select inner viewport: vizL, vizR, yEa, yEb
+        Axes: 0, outDur, -1.1, 1.1
+        selectObject: schedTbl
+        for i from 1 to nSched
+            eOut = Get value: i, "out_start_s"
+            ePan = Get value: i, "pan"
+            eClu = Get value: i, "cluster"
+            eGain = Get value: i, "gain"
+            gNorm = 0
+            if schedGainHi > 0
+                gNorm = eGain / schedGainHi
+            endif
+            @clusterCol: eClu, 0
+            Paint circle (mm): clusterCol.col$, eOut, ePan, 0.7 + 0.9 * gNorm
+        endfor
+        Colour: "Black"
+        Select inner viewport: vizL, vizR, yEa, yEb
+        Axes: 0, outDur, -1.1, 1.1
+        Draw inner box
+        One mark left: 0.86, "no", "yes", "no", "R"
+        One mark left: 0, "no", "yes", "no", "0"
+        One mark left: -0.86, "no", "yes", "no", "L"
+        Marks bottom every: 1, snapOut, "yes", "yes", "no"
+        Text bottom: "yes", "Output time (s)"
+        @rail: yEa, yEb, "Pan L-R"
+    endif
+
+    # --- F: rendered output --------------------------------------------------
+    @caption: vizL, vizR, yFa, yFb, "Rendered swarm"
+    Font size: 7
+    Select inner viewport: vizL, vizR, yFa, yFb
     selectObject: result
     Colour: "{0.15, 0.55, 0.82}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
+    Draw: 0, 0, -outAmp, outAmp, "no", "Curve"
     Colour: "Black"
+    Select inner viewport: vizL, vizR, yFa, yFb
+    Axes: 0, outDur, -outAmp, outAmp
     Draw inner box
-    Font size: 7
-    Text left: "yes", "Swarm"
-    Text bottom: "yes", "Time (s)"
+    @rail: yFa, yFb, "Swarm"
 
-    # Output spectrogram, channel 1 only.
-    Select outer viewport: 0, 8, 3.05, 4.8
-    Select inner viewport: 0.65, 7.7, 3.15, 4.7
+    # --- G: output spectrogram -----------------------------------------------
+    @caption: vizL, vizR, yGa, yGb, "Output spectrogram (channel 1)"
+    Font size: 7
+    Select inner viewport: vizL, vizR, yGa, yGb
     selectObject: result
     Extract one channel: 1
     vizCh = selected("Sound")
@@ -668,27 +1228,73 @@ if draw_visualization
     To Spectrogram: 0.03, vizMaxHz, 0.002, 20, "Gaussian"
     vizSpec = selected("Spectrogram")
     Paint: 0, 0, 0, vizMaxHz, 100, "yes", 50, 6, 0, "no"
-    Colour: "Black"
-    Draw inner box
-    Font size: 7
-    Text left: "yes", "Hz"
-    Text bottom: "yes", "Time (s)"
-    Text top: "no", "Swarm spectrogram"
     removeObject: vizSpec, vizCh
+    Colour: "Black"
+    Select inner viewport: vizL, vizR, yGa, yGb
+    Axes: 0, outDur, 0, vizMaxHz
+    Draw inner box
+    @snapStep: vizMaxHz, 3
+    Marks left every: 1, snapStep.step, "yes", "yes", "no"
+    @snapStep: outDur, 8
+    Marks bottom every: 1, snapStep.step, "yes", "yes", "no"
+    Text bottom: "yes", "Output time (s)"
+    @rail: yGa, yGb, "Hz"
 
-    Select outer viewport: 0, 8, 5.0, 6.25
-    Select inner viewport: 0.65, 7.7, 5.08, 6.18
+    # --- H: summary ----------------------------------------------------------
+    Font size: 7
+    Select inner viewport: vizL, vizR, yHa, yHb
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    @sanitize: replace$(statFeatures$, ",", ", ", 0)
+    featTxt$ = sanitize.out$
+
     Font size: 8
+    Select inner viewport: vizL, vizR, yHa, yHb
+    Axes: 0, 1, 0, 1
     Colour: "Black"
-    Text: 0.02, "left", 0.86, "half", "##Descriptor confidence##"
+    Text: 0.015, "left", 0.90, "half", "##Process summary##"
+
     Font size: 7
-    Text: 0.02, "left", 0.66, "half", "Reliable grains: " + statValidGrains$ + "/" + statGrains$ + "  ratio=" + statValidRatio$
-    Text: 0.02, "left", 0.49, "half", "Formant features active: " + statFormantActive$ + "  confidence=" + statMeanConfidence$ + "  contrast=" + statMedianContrast$ + " dB"
-    Text: 0.02, "left", 0.32, "half", "Features: " + statFeatures$
-    Text: 0.02, "left", 0.15, "half", "Reliable means: F1=" + statMeanF1$ + "  F2=" + statMeanF2$ + "  F3=" + statMeanF3$ + " Hz"
+    Select inner viewport: vizL, vizR, yHa, yHb
+    Axes: 0, 1, 0, 1
+    Text: 0.015, "left", 0.755, "half", "Gate: " + gateTxt$ + "  -  reliable " + statValidGrains$ + "/" + statGrains$
+        ... + ", ratio " + statValidRatio$ + " (min " + fixed$(min_reliable_formant_ratio, 2) + ")"
+        ... + ", median contrast " + statMedianContrast$ + " dB (min " + fixed$(min_resonance_contrast_dB, 2) + ")"
+        ... + ", mean confidence " + statMeanConfidence$
+    Text: 0.015, "left", 0.620, "half", "Feature space: " + featTxt$ + "  -  " + statClusters$ + " clusters"
+    Text: 0.015, "left", 0.485, "half", "Reliable means: F1 " + statMeanF1$ + "   F2 " + statMeanF2$ + "   F3 " + statMeanF3$ + " Hz"
+    Text: 0.015, "left", 0.350, "half", "Swarm: " + hdrMode$ + ", " + statScheduled$ + " events over " + fixed$(outDur, 2) + " s"
+        ... + ", density " + fixed$(density_grains_per_sec, 1) + "/s"
+        ... + ", attraction " + fixed$(attraction, 2)
+        ... + ", repulsion time " + fixed$(temporal_repulsion, 2) + " / density " + fixed$(density_repulsion, 2)
+    reuseTxt$ = "Grain reuse: not reported by this engine"
+    if fullFigure
+        reuseTxt$ = "Grain reuse: median " + statMedReuse$ + ", max " + statMaxReuse$
+            ... + ", " + statUnused$ + " of " + statGrains$ + " never used"
+    endif
+    Text: 0.015, "left", 0.215, "half", reuseTxt$ + "   |   pan spread " + fixed$(pan_spread, 2)
+        ... + ", pitch drift \+- " + fixed$(pitch_drift_semitones, 2) + " st"
+    Text: 0.015, "left", 0.080, "half", "Level: RMS in " + statRmsIn$ + " to out " + statRmsOut$ + ", peak " + fixed$(outAmp, 3)
+        ... + "   |   grain " + fixed$(grainLengthSec * 1000, 1) + " ms, hop " + fixed$(hopSec * 1000, 1) + " ms"
+    if fullFigure = 0
+        Colour: "{0.70, 0.35, 0.10}"
+        Text: 0.985, "right", 0.90, "half", "compact figure: engine did not export the process tables"
+        Colour: "Black"
+    endif
+    Select inner viewport: vizL, vizR, yHa, yHb
+    Axes: 0, 1, 0, 1
     Draw rectangle: 0, 1, 0, 1
+
+    if hasMap
+        removeObject: mapTbl
+    endif
+    if hasSched
+        removeObject: schedTbl
+    endif
+
+    # The PNG export follows the CURRENT viewport selection, so end on the
+    # whole canvas or Save/Copy silently crops to the last panel.
+    Select outer viewport: 0, 8, 0, canvasH
 endif
 
 @cleanUpTempFiles
@@ -722,5 +1328,123 @@ procedure parseStatLine: .text$, .key$
         else
             .result$ = .rest$
         endif
+    endif
+endproc
+
+# -----------------------------------------------------------------------------
+# Drawing helpers
+# -----------------------------------------------------------------------------
+
+# Picture-window text treats _ ^ # % and \ as markup, so every machine-generated
+# label (object names, mode names, feature lists) has to be escaped first.
+procedure sanitize: .s$
+    .out$ = replace$(.s$, "\", "\bs ", 0)
+    .out$ = replace$(.out$, "_", "\_ ", 0)
+    .out$ = replace$(.out$, "#", "\# ", 0)
+    .out$ = replace$(.out$, "^", "\^ ", 0)
+    .out$ = replace$(.out$, "%", "\% ", 0)
+endproc
+
+# Six cluster hues, tinted towards white by .tint (0 = full strength).
+procedure clusterCol: .k, .tint
+    .i = .k - 6 * floor(.k / 6)
+    if .i = 0
+        .r = 0.15
+        .g = 0.55
+        .b = 0.82
+    elsif .i = 1
+        .r = 0.85
+        .g = 0.42
+        .b = 0.18
+    elsif .i = 2
+        .r = 0.20
+        .g = 0.62
+        .b = 0.38
+    elsif .i = 3
+        .r = 0.60
+        .g = 0.32
+        .b = 0.70
+    elsif .i = 4
+        .r = 0.88
+        .g = 0.66
+        .b = 0.10
+    else
+        .r = 0.30
+        .g = 0.42
+        .b = 0.62
+    endif
+    .col$ = "{" + fixed$(.r + (1 - .r) * .tint, 3)
+        ... + ", " + fixed$(.g + (1 - .g) * .tint, 3)
+        ... + ", " + fixed$(.b + (1 - .b) * .tint, 3) + "}"
+endproc
+
+# A tick step derived as span/N prints labels like 0.6569; snap it to 1/2/5.
+procedure snapStep: .span, .target
+    .step = 1
+    if .span > 0
+        if .target > 0
+            .raw = .span / .target
+            .mag = 10 ^ floor(log10(.raw))
+            .n = .raw / .mag
+            if .n <= 1.5
+                .step = .mag
+            elsif .n <= 3.5
+                .step = 2 * .mag
+            elsif .n <= 7.5
+                .step = 5 * .mag
+            else
+                .step = 10 * .mag
+            endif
+        endif
+    endif
+endproc
+
+# Text left: anchors against whatever drawing frame is current, which puts each
+# panel's name at a different x. Place the rail by hand at one shared offset.
+procedure rail: .y1, .y2, .name$
+    Font size: 7
+    Select inner viewport: vizL, vizR, .y1, .y2
+    Axes: 0, 1, 0, 1
+    Colour: "Black"
+    Text special: railX, "centre", 0.5, "bottom", "Helvetica", 7, "90", .name$
+endproc
+
+procedure caption: .x1, .x2, .y1, .y2, .txt$
+    Font size: 6
+    Select inner viewport: .x1, .x2, .y1, .y2
+    Axes: 0, 1, 0, 1
+    Colour: "{0.35, 0.35, 0.50}"
+    Text top: "no", .txt$
+    Colour: "Black"
+endproc
+
+# Percentage of the grain pool and of the scheduled events held by cluster .k.
+procedure budgetShare: .k
+    if .k = 0
+        .cg = cg0
+        .ce = ce0
+    elsif .k = 1
+        .cg = cg1
+        .ce = ce1
+    elsif .k = 2
+        .cg = cg2
+        .ce = ce2
+    elsif .k = 3
+        .cg = cg3
+        .ce = ce3
+    elsif .k = 4
+        .cg = cg4
+        .ce = ce4
+    else
+        .cg = cg5
+        .ce = ce5
+    endif
+    .pool = 0
+    .play = 0
+    if nMap > 0
+        .pool = 100 * .cg / nMap
+    endif
+    if nSched > 0
+        .play = 100 * .ce / nSched
     endif
 endproc
