@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-stretch.py — HPSS + Phase Vocoder Time-Stretching  v2.3
+stretch.py — HPSS + Phase Vocoder Time-Stretching  v2.4
 
 Part of Praat AudioTools plugin
 Author: Shai Cohen, Department of Music, Bar-Ilan University
@@ -14,6 +14,14 @@ Pipeline:
        (pitch- and transient-preserving — no rate-change detuning)
     6. Recombine H + P waveforms
     7. Write output WAV + stats
+
+Changelog v2.4:
+    - Optional process exports for the Praat figure, requested with trailing
+      --flags: the separated harmonic and percussive layers as audio, the
+      per-frame HPSS mask profile, a magnitude-weighted mask histogram, and
+      WSOLA alignment telemetry (per-frame deviation from the nominal analysis
+      position and the normalised correlation the similarity search achieved).
+      All exports are read-only observations; the rendered audio is unchanged.
 
 Changelog v2.3:
     - Stereo/multichannel percussive stretching now uses one linked WSOLA
@@ -200,7 +208,7 @@ def phase_vocoder_stretch(S, stretch_factor, hop):
 # Percussive stretch (WSOLA — preserves pitch AND transient sharpness)
 # ═══════════════════════════════════════════════════════════════════════════
 
-def stretch_percussive(y_P, stretch_factor, target_len):
+def stretch_percussive(y_P, stretch_factor, target_len, telemetry=None):
     """
     WSOLA (waveform-similarity overlap-add) time-stretch of the percussive
     band. This changes DURATION only: pitch is preserved and transients
@@ -227,6 +235,8 @@ def stretch_percussive(y_P, stretch_factor, target_len):
     W    = min(1024, max(128, (n // 16) // 2 * 2))
     if W < 64:
         W = 64
+    if telemetry is not None:
+        telemetry.append(("geometry", W, W // 2, max(1, int(round((W // 2) / stretch_factor))), max(1, W // 4)))
     Hs   = W // 2                                   # synthesis hop
     L    = W - Hs                                   # overlap length
     Ha   = max(1, int(round(Hs / stretch_factor)))  # analysis hop
@@ -271,6 +281,10 @@ def stretch_percussive(y_P, stretch_factor, target_len):
             cand_norm = np.sqrt(np.maximum(energy, 0.0)) + 1e-9
             score    = cc / cand_norm[:len(cc)]
             best_off = lo + int(np.argmax(score))
+            if telemetry is not None:
+                ref_norm = float(np.sqrt(np.sum(ref ** 2))) + 1e-9
+                telemetry.append((s_pos, best_off - nominal,
+                                  float(score[best_off - lo]) / ref_norm))
 
         frame = y[best_off: best_off + W]
         if len(frame) < W:
@@ -288,7 +302,7 @@ def stretch_percussive(y_P, stretch_factor, target_len):
     return out.astype(np.float64)
 
 
-def stretch_percussive_linked(y_P_multi, stretch_factor, target_len):
+def stretch_percussive_linked(y_P_multi, stretch_factor, target_len, telemetry=None):
     """Linked multichannel WSOLA for the percussive component.
 
     One similarity-search path is derived from a phase-safe reference and the
@@ -329,6 +343,8 @@ def stretch_percussive_linked(y_P_multi, stretch_factor, target_len):
     Ha   = max(1, int(round(Hs / stretch_factor)))
     seek = max(1, W // 4)
     win  = np.hanning(W)
+    if telemetry is not None:
+        telemetry.append(("geometry", W, Hs, Ha, seek))
 
     out_len = target_len + W
     out = np.zeros((out_len, n_ch), dtype=np.float64)
@@ -365,6 +381,10 @@ def stretch_percussive_linked(y_P_multi, stretch_factor, target_len):
             cand_norm = np.sqrt(np.maximum(energy, 0.0)) + 1e-9
             score     = cc / cand_norm[:len(cc)]
             best_off  = lo + int(np.argmax(score))
+            if telemetry is not None:
+                ref_norm = float(np.sqrt(np.sum(ref ** 2))) + 1e-9
+                telemetry.append((s_pos, best_off - nominal,
+                                  float(score[best_off - lo]) / ref_norm))
 
         frame = y[best_off: best_off + W, :]
         if len(frame) < W:
@@ -391,8 +411,12 @@ HOP_DIV = 8
 MARGIN  = 3.0
 
 
-def process_channel(y, sr, stretch_factor, n_fft=N_FFT, margin=MARGIN):
-    """Process one mono channel. Returns (y_out, h_rms, p_rms)."""
+def process_channel(y, sr, stretch_factor, n_fft=N_FFT, margin=MARGIN, collect=None):
+    """Process one mono channel. Returns (y_out, h_rms, p_rms).
+
+    ``collect`` is an optional dict the caller can pass to receive the
+    intermediate layers and HPSS masks for the figure. Filling it changes
+    nothing about the audio that is returned."""
     import numpy as np
 
     hop        = n_fft // HOP_DIV
@@ -411,7 +435,8 @@ def process_channel(y, sr, stretch_factor, n_fft=N_FFT, margin=MARGIN):
 
     # Percussive: WSOLA
     y_P   = inverse_stft(S_P, hop, target_len=orig_len)
-    y_P_s = stretch_percussive(y_P, stretch_factor, target_len)
+    telem = [] if collect is not None else None
+    y_P_s = stretch_percussive(y_P, stretch_factor, target_len, telemetry=telem)
 
     # RMS for stats
     h_rms = float(np.sqrt(np.mean(y_H ** 2) + 1e-12))
@@ -421,7 +446,79 @@ def process_channel(y, sr, stretch_factor, n_fft=N_FFT, margin=MARGIN):
     ml    = min(len(y_H), len(y_P_s))
     y_out = y_H[:ml] + y_P_s[:ml]
 
+    if collect is not None:
+        collect["y_H"] = y_H[:ml]
+        collect["y_P"] = y_P_s[:ml]
+        collect["S_H"] = S_H
+        collect["S_P"] = S_P
+        collect["hop"] = hop
+        collect["wsola"] = telem
+
     return y_out.astype(np.float64), h_rms, p_rms
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Process exports for the Praat figure
+# ═══════════════════════════════════════════════════════════════════════════
+
+def mask_from_layers(S_H, S_P):
+    """Recover the HPSS harmonic mask from the two masked spectrograms.
+
+    S_H = S * mask_H and S_P = S * mask_P with mask_H + mask_P = 1, so the
+    mask is recoverable without changing hpss_complex or re-running it."""
+    import numpy as np
+    aH = np.abs(S_H)
+    aP = np.abs(S_P)
+    return aH / (aH + aP + 1e-20), aH, aP
+
+
+def write_profile(path, S_H, S_P, hop, sr):
+    """Per-STFT-frame harmonic share of spectral energy, over input time."""
+    import numpy as np
+    _, aH, aP = mask_from_layers(S_H, S_P)
+    eH = (aH ** 2).sum(axis=0)
+    eP = (aP ** 2).sum(axis=0)
+    tot = eH + eP
+    share = np.where(tot > 1e-20, eH / (tot + 1e-20), 0.5)
+    ref = float(tot.max()) + 1e-20
+    n_fft = (S_H.shape[0] - 1) * 2
+    with open(path, "w") as f:
+        f.write("frame,time_s,harmonic_share,level\n")
+        for i in range(S_H.shape[1]):
+            t = max(0.0, (i * hop - n_fft / 2.0) / float(sr))
+            f.write("%d,%.6f,%.5f,%.6f\n" % (i, t, share[i], tot[i] / ref))
+
+
+def write_mask_hist(path, S_H, S_P, n_bins=24):
+    """Magnitude-weighted distribution of the harmonic mask value.
+
+    This is what ``margin`` actually did: a hard separation piles the weight
+    at the two ends, a soft one leaves it in the middle."""
+    import numpy as np
+    mask, aH, aP = mask_from_layers(S_H, S_P)
+    w = aH + aP
+    edges = np.linspace(0.0, 1.0, n_bins + 1)
+    hist, _ = np.histogram(mask.ravel(), bins=edges, weights=w.ravel())
+    total = float(hist.sum()) + 1e-20
+    with open(path, "w") as f:
+        f.write("bin,lo,hi,share\n")
+        for i in range(n_bins):
+            f.write("%d,%.5f,%.5f,%.6f\n" % (i, edges[i], edges[i + 1], hist[i] / total))
+
+
+def write_wsola(path, telem, sr, max_rows=4000):
+    """WSOLA alignment: how far the similarity search moved each frame away
+    from its nominal analysis position, and the correlation it achieved."""
+    rows = [t for t in telem if not (len(t) and t[0] == "geometry")] if telem else []
+    stride = max(1, int(math.ceil(len(rows) / float(max_rows)))) if rows else 1
+    with open(path, "w") as f:
+        f.write("frame,out_time_s,deviation_ms,score,stride\n")
+        for i, (s_pos, dev, score) in enumerate(rows):
+            if i % stride:
+                continue
+            f.write("%d,%.6f,%.4f,%.5f,%d\n" % (
+                i, s_pos / float(sr), 1000.0 * dev / float(sr), score, stride))
+    return rows, stride
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -441,8 +538,26 @@ def write_stats(path, stats):
 def main():
     if len(sys.argv) < 5:
         print("Usage: stretch.py input.wav output.wav stats.txt "
-              "stretch_factor [n_fft] [margin]")
+              "stretch_factor [n_fft] [margin] "
+              "[--harmonic f.wav] [--percussive f.wav] [--profile f.csv] "
+              "[--maskhist f.csv] [--wsola f.csv]")
         sys.exit(1)
+
+    # Optional figure exports are named flags, so the positional interface an
+    # older front-end uses is left exactly as it was.
+    opts = {}
+    argv = list(sys.argv)
+    positional = []
+    i = 1
+    while i < len(argv):
+        a = argv[i]
+        if a.startswith("--") and i + 1 < len(argv):
+            opts[a[2:]] = argv[i + 1]
+            i += 2
+        else:
+            positional.append(a)
+            i += 1
+    sys.argv = [argv[0]] + positional
 
     check_dependencies()
 
@@ -484,10 +599,12 @@ def main():
     p_rms_total = 0.0
     linked_wsola = 0
 
+    collect = {} if opts else None
+
     if n_ch == 1:
         print("[HPSS-PV] Channel 1/1...")
         y_out, h_rms, p_rms = process_channel(
-            audio[:, 0], sr, stretch_factor, n_fft, margin)
+            audio[:, 0], sr, stretch_factor, n_fft, margin, collect=collect)
         out_chs.append(y_out)
         h_rms_total = h_rms
         p_rms_total = p_rms
@@ -508,10 +625,20 @@ def main():
             y_P = inverse_stft(S_P, hop, target_len=orig_len)
             harmonic_chs.append(y_H)
             percussive_chs.append(y_P)
+            if collect is not None and ch == 0:
+                collect["S_H"] = S_H
+                collect["S_P"] = S_P
+                collect["hop"] = hop
 
         P_multi = np.column_stack(percussive_chs)
-        P_stretched = stretch_percussive_linked(P_multi, stretch_factor, target_len)
+        telem = [] if collect is not None else None
+        P_stretched = stretch_percussive_linked(
+            P_multi, stretch_factor, target_len, telemetry=telem)
         linked_wsola = 1
+        if collect is not None:
+            collect["wsola"] = telem
+            collect["y_H"] = harmonic_chs[0]
+            collect["y_P"] = P_stretched[:, 0]
 
         for ch in range(n_ch):
             y_H = harmonic_chs[ch]
@@ -549,6 +676,34 @@ def main():
     sf.write(out_wav, result, sr, subtype="FLOAT")
     print("[HPSS-PV] Wrote: %s" % out_wav)
 
+    # ---- optional process exports for the figure -------------------------
+    wsola_rows = []
+    wsola_geom = None
+    if collect:
+        gain = peak_in / peak_out
+        if "y_H" in collect and "harmonic" in opts:
+            sf.write(opts["harmonic"],
+                     np.clip(collect["y_H"] * gain, -1.0, 1.0).astype(np.float32),
+                     sr, subtype="FLOAT")
+        if "y_P" in collect and "percussive" in opts:
+            sf.write(opts["percussive"],
+                     np.clip(collect["y_P"] * gain, -1.0, 1.0).astype(np.float32),
+                     sr, subtype="FLOAT")
+        if "S_H" in collect and "profile" in opts:
+            write_profile(opts["profile"], collect["S_H"], collect["S_P"],
+                          collect["hop"], sr)
+        if "S_H" in collect and "maskhist" in opts:
+            write_mask_hist(opts["maskhist"], collect["S_H"], collect["S_P"])
+        telem = collect.get("wsola") or []
+        for t in telem:
+            if len(t) == 5 and t[0] == "geometry":
+                wsola_geom = t
+        if "wsola" in opts:
+            wsola_rows, _ = write_wsola(opts["wsola"], telem, sr)
+        else:
+            wsola_rows = [t for t in telem if not (len(t) and t[0] == "geometry")]
+        print("[HPSS-PV] Process exports written.")
+
     # Stats
     in_rms = float(np.sqrt(np.mean(audio.astype(np.float64) ** 2)))
     stats = {
@@ -566,7 +721,32 @@ def main():
         "hp_ratio":          "%.4f" % (h_rms_mean / (p_rms_mean + 1e-9)),
         "channels":          n_ch,
         "linked_wsola":      linked_wsola,
+        "achieved_stretch":  "%.4f" % ((max_len / float(orig_len)) if orig_len else 0.0),
     }
+    if collect:
+        devs = [abs(r[1]) for r in wsola_rows]
+        scores = [r[2] for r in wsola_rows]
+        stats["wsola_frames"] = len(wsola_rows)
+        stats["wsola_mean_abs_dev_ms"] = "%.3f" % (
+            1000.0 * float(np.mean(devs)) / sr if devs else 0.0)
+        stats["wsola_max_abs_dev_ms"] = "%.3f" % (
+            1000.0 * float(np.max(devs)) / sr if devs else 0.0)
+        stats["wsola_mean_score"] = "%.4f" % (float(np.mean(scores)) if scores else 0.0)
+        if wsola_geom is not None:
+            stats["wsola_window"] = wsola_geom[1]
+            stats["wsola_syn_hop"] = wsola_geom[2]
+            stats["wsola_ana_hop"] = wsola_geom[3]
+            stats["wsola_seek"] = wsola_geom[4]
+        if "S_H" in collect:
+            mask, aH, aP = mask_from_layers(collect["S_H"], collect["S_P"])
+            w = aH + aP
+            wsum = float(w.sum()) + 1e-20
+            stats["mask_mean"] = "%.4f" % float((mask * w).sum() / wsum)
+            eH = float((aH ** 2).sum())
+            eP = float((aP ** 2).sum())
+            stats["harmonic_energy_share"] = "%.4f" % (eH / (eH + eP + 1e-20))
+            hard = float(w[(mask < 0.15) | (mask > 0.85)].sum()) / wsum
+            stats["mask_decisive_share"] = "%.4f" % hard
     write_stats(stats_txt, stats)
     print("[HPSS-PV] Stats: %s" % stats_txt)
     print("[HPSS-PV] Done.")
