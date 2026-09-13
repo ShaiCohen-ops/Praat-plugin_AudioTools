@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.5 (2026) - Structural stereo spatialization + process map
+# Version: 1.6 (2026) - Structural stereo spatialization + process map
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -13,6 +13,20 @@
 #   A PyTorch three-level hierarchical model (EventEncoder,
 #   PhraseEncoder, SectionPlanner) generates a recomposition
 #   plan. Audio is re-rendered from the original source material.
+#
+# Changelog v1.6:
+#   - The static five-box "plan generator" diagram is replaced by the plan the
+#     generator actually produced: a phrase x slot matrix of the 16 compositional
+#     values, exported by hierarchical_recomposition.py v1.5.
+#   - New panel: where in the SOURCE each scheduled operation's material came
+#     from, which is what makes recall, repetition and braiding visible.
+#   - The stereo-field strip is now its own panel and is drawn only when the
+#     render is actually spatial, instead of a flat line squeezed under the
+#     operations lanes in mono.
+#   - Every time panel shares one axis, so the duration change reads as width.
+#   - Fixed: no panel drew axis numbers; panel captions were painted over by the
+#     previous panel's axis label; underscores in model and mode names were
+#     rendered as subscript markup.
 #
 # Changelog v1.5:
 #   - Pairs with hierarchical_recomposition.py v1.4: RecursiveSpeechChoir voices
@@ -128,7 +142,7 @@ endproc
 @cleanUpTempFiles
 
 # ---- FORM ----
-form Hierarchical Neural Recomposition v1.3
+form Hierarchical Neural Recomposition v1.6
     comment === Preset ===
     optionmenu Preset: 1
         option Custom
@@ -236,7 +250,7 @@ rms_orig  = Get root-mean-square: 0, 0
 
 # ---- INFO HEADER ----
 clearinfo
-writeInfoLine:  "=== Hierarchical Neural Recomposition v1.3 ==="
+writeInfoLine:  "=== Hierarchical Neural Recomposition v1.6 ==="
 appendInfoLine: "Input:   ", soundName$
 appendInfoLine: "Preset:  ", presetName$
 appendInfoLine: ""
@@ -358,6 +372,11 @@ nOpRecall = 0
 nOpBraid = 0
 nOpEcho = 0
 nOpInvert = 0
+nPlanViz = 0
+nPlanCols = 0
+nPlanRowsAll = 0
+nMapOps = 0
+planSpread$ = "?"
 
 procedure parseStatLine: .text$, .key$
     .pos = index(.text$, .key$)
@@ -546,6 +565,61 @@ if fileReadable(tempStats$)
     if parseStatLine.result$ <> "?"
         nOpInvert = number(parseStatLine.result$)
     endif
+
+    # Source span of each drawn operation. Kept in its own key so the fixed
+    # op_ field layout stays readable by older front-ends.
+    for iO from 0 to nOpViz - 1
+        opSrcStart_'iO' = -1
+        opSrcEnd_'iO' = -1
+        @parseStatLine: statsText$, "opsrc_" + string$(iO) + "="
+        if parseStatLine.result$ <> "?"
+            srow$ = parseStatLine.result$
+            cs = index(srow$, ",")
+            if cs > 0
+                opSrcStart_'iO' = number(left$(srow$, cs - 1))
+                opSrcEnd_'iO' = number(mid$(srow$, cs + 1, length(srow$) - cs))
+                if opSrcStart_'iO' >= 0
+                    nMapOps = nMapOps + 1
+                endif
+            endif
+        endif
+    endfor
+
+    # The generated plan matrix.
+    @parseStatLine: statsText$, "n_plan_viz="
+    if parseStatLine.result$ <> "?"
+        nPlanViz = number(parseStatLine.result$)
+    endif
+    @parseStatLine: statsText$, "n_plan_cols="
+    if parseStatLine.result$ <> "?"
+        nPlanCols = number(parseStatLine.result$)
+    endif
+    @parseStatLine: statsText$, "plan_rows_all="
+    if parseStatLine.result$ <> "?"
+        nPlanRowsAll = number(parseStatLine.result$)
+    endif
+    @parseStatLine: statsText$, "plan_row_spread="
+    planSpread$ = parseStatLine.result$
+    for iC from 0 to nPlanCols - 1
+        @parseStatLine: statsText$, "plan_col_" + string$(iC) + "="
+        planCol_'iC'$ = parseStatLine.result$
+    endfor
+    for iR from 0 to nPlanViz - 1
+        @parseStatLine: statsText$, "plan_row_" + string$(iR) + "="
+        prow$ = parseStatLine.result$
+        for iC from 0 to nPlanCols - 1
+            cpos = index(prow$, ",")
+            if cpos > 0
+                vtxt$ = left$(prow$, cpos - 1)
+                prow$ = mid$(prow$, cpos + 1, length(prow$) - cpos)
+            else
+                vtxt$ = prow$
+                prow$ = ""
+            endif
+            pk = iR * nPlanCols + iC
+            planVal_'pk' = number(vtxt$)
+        endfor
+    endfor
 endif
 
 appendInfoLine: ""
@@ -558,356 +632,401 @@ appendInfoLine: "Brightness: ", brightStat$
 
 ###############################################################################
 # VISUALIZATION — actual process map
+#
+# Every time panel shares one axis running 0..axisDur, so a source panel ends
+# partway across while an output panel fills its width: the change in duration
+# is visible as width rather than hidden by per-panel autoscaling.
+#
+#   1  source waveform with the detected event boundaries, and the event ->
+#      phrase grouping directly underneath it;
+#   2  the plan the seeded generator actually produced, one row per phrase and
+#      one column per compositional slot;
+#   3  the operations that plan turned into, by type, over output time;
+#   4  their stereo positions (drawn only when the render is actually spatial);
+#   5  where in the SOURCE each operation's material came from;
+#   6  the rendered result on the same time scale as the source.
 ###############################################################################
 
 if draw_visualization
+    vizL = 0.65
+    vizR = 7.70
+    railX = -0.043
+
+    selectObject: sound
+    srcHi = Get maximum: 0, 0, "None"
+    srcLo = Get minimum: 0, 0, "None"
+    selectObject: resultSound
+    outHi = Get maximum: 0, 0, "None"
+    outLo = Get minimum: 0, 0, "None"
+    ampViz = max(abs(srcHi), abs(srcLo))
+    ampViz = max(ampViz, max(abs(outHi), abs(outLo)))
+    if ampViz < 0.001
+        ampViz = 0.001
+    endif
+    axisDur = max(dur, dur_out)
+
+    @snapStep: axisDur, 8
+    snapT = snapStep.step
+
+    # The stereo-field strip is only drawn when the render is actually spatial;
+    # in mono it was a flat line through the middle of a panel.
+    showPan = 0
+    if panMax - panMin > 0.01
+        showPan = 1
+    endif
+
+    hasPlan = 0
+    if nPlanViz > 0 and nPlanCols > 0
+        hasPlan = 1
+    endif
+
+    # An engine older than v1.5 reports no source span per operation, so the
+    # map would be an empty framed panel under a caption promising content.
+    hasMap = 0
+    if nMapOps > 0
+        hasMap = 1
+    endif
+
+    # --- layout --------------------------------------------------------------
+    yWa = 0.80
+    yWb = 1.45
+    yHa = 1.47
+    yHb = 1.95
+
+    yPa = 2.62
+    yPb = 4.35
+    if hasPlan = 0
+        yPa = 2.62
+        yPb = 2.62
+    endif
+
+    yOpsA = 5.00
+    yOpsB = 5.95
+    if hasPlan = 0
+        yOpsA = 2.75
+        yOpsB = 3.70
+    endif
+
+    yPanA = yOpsB + 0.02
+    yPanB = yPanA + 0.45
+    if showPan = 0
+        yPanB = yOpsB
+    endif
+
+    yMapA = yPanB + 0.34
+    yMapB = yMapA + 0.90
+    if hasMap = 0
+        yMapA = yPanB
+        yMapB = yPanB
+    endif
+    yResA = yMapB + 0.32
+    yResB = yResA + 0.65
+    ySumA = yResB + 0.54
+    ySumB = ySumA + 0.90
+    canvasH = ySumB + 0.15
 
     Erase all
-    Select outer viewport: 0, 8, 0, 8
-    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
 
-    # === Title strip ===
-    Select outer viewport: 0, 8, 0, 0.48
-    Select inner viewport: 0.15, 7.85, 0.08, 0.44
-    Axes: 0, 1, 0, 1
+    # --- title ---------------------------------------------------------------
+    @sanitize: soundName$
+    hdrName$ = sanitize.out$
+    @sanitize: presetName$
+    hdrPreset$ = sanitize.out$
     Font size: 13
-    Colour: "{0.2, 0.2, 0.4}"
-    Text: 0.5, "centre", 0.72, "half", "Hierarchical Recomposition - Process Map"
-    Select outer viewport: 0, 8, 0, 0.48
-    Select inner viewport: 0.15, 7.85, 0.08, 0.44
+    Select inner viewport: vizL, vizR, 0.05, 0.60
     Axes: 0, 1, 0, 1
-    Font size: 8
+    Colour: "Black"
+    Text: 0.5, "centre", 0.74, "half", "##Hierarchical Recomposition##"
+    Font size: 7
+    Select inner viewport: vizL, vizR, 0.05, 0.60
+    Axes: 0, 1, 0, 1
     Colour: "{0.35, 0.35, 0.45}"
-    Text: 0.5, "centre", 0.24, "half", soundName$ + " | " + presetName$ + " | seed " + string$(random_seed)
+    Text: 0.5, "centre", 0.24, "half", hdrName$ + "   |   " + hdrPreset$
+        ... + "   |   seed " + string$(random_seed)
+        ... + "   |   " + nEvStat$ + " events, " + nPhStat$ + " phrases, " + nSecStat$ + " sections"
+    Colour: "Black"
 
-    # === 1. SOURCE -> EVENT SEGMENTATION ===
-    Select outer viewport: 0, 8, 0.55, 1.75
-    Select inner viewport: 0.65, 7.75, 0.68, 1.65
-    Axes: 0, dur, -1, 1
-    Paint rectangle: "{0.975, 0.975, 0.985}", 0, dur, -1, 1
-
-    # phrase strips at top of waveform
-    for iP from 0 to nPhraseViz - 1
-        Colour: "{0.88, 0.91, 0.97}"
-        Paint rectangle: "{0.88, 0.91, 0.97}", phStart_'iP', phEnd_'iP', 0.78, 0.98
-    endfor
-
+    # --- 1a: source waveform with detected event boundaries -------------------
+    @caption: vizL, vizR, yWa, yWb, "1  Onset segmentation and the event to phrase grouping it feeds"
+    Font size: 7
+    Select inner viewport: vizL, vizR, yWa, yWb
     selectObject: sound
-    Colour: "{0.2, 0.4, 0.75}"
-    Draw: 0, dur, -1, 1, "no", "Curve"
-
-    # Actual detected event starts
-    Select outer viewport: 0, 8, 0.55, 1.75
-    Select inner viewport: 0.65, 7.75, 0.68, 1.65
-    Axes: 0, dur, -1, 1
-    Colour: "{0.55, 0.55, 0.62}"
-    Line width: 0.7
+    Colour: "{0.55, 0.55, 0.60}"
+    Draw: 0, axisDur, -ampViz, ampViz, "no", "Curve"
+    Select inner viewport: vizL, vizR, yWa, yWb
+    Axes: 0, axisDur, -ampViz, ampViz
+    Colour: "{0.25, 0.45, 0.78}"
+    Line width: 1
     for iE from 0 to nEventViz - 1
-        Draw line: evStart_'iE', -0.95, evStart_'iE', 0.72
+        Draw line: evStart_'iE', -ampViz, evStart_'iE', ampViz
     endfor
     Colour: "Black"
-    Line width: 1
+    Select inner viewport: vizL, vizR, yWa, yWb
+    Axes: 0, axisDur, -ampViz, ampViz
     Draw inner box
+    Marks bottom every: 1, snapT, "no", "yes", "no"
+    @rail: yWa, yWb, "Source"
+
+    # --- 1b: event and phrase spans ------------------------------------------
     Font size: 7
-    Text left: "yes", "Source"
-    Text top: "no", "1  Onset segmentation: actual event boundaries; phrase spans shown as top strips"
-    Text bottom: "yes", "Source time (s)"
-
-    # === 2. EVENT -> PHRASE HIERARCHY ===
-    Select outer viewport: 0, 8, 1.82, 2.85
-    Select inner viewport: 0.65, 7.75, 1.92, 2.77
-    Axes: 0, dur, 0, 1
-    Paint rectangle: "{0.97, 0.97, 0.98}", 0, dur, 0, 1
-
-    # event blocks: these are actual source-time spans
+    Select inner viewport: vizL, vizR, yHa, yHb
+    Axes: 0, axisDur, 0, 2
+    Paint rectangle: "{1.00, 1.00, 1.00}", 0, axisDur, 0, 2
     for iE from 0 to nEventViz - 1
-        Colour: "{0.35, 0.55, 0.82}"
-        Paint rectangle: "{0.82, 0.88, 0.96}", evStart_'iE', evEnd_'iE', 0.66, 0.84
-        Draw rectangle: evStart_'iE', evEnd_'iE', 0.66, 0.84
+        Paint rectangle: "{0.80, 0.86, 0.95}", evStart_'iE', evEnd_'iE', 1.12, 1.82
+        Colour: "{0.35, 0.45, 0.62}"
+        Draw rectangle: evStart_'iE', evEnd_'iE', 1.12, 1.82
     endfor
-
-    # phrase blocks: actual grouping returned by group_into_phrases
     for iP from 0 to nPhraseViz - 1
+        Paint rectangle: "{0.87, 0.87, 0.91}", phStart_'iP', phEnd_'iP', 0.18, 0.88
         Colour: "{0.35, 0.35, 0.45}"
-        Paint rectangle: "{0.88, 0.88, 0.91}", phStart_'iP', phEnd_'iP', 0.34, 0.54
-        Draw rectangle: phStart_'iP', phEnd_'iP', 0.34, 0.54
+        Draw rectangle: phStart_'iP', phEnd_'iP', 0.18, 0.88
     endfor
-
     Colour: "Black"
-    Draw inner box
+    Select inner viewport: vizL, vizR, yHa, yHb
+    Axes: 0, axisDur, 0, 2
+    if nPhraseViz <= 16
+        Font size: 5.5
+        Select inner viewport: vizL, vizR, yHa, yHb
+        Axes: 0, axisDur, 0, 2
+        Colour: "{0.30, 0.30, 0.38}"
+        for iP from 0 to nPhraseViz - 1
+            Text: (phStart_'iP' + phEnd_'iP') / 2, "centre", 0.53, "half", "P" + string$(phIndex_'iP' + 1)
+        endfor
+        Colour: "Black"
+    endif
     Font size: 7
-    Text top: "no", "2  Hierarchy: events are grouped into phrases by feature similarity + coherence"
+    Select inner viewport: vizL, vizR, yHa, yHb
+    Axes: 0, axisDur, 0, 2
+    Draw inner box
+    One mark left: 1.47, "no", "yes", "no", "events"
+    One mark left: 0.53, "no", "yes", "no", "phrases"
+    Marks bottom every: 1, snapT, "yes", "yes", "no"
     Text bottom: "yes", "Source time (s)"
 
-    # Free text can change Praat Picture viewport state; reselect before each label.
-    Select outer viewport: 0, 8, 1.82, 2.85
-    Select inner viewport: 0.65, 7.75, 1.92, 2.77
-    Axes: 0, dur, 0, 1
-    Text: 0.01 * dur, "left", 0.75, "half", "Events"
-    Select outer viewport: 0, 8, 1.82, 2.85
-    Select inner viewport: 0.65, 7.75, 1.92, 2.77
-    Axes: 0, dur, 0, 1
-    Text: 0.01 * dur, "left", 0.44, "half", "Phrases"
-    if nPhraseViz <= 14
-        for iP from 0 to nPhraseViz - 1
-            Select outer viewport: 0, 8, 1.82, 2.85
-            Select inner viewport: 0.65, 7.75, 1.92, 2.77
-            Axes: 0, dur, 0, 1
-            Text: (phStart_'iP' + phEnd_'iP') / 2, "centre", 0.44, "half", "P" + string$(phIndex_'iP' + 1)
+    # --- 2: the generated plan -----------------------------------------------
+    if hasPlan
+        @caption: vizL, vizR, yPa, yPb, "2  The plan the seeded generator produced - one column per phrase, one row per compositional slot (darker = higher)"
+        Font size: 5.5
+        Select inner viewport: vizL, vizR, yPa, yPb
+        Axes: 0, nPlanViz, 0, nPlanCols
+        Paint rectangle: "{1.00, 1.00, 1.00}", 0, nPlanViz, 0, nPlanCols
+        for iR from 0 to nPlanViz - 1
+            for iC from 0 to nPlanCols - 1
+                pk = iR * nPlanCols + iC
+                pv = planVal_'pk'
+                if pv = undefined
+                    pv = 0
+                endif
+                pv = min(1, max(0, pv))
+                cellCol$ = "{" + fixed$(0.97 - 0.82 * pv, 3)
+                    ... + ", " + fixed$(0.98 - 0.63 * pv, 3)
+                    ... + ", " + fixed$(0.99 - 0.31 * pv, 3) + "}"
+                yTop = nPlanCols - iC
+                Paint rectangle: cellCol$, iR, iR + 1, yTop - 1, yTop
+            endfor
         endfor
+        Colour: "Black"
+        Select inner viewport: vizL, vizR, yPa, yPb
+        Axes: 0, nPlanViz, 0, nPlanCols
+        Draw inner box
+        for iC from 0 to nPlanCols - 1
+            @sanitize: planCol_'iC'$
+            One mark left: nPlanCols - iC - 0.5, "no", "yes", "no", sanitize.out$
+        endfor
+        if nPlanViz <= 24
+            for iR from 0 to nPlanViz - 1
+                One mark bottom: iR + 0.5, "no", "yes", "no", "P" + string$(iR + 1)
+            endfor
+        else
+            @snapStep: nPlanViz, 8
+            Marks bottom every: 1, snapStep.step, "yes", "yes", "no"
+        endif
+        Font size: 6
+        Select inner viewport: vizL, vizR, yPa, yPb
+        Axes: 0, 1, 0, 1
+        Text bottom: "yes", "Phrase  (plan row, after user-parameter modulation)"
     endif
 
-    # === 3. SEEDED NEURAL PLAN GENERATOR ===
-    Select outer viewport: 0, 8, 2.92, 4.12
-    Select inner viewport: 0.45, 7.8, 3.02, 4.04
-    Axes: 0, 1, 0, 1
-    Paint rectangle: "{0.965, 0.97, 0.985}", 0, 1, 0, 1
-
-    # five explicit processing stages
-    Colour: "{0.2, 0.4, 0.75}"
-    Paint rectangle: "{0.88, 0.92, 0.98}", 0.02, 0.17, 0.52, 0.78
-    Draw rectangle: 0.02, 0.17, 0.52, 0.78
-    Paint rectangle: "{0.88, 0.92, 0.98}", 0.22, 0.38, 0.52, 0.78
-    Draw rectangle: 0.22, 0.38, 0.52, 0.78
-    Paint rectangle: "{0.88, 0.92, 0.98}", 0.43, 0.61, 0.52, 0.78
-    Draw rectangle: 0.43, 0.61, 0.52, 0.78
-    Paint rectangle: "{0.88, 0.92, 0.98}", 0.66, 0.79, 0.52, 0.78
-    Draw rectangle: 0.66, 0.79, 0.52, 0.78
-    Paint rectangle: "{0.88, 0.92, 0.98}", 0.84, 0.98, 0.52, 0.78
-    Draw rectangle: 0.84, 0.98, 0.52, 0.78
-
-    Colour: "{0.25, 0.25, 0.35}"
-    Draw arrow: 0.17, 0.65, 0.22, 0.65
-    Draw arrow: 0.38, 0.65, 0.43, 0.65
-    Draw arrow: 0.61, 0.65, 0.66, 0.65
-    Draw arrow: 0.79, 0.65, 0.84, 0.65
-
-    # Draw the frame before free text; then restore inner viewport for each label.
-    Colour: "Black"
-    Draw rectangle: 0, 1, 0, 1
-
-    Font size: 6
-    Colour: "Black"
-    Select outer viewport: 0, 8, 2.92, 4.12
-    Select inner viewport: 0.45, 7.8, 3.02, 4.04
-    Axes: 0, 1, 0, 1
-    Text: 0.095, "centre", 0.65, "half", "7-D event features"
-    Select outer viewport: 0, 8, 2.92, 4.12
-    Select inner viewport: 0.45, 7.8, 3.02, 4.04
-    Axes: 0, 1, 0, 1
-    Text: 0.30, "centre", 0.65, "half", "Event Encoder"
-    Select outer viewport: 0, 8, 2.92, 4.12
-    Select inner viewport: 0.45, 7.8, 3.02, 4.04
-    Axes: 0, 1, 0, 1
-    Text: 0.52, "centre", 0.65, "half", "Phrase Transformer"
-    Select outer viewport: 0, 8, 2.92, 4.12
-    Select inner viewport: 0.45, 7.8, 3.02, 4.04
-    Axes: 0, 1, 0, 1
-    Text: 0.725, "centre", 0.65, "half", "Bi-GRU"
-    Select outer viewport: 0, 8, 2.92, 4.12
-    Select inner viewport: 0.45, 7.8, 3.02, 4.04
-    Axes: 0, 1, 0, 1
-    Text: 0.91, "centre", 0.65, "half", "16-D plan"
-
+    # --- 3: scheduled operations by type -------------------------------------
+    @caption: vizL, vizR, yOpsA, yOpsB, "3  Operations actually scheduled for this render"
     Font size: 7
-    Colour: "{0.2, 0.2, 0.35}"
-    Select outer viewport: 0, 8, 2.92, 4.12
-    Select inner viewport: 0.45, 7.8, 3.02, 4.04
-    Axes: 0, 1, 0, 1
-    Text: 0.5, "centre", 0.91, "half", "3  Seeded plan generator (untrained weights; deterministic for this seed)"
-    Font size: 6
-    Colour: "{0.35, 0.35, 0.42}"
-    Select outer viewport: 0, 8, 2.92, 4.12
-    Select inner viewport: 0.45, 7.8, 3.02, 4.04
-    Axes: 0, 1, 0, 1
-    Text: 0.5, "centre", 0.31, "half",
-        ... "Actual plan means: repeat " + fixed$(planRep, 2)
-        ... + " | fragment " + fixed$(planFrag, 2)
-        ... + " | overlap " + fixed$(planOverlap, 2)
-    Select outer viewport: 0, 8, 2.92, 4.12
-    Select inner viewport: 0.45, 7.8, 3.02, 4.04
-    Axes: 0, 1, 0, 1
-    Text: 0.5, "centre", 0.15, "half",
-        ... "stretch " + fixed$(planStretch, 2)
-        ... + " | memory " + fixed$(planMemory, 2)
-        ... + " | braid " + fixed$(planBraid, 2)
-
-    # === 4. PLAN -> ACTUAL SCHEDULED OPERATIONS ===
-    Select outer viewport: 0, 8, 4.2, 5.78
-    Select inner viewport: 0.9, 7.75, 4.33, 5.67
-    Axes: 0, dur_out, 0, 7
-    Paint rectangle: "{0.975, 0.975, 0.985}", 0, dur_out, 0, 7
-
-    # lanes: place 6, repeat 5, fragment 4, recall 3, braid 2, echo/invert 1
+    Select inner viewport: vizL, vizR, yOpsA, yOpsB
+    Axes: 0, axisDur, 0, 7
+    Paint rectangle: "{1.00, 1.00, 1.00}", 0, axisDur, 0, 7
     for iO from 0 to nOpViz - 1
-        typ$ = opType_'iO'$
-        oy = 1.0
-        fill$ = "{0.70, 0.70, 0.75}"
-        if typ$ = "place"
-            oy = 6.0
-            fill$ = "{0.45, 0.65, 0.88}"
-        elsif typ$ = "repeat"
-            oy = 5.0
-            fill$ = "{0.62, 0.74, 0.88}"
-        elsif typ$ = "fragment"
-            oy = 4.0
-            fill$ = "{0.84, 0.68, 0.45}"
-        elsif typ$ = "recall"
-            oy = 3.0
-            fill$ = "{0.68, 0.58, 0.78}"
-        elsif typ$ = "braid"
-            oy = 2.0
-            fill$ = "{0.50, 0.72, 0.68}"
-        elsif typ$ = "echo"
-            oy = 1.0
-            fill$ = "{0.72, 0.72, 0.80}"
-        elsif typ$ = "invert"
-            oy = 1.0
-            fill$ = "{0.55, 0.55, 0.65}"
-        endif
+        @opLane: opType_'iO'$
         if opEnd_'iO' > opStart_'iO'
-            Paint rectangle: fill$, opStart_'iO', opEnd_'iO', oy - 0.27, oy + 0.27
-            Colour: "{0.35, 0.35, 0.42}"
-            Draw rectangle: opStart_'iO', opEnd_'iO', oy - 0.27, oy + 0.27
+            Paint rectangle: opLane.fill$, opStart_'iO', opEnd_'iO', opLane.y - 0.28, opLane.y + 0.28
+            Colour: opLane.line$
+            Draw rectangle: opStart_'iO', opEnd_'iO', opLane.y - 0.28, opLane.y + 0.28
         endif
     endfor
-
     Colour: "Black"
+    Select inner viewport: vizL, vizR, yOpsA, yOpsB
+    Axes: 0, axisDur, 0, 7
     Draw inner box
+    @laneLabel: 6.5, nOpPlace, "place"
+    @laneLabel: 5.5, nOpRepeat, "repeat"
+    @laneLabel: 4.5, nOpFragment, "fragment"
+    @laneLabel: 3.5, nOpRecall, "recall"
+    @laneLabel: 2.5, nOpBraid, "braid"
+    @laneLabel: 1.5, nOpEcho, "echo"
+    @laneLabel: 0.5, nOpInvert, "invert"
     Font size: 7
-    Text top: "no", "4  Actual operations scheduled for this render; stereo field at bottom"
-    Text bottom: "yes", "Output time (s)"
+    Select inner viewport: vizL, vizR, yOpsA, yOpsB
+    Axes: 0, axisDur, 0, 7
+    Marks bottom every: 1, snapT, "no", "yes", "no"
 
-    # Lane labels after all data-world painting; restore viewport before each Text.
-    Font size: 6
-    Colour: "{0.35, 0.35, 0.42}"
-    Select outer viewport: 0, 8, 4.2, 5.78
-    Select inner viewport: 0.9, 7.75, 4.33, 5.67
-    Axes: 0, dur_out, 0, 7
-    Text: 0.005 * dur_out, "left", 6.0, "half", "place"
-    Select outer viewport: 0, 8, 4.2, 5.78
-    Select inner viewport: 0.9, 7.75, 4.33, 5.67
-    Axes: 0, dur_out, 0, 7
-    Text: 0.005 * dur_out, "left", 5.0, "half", "repeat"
-    Select outer viewport: 0, 8, 4.2, 5.78
-    Select inner viewport: 0.9, 7.75, 4.33, 5.67
-    Axes: 0, dur_out, 0, 7
-    Text: 0.005 * dur_out, "left", 4.0, "half", "fragment"
-    Select outer viewport: 0, 8, 4.2, 5.78
-    Select inner viewport: 0.9, 7.75, 4.33, 5.67
-    Axes: 0, dur_out, 0, 7
-    Text: 0.005 * dur_out, "left", 3.0, "half", "recall"
-    Select outer viewport: 0, 8, 4.2, 5.78
-    Select inner viewport: 0.9, 7.75, 4.33, 5.67
-    Axes: 0, dur_out, 0, 7
-    Text: 0.005 * dur_out, "left", 2.0, "half", "braid"
-    Select outer viewport: 0, 8, 4.2, 5.78
-    Select inner viewport: 0.9, 7.75, 4.33, 5.67
-    Axes: 0, dur_out, 0, 7
-    Text: 0.005 * dur_out, "left", 1.0, "half", "echo / invert"
-
-    # Actual stereo field inside the unused bottom of the operations panel.
-    # pan -1 -> L (0.12), 0 -> C (0.36), +1 -> R (0.60).
-    Select outer viewport: 0, 8, 4.2, 5.78
-    Select inner viewport: 0.9, 7.75, 4.33, 5.67
-    Axes: 0, dur_out, 0, 7
-    Colour: "{0.82, 0.82, 0.86}"
-    Line width: 0.6
-    Draw line: 0, 0.12, dur_out, 0.12
-    Draw line: 0, 0.36, dur_out, 0.36
-    Draw line: 0, 0.60, dur_out, 0.60
-    for iO from 0 to nOpViz - 1
-        panY = 0.36 + 0.24 * opPan_'iO'
-        Colour: "{0.25, 0.45, 0.72}"
-        Line width: 1.4
-        if opEnd_'iO' > opStart_'iO'
-            Draw line: opStart_'iO', panY, opEnd_'iO', panY
-        endif
-    endfor
-    Line width: 1
-    Colour: "{0.35, 0.35, 0.42}"
-    Font size: 5
-    Select outer viewport: 0, 8, 4.2, 5.78
-    Select inner viewport: 0.9, 7.75, 4.33, 5.67
-    Axes: 0, dur_out, 0, 7
-    Text: 0.005 * dur_out, "left", 0.12, "half", "L"
-    Select outer viewport: 0, 8, 4.2, 5.78
-    Select inner viewport: 0.9, 7.75, 4.33, 5.67
-    Axes: 0, dur_out, 0, 7
-    Text: 0.005 * dur_out, "left", 0.36, "half", "C"
-    Select outer viewport: 0, 8, 4.2, 5.78
-    Select inner viewport: 0.9, 7.75, 4.33, 5.67
-    Axes: 0, dur_out, 0, 7
-    Text: 0.005 * dur_out, "left", 0.60, "half", "R"
-
-    # === 5. MEASURED ACOUSTIC RESULT — SAME AXES ===
-    Select outer viewport: 0, 8, 5.86, 7.08
-    Select inner viewport: 0.65, 7.75, 5.98, 6.98
-    if dur_out > dur
-        axisDur = dur_out
-    else
-        axisDur = dur
+    # --- 4: stereo field (spatial renders only) ------------------------------
+    if showPan
+        Font size: 7
+        Select inner viewport: vizL, vizR, yPanA, yPanB
+        Axes: 0, axisDur, -1.15, 1.15
+        Paint rectangle: "{1.00, 1.00, 1.00}", 0, axisDur, -1.15, 1.15
+        Dotted line
+        Colour: "{0.75, 0.75, 0.80}"
+        Draw line: 0, 0, axisDur, 0
+        Solid line
+        Select inner viewport: vizL, vizR, yPanA, yPanB
+        Axes: 0, axisDur, -1.15, 1.15
+        Line width: 2
+        for iO from 0 to nOpViz - 1
+            @opLane: opType_'iO'$
+            Colour: opLane.line$
+            if opEnd_'iO' > opStart_'iO'
+                Draw line: opStart_'iO', opPan_'iO', opEnd_'iO', opPan_'iO'
+            endif
+        endfor
+        Line width: 1
+        Colour: "Black"
+        Select inner viewport: vizL, vizR, yPanA, yPanB
+        Axes: 0, axisDur, -1.15, 1.15
+        Draw inner box
+        One mark left: 0.85, "no", "yes", "no", "R"
+        One mark left: 0, "no", "yes", "no", "0"
+        One mark left: -0.85, "no", "yes", "no", "L"
+        Marks bottom every: 1, snapT, "no", "yes", "no"
+        @rail: yPanA, yPanB, "Pan"
     endif
-    Axes: 0, axisDur, -1, 1
-    Paint rectangle: "{0.975, 0.975, 0.985}", 0, axisDur, -1, 1
 
-    selectObject: sound
-    Colour: "{0.62, 0.62, 0.65}"
-    Line width: 1
-    Draw: 0, axisDur, -1, 1, "no", "Curve"
-    Select outer viewport: 0, 8, 5.86, 7.08
-    Select inner viewport: 0.65, 7.75, 5.98, 6.98
-    Axes: 0, axisDur, -1, 1
+    # --- 5: where each operation's material came from ------------------------
+    if hasMap
+        @caption: vizL, vizR, yMapA, yMapB, "5  Source of every scheduled operation - a flat run is a held source position, a jump down is a recall"
+        Font size: 7
+        Select inner viewport: vizL, vizR, yMapA, yMapB
+        Axes: 0, axisDur, 0, axisDur
+        Paint rectangle: "{1.00, 1.00, 1.00}", 0, axisDur, 0, axisDur
+        Dotted line
+        Colour: "{0.78, 0.78, 0.84}"
+        Draw line: 0, 0, axisDur, axisDur
+        Solid line
+        Select inner viewport: vizL, vizR, yMapA, yMapB
+        Axes: 0, axisDur, 0, axisDur
+        Line width: 2
+        for iO from 0 to nOpViz - 1
+            if opSrcStart_'iO' >= 0 and opEnd_'iO' > opStart_'iO'
+                @opLane: opType_'iO'$
+                Colour: opLane.line$
+                Draw line: opStart_'iO', opSrcStart_'iO', opEnd_'iO', opSrcEnd_'iO'
+            endif
+        endfor
+        Line width: 1
+        Colour: "Black"
+        Select inner viewport: vizL, vizR, yMapA, yMapB
+        Axes: 0, axisDur, 0, axisDur
+        Draw inner box
+        @snapStep: axisDur, 4
+        Marks left every: 1, snapStep.step, "yes", "yes", "no"
+        Marks bottom every: 1, snapT, "no", "yes", "no"
+        @rail: yMapA, yMapB, "Source s"
+    endif
+
+    # --- 6: the rendered result ----------------------------------------------
+    @caption: vizL, vizR, yResA, yResB, "6  Rendered recomposition, drawn at the same time and amplitude scale as the source in panel 1"
+    Font size: 7
+    Select inner viewport: vizL, vizR, yResA, yResB
     selectObject: resultSound
-    Colour: "{0.2, 0.4, 0.75}"
-    Line width: 1.5
-    Draw: 0, axisDur, -1, 1, "no", "Curve"
-
-    Select outer viewport: 0, 8, 5.86, 7.08
-    Select inner viewport: 0.65, 7.75, 5.98, 6.98
-    Axes: 0, axisDur, -1, 1
+    Colour: "{0.20, 0.40, 0.75}"
+    Draw: 0, axisDur, -ampViz, ampViz, "no", "Curve"
     Colour: "Black"
-    Line width: 1
+    Select inner viewport: vizL, vizR, yResA, yResB
+    Axes: 0, axisDur, -ampViz, ampViz
     Draw inner box
+    Marks bottom every: 1, snapT, "yes", "yes", "no"
+    Text bottom: "yes", "Output time (s)"
+    @rail: yResA, yResB, "Result"
+
+    # --- summary --------------------------------------------------------------
+    @sanitize: neuralModel$
+    modelTxt$ = sanitize.out$
+    @sanitize: spatialMode$
+    spatialTxt$ = sanitize.out$
+    @sanitize: monoStrategy$
+    monoTxt$ = sanitize.out$
+
     Font size: 7
-    Text top: "no", "5  Same-scale waveform: grey source / blue recomposition | " + spatialMode$
-    Text bottom: "yes", "Time (s)"
-    Text left: "yes", "Amplitude"
-
-    # === Bottom QC / summary bar ===
-    Select outer viewport: 0, 8, 7.17, 8.0
-    Select inner viewport: 0.35, 7.75, 7.25, 7.9
+    Select inner viewport: vizL, vizR, ySumA, ySumB
     Axes: 0, 1, 0, 1
-    Paint rectangle: "{0.94, 0.95, 0.97}", 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+
+    Font size: 8
+    Select inner viewport: vizL, vizR, ySumA, ySumB
+    Axes: 0, 1, 0, 1
     Colour: "Black"
+    Text: 0.015, "left", 0.90, "half", "##Process summary##"
+
+    Font size: 7
+    Select inner viewport: vizL, vizR, ySumA, ySumB
+    Axes: 0, 1, 0, 1
+    Text: 0.015, "left", 0.755, "half", "Hierarchy: " + nEvStat$ + " events to " + nPhStat$
+        ... + " phrases to " + nSecStat$ + " sections"
+        ... + "   coherence " + fixed$(phrase_coherence, 2)
+        ... + ", fragmentation " + fixed$(fragmentation, 2)
+        ... + "   mean density " + densityStat$ + ", mean brightness " + brightStat$
+    planTxt$ = "Plan: " + modelTxt$ + ", seed " + string$(random_seed)
+    if hasPlan
+        planTxt$ = planTxt$ + ", " + string$(nPlanRowsAll) + " rows x " + string$(nPlanCols) + " slots"
+            ... + ", phrase-to-phrase spread " + planSpread$
+    endif
+    Text: 0.015, "left", 0.620, "half", planTxt$
+        ... + "   means repeat " + fixed$(planRep, 2)
+        ... + ", fragment " + fixed$(planFrag, 2)
+        ... + ", overlap " + fixed$(planOverlap, 2)
+        ... + ", stretch " + fixed$(planStretch, 2)
+        ... + ", memory " + fixed$(planMemory, 2)
+        ... + ", braid " + fixed$(planBraid, 2)
+    Text: 0.015, "left", 0.485, "half", "Operations: " + string$(nOpsTotal) + " total"
+        ... + "   place " + string$(nOpPlace) + ", repeat " + string$(nOpRepeat)
+        ... + ", fragment " + string$(nOpFragment) + ", recall " + string$(nOpRecall)
+        ... + ", braid " + string$(nOpBraid) + ", echo " + string$(nOpEcho)
+        ... + ", invert " + string$(nOpInvert)
+    opDrawn$ = string$(nOpViz) + " of " + string$(nOpsTotal)
+    Text: 0.015, "left", 0.350, "half", "Rendering: target ratio x" + fixed$(target_duration, 2)
+        ... + ", overlap " + fixed$(overlap_amount, 2)
+        ... + ", surprise " + fixed$(formal_surprise, 2)
+        ... + "   analysis " + monoTxt$
+        ... + "   " + opDrawn$ + " operations drawn"
+    Text: 0.015, "left", 0.215, "half", "Output: " + string$(outputChannels) + " ch, " + spatialTxt$
+        ... + ", " + string$(nSpatialOps) + " panned operations, pan " + fixed$(panMin, 2)
+        ... + " to " + fixed$(panMax, 2)
+    Text: 0.015, "left", 0.080, "half", "Level: duration " + fixed$(dur, 2) + " to " + fixed$(dur_out, 2)
+        ... + " s   RMS " + fixed$(rms_orig, 4) + " to " + fixed$(rms_out, 4)
+    if hasPlan = 0 or hasMap = 0
+        Colour: "{0.70, 0.35, 0.10}"
+        Text: 0.985, "right", 0.90, "half", "stages 2 and 5 need engine v1.5 or newer"
+        Colour: "Black"
+    endif
+    Select inner viewport: vizL, vizR, ySumA, ySumB
+    Axes: 0, 1, 0, 1
     Draw rectangle: 0, 1, 0, 1
-    Font size: 6
-    Select outer viewport: 0, 8, 7.17, 8.0
-    Select inner viewport: 0.35, 7.75, 7.25, 7.9
-    Axes: 0, 1, 0, 1
-    Text: 0.02, "left", 0.72, "half",
-        ... "Events " + nEvStat$ + " -> Phrases " + nPhStat$ + " | Ops " + string$(nOpsTotal)
-        ... + " [place " + string$(nOpPlace) + ", repeat " + string$(nOpRepeat)
-        ... + ", fragment " + string$(nOpFragment) + ", recall " + string$(nOpRecall) + "]"
-    Select outer viewport: 0, 8, 7.17, 8.0
-    Select inner viewport: 0.35, 7.75, 7.25, 7.9
-    Axes: 0, 1, 0, 1
-    Text: 0.02, "left", 0.40, "half",
-        ... "Secondary ops: braid " + string$(nOpBraid) + " | echo " + string$(nOpEcho)
-        ... + " | invert " + string$(nOpInvert) + " | model " + neuralModel$
-        ... + " | analysis " + monoStrategy$
-    Select outer viewport: 0, 8, 7.17, 8.0
-    Select inner viewport: 0.35, 7.75, 7.25, 7.9
-    Axes: 0, 1, 0, 1
-    Text: 0.02, "left", 0.12, "half",
-        ... "Duration " + fixed$(dur, 2) + "s -> " + fixed$(dur_out, 2) + "s"
-        ... + " | RMS " + fixed$(rms_orig, 4) + " -> " + fixed$(rms_out, 4)
-        ... + " | " + string$(outputChannels) + "ch " + spatialMode$
-        ... + " | pan " + fixed$(panMin, 2) + ".." + fixed$(panMax, 2)
 
-    Font size: 10
-    Colour: "Black"
-
+    # Save as / Copy follow the CURRENT viewport selection, so end on the whole
+    # canvas or the export is silently cropped to the last panel.
+    Select outer viewport: 0, 8, 0, canvasH
 endif
 
 # ---- CLEANUP AND FINISH ----
@@ -924,3 +1043,121 @@ appendInfoLine: ""
 appendInfoLine: "=== COMPLETE ==="
 appendInfoLine: "Output: " + soundName$ + "_hnr_" + presetName$
 appendInfoLine: "Duration: " + fixed$(dur_out, 2) + " s"
+
+# -----------------------------------------------------------------------------
+# Drawing helpers
+# -----------------------------------------------------------------------------
+
+# Picture-window text treats _ ^ # % and \ as markup, so machine-generated
+# labels (object names, model names, plan slot names) must be escaped.
+procedure sanitize: .s$
+    .out$ = replace$(.s$, "\", "\bs ", 0)
+    .out$ = replace$(.out$, "_", "\_ ", 0)
+    .out$ = replace$(.out$, "#", "\# ", 0)
+    .out$ = replace$(.out$, "^", "\^ ", 0)
+    .out$ = replace$(.out$, "%", "\% ", 0)
+endproc
+
+# A tick step derived as span/N prints labels like 0.6569; snap it to 1/2/5.
+procedure snapStep: .span, .target
+    .step = 1
+    if .span > 0
+        if .target > 0
+            .raw = .span / .target
+            .mag = 10 ^ floor(log10(.raw))
+            .n = .raw / .mag
+            if .n <= 1.5
+                .step = .mag
+            elsif .n <= 3.5
+                .step = 2 * .mag
+            elsif .n <= 7.5
+                .step = 5 * .mag
+            else
+                .step = 10 * .mag
+            endif
+        endif
+    endif
+endproc
+
+# Text left: anchors against whatever drawing frame is current, which puts each
+# panel's name at a different x. Place the rail by hand at one shared offset.
+procedure rail: .y1, .y2, .name$
+    Font size: 7
+    Select inner viewport: vizL, vizR, .y1, .y2
+    Axes: 0, 1, 0, 1
+    Colour: "Black"
+    Text special: railX, "centre", 0.5, "bottom", "Helvetica", 7, "90", .name$
+endproc
+
+procedure caption: .x1, .x2, .y1, .y2, .txt$
+    Font size: 6
+    Select inner viewport: .x1, .x2, .y1, .y2
+    Axes: 0, 1, 0, 1
+    Colour: "{0.35, 0.35, 0.45}"
+    Text top: "no", .txt$
+    Colour: "Black"
+endproc
+
+# One palette for every operation type, used by the lane chart, the stereo
+# strip and the source map so a colour means the same thing in all three.
+procedure opLane: .typ$
+    .y = 1.5
+    .r = 0.55
+    .g = 0.55
+    .b = 0.70
+    if .typ$ = "place"
+        .y = 6.5
+        .r = 0.20
+        .g = 0.45
+        .b = 0.78
+    elsif .typ$ = "repeat"
+        .y = 5.5
+        .r = 0.40
+        .g = 0.62
+        .b = 0.85
+    elsif .typ$ = "fragment"
+        .y = 4.5
+        .r = 0.80
+        .g = 0.55
+        .b = 0.20
+    elsif .typ$ = "recall"
+        .y = 3.5
+        .r = 0.55
+        .g = 0.38
+        .b = 0.72
+    elsif .typ$ = "braid"
+        .y = 2.5
+        .r = 0.20
+        .g = 0.60
+        .b = 0.52
+    elsif .typ$ = "echo"
+        .y = 1.5
+        .r = 0.55
+        .g = 0.55
+        .b = 0.70
+    elsif .typ$ = "invert"
+        .y = 0.5
+        .r = 0.35
+        .g = 0.35
+        .b = 0.45
+    endif
+    .line$ = "{" + fixed$(.r, 3) + ", " + fixed$(.g, 3) + ", " + fixed$(.b, 3) + "}"
+    .fill$ = "{" + fixed$(.r + (1 - .r) * 0.55, 3)
+        ... + ", " + fixed$(.g + (1 - .g) * 0.55, 3)
+        ... + ", " + fixed$(.b + (1 - .b) * 0.55, 3) + "}"
+endproc
+
+# Lane names carry their own count, and a lane this render never used is greyed
+# rather than hidden, so the same seven rows appear for every preset.
+procedure laneLabel: .y, .count, .name$
+    Font size: 5.5
+    Select inner viewport: vizL, vizR, yOpsA, yOpsB
+    Axes: 0, axisDur, 0, 7
+    if .count > 0
+        Colour: "{0.25, 0.25, 0.32}"
+    else
+        Colour: "{0.70, 0.70, 0.75}"
+    endif
+    One mark left: .y, "no", "yes", "no", .name$ + "  " + string$(.count)
+    Colour: "Black"
+endproc

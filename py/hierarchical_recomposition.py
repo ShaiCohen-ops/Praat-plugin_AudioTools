@@ -1432,6 +1432,8 @@ def main():
         'mean_density':   f'{np.mean([s["density"] for s in sections]):.3f}' if sections else '0',
         'mean_brightness':f'{np.mean([s["brightness"] for s in sections]):.3f}' if sections else '0',
         'plan_rows':      len(section_plan_np),
+        'target_duration_s': f'{target_dur:.4f}',
+        'n_voices':       n_voices,
     }
 
     # Actual plan values used by the scheduler (after user-parameter modulation).
@@ -1439,6 +1441,32 @@ def main():
                 'memory', 'braid', 'inversion', 'collapse'):
         col = PLAN_SLOTS[key]
         stats[f'plan_{key}_mean'] = f'{float(np.mean(section_plan_np[:, col])):.4f}'
+
+    # The generated plan itself, one row per phrase and one column per slot.
+    # Only eight column means were reported before, which is not enough to see
+    # whether the planner actually differentiated the phrases.
+    n_plan_rows_all = len(section_plan_np)
+    stats['n_plan_cols'] = section_plan_np.shape[1] if n_plan_rows_all else 0
+    for name, col in PLAN_SLOTS.items():
+        stats[f'plan_col_{col}'] = name
+    max_plan_viz = 40
+    if n_plan_rows_all <= max_plan_viz:
+        plan_viz_idx = np.arange(n_plan_rows_all, dtype=int)
+    else:
+        plan_viz_idx = np.unique(
+            np.linspace(0, n_plan_rows_all - 1, max_plan_viz).astype(int))
+    stats['n_plan_viz'] = len(plan_viz_idx)
+    stats['plan_rows_all'] = n_plan_rows_all
+    # How much the planner actually differentiated the phrases: the mean, over
+    # slots, of the spread across plan rows. Near zero means every phrase got
+    # essentially the same plan, which a heatmap alone can look like either way.
+    if n_plan_rows_all > 1:
+        stats['plan_row_spread'] = '%.4f' % float(np.mean(np.std(section_plan_np, axis=0)))
+    else:
+        stats['plan_row_spread'] = '0.0000'
+    for j, pi in enumerate(plan_viz_idx):
+        stats[f'plan_row_{j}'] = ','.join(
+            f'{float(v):.4f}' for v in section_plan_np[int(pi)])
 
     # Map source events to their actual phrase membership.
     event_phrase = np.full(n_ev, -1, dtype=int)
@@ -1507,7 +1535,7 @@ def main():
     for typ in ('place', 'repeat', 'fragment', 'recall', 'braid', 'echo', 'invert'):
         stats[f'n_op_{typ}'] = op_counts.get(typ, 0)
 
-    max_op_viz = 90
+    max_op_viz = 240
     audible_ops = []
     for op in ops_sorted:
         start = float(op.get('start_time', 0.0))
@@ -1526,6 +1554,14 @@ def main():
             f'{op.get("type", "other")},{t0o:.6f},{t1o:.6f},'
             f'{int(op.get("event_idx", -1))},{float(op.get("gain", 1.0)):.4f},'
             f'{float(op.get("pan", 0.0)):.4f},{int(op.get("voice", 0))}')
+        # Where in the SOURCE this operation's material came from. Separate key
+        # so a front-end that parses the fixed op_ layout is unaffected.
+        ei = int(op.get('event_idx', -1))
+        if 0 <= ei < len(events):
+            stats[f'opsrc_{j}'] = (
+                f'{events[ei]["start"]/sr:.6f},{events[ei]["end"]/sr:.6f}')
+        else:
+            stats[f'opsrc_{j}'] = '-1.000000,-1.000000'
 
     write_stats(cfg['stats'], stats)
     print("[HNR] Done.", flush=True)
