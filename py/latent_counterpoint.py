@@ -940,6 +940,86 @@ def write_stats(path, events, agents, agent_histories, Z, center,
                     f.write("ag_%d_bl_%d=%d,%.4f,%.4f\n" % (
                         ai, bi, ev_idx, bs, be))
 
+        # ── Latent map: a 2-D projection of the space the agents navigate ──
+        # The tool is named for this space and nothing was ever exported from
+        # it. PCA by SVD, no sklearn dependency.
+        Zc = np.asarray(Z, dtype=np.float64)
+        if Zc.ndim == 2 and Zc.shape[0] >= 2 and Zc.shape[1] >= 2:
+            mu = Zc.mean(axis=0)
+            Zm = Zc - mu
+            try:
+                U, S, Vt = np.linalg.svd(Zm, full_matrices=False)
+                comp = Vt[:2]
+                proj = Zm @ comp.T
+                var = (S ** 2)
+                tot = float(var.sum()) + 1e-20
+                share = float(var[0] + var[1]) / tot
+                cen = (np.asarray(center, dtype=np.float64) - mu) @ comp.T
+                f.write("latent_dim=%d\n" % Zc.shape[1])
+                f.write("latent_pc_share=%.4f\n" % share)
+                f.write("lat_center=%.6f,%.6f\n" % (float(cen[0]), float(cen[1])))
+                max_lat = 400
+                if n_events <= max_lat:
+                    lat_idx = np.arange(n_events, dtype=int)
+                else:
+                    lat_idx = np.unique(
+                        np.linspace(0, n_events - 1, max_lat).astype(int))
+                f.write("n_lat=%d\n" % len(lat_idx))
+                for j, ei in enumerate(lat_idx):
+                    f.write("lat_%d=%d,%.6f,%.6f,%.4f\n" % (
+                        j, int(ei), float(proj[ei, 0]), float(proj[ei, 1]),
+                        float(periphery[ei])))
+            except Exception:
+                pass
+
+        # ── Autoencoder training curve ────────────────────────────────
+        # Two loss numbers cannot show whether the latent space converged.
+        if losses:
+            max_loss_pts = 80
+            L = list(losses)
+            if len(L) <= max_loss_pts:
+                loss_idx = list(range(len(L)))
+            else:
+                loss_idx = sorted(set(
+                    int(round(v)) for v in
+                    np.linspace(0, len(L) - 1, max_loss_pts)))
+            f.write("n_loss=%d\n" % len(loss_idx))
+            for j, li in enumerate(loss_idx):
+                f.write("loss_%d=%d,%.8f\n" % (j, int(li), float(L[li])))
+
+        # ── Simultaneous separation per physics step ──────────────────
+        # mean_separation_ratio collapses the whole run to one number; the
+        # rigidity control is about how that varies over the piece.
+        if max_steps > 1 and n_agents > 1:
+            step_sep = []
+            for st in range(max_steps):
+                chosen = [Z[h[st]] for h in agent_histories if st < len(h)]
+                vals = []
+                for ia in range(len(chosen)):
+                    for ib in range(ia + 1, len(chosen)):
+                        vals.append(float(np.linalg.norm(chosen[ia] - chosen[ib])))
+                if vals:
+                    step_sep.append(float(np.mean(vals)) / max(float(median_dist), 1e-9))
+            max_sep_pts = 300
+            if len(step_sep) > max_sep_pts:
+                keep = sorted(set(int(round(v)) for v in
+                                  np.linspace(0, len(step_sep) - 1, max_sep_pts)))
+            else:
+                keep = list(range(len(step_sep)))
+            f.write("n_sep=%d\n" % len(keep))
+            for j, si in enumerate(keep):
+                f.write("sep_%d=%d,%.4f\n" % (j, int(si), step_sep[si]))
+
+        # ── Per-agent event usage, one count per event ────────────────
+        if n_events <= 400:
+            f.write("n_use_events=%d\n" % n_events)
+            for ai, hist in enumerate(agent_histories):
+                counts = np.zeros(n_events, dtype=int)
+                for idx in hist:
+                    if 0 <= idx < n_events:
+                        counts[idx] += 1
+                f.write("use_%d=%s\n" % (ai, ','.join(str(int(c)) for c in counts)))
+
         if warnings:
             f.write("warning=%s\n" % "; ".join(warnings))
 

@@ -3,7 +3,21 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.4 (2026) - click-safe reconstruction + truthful process QC
+# Version: 1.5 (2026) - click-safe reconstruction + latent-space process figure
+#
+# Changelog v1.5:
+#   - The figure now shows the latent space the tool is named for: a PCA map of
+#     the event corpus with each voice's path through it, plus the autoencoder
+#     training curve and the per-step voice separation. Pairs with
+#     latent_counterpoint.py v1.5, which exports those observations only.
+#   - The process-architecture diagram, the QC box and the agent-profile box
+#     were three prose panels filling half the canvas; they collapse into one
+#     summary and the space goes to a per-voice event-usage matrix.
+#   - Fixed: the polyphonic timeline drew its lowest voice below the panel's
+#     ymin, and Paint rectangle does not clip, so it spilled over the summary.
+#   - Fixed: no panel drew axis numbers; the output panel's axis label was
+#     painted over by the next panel; "adaptive_equal_power" rendered with a
+#     subscript because _ is Picture markup.
 #
 # Changelog v1.4:
 #   - Reconstruction uses adaptive local equal-power splices; removed global
@@ -126,7 +140,7 @@ endproc
 @cleanUpTempFiles
 
 # ---- FORM ----
-form The Latent Counterpoint v1.4
+form The Latent Counterpoint v1.5
     optionmenu Preset: 1
         option Custom
         option Duo (2 voices)
@@ -207,7 +221,7 @@ endif
 
 # ---- INFO ----
 clearinfo
-writeInfoLine:  "=== The Latent Counterpoint v1.4 ==="
+writeInfoLine:  "=== The Latent Counterpoint v1.5 ==="
 appendInfoLine: "Input: ", soundName$
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
@@ -472,6 +486,22 @@ for iAT from 0 to 5
     agNBlocks_'iAT' = 0
 endfor
 
+nLat = 0
+nLoss = 0
+nSep = 0
+nUseEvents = 0
+latShare$ = "?"
+latCx = 0
+latCy = 0
+latXlo = -1
+latXhi = 1
+latYlo = -1
+latYhi = 1
+lossHi = 1
+lossSteps = 1
+sepHi = 1
+useHi = 1
+
 if fileReadable(tempStats$)
     statsText$ = readFile$(tempStats$)
 
@@ -553,165 +583,550 @@ if fileReadable(tempStats$)
             endif
         endfor
     endfor
+
+    # ── Latent map: events projected to two dimensions, plus the centre ──
+    @parseStatLine: statsText$, "n_lat="
+    if parseStatLine.result$ <> "?"
+        nLat = number(parseStatLine.result$)
+    endif
+    @parseStatLine: statsText$, "latent_pc_share="
+    latShare$ = parseStatLine.result$
+    @parseStatLine: statsText$, "lat_center="
+    if parseStatLine.result$ <> "?"
+        crow$ = parseStatLine.result$
+        cc = index(crow$, ",")
+        if cc > 0
+            latCx = number(left$(crow$, cc - 1))
+            latCy = number(mid$(crow$, cc + 1, length(crow$) - cc))
+        endif
+    endif
+    # latOf_ maps a source event index back to its row in the drawn map, so a
+    # voice path can be traced from the timeline blocks without a second export.
+    for iEvL from 0 to 511
+        latOf_'iEvL' = -1
+    endfor
+    for iL from 0 to nLat - 1
+        @parseStatLine: statsText$, "lat_" + string$(iL) + "="
+        lrow$ = parseStatLine.result$
+        if lrow$ <> "?"
+            k1 = index(lrow$, ",")
+            latIdx = number(left$(lrow$, k1 - 1))
+            r1$ = mid$(lrow$, k1 + 1, length(lrow$) - k1)
+            k2 = index(r1$, ",")
+            latX_'iL' = number(left$(r1$, k2 - 1))
+            r2$ = mid$(r1$, k2 + 1, length(r1$) - k2)
+            k3 = index(r2$, ",")
+            latY_'iL' = number(left$(r2$, k3 - 1))
+            latP_'iL' = number(mid$(r2$, k3 + 1, length(r2$) - k3))
+            if latIdx >= 0 and latIdx <= 511
+                latOf_'latIdx' = iL
+            endif
+            if iL = 0
+                latXlo = latX_'iL'
+                latXhi = latX_'iL'
+                latYlo = latY_'iL'
+                latYhi = latY_'iL'
+            else
+                latXlo = min(latXlo, latX_'iL')
+                latXhi = max(latXhi, latX_'iL')
+                latYlo = min(latYlo, latY_'iL')
+                latYhi = max(latYhi, latY_'iL')
+            endif
+        endif
+    endfor
+    if nLat >= 2
+        latXlo = min(latXlo, latCx)
+        latXhi = max(latXhi, latCx)
+        latYlo = min(latYlo, latCy)
+        latYhi = max(latYhi, latCy)
+    endif
+    # A single far-flung event can squash the rest of a large corpus into one
+    # blob, so on anything but a small corpus frame the map on mean +/- 3 sd and
+    # clamp the stragglers onto the border rather than let them set the scale.
+    if nLat >= 20
+        sxSum = 0
+        sySum = 0
+        for iL from 0 to nLat - 1
+            sxSum = sxSum + latX_'iL'
+            sySum = sySum + latY_'iL'
+        endfor
+        sxMean = sxSum / nLat
+        syMean = sySum / nLat
+        sxVar = 0
+        syVar = 0
+        for iL from 0 to nLat - 1
+            sxVar = sxVar + (latX_'iL' - sxMean) ^ 2
+            syVar = syVar + (latY_'iL' - syMean) ^ 2
+        endfor
+        sxSd = sqrt(sxVar / nLat)
+        sySd = sqrt(syVar / nLat)
+        if sxSd > 0
+            latXlo = max(latXlo, sxMean - 3 * sxSd)
+            latXhi = min(latXhi, sxMean + 3 * sxSd)
+        endif
+        if sySd > 0
+            latYlo = max(latYlo, syMean - 3 * sySd)
+            latYhi = min(latYhi, syMean + 3 * sySd)
+        endif
+    endif
+
+    # ── Autoencoder training curve ──
+    @parseStatLine: statsText$, "n_loss="
+    if parseStatLine.result$ <> "?"
+        nLoss = number(parseStatLine.result$)
+    endif
+    for iLo from 0 to nLoss - 1
+        @parseStatLine: statsText$, "loss_" + string$(iLo) + "="
+        lrow$ = parseStatLine.result$
+        lossStep_'iLo' = iLo
+        lossVal_'iLo' = 0
+        if lrow$ <> "?"
+            k1 = index(lrow$, ",")
+            if k1 > 0
+                lossStep_'iLo' = number(left$(lrow$, k1 - 1))
+                lossVal_'iLo' = number(mid$(lrow$, k1 + 1, length(lrow$) - k1))
+                lossHi = max(lossHi * (iLo > 0), lossVal_'iLo')
+                lossSteps = max(lossSteps, lossStep_'iLo')
+            endif
+        endif
+    endfor
+
+    # ── Voice separation per physics step ──
+    @parseStatLine: statsText$, "n_sep="
+    if parseStatLine.result$ <> "?"
+        nSep = number(parseStatLine.result$)
+    endif
+    sepHi = 0
+    for iSp from 0 to nSep - 1
+        @parseStatLine: statsText$, "sep_" + string$(iSp) + "="
+        srow$ = parseStatLine.result$
+        sepVal_'iSp' = 0
+        if srow$ <> "?"
+            k1 = index(srow$, ",")
+            if k1 > 0
+                sepVal_'iSp' = number(mid$(srow$, k1 + 1, length(srow$) - k1))
+                sepHi = max(sepHi, sepVal_'iSp')
+            endif
+        endif
+    endfor
+    sepHi = max(sepHi, 1)
+
+    # ── Per-voice event usage ──
+    @parseStatLine: statsText$, "n_use_events="
+    if parseStatLine.result$ <> "?"
+        nUseEvents = number(parseStatLine.result$)
+    endif
+    useHi = 1
+    for iAT from 0 to number_of_agents - 1
+        @parseStatLine: statsText$, "use_" + string$(iAT) + "="
+        urow$ = parseStatLine.result$
+        for iEv2 from 0 to nUseEvents - 1
+            uk = iAT * nUseEvents + iEv2
+            useCount_'uk' = 0
+            if urow$ <> ""
+                up = index(urow$, ",")
+                if up > 0
+                    utxt$ = left$(urow$, up - 1)
+                    urow$ = mid$(urow$, up + 1, length(urow$) - up)
+                else
+                    utxt$ = urow$
+                    urow$ = ""
+                endif
+                useCount_'uk' = number(utxt$)
+                if useCount_'uk' = undefined
+                    useCount_'uk' = 0
+                endif
+                useHi = max(useHi, useCount_'uk')
+            endif
+        endfor
+    endfor
 endif
 
 ###############################################################################
 # VISUALIZATION
+#
+# The tool is named for a latent space that the figure never showed. It does
+# now, and the three prose boxes that filled half the old canvas (process
+# architecture, QC, agent profiles) collapse into one summary so the space can
+# carry measurements instead:
+#
+#   1  source with the event boundaries that were actually cut;
+#   2  the rendered result on the same scale;
+#   3  the latent space itself, with each voice's path through it;
+#   4  whether the autoencoder converged, and how far apart the voices stayed;
+#   5  which events each voice took, and the polyphonic timeline.
 ###############################################################################
 
 if draw_visualization
     appendInfoLine: ""
     appendInfoLine: "Drawing visualization..."
 
+    vizL = 0.60
+    vizR = 7.70
+    railX = -0.040
+
+    selectObject: sound
+    srcHi = Get maximum: 0, 0, "None"
+    srcLo = Get minimum: 0, 0, "None"
+    selectObject: resultSound
+    outHi = Get maximum: 0, 0, "None"
+    outLo = Get minimum: 0, 0, "None"
+    ampViz = max(abs(srcHi), abs(srcLo))
+    ampViz = max(ampViz, max(abs(outHi), abs(outLo)))
+    if ampViz < 0.001
+        ampViz = 0.001
+    endif
+    axisDur = max(dur, durOut)
+    @snapStep: axisDur, 8
+    snapT = snapStep.step
+
+    hasLatent = 0
+    if nLat >= 2
+        hasLatent = 1
+    endif
+    hasLoss = 0
+    if nLoss >= 2
+        hasLoss = 1
+    endif
+    hasSep = 0
+    if nSep >= 2
+        hasSep = 1
+    endif
+    hasUse = 0
+    if nUseEvents >= 1
+        hasUse = 1
+    endif
+
+    # --- layout --------------------------------------------------------------
+    yInA = 0.80
+    yInB = 1.45
+    yOutA = 1.47
+    yOutB = 2.12
+
+    yLatA = 2.75
+    yLatB = 4.85
+    if hasLatent = 0
+        yLatA = 2.62
+        yLatB = 2.62
+    endif
+
+    yCurveA = yLatB + 0.50
+    yCurveB = yCurveA + 0.85
+    if hasLoss = 0 and hasSep = 0
+        yCurveA = yLatB
+        yCurveB = yLatB
+    endif
+
+    yUseA = yCurveB + 0.50
+    yUseB = yUseA + 0.70
+    if hasUse = 0
+        yUseA = yCurveB
+        yUseB = yCurveB
+    endif
+
+    yTlA = yUseB + 0.32
+    yTlB = yTlA + 0.95
+    ySumA = yTlB + 0.54
+    # header + 3 analysis lines + one line per voice + 2 tail lines
+    sumRows = 6 + number_of_agents
+    sumPitch = 0.115
+    sumH = 0.12 + sumPitch * sumRows
+    ySumB = ySumA + sumH
+    canvasH = ySumB + 0.15
+
     Erase all
-    Select outer viewport: 0, 8, 0, 8
-
-    # === Title (own band) ===
-    Select outer viewport: 0, 8, 0, 0.33
-    Axes: 0, 1, 0, 1
-    Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "##The Latent Counterpoint##"
+    Line width: 1
+    Solid line
 
-    # === Subtitle (separate band so it can't collide with the title) ===
-    Select outer viewport: 0, 8, 0.33, 0.5
+    # --- title ---------------------------------------------------------------
+    @sanitize: soundName$
+    hdrName$ = sanitize.out$
+    Font size: 13
+    Select inner viewport: vizL, vizR, 0.05, 0.60
     Axes: 0, 1, 0, 1
-    Font size: 9
-    Colour: "{0.4, 0.4, 0.5}"
-    Text: 0.5, "centre", 0.5, "half", soundName$ + " | " + presetName$ + " | " + string$(number_of_agents) + " voices | Rigidity=" + fixed$(counterpoint_rigidity, 2)
+    Colour: "Black"
+    Text: 0.5, "centre", 0.74, "half", "##The Latent Counterpoint##"
+    Font size: 7
+    Select inner viewport: vizL, vizR, 0.05, 0.60
+    Axes: 0, 1, 0, 1
+    Colour: "{0.40, 0.40, 0.50}"
+    Text: 0.5, "centre", 0.24, "half", hdrName$ + "   |   " + presetName$
+        ... + "   |   " + string$(number_of_agents) + " voices"
+        ... + "   |   rigidity " + fixed$(counterpoint_rigidity, 2)
+        ... + ", speed " + fixed$(speed, 2)
+        ... + ", latent " + string$(latent_size) + "-D, seed " + string$(seed)
+    Colour: "Black"
 
-    # === Input Waveform (analysis channel, fixed amplitude scale) ===
-    Select outer viewport: 0, 8, 0.6, 1.5
-    Select inner viewport: 0.6, 7.7, 0.65, 1.45
+    # --- 1: source with the event cuts ---------------------------------------
+    @caption: vizL, vizR, yInA, yInB, "1  Source and the " + string$(nEvents) + " event boundaries the engine was given, against the rendered result on the same scale"
+    Font size: 7
+    Select inner viewport: vizL, vizR, yInA, yInB
     selectObject: sound
     if nChannels > 1
         Extract one channel: 1
-        tmpInWave = selected("Sound")
     else
-        Copy: "tmpInWave"
-        tmpInWave = selected("Sound")
+        Copy: "lcVizIn"
     endif
-    Colour: "{0.5, 0.5, 0.5}"
-    Draw: 0, dur, -1, 1, "no", "Curve"
-    Colour: "Black"
-    Draw inner box
-    Font size: 7
-    Text left: "yes", "Input ch1"
-    # Drawing text/box can change Picture viewport state; restore explicitly
-    # before drawing event boundaries in data coordinates.
-    Select inner viewport: 0.6, 7.7, 0.65, 1.45
-    Axes: 0, dur, -1, 1
-    Colour: "{0.8, 0.3, 0.3}"
-    Line width: 1
+    tmpInWave = selected("Sound")
+    Colour: "{0.55, 0.55, 0.58}"
+    Draw: 0, axisDur, -ampViz, ampViz, "no", "Curve"
+    removeObject: tmpInWave
+    Select inner viewport: vizL, vizR, yInA, yInB
+    Axes: 0, axisDur, -ampViz, ampViz
+    Colour: "{0.80, 0.30, 0.30}"
     for iEv from 1 to nEvents
         evBound = evS_'iEv'
         if evBound > 0 and evBound < dur
-            Draw line: evBound, -0.9, evBound, 0.9
+            Draw line: evBound, -ampViz, evBound, ampViz
         endif
     endfor
-    Font size: 7
     Colour: "Black"
-    Text top: "no", string$(nEvents) + " events | " + fixed$(dur, 2) + " s | amp -1..1"
-    removeObject: tmpInWave
+    Select inner viewport: vizL, vizR, yInA, yInB
+    Axes: 0, axisDur, -ampViz, ampViz
+    Draw inner box
+    Marks bottom every: 1, snapT, "no", "yes", "no"
+    @rail: yInA, yInB, "Source"
 
-    # === Output Waveform (left channel, same amplitude scale) ===
-    Select outer viewport: 0, 8, 1.5, 2.4
-    Select inner viewport: 0.6, 7.7, 1.55, 2.35
+    # --- 2: result -----------------------------------------------------------
+    Font size: 7
+    Select inner viewport: vizL, vizR, yOutA, yOutB
     selectObject: resultSound
     Extract one channel: 1
     tmpOutWave = selected("Sound")
-    Colour: "{0.2, 0.4, 0.75}"
-    Draw: 0, durOut, -1, 1, "no", "Curve"
-    Colour: "Black"
-    Draw inner box
-    Font size: 7
-    Text left: "yes", "Output L"
-    Text bottom: "yes", "Time (s)"
-    Text top: "no", "amp -1..1 | adaptive equal-power splices"
+    Colour: "{0.20, 0.40, 0.75}"
+    Draw: 0, axisDur, -ampViz, ampViz, "no", "Curve"
     removeObject: tmpOutWave
-
-    # === Process Architecture ===
-    Select outer viewport: 0, 8, 2.5, 3.7
-    Select inner viewport: 0.6, 7.7, 2.6, 3.6
-    Axes: 0, 1, 0, 1
-    Paint rectangle: "{0.96, 0.96, 0.98}", 0, 1, 0, 1
-    Font size: 7
     Colour: "Black"
-    Text: 0.02, "left", 0.90, "half", "##Process Architecture##"
-    Font size: 6
-    Colour: "{0.2, 0.4, 0.75}"
-    Text: 0.03, "left", 0.63, "half", "Events"
-    Text: 0.20, "left", 0.63, "half", "log-mel"
-    Text: 0.37, "left", 0.63, "half", "Autoencoder"
-    Text: 0.57, "left", 0.63, "half", "latent Z"
-    Text: 0.73, "left", 0.63, "half", "physics"
-    Text: 0.88, "left", 0.63, "half", "voices"
-    Colour: "{0.35, 0.35, 0.35}"
-    Line width: 1
-    Draw arrow: 0.11, 0.63, 0.18, 0.63
-    Draw arrow: 0.30, 0.63, 0.35, 0.63
-    Draw arrow: 0.49, 0.63, 0.55, 0.63
-    Draw arrow: 0.66, 0.63, 0.71, 0.63
-    Draw arrow: 0.82, 0.63, 0.87, 0.63
-    Colour: "{0.35, 0.35, 0.45}"
-    Text: 0.03, "left", 0.30, "half", "forces: inertia + profile attraction + mutual repulsion + jitter"
-    Text: 0.03, "left", 0.12, "half", "selection: nearest event + LRU memory + rigidity separation penalty"
-    Colour: "Black"
-    Draw rectangle: 0, 1, 0, 1
+    Select inner viewport: vizL, vizR, yOutA, yOutB
+    Axes: 0, axisDur, -ampViz, ampViz
+    Draw inner box
+    Marks bottom every: 1, snapT, "yes", "yes", "no"
+    Text bottom: "yes", "Time (s)"
+    @rail: yOutA, yOutB, "Result L"
 
-    # === Measured Counterpoint QC ===
-    Select outer viewport: 0, 8, 3.7, 4.9
-    Select inner viewport: 0.6, 7.7, 3.8, 4.8
-    Axes: 0, 1, 0, 1
-    Paint rectangle: "{0.95, 0.97, 0.98}", 0, 1, 0, 1
-    Font size: 7
-    Colour: "Black"
-    Text: 0.02, "left", 0.90, "half", "##Measured Counterpoint QC##"
-    Font size: 6
-    Colour: "{0.2, 0.4, 0.75}"
-    Text: 0.03, "left", 0.66, "half", "Mean latent separation / corpus median: " + meanSep$
-    Colour: "{0.45, 0.35, 0.55}"
-    Text: 0.03, "left", 0.43, "half", "Splice: " + spliceMode$ + " | phase-safe event folds: " + phaseSafe$
-    Colour: "{0.35, 0.35, 0.35}"
-    Text: 0.03, "left", 0.20, "half", "Rigidity=" + fixed$(counterpoint_rigidity, 2) + " | Speed=" + fixed$(speed, 2) + " | Latent=" + string$(latent_size) + " | Seed=" + string$(seed)
-    Colour: "Black"
-    Draw rectangle: 0, 1, 0, 1
+    # --- 3: the latent space and the voices' paths through it ----------------
+    if hasLatent
+        @caption: vizL, vizR, yLatA, yLatB, "3  The latent space the voices navigate - events as dots, each voice's path in its own colour, x marks the centre of gravity"
+        padL = max(0.05, 0.08 * (latXhi - latXlo))
+        padM = max(0.05, 0.08 * (latYhi - latYlo))
+        lx1 = latXlo - padL
+        lx2 = latXhi + padL
+        ly1 = latYlo - padM
+        ly2 = latYhi + padM
+        lxIn1 = lx1 + 0.012 * (lx2 - lx1)
+        lxIn2 = lx2 - 0.012 * (lx2 - lx1)
+        lyIn1 = ly1 + 0.012 * (ly2 - ly1)
+        lyIn2 = ly2 - 0.012 * (ly2 - ly1)
+        latOff = 0
+        for iL from 0 to nLat - 1
+            if latX_'iL' < lxIn1 or latX_'iL' > lxIn2 or latY_'iL' < lyIn1 or latY_'iL' > lyIn2
+                latOff = latOff + 1
+            endif
+            latX_'iL' = min(lxIn2, max(lxIn1, latX_'iL'))
+            latY_'iL' = min(lyIn2, max(lyIn1, latY_'iL'))
+        endfor
+        latCx = min(lxIn2, max(lxIn1, latCx))
+        latCy = min(lyIn2, max(lyIn1, latCy))
+        Font size: 7
+        Select inner viewport: vizL, vizR, yLatA, yLatB
+        Axes: lx1, lx2, ly1, ly2
+        Paint rectangle: "{1.00, 1.00, 1.00}", lx1, lx2, ly1, ly2
 
-    # === Agent Profiles Panel ===
-    Select outer viewport: 0, 8, 5.0, 6.0
-    Select inner viewport: 0.6, 7.7, 5.1, 5.9
+        # Voice paths first, events on top, so a dot is never hidden by a line.
+        Line width: 1
+        for iAT from 0 to number_of_agents - 1
+            @agentCol: iAT
+            # Paths run lighter than the legend swatch so a dense corpus does
+            # not disappear under its own trajectories.
+            Colour: "{" + fixed$(agentCol.r + (1 - agentCol.r) * 0.35, 3)
+                ... + ", " + fixed$(agentCol.g + (1 - agentCol.g) * 0.35, 3)
+                ... + ", " + fixed$(agentCol.b + (1 - agentCol.b) * 0.35, 3) + "}"
+            nBl = agNBlocks_'iAT'
+            prevSet = 0
+            for iBl from 0 to nBl - 1
+                blEv = agBl_'iAT'_'iBl'_ev
+                lk = latOf_'blEv'
+                if lk >= 0
+                    thisX = latX_'lk'
+                    thisY = latY_'lk'
+                    if prevSet = 1
+                        Draw line: prevX, prevY, thisX, thisY
+                    endif
+                    prevX = thisX
+                    prevY = thisY
+                    prevSet = 1
+                endif
+            endfor
+        endfor
 
-    Axes: 0, 1, 0, 1
-    Paint rectangle: "{0.93, 0.93, 0.96}", 0, 1, 0, 1
+        Select inner viewport: vizL, vizR, yLatA, yLatB
+        Axes: lx1, lx2, ly1, ly2
+        for iL from 0 to nLat - 1
+            # Dot size is the event's periphery score, the quantity the Florid
+            # profile is attracted to and the Cantus profile is not.
+            dotD = 0.7 + 1.6 * min(1, max(0, latP_'iL'))
+            Paint circle (mm): "{0.62, 0.62, 0.68}", latX_'iL', latY_'iL', dotD
+        endfor
 
-    Font size: 7
-    Colour: "Black"
-    Text: 0.02, "left", 0.92, "half", "Agent Profiles:"
+        Select inner viewport: vizL, vizR, yLatA, yLatB
+        Axes: lx1, lx2, ly1, ly2
+        Line width: 2
+        Colour: "{0.20, 0.20, 0.25}"
+        crossX = 0.018 * (lx2 - lx1)
+        crossY = 0.018 * (ly2 - ly1)
+        Draw line: latCx - crossX, latCy - crossY, latCx + crossX, latCy + crossY
+        Draw line: latCx - crossX, latCy + crossY, latCx + crossX, latCy - crossY
+        Line width: 1
 
-    agCol_0$ = "{0.2, 0.4, 0.7}"
-    agCol_1$ = "{0.7, 0.3, 0.2}"
-    agCol_2$ = "{0.3, 0.6, 0.3}"
-    agCol_3$ = "{0.6, 0.4, 0.6}"
-    agCol_4$ = "{0.7, 0.6, 0.2}"
-    agCol_5$ = "{0.4, 0.6, 0.7}"
+        Colour: "Black"
+        Select inner viewport: vizL, vizR, yLatA, yLatB
+        Axes: lx1, lx2, ly1, ly2
+        Draw inner box
+        @snapStep: lx2 - lx1, 5
+        Marks bottom every: 1, snapStep.step, "yes", "yes", "no"
+        @snapStep: ly2 - ly1, 4
+        Marks left every: 1, snapStep.step, "yes", "yes", "no"
 
-    yStep = 0.75 / max(1, number_of_agents)
-    for iA from 0 to number_of_agents - 1
-        yPos = 0.78 - iA * yStep
-        thisCol$ = agCol_'iA'$
-        Colour: thisCol$
+        # Voice legend, on a plate so a path cannot run through the text.
         Font size: 6
-        agLine$ = agProfile_'iA'$ + " | Steps=" + agSteps_'iA'$ + " Uniq=" + agUnique_'iA'$ + " Rep=" + agRepRate_'iA'$ + " Travel=" + agTravel_'iA'$
-        Text: 0.02, "left", yPos, "half", "Agent " + string$(iA) + ": " + agLine$
-    endfor
+        Select inner viewport: vizL, vizR, yLatA, yLatB
+        Axes: 0, 1, 0, 1
+        legTop = 0.985
+        legBot = legTop - 0.052 * number_of_agents - 0.015
+        Paint rectangle: "{1.00, 1.00, 1.00}", 0.735, 0.998, legBot, legTop
+        for iAT from 0 to number_of_agents - 1
+            @agentCol: iAT
+            legY = legTop - 0.030 - 0.052 * iAT
+            Colour: agentCol.col$
+            Line width: 2
+            Draw line: 0.748, legY, 0.786, legY
+            Line width: 1
+            @sanitize: agProfile_'iAT'$
+            Text: 0.794, "left", legY, "half", "voice " + string$(iAT) + "  " + sanitize.out$
+        endfor
+        Colour: "{0.45, 0.45, 0.52}"
+        shareTxt$ = "PC1 + PC2 hold " + latShare$ + " of the " + string$(latent_size) + "-D latent variance"
+        if latOff > 0
+            shareTxt$ = shareTxt$ + "   |   " + string$(latOff) + " off-scale, drawn on the border"
+        endif
+        Text: 0.015, "left", 0.030, "half", shareTxt$
+        Colour: "Black"
+        Font size: 6
+        Select inner viewport: vizL, vizR, yLatA, yLatB
+        Axes: 0, 1, 0, 1
+        Text bottom: "yes", "latent PC1"
+        Text left: "yes", "latent PC2"
+    endif
 
-    Colour: "Black"
-    Draw rectangle: 0, 1, 0, 1
+    # --- 4: did the autoencoder converge, and how far apart did voices stay? --
+    if hasLoss or hasSep
+        @caption: vizL, 3.90, yCurveA, yCurveB, "4a  Autoencoder training loss"
+        Font size: 7
+        Select inner viewport: vizL, 3.90, yCurveA, yCurveB
+        lossTop = max(1e-6, lossHi * 1.08)
+        Axes: 0, lossSteps, 0, lossTop
+        Paint rectangle: "{1.00, 1.00, 1.00}", 0, lossSteps, 0, lossTop
+        if hasLoss
+            Colour: "{0.20, 0.40, 0.75}"
+            Line width: 2
+            for iLo from 1 to nLoss - 1
+                iPrev = iLo - 1
+                Draw line: lossStep_'iPrev', lossVal_'iPrev', lossStep_'iLo', lossVal_'iLo'
+            endfor
+            Line width: 1
+        endif
+        Colour: "Black"
+        Select inner viewport: vizL, 3.90, yCurveA, yCurveB
+        Axes: 0, lossSteps, 0, lossTop
+        Draw inner box
+        @snapStep: lossTop, 3
+        Marks left every: 1, snapStep.step, "yes", "yes", "no"
+        @snapStep: lossSteps, 4
+        Marks bottom every: 1, snapStep.step, "yes", "yes", "no"
+        Font size: 6
+        Select inner viewport: vizL, 3.90, yCurveA, yCurveB
+        Axes: 0, 1, 0, 1
+        Text bottom: "yes", "training step"
+        Text left: "yes", "reconstruction loss"
 
-    # === Polyphonic Timeline Panel ===
-    Select outer viewport: 0, 8, 6.1, 7.2
-    Select inner viewport: 0.6, 7.7, 6.2, 7.1
+        @caption: 4.35, vizR, yCurveA, yCurveB, "4b  Simultaneous voice separation, in units of the corpus median distance"
+        Font size: 7
+        Select inner viewport: 4.35, vizR, yCurveA, yCurveB
+        sepTop = max(0.2, sepHi * 1.12)
+        Axes: 0, max(1, nSep - 1), 0, sepTop
+        Paint rectangle: "{1.00, 1.00, 1.00}", 0, max(1, nSep - 1), 0, sepTop
+        Dotted line
+        Colour: "{0.75, 0.75, 0.80}"
+        Draw line: 0, 1, max(1, nSep - 1), 1
+        Solid line
+        Select inner viewport: 4.35, vizR, yCurveA, yCurveB
+        Axes: 0, max(1, nSep - 1), 0, sepTop
+        if hasSep
+            Colour: "{0.45, 0.35, 0.55}"
+            Line width: 2
+            for iSp from 1 to nSep - 1
+                iPrev = iSp - 1
+                Draw line: iPrev, sepVal_'iPrev', iSp, sepVal_'iSp'
+            endfor
+            Line width: 1
+        endif
+        Colour: "Black"
+        Select inner viewport: 4.35, vizR, yCurveA, yCurveB
+        Axes: 0, max(1, nSep - 1), 0, sepTop
+        Draw inner box
+        @snapStep: sepTop, 3
+        Marks left every: 1, snapStep.step, "yes", "yes", "no"
+        @snapStep: max(1, nSep - 1), 5
+        Marks bottom every: 1, snapStep.step, "yes", "yes", "no"
+        Font size: 6
+        Select inner viewport: 4.35, vizR, yCurveA, yCurveB
+        Axes: 0, 1, 0, 1
+        Text bottom: "yes", "physics step   -   dotted line = one median distance"
+        Text left: "yes", "separation"
+    endif
 
+    # --- 5a: which events each voice took ------------------------------------
+    if hasUse
+        @caption: vizL, vizR, yUseA, yUseB, "5  Which source events each voice took, and when it played them"
+        Font size: 7
+        Select inner viewport: vizL, vizR, yUseA, yUseB
+        Axes: 0, nUseEvents, 0, number_of_agents
+        Paint rectangle: "{1.00, 1.00, 1.00}", 0, nUseEvents, 0, number_of_agents
+        for iAT from 0 to number_of_agents - 1
+            @agentCol: iAT
+            yTop = number_of_agents - iAT
+            for iEv2 from 0 to nUseEvents - 1
+                uk = iAT * nUseEvents + iEv2
+                uv = useCount_'uk'
+                if uv = undefined
+                    uv = 0
+                endif
+                if uv > 0
+                    shade = min(1, uv / max(1, useHi))
+                    cellCol$ = "{" + fixed$(1 - (1 - agentCol.r) * (0.35 + 0.65 * shade), 3)
+                        ... + ", " + fixed$(1 - (1 - agentCol.g) * (0.35 + 0.65 * shade), 3)
+                        ... + ", " + fixed$(1 - (1 - agentCol.b) * (0.35 + 0.65 * shade), 3) + "}"
+                    Paint rectangle: cellCol$, iEv2 + 0.08, iEv2 + 0.92, yTop - 0.88, yTop - 0.12
+                endif
+            endfor
+        endfor
+        Colour: "Black"
+        Select inner viewport: vizL, vizR, yUseA, yUseB
+        Axes: 0, nUseEvents, 0, number_of_agents
+        Draw inner box
+        for iAT from 0 to number_of_agents - 1
+            One mark left: number_of_agents - iAT - 0.5, "no", "yes", "no", "v" + string$(iAT)
+        endfor
+        @snapStep: nUseEvents, 8
+        Marks bottom every: 1, snapStep.step, "yes", "yes", "no"
+        Font size: 6
+        Select inner viewport: vizL, vizR, yUseA, yUseB
+        Axes: 0, 1, 0, 1
+        Text bottom: "yes", "source event index   -   darker = used more often"
+    endif
+
+    # --- 5b: polyphonic timeline ---------------------------------------------
     tlMaxTime = 0.01
     for iAT from 0 to number_of_agents - 1
         nBl = agNBlocks_'iAT'
@@ -724,77 +1139,157 @@ if draw_visualization
         endif
     endfor
 
-    Axes: 0, tlMaxTime, -0.2, number_of_agents - 0.8
-    Paint rectangle: "{0.97, 0.97, 0.99}", 0, tlMaxTime, -0.2, number_of_agents - 0.8
-
-    laneH = 0.35
+    Font size: 7
+    Select inner viewport: vizL, vizR, yTlA, yTlB
+    # The old axis ran -0.2..n-0.8 while lanes were centred at n-1-i-0.5, so the
+    # bottom voice was drawn below ymin. Paint rectangle does not clip, and it
+    # spilled over the panel below.
+    Axes: 0, tlMaxTime, 0, number_of_agents
+    Paint rectangle: "{1.00, 1.00, 1.00}", 0, tlMaxTime, 0, number_of_agents
     for iAT from 0 to number_of_agents - 1
-        laneY = (number_of_agents - 1 - iAT) - 0.5
+        laneY = number_of_agents - iAT - 0.5
         nBl = agNBlocks_'iAT'
-        thisCol$ = agCol_'iAT'$
-
+        @agentCol: iAT
         for iBl from 0 to nBl - 1
             blS = agBl_'iAT'_'iBl'_s
             blE = agBl_'iAT'_'iBl'_e
-            blEv = agBl_'iAT'_'iBl'_ev
-            Paint rectangle: thisCol$, blS, blE, laneY - laneH, laneY + laneH
-
-            blDur = blE - blS
-            if blDur > tlMaxTime * 0.04
-                Font size: 4
-                Colour: "White"
-                Text: (blS + blE) / 2, "centre", laneY, "half", string$(blEv)
+            if blE > blS
+                Paint rectangle: agentCol.col$, blS, blE, laneY - 0.36, laneY + 0.36
             endif
         endfor
-
-        Font size: 5
-        Colour: "Black"
-        Text: -tlMaxTime * 0.005, "right", laneY, "half", string$(iAT)
     endfor
-
+    # Without separators a run of adjacent blocks reads as one solid bar.
+    Colour: "White"
+    Line width: 1
+    for iAT from 0 to number_of_agents - 1
+        laneY = number_of_agents - iAT - 0.5
+        nBl = agNBlocks_'iAT'
+        for iBl from 1 to nBl - 1
+            blS = agBl_'iAT'_'iBl'_s
+            Draw line: blS, laneY - 0.36, blS, laneY + 0.36
+        endfor
+    endfor
     Colour: "Black"
+    if nUseEvents <= 40
+        Font size: 4.5
+        Select inner viewport: vizL, vizR, yTlA, yTlB
+        Axes: 0, tlMaxTime, 0, number_of_agents
+        Colour: "White"
+        for iAT from 0 to number_of_agents - 1
+            laneY = number_of_agents - iAT - 0.5
+            nBl = agNBlocks_'iAT'
+            for iBl from 0 to nBl - 1
+                blS = agBl_'iAT'_'iBl'_s
+                blE = agBl_'iAT'_'iBl'_e
+                blEv = agBl_'iAT'_'iBl'_ev
+                if blE - blS > tlMaxTime * 0.016
+                    Text: (blS + blE) / 2, "centre", laneY, "half", string$(blEv)
+                endif
+            endfor
+        endfor
+        Colour: "Black"
+    endif
+    Font size: 7
+    Select inner viewport: vizL, vizR, yTlA, yTlB
+    Axes: 0, tlMaxTime, 0, number_of_agents
     Draw inner box
-    Font size: 6
-    Text left: "yes", "Agent"
-    Text bottom: "yes", "Time (s)"
-    Text top: "no", "Polyphonic Timeline (event index per voice)"
+    for iAT from 0 to number_of_agents - 1
+        One mark left: number_of_agents - iAT - 0.5, "no", "yes", "no", "v" + string$(iAT)
+    endfor
+    @snapStep: tlMaxTime, 8
+    Marks bottom every: 1, snapStep.step, "yes", "yes", "no"
+    Text bottom: "yes", "Output time (s)   -   numbers are source event indices"
 
-    # === Summary Panel ===
-    Select outer viewport: 0, 8, 7.3, 8.0
-    Select inner viewport: 0.6, 7.7, 7.35, 7.95
-
-    Axes: 0, 1, 0, 1
-    Paint rectangle: "{0.95, 0.95, 0.95}", 0, 1, 0, 1
+    # --- summary --------------------------------------------------------------
+    @sanitize: spliceMode$
+    spliceTxt$ = sanitize.out$
 
     Font size: 7
-    Colour: "Black"
-    Text: 0.02, "left", 0.88, "half", "Summary:"
-    Font size: 6
-    Colour: "{0.3, 0.3, 0.3}"
-    Text: 0.02, "left", 0.68, "half", "Events: " + nEvStat$ + " | Unique used: " + totalUnique$ + " | Mean dur: " + meanEvDur$ + "s | AE: " + initialLoss$ + "->" + finalLoss$
-    Text: 0.02, "left", 0.44, "half", "Duration: " + fixed$(dur, 2) + "s->" + outDurStat$ + "s | RMS: " + fixed$(rms_orig, 4) + "->" + fixed$(rms_out, 4) + " | Sep=" + meanSep$
+    Select inner viewport: vizL, vizR, ySumA, ySumB
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
 
-    Colour: "{0.4, 0.4, 0.5}"
-    unisonLine$ = "Unison: "
+    Font size: 8
+    Select inner viewport: vizL, vizR, ySumA, ySumB
+    Axes: 0, 1, 0, 1
+    Colour: "Black"
+    @sumRow: 0
+    Text: 0.015, "left", sumRow.y, "half", "##Process summary##"
+
+    Font size: 7
+    Select inner viewport: vizL, vizR, ySumA, ySumB
+    Axes: 0, 1, 0, 1
+    lossStepsTxt$ = ""
+    if hasLoss
+        lossStepsTxt$ = " over " + string$(lossSteps) + " steps"
+    endif
+    @sumRow: 1
+    Text: 0.015, "left", sumRow.y, "half", "Analysis: " + nEvStat$ + " events, mean " + meanEvDur$
+        ... + " s, " + totalUnique$ + " used by at least one voice"
+        ... + "   autoencoder loss " + initialLoss$ + " to " + finalLoss$
+        ... + lossStepsTxt$ + ", " + string$(latent_size) + "-D latent"
+    @sumRow: 2
+    Text: 0.015, "left", sumRow.y, "half", "Counterpoint: mean separation " + meanSep$
+        ... + " x the corpus median distance   rigidity " + fixed$(counterpoint_rigidity, 2)
+        ... + ", speed " + fixed$(speed, 2)
+        ... + "   forces: inertia, profile attraction, mutual repulsion, jitter"
+    @sumRow: 3
+    Text: 0.015, "left", sumRow.y, "half", "Selection: nearest event, LRU memory of 15, graded proximity penalty scaled by rigidity"
+
+    # Per-voice lines, in that voice's own colour.
+    for iAT from 0 to number_of_agents - 1
+        @agentCol: iAT
+        @sanitize: agProfile_'iAT'$
+        Font size: 7
+        Select inner viewport: vizL, vizR, ySumA, ySumB
+        Axes: 0, 1, 0, 1
+        Colour: agentCol.col$
+        @sumRow: 4 + iAT
+        Text: 0.015, "left", sumRow.y, "half", "voice " + string$(iAT) + "  " + sanitize.out$
+            ... + ":  " + agSteps_'iAT'$ + " steps, " + agUnique_'iAT'$ + " unique events"
+            ... + ", repetition " + agRepRate_'iAT'$
+            ... + ", mean latent travel " + agTravel_'iAT'$
+            ... + ", mean periphery " + agPeriph_'iAT'$
+    endfor
+    Colour: "Black"
+
+    unisonLine$ = "Unison rates: "
     for iA from 0 to number_of_agents - 2
         for iB from iA + 1 to number_of_agents - 1
             thisRate$ = unisonRate_'iA'_'iB'$
             if thisRate$ <> "?"
-                unisonLine$ = unisonLine$ + string$(iA) + "↔" + string$(iB) + "=" + thisRate$ + " "
+                unisonLine$ = unisonLine$ + string$(iA) + "-" + string$(iB) + " " + thisRate$ + "   "
             endif
         endfor
     endfor
-    Text: 0.02, "left", 0.20, "half", unisonLine$
-
+    Font size: 7
+    Select inner viewport: vizL, vizR, ySumA, ySumB
+    Axes: 0, 1, 0, 1
+    @sumRow: 4 + number_of_agents
+    Text: 0.015, "left", sumRow.y, "half", unisonLine$
+    @sumRow: 5 + number_of_agents
+    Text: 0.015, "left", sumRow.y, "half", "Render: " + spliceTxt$ + " splices, "
+        ... + phaseSafe$ + " phase-safe event folds"
+        ... + "   duration " + fixed$(dur, 2) + " to " + outDurStat$ + " s"
+        ... + "   RMS " + fixed$(rms_orig, 4) + " to " + fixed$(rms_out, 4)
     if warningStat$ <> "?" and warningStat$ <> ""
-        Colour: "{0.8, 0.2, 0.2}"
-        Text: 0.60, "left", 0.20, "half", "Warn: " + warningStat$
+        @sanitize: warningStat$
+        Colour: "{0.80, 0.20, 0.20}"
+        Text: 0.985, "right", 1 - 0.10 / sumH, "half", "warning: " + sanitize.out$
+        Colour: "Black"
     endif
-
-    Colour: "Black"
+    if hasLatent = 0
+        Colour: "{0.70, 0.35, 0.10}"
+        Text: 0.985, "right", 1 - (0.10 + sumPitch * (5 + number_of_agents)) / sumH, "half", "panels 3 and 4 need engine v1.5 or newer"
+        Colour: "Black"
+    endif
+    Select inner viewport: vizL, vizR, ySumA, ySumB
+    Axes: 0, 1, 0, 1
     Draw rectangle: 0, 1, 0, 1
-    Font size: 10
-    Colour: "Black"
+
+    # Save as / Copy follow the CURRENT viewport selection, so end on the whole
+    # canvas or the export is silently cropped to the last panel.
+    Select outer viewport: 0, 8, 0, canvasH
 endif
 
 # ===========================================================================
@@ -852,4 +1347,90 @@ procedure parseStatLine: .text$, .key$
             .result$ = .rest$
         endif
     endif
+endproc
+
+procedure sanitize: .s$
+    .out$ = replace$(.s$, "\", "\bs ", 0)
+    .out$ = replace$(.out$, "_", "\_ ", 0)
+    .out$ = replace$(.out$, "#", "\# ", 0)
+    .out$ = replace$(.out$, "^", "\^ ", 0)
+    .out$ = replace$(.out$, "%", "\% ", 0)
+endproc
+
+# A tick step derived as span/N prints labels like 0.6569; snap it to 1/2/5.
+procedure snapStep: .span, .target
+    .step = 1
+    if .span > 0
+        if .target > 0
+            .raw = .span / .target
+            .mag = 10 ^ floor(log10(.raw))
+            .n = .raw / .mag
+            if .n <= 1.5
+                .step = .mag
+            elsif .n <= 3.5
+                .step = 2 * .mag
+            elsif .n <= 7.5
+                .step = 5 * .mag
+            else
+                .step = 10 * .mag
+            endif
+        endif
+    endif
+endproc
+
+# Text left: anchors against whatever drawing frame is current, which puts each
+# panel's name at a different x. Place the rail by hand at one shared offset.
+procedure rail: .y1, .y2, .name$
+    Font size: 7
+    Select inner viewport: vizL, vizR, .y1, .y2
+    Axes: 0, 1, 0, 1
+    Colour: "Black"
+    Text special: railX, "centre", 0.5, "bottom", "Helvetica", 7, "90", .name$
+endproc
+
+procedure caption: .x1, .x2, .y1, .y2, .txt$
+    Font size: 6
+    Select inner viewport: .x1, .x2, .y1, .y2
+    Axes: 0, 1, 0, 1
+    Colour: "{0.40, 0.40, 0.50}"
+    Text top: "no", .txt$
+    Colour: "Black"
+endproc
+
+# One voice palette, shared by the latent paths, the usage matrix, the timeline
+# and the summary lines, so a colour means the same voice everywhere.
+procedure agentCol: .k
+    .i = .k - 6 * floor(.k / 6)
+    if .i = 0
+        .r = 0.20
+        .g = 0.40
+        .b = 0.70
+    elsif .i = 1
+        .r = 0.70
+        .g = 0.30
+        .b = 0.20
+    elsif .i = 2
+        .r = 0.30
+        .g = 0.60
+        .b = 0.30
+    elsif .i = 3
+        .r = 0.60
+        .g = 0.40
+        .b = 0.60
+    elsif .i = 4
+        .r = 0.70
+        .g = 0.60
+        .b = 0.20
+    else
+        .r = 0.40
+        .g = 0.60
+        .b = 0.70
+    endif
+    .col$ = "{" + fixed$(.r, 3) + ", " + fixed$(.g, 3) + ", " + fixed$(.b, 3) + "}"
+endproc
+
+# Summary rows are laid out from a pitch rather than hard-coded fractions, so
+# the box grows with the number of voices instead of overprinting itself.
+procedure sumRow: .r
+    .y = 1 - (0.10 + sumPitch * .r) / sumH
 endproc
