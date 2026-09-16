@@ -2,7 +2,7 @@
 # Praat AudioTools - CorpusMosaic.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
-# Version: 1.5 (2026) - Compact preset dialog, concept visualization
+# Version: 1.5.1 (2026) - Optional stereo source/mosaic comparison
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -27,6 +27,14 @@
 #   Cohen, S. (2026). Praat AudioTools: An Offline Analysis-
 #   Resynthesis Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v1.5.1 (engine v1.4.0, unchanged):
+#   - New "Stereo_comparison" option: builds an extra stereo Sound with the
+#     source (downmixed to mono) on one side and the mosaic on the other,
+#     in either order. Both sides are time-aligned from 0 s at the mosaic's
+#     sample rate; with Normalize_output on, the source side is peak-scaled
+#     to 0.95 too so both sides are level-matched. The mono mosaic is still
+#     created. When the comparison exists, Play_result plays it.
 #
 # Changelog v1.5 (engine v1.4.0):
 #   - Compact form: the preset is a single dropdown. The ten detail
@@ -80,7 +88,7 @@
 #     corpus itself). Synced the version across header/form/banner.
 # ============================================================
 
-form "Offline Corpus Mosaic Synthesizer v1.5"
+form "Offline Corpus Mosaic Synthesizer v1.5.1"
     comment Corpus folder (leave blank to choose with a dialog)
     sentence Corpus_folder
     optionmenu Preset 2
@@ -92,6 +100,10 @@ form "Offline Corpus Mosaic Synthesizer v1.5"
         option Granular Scatter
         option Percussive Cut
     boolean Edit_preset_parameters 0
+    optionmenu Stereo_comparison 1
+        option Off
+        option Source left, mosaic right
+        option Mosaic left, source right
     integer Random_seed 0
     boolean Normalize_output 1
     boolean Draw_visualization 1
@@ -350,7 +362,7 @@ endproc
 # Check Python Dependencies
 # ============================================================
 clearinfo
-writeInfoLine: "=== Offline Corpus Mosaic v1.5 ==="
+writeInfoLine: "=== Offline Corpus Mosaic v1.5.1 ==="
 appendInfoLine: "Preset: ", presetName$, " - ", presetBlurb$
 appendInfoLine: "Scanning corpus: ", corpusDir$
 appendInfoLine: "[1/3] Detecting Python and Librosa..."
@@ -430,6 +442,61 @@ appendInfoLine: "[3/3] Importing result..."
 Read from file: tempOutput$
 resultSound = selected("Sound")
 Rename: sourceName$ + "_mosaic"
+
+# ------------------------------------------------------------
+# Optional stereo comparison: source on one side, mosaic on the other.
+# Combine to stereo orders channels by OBJECT-LIST order (not by the
+# order of selection), so the two mono copies are created left first.
+# ------------------------------------------------------------
+comparisonSound = 0
+if stereo_comparison$ <> "Off"
+    selectObject: resultSound
+    cmpFs = Get sampling frequency
+
+    selectObject: sourceId
+    nChCmp = Get number of channels
+    if nChCmp > 1
+        cmpSrcTmp = Convert to mono
+    else
+        cmpSrcTmp = Copy: "cmpSrcTmp"
+    endif
+    Shift times to: "start time", 0
+    srcFs = Get sampling frequency
+    if srcFs <> cmpFs
+        cmpSrcRs = Resample: cmpFs, 50
+        removeObject: cmpSrcTmp
+        cmpSrcTmp = cmpSrcRs
+    endif
+    if normalize_output
+        selectObject: cmpSrcTmp
+        cmpPeak = Get absolute extremum: 0, 0, "None"
+        if cmpPeak > 0
+            Scale peak: 0.95
+        endif
+    endif
+
+    if stereo_comparison$ = "Source left, mosaic right"
+        selectObject: cmpSrcTmp
+        cmpLeft = Copy: "cmpLeft"
+        selectObject: resultSound
+        cmpRight = Copy: "cmpRight"
+        cmpName$ = sourceName$ + "_source_L_mosaic_R"
+    else
+        selectObject: resultSound
+        cmpLeft = Copy: "cmpLeft"
+        selectObject: cmpSrcTmp
+        cmpRight = Copy: "cmpRight"
+        cmpName$ = sourceName$ + "_mosaic_L_source_R"
+    endif
+    selectObject: cmpRight
+    Shift times to: "start time", 0
+
+    selectObject: cmpLeft, cmpRight
+    comparisonSound = Combine to stereo
+    Rename: cmpName$
+    removeObject: cmpSrcTmp, cmpLeft, cmpRight
+    appendInfoLine: "  Stereo comparison: ", cmpName$
+endif
 
 statSourceGrains$ = "0"
 statSilenced$     = "0"
@@ -1382,12 +1449,20 @@ appendInfoLine: "Pitch rel.:    ", statPitchRel$, "  |  YIN fmin: ", statPitchFm
 appendInfoLine: "Random seed:   ", statSeed$
 appendInfoLine: "Render time:   ", statTime$
 
-selectObject: resultSound
-
 @cleanUpTempFiles
 
-if play_result
-    Play
+if comparisonSound <> 0
+    appendInfoLine: "Comparison:    ", cmpName$, " (", stereo_comparison$, ")"
+    if play_result
+        selectObject: comparisonSound
+        Play
+    endif
+    selectObject: resultSound, comparisonSound
+else
+    selectObject: resultSound
+    if play_result
+        Play
+    endif
 endif
 
 # ============================================================
