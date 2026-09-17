@@ -1,26 +1,39 @@
 """
-host_vst.py  -  Praat -> Python -> VST3 native-editor host v1.7
-========================================================
-CLI (legacy / Praat-driven):
+host_vst.py  -  Praat -> Python -> VST3 host v1.9.2
+==================================================
+
+EFFECT MODE
+    Sound -> Pedalboard -> VST3 effect -> Sound
+
+INSTRUMENT MODE
+    MusicXML Strings -> parser -> DawDreamer RenderEngine -> VST3 instrument -> Sound
+
+CLI:
     py host_vst.py input.wav output.wav plugin.vst3 [tail] [buf] [params] [dump]
+    py host_vst.py --instrument score.musicxml output.wav plugin.vst3
+                         [tail] [buf] [params] [velocity] [sample_rate]
 
-GUI (launched by the Praat script or manually):
-    py host_vst.py --gui input.wav output.wav [plugin.vst3] [tail] [buf]
-                         [params] [sentinel] [prefs_output]
+GUI:
+    py host_vst.py --gui input.wav output.wav [plugin.vst3] ...
+    py host_vst.py --gui --instrument score.musicxml output.wav [plugin.vst3] ...
 
-v1.7 reshapes the GUI from a control panel into a toolbar. The premise is that
-the plugin's OWN editor is where parameter work belongs, so the host shows only
-what the host is actually for: pick a plugin, open its editor, audition, render.
-Tail / buffer / text parameters / presets / parameter dump moved behind an
-"Advanced" disclosure, and the log behind a "Log" disclosure that opens itself
-when something fails. Duplicated controls were removed: one editor button that
-toggles Open/Close, one cancel path, no read-only temp-path card.
+v1.9.2 is the release cleanup of the v1.9 architecture. Effect processing uses
+Pedalboard. MusicXML instrument rendering, audition, native editor state and
+instrument parameter access use DawDreamer only. The experimental Pedalboard
+VSTi probe/retry/chunk/part/note fallbacks from v1.8 have been removed.
+
+DawDreamer RenderEngine.render() runs in an isolated worker process so the Tk
+host stays responsive, shows elapsed time, supports cancellation, and can
+terminate a hung VST render with an explicit timeout.
 """
 
 from __future__ import annotations
 
 import json
+import queue
+import math
 import os
+import re
 import sys
 import subprocess
 import threading
@@ -38,6 +51,11 @@ CONFIG_DIR  = Path.home() / ".vst_host"
 CONFIG_FILE = CONFIG_DIR / "settings.json"
 PRESET_DIR  = CONFIG_DIR / "presets"
 VST_CACHE_FILE = CONFIG_DIR / "vst_plugins.json"
+DAWDREAMER_STATE_DIR = CONFIG_DIR / "dawdreamer_states"
+
+INSTRUMENT_SILENCE_PEAK = 1e-6
+INSTRUMENT_DEFAULT_BUFFER_SIZE = 512
+INSTRUMENT_RENDER_TIMEOUT_SECONDS = 120.0
 
 # ---------------------------------------------------------------------------
 # Dependency helpers
@@ -59,6 +77,17 @@ def _check_dependencies() -> None:
 def _fail(msg: str, code: int = 1) -> None:
     print(f"ERROR: {msg}", file=sys.stderr)
     raise SystemExit(code)
+
+# ---------------------------------------------------------------------------
+# Plugin loading / persistent instrument state
+# ---------------------------------------------------------------------------
+
+def _load_effect_plugin(plugin_path: str, emit=print):
+    """Load a VST3 effect through Pedalboard. Instrument mode never uses this path."""
+    from pedalboard import load_plugin
+    emit(f"Loading effect: {plugin_path}")
+    return load_plugin(plugin_path)
+
 
 # ---------------------------------------------------------------------------
 # Parameter parsing
@@ -108,6 +137,27 @@ def _reset_plugin_state(plugin, emit=print) -> None:
         plugin.reset()
     except Exception as exc:
         emit(f"WARNING: plugin reset failed; continuing with current state: {exc}")
+
+def _run_effect(plugin, audio, sr: float, buffer_size: int, emit=print):
+    """Process audio, duplicating mono to stereo if the plugin refuses 1 channel.
+
+    Many effects (most stereo reverbs) only offer a 2-in/2-out bus, and
+    Pedalboard then rejects a mono buffer outright. Duplicating the channel is
+    what a DAW does with a mono track on a stereo insert. Returns the processed
+    buffer and the channel count that was actually used, so a following tail
+    uses the same layout.
+    """
+    import numpy as np
+    try:
+        return plugin(audio, sr, buffer_size=buffer_size, reset=False), int(audio.shape[0])
+    except ValueError as exc:
+        if audio.shape[0] != 1 or "channel" not in str(exc).lower():
+            raise
+        emit("Plugin needs stereo input: the mono Sound is sent on both channels "
+             "(the result is stereo).")
+        stereo = np.repeat(audio, 2, axis=0)
+        return plugin(stereo, sr, buffer_size=buffer_size, reset=False), 2
+
 
 def run_offline(
     in_wav: str,
@@ -189,7 +239,7 @@ def run_offline(
     # reset=False avoids the "must be reloaded on the main thread" error that
     # some VST3s raise when reset=True is passed (reset forces a re-init which
     # some plugins only allow on the thread they were loaded on).
-    processed = plugin(audio, sr, buffer_size=buffer_size, reset=False)
+    processed, num_channels = _run_effect(plugin, audio, sr, buffer_size, emit)
 
     tail_seconds = max(0.0, tail_seconds)
     if tail_seconds > 0:
@@ -202,6 +252,447 @@ def run_offline(
         f.write(processed)
 
     emit(f"OK: wrote {out_wav}")
+
+# ---------------------------------------------------------------------------
+# DawDreamer instrument backend (v1.9)
+# ---------------------------------------------------------------------------
+
+def _check_dawdreamer_dependencies() -> None:
+    missing = []
+    try:
+        import dawdreamer  # noqa: F401
+    except ImportError:
+        missing.append("dawdreamer")
+    try:
+        import soundfile  # noqa: F401
+    except ImportError:
+        missing.append("soundfile")
+    if missing:
+        raise RuntimeError(
+            "Instrument mode requires: " + ", ".join(missing)
+            + ". Install with: pip install dawdreamer soundfile"
+        )
+
+
+def _dawdreamer_state_path(plugin_path: str) -> Path:
+    import hashlib
+    stem = re.sub(r"[^A-Za-z0-9_.-]+", "_", Path(plugin_path).stem)[:64]
+    digest = hashlib.sha1(os.path.normcase(os.path.abspath(plugin_path)).encode("utf-8")).hexdigest()[:12]
+    return DAWDREAMER_STATE_DIR / f"{stem}_{digest}.ddstate"
+
+
+def _apply_dawdreamer_params(synth, param_string: str, emit=print) -> None:
+    assignments = _parse_param_string(param_string)
+    if not assignments:
+        return
+    desc = synth.get_parameters_description()
+    by_name = {str(p.get("name", "")): int(p.get("index", i)) for i, p in enumerate(desc)}
+    for key, value in assignments.items():
+        idx = None
+        if str(key).isdigit():
+            idx = int(key)
+        elif key in by_name:
+            idx = by_name[key]
+        if idx is None:
+            emit(f"WARNING: DawDreamer parameter '{key}' not found; skipping.")
+            continue
+        v = max(0.0, min(1.0, float(value)))
+        synth.set_parameter(idx, v)
+        emit(f"Set instrument parameter {key} (index {idx}) = {v}")
+
+
+def _make_dawdreamer_instrument(plugin_path: str, sample_rate: float, buffer_size: int,
+                                 param_string: str = "", emit=print,
+                                 load_saved_state: bool = True):
+    _check_dawdreamer_dependencies()
+    import dawdreamer as daw
+    if not os.path.exists(plugin_path):
+        raise FileNotFoundError(f"VST3 plugin not found: {plugin_path}")
+    engine = daw.RenderEngine(float(sample_rate), max(64, int(buffer_size)))
+    synth = engine.make_plugin_processor("instrument", plugin_path)
+    state_path = _dawdreamer_state_path(plugin_path)
+    if load_saved_state and state_path.exists():
+        try:
+            synth.load_state(str(state_path))
+            emit(f"Loaded DawDreamer instrument state: {state_path}")
+        except Exception as exc:
+            emit(f"WARNING: could not load DawDreamer state: {exc}")
+    _apply_dawdreamer_params(synth, param_string, emit)
+    engine.load_graph([(synth, [])])
+    try:
+        ins, outs = synth.get_num_input_channels(), synth.get_num_output_channels()
+        emit(f"DawDreamer VSTi channels: {ins} in / {outs} out")
+    except Exception:
+        pass
+    return engine, synth
+
+
+def _save_dawdreamer_state(synth, plugin_path: str, emit=print) -> Path:
+    state_path = _dawdreamer_state_path(plugin_path)
+    DAWDREAMER_STATE_DIR.mkdir(parents=True, exist_ok=True)
+    synth.save_state(str(state_path))
+    emit(f"Saved DawDreamer instrument state: {state_path}")
+    return state_path
+
+# ---------------------------------------------------------------------------
+# MusicXML -> timed MIDI  (instrument mode, standard library only)
+# ---------------------------------------------------------------------------
+
+_STEP_PC = {"C": 0, "D": 2, "E": 4, "F": 5, "G": 7, "A": 9, "B": 11}
+_DEFAULT_TEMPO = 120.0   # MusicXML's implied tempo when a score states none
+_EPS = 1e-6
+
+
+def _tag(el) -> str:
+    """Element name without a namespace prefix."""
+    t = el.tag
+    return t.rsplit("}", 1)[-1] if isinstance(t, str) else ""
+
+
+def _read_xml_text(path: str) -> str:
+    """Read a MusicXML file whatever Praat saved it as.
+
+    Praat writes a Strings object as ASCII when it can and as UTF-16 (with a
+    byte-order mark) when any line holds a non-ASCII character, while the XML
+    declaration inside still says UTF-8. Decoding by BOM first and dropping the
+    now-meaningless declaration makes both cases parse identically.
+    """
+    raw = Path(path).read_bytes()
+    if raw.startswith(b"\xff\xfe") or raw.startswith(b"\xfe\xff"):
+        text = raw.decode("utf-16")
+    elif raw.startswith(b"\xef\xbb\xbf"):
+        text = raw[3:].decode("utf-8")
+    else:
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            text = raw.decode("latin-1")
+    return re.sub(r"^\s*<\?xml[^>]*\?>", "", text, count=1)
+
+
+def parse_musicxml(path: str, default_velocity: int = 90) -> Dict[str, Any]:
+    """Parse a score-partwise MusicXML file into sounding notes.
+
+    Positions are kept in quarter notes; the tempo map converts them to
+    seconds later. Returns a dict with notes (start_q, end_q, midi, vel, part),
+    tempos [(pos_q, bpm)], pedals [(pos_q, value)] and counters for the log.
+    """
+    import xml.etree.ElementTree as ET
+
+    try:
+        root = ET.fromstring(_read_xml_text(path))
+    except ET.ParseError as exc:
+        raise ValueError(f"The score is not well-formed XML: {exc}")
+    root_tag = _tag(root)
+    if root_tag == "score-timewise":
+        raise ValueError("score-timewise MusicXML is not supported; export score-partwise.")
+    if root_tag != "score-partwise":
+        raise ValueError(f"Not a MusicXML score (root element <{root_tag}>).")
+
+    names: Dict[str, str] = {}
+    for sp in root.iter():
+        if _tag(sp) == "score-part":
+            pn = ""
+            for child in sp:
+                if _tag(child) == "part-name":
+                    pn = (child.text or "").strip()
+            names[sp.get("id", "")] = pn
+
+    default_velocity = max(1, min(127, int(default_velocity)))
+    notes: list[Dict[str, Any]] = []
+    tempos: list[Tuple[float, float]] = []
+    pedals: list[Tuple[float, int]] = []
+    part_names: list[str] = []
+    counts = {"microtonal": 0, "grace": 0, "cue": 0, "unpitched": 0,
+              "rests": 0, "ties_merged": 0, "dynamics_used": 0}
+
+    parts = [el for el in root if _tag(el) == "part"]
+    if not parts:
+        raise ValueError("The score has no <part> elements.")
+
+    for pi, part in enumerate(parts):
+        part_names.append(names.get(part.get("id", ""), "") or f"Part {pi + 1}")
+        divisions = 1.0
+        measure_start = 0.0
+        open_ties: Dict[Tuple[str, int], Dict[str, Any]] = {}
+        dyn_pct: Optional[float] = None
+
+        def handle_sound(el, at_q: float) -> None:
+            nonlocal dyn_pct
+            if el.get("tempo"):
+                try:
+                    bpm = float(el.get("tempo"))
+                    if bpm > 0:
+                        tempos.append((at_q, bpm))
+                except ValueError:
+                    pass
+            if el.get("dynamics"):
+                try:
+                    dyn_pct = float(el.get("dynamics"))
+                except ValueError:
+                    pass
+
+        for measure in part:
+            if _tag(measure) != "measure":
+                continue
+            pos = 0.0          # quarters from the start of this measure
+            max_pos = 0.0
+            last_start = 0.0
+            for el in measure:
+                t = _tag(el)
+                if t == "attributes":
+                    for child in el:
+                        if _tag(child) == "divisions" and child.text:
+                            divisions = float(child.text)
+                elif t == "backup":
+                    d = float(el.findtext("duration", "0") or 0) / divisions
+                    pos = max(0.0, pos - d)
+                elif t == "forward":
+                    d = float(el.findtext("duration", "0") or 0) / divisions
+                    pos += d
+                    max_pos = max(max_pos, pos)
+                elif t == "sound":
+                    handle_sound(el, measure_start + pos)
+                elif t == "direction":
+                    off_txt = el.findtext("offset")
+                    at_q = measure_start + pos + (float(off_txt) / divisions if off_txt else 0.0)
+                    for sub in el.iter():
+                        st = _tag(sub)
+                        if st == "sound":
+                            handle_sound(sub, at_q)
+                        elif st == "pedal":
+                            ptype = sub.get("type", "")
+                            if ptype == "start":
+                                pedals.append((at_q, 127))
+                            elif ptype == "stop":
+                                pedals.append((at_q, 0))
+                            elif ptype == "change":
+                                pedals.append((at_q, 0))
+                                pedals.append((at_q + _EPS, 127))
+                elif t == "note":
+                    kids = {_tag(c) for c in el}
+                    if "grace" in kids:
+                        counts["grace"] += 1
+                        continue
+                    d = float(el.findtext("duration", "0") or 0) / divisions
+                    is_chord = "chord" in kids
+                    start = last_start if is_chord else pos
+                    if not is_chord:
+                        last_start = pos
+                        pos += d
+                        max_pos = max(max_pos, pos)
+                    if "cue" in kids:
+                        counts["cue"] += 1
+                        continue
+                    if "rest" in kids:
+                        counts["rests"] += 1
+                        continue
+                    pitch = el.find("pitch")
+                    if pitch is None:
+                        counts["unpitched"] += 1
+                        continue
+                    step = (pitch.findtext("step") or "C").strip().upper()
+                    alter = float(pitch.findtext("alter") or 0)
+                    octave = int(float(pitch.findtext("octave") or 4))
+                    exact = (octave + 1) * 12 + _STEP_PC.get(step, 0) + alter
+                    # Half-up, not Python's round-half-to-even, so every
+                    # quarter-tone sharp goes the same way (66.5 and 67.5 alike).
+                    midi = int(math.floor(exact + 0.5))
+                    if abs(exact - midi) > _EPS:
+                        counts["microtonal"] += 1
+                    midi = max(0, min(127, midi))
+
+                    if el.get("dynamics"):
+                        vel = round(float(el.get("dynamics")) * 0.9)
+                        counts["dynamics_used"] += 1
+                    elif dyn_pct is not None:
+                        vel = round(dyn_pct * 0.9)
+                        counts["dynamics_used"] += 1
+                    else:
+                        vel = default_velocity
+                    vel = max(1, min(127, int(vel)))
+
+                    ties = [c.get("type", "") for c in el if _tag(c) == "tie"]
+                    voice = (el.findtext("voice") or "1").strip()
+                    abs_start = measure_start + start
+                    key = (voice, midi)
+                    held = open_ties.get(key)
+                    if "stop" in ties and held is not None and abs(held["end_q"] - abs_start) < _EPS:
+                        held["end_q"] = abs_start + d
+                        counts["ties_merged"] += 1
+                        if "start" not in ties:
+                            del open_ties[key]
+                    else:
+                        n = {"start_q": abs_start, "end_q": abs_start + d,
+                             "midi": midi, "vel": vel, "part": pi}
+                        notes.append(n)
+                        if "start" in ties:
+                            open_ties[key] = n
+            measure_start += max(max_pos, pos)
+
+    notes.sort(key=lambda n: (n["start_q"], n["part"], n["midi"]))
+    return {"notes": notes, "tempos": tempos, "pedals": pedals,
+            "parts": part_names, "counts": counts,
+            "length_q": max((n["end_q"] for n in notes), default=0.0)}
+
+
+def _tempo_mapper(tempos: list[Tuple[float, float]]):
+    """Return f(quarter_position) -> seconds for a piecewise-constant tempo."""
+    changes: Dict[float, float] = {}
+    for pos, bpm in sorted(tempos, key=lambda x: x[0]):
+        changes[round(pos, 9)] = bpm          # the last statement at a position wins
+    points = sorted(changes.items())
+    if not points or points[0][0] > 0:
+        first = points[0][1] if points else _DEFAULT_TEMPO
+        points.insert(0, (0.0, first))
+    starts = [p for p, _ in points]
+    cum = [0.0]
+    for k in range(1, len(points)):
+        cum.append(cum[-1] + (points[k][0] - points[k - 1][0]) * 60.0 / points[k - 1][1])
+
+    def to_sec(q: float) -> float:
+        k = 0
+        lo, hi = 0, len(starts) - 1
+        while lo <= hi:                         # last change at or before q
+            mid = (lo + hi) // 2
+            if starts[mid] <= q + 1e-12:
+                k = mid
+                lo = mid + 1
+            else:
+                hi = mid - 1
+        return cum[k] + (q - starts[k]) * 60.0 / points[k][1]
+
+    return to_sec, points
+
+
+def build_midi_messages(score: Dict[str, Any], channel: int = 0):
+    """Merge every part into one timed MIDI stream.
+
+    Returns (messages, end_seconds, tempo_points). Messages are
+    (bytes, seconds) tuples for score diagnostics/export. When two notes of the same
+    pitch overlap (two parts in unison), the note-off is sent only when the
+    last of them ends, so one part cannot silence the other. At equal times
+    note-offs go first, so a repeated note is re-struck rather than cut.
+    """
+    to_sec, points = _tempo_mapper(score["tempos"])
+    ch = channel & 0x0F
+    events = []
+    for n in score["notes"]:
+        s, e = to_sec(n["start_q"]), to_sec(n["end_q"])
+        if e - s <= 0:
+            continue
+        events.append((s, 1, "on", n["midi"], n["vel"]))
+        events.append((e, 0, "off", n["midi"], 0))
+    for pos, value in score["pedals"]:
+        events.append((to_sec(pos), 0 if value == 0 else 2, "cc64", 64, value))
+    events.sort(key=lambda ev: (ev[0], ev[1]))
+
+    active: Dict[int, int] = {}
+    messages = []
+    end_t = 0.0
+    for t, _order, kind, num, val in events:
+        if kind == "on":
+            active[num] = active.get(num, 0) + 1
+            messages.append((bytes([0x90 | ch, num, val]), t))
+        elif kind == "off":
+            active[num] = max(0, active.get(num, 0) - 1)
+            if active[num] == 0:
+                messages.append((bytes([0x80 | ch, num, 0]), t))
+        else:
+            messages.append((bytes([0xB0 | ch, 64, val]), t))
+        end_t = max(end_t, t)
+    return messages, end_t, points
+
+
+def describe_score(score: Dict[str, Any], end_t: float, points) -> str:
+    c = score["counts"]
+    tempo_txt = f"{points[0][1]:g} bpm" if len(points) == 1 else f"{len(points)} tempo changes"
+    if not score["tempos"]:
+        tempo_txt += " (none in score, default)"
+    parts = len(score["parts"])
+    text = (f"{parts} part{'s' if parts != 1 else ''} · {len(score['notes'])} notes · "
+            f"{end_t:.1f} s · {tempo_txt}")
+    extras = []
+    if c["microtonal"]:
+        extras.append(f"{c['microtonal']} microtonal pitches rounded")
+    if c["grace"]:
+        extras.append(f"{c['grace']} grace notes skipped")
+    if score["pedals"]:
+        extras.append(f"{len(score['pedals'])} pedal events")
+    if extras:
+        text += " · " + ", ".join(extras)
+    return text
+
+
+def _audio_peak(audio) -> float:
+    return float(abs(audio).max()) if getattr(audio, "size", 0) else 0.0
+
+
+def render_instrument(
+    score_path: str,
+    out_wav: str,
+    plugin_path: str,
+    tail_seconds: float = 2.5,
+    buffer_size: int = INSTRUMENT_DEFAULT_BUFFER_SIZE,
+    param_string: str = "",
+    velocity: int = 90,
+    sample_rate: int = 44100,
+    log=None,
+) -> None:
+    """Render MusicXML through one DawDreamer VST3 instrument graph."""
+    import numpy as np
+    import soundfile as sf
+
+    def emit(s: str) -> None:
+        if log:
+            log(s)
+        else:
+            print(s)
+
+    if not os.path.isfile(score_path):
+        raise FileNotFoundError(f"Score file not found: {score_path}")
+    score = parse_musicxml(score_path, velocity)
+    to_sec, points = _tempo_mapper(score["tempos"])
+    notes = score["notes"]
+    if not notes:
+        raise ValueError("The score contains no sounding notes.")
+    end_t = max(to_sec(n["end_q"]) for n in notes)
+    emit(f"Score:    {score_path}")
+    emit(f"          {describe_score(score, end_t, points)}")
+
+    sr = float(sample_rate)
+    engine, synth = _make_dawdreamer_instrument(
+        plugin_path, sr, buffer_size,
+        param_string=param_string,
+        emit=emit, load_saved_state=True)
+
+    synth.clear_midi()
+    for n in notes:
+        start = max(0.0, float(to_sec(n["start_q"])))
+        stop = max(start + 1e-4, float(to_sec(n["end_q"])))
+        synth.add_midi_note(int(n["midi"]), int(n["vel"]), start, stop - start)
+
+    # DawDreamer owns the entire score timeline. One graph, one engine.render().
+    duration = end_t + max(0.0, float(tail_seconds))
+    emit(f"DawDreamer render: {len(notes)} notes, {duration:.2f} s at {int(sr)} Hz, "
+         f"buffer {int(buffer_size)}...")
+    engine.render(float(duration))
+    audio = np.asarray(engine.get_audio(), dtype=np.float32)
+    if audio.ndim == 1:
+        audio = audio.reshape(1, -1)
+    if audio.shape[0] == 1:
+        audio = np.repeat(audio, 2, axis=0)
+    peak = _audio_peak(audio)
+    emit(f"DawDreamer peak {peak:.6f}")
+    if peak < INSTRUMENT_SILENCE_PEAK:
+        raise RuntimeError(
+            "DawDreamer rendered silence. The MusicXML parsed correctly and the VSTi received "
+            f"{len(notes)} scheduled notes in one RenderEngine timeline. Open the plugin editor "
+            "and verify that the instrument/preset is loaded and its main output is active."
+        )
+    sf.write(out_wav, audio.T, int(sr), subtype="FLOAT")
+    emit(f"OK: wrote {out_wav}")
+
 
 # ---------------------------------------------------------------------------
 # Config / preset helpers
@@ -362,15 +853,81 @@ def _load_vst_cache() -> list[str]:
         return []
 
 
-def _save_vst_cache(paths: list[str]) -> None:
+def _load_vst_kinds() -> Dict[str, Dict[str, Any]]:
+    """Plugin types identified so far: normalised path -> {kind, mtime}."""
     try:
+        if not VST_CACHE_FILE.exists():
+            return {}
+        data = json.loads(VST_CACHE_FILE.read_text(encoding="utf-8"))
+        kinds = data.get("kinds", {}) if isinstance(data, dict) else {}
+        return {k: v for k, v in kinds.items() if isinstance(v, dict) and "kind" in v}
+    except Exception:
+        return {}
+
+
+def _save_vst_cache(paths: list[str], kinds: Optional[Dict[str, Dict[str, Any]]] = None) -> None:
+    """Write the catalogue. Plugin types already on disk are kept unless given."""
+    try:
+        if kinds is None:
+            kinds = _load_vst_kinds()
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
         VST_CACHE_FILE.write_text(
-            json.dumps({"version": 1, "paths": paths}, indent=2),
+            json.dumps({"version": 2, "paths": paths, "kinds": kinds}, indent=2),
             encoding="utf-8",
         )
     except Exception as exc:
         print(f"WARNING: could not save VST cache: {exc}", file=sys.stderr)
+
+
+def _plugin_mtime(path: str) -> float:
+    try:
+        return float(os.path.getmtime(path))
+    except OSError:
+        return 0.0
+
+
+def _classify_plugin(path: str, timeout: float = 45.0) -> str:
+    """Identify one plugin as instrument / effect / both in a child process.
+
+    Loading a plugin can hang or crash the interpreter (licence dialogs,
+    broken bundles), so it never happens in the host process for this purpose.
+    Returns "instrument", "effect", "both" or "failed".
+    """
+    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
+    try:
+        proc = subprocess.run(
+            [sys.executable, os.path.abspath(__file__), "--classify-worker", path],
+            stdin=subprocess.DEVNULL, capture_output=True, text=True,
+            timeout=timeout, creationflags=creationflags)
+    except Exception:
+        return "failed"
+    for line in reversed((proc.stdout or "").splitlines()):
+        line = line.strip()
+        if line.startswith("{"):
+            try:
+                info = json.loads(line)
+            except ValueError:
+                continue
+            inst, eff = bool(info.get("instrument")), bool(info.get("effect"))
+            if inst and eff:
+                return "both"
+            if inst:
+                return "instrument"
+            if eff:
+                return "effect"
+    return "failed"
+
+
+def _save_mode_config(mode: str, settings: Dict[str, Any]) -> None:
+    """Merge one mode's settings into settings.json without touching the other.
+
+    Effect mode keeps the v1.7 key names, so an older host still reads them.
+    """
+    cfg = _load_config()
+    prefix = "instrument_" if mode == "instrument" else ""
+    for key, value in settings.items():
+        cfg[prefix + key] = value
+    _save_config(cfg)
 
 
 # ---------------------------------------------------------------------------
@@ -404,13 +961,25 @@ class VSTHostApp(tk.Tk):
         buffer_size: Optional[int] = None,
         param_string: Optional[str] = None,
         prefs_output_path: str = "",
+        mode: str = "effect",
+        velocity: Optional[int] = None,
+        sample_rate: Optional[int] = None,
     ) -> None:
         super().__init__()
 
+        # In instrument mode in_wav is the MusicXML score; the name is kept so
+        # the effect path reads exactly as in v1.7.
+        self._mode        = "instrument" if mode == "instrument" else "effect"
         self._in_wav      = in_wav
         self._out_wav     = out_wav
         self._exit_code   = 0
         self._prefs_output_path = prefs_output_path
+
+        # Parsed score (instrument mode), kept for audition and the summary.
+        self._score: Optional[Dict[str, Any]] = None
+        self._score_end = 0.0
+        self._score_summary = ""
+        self._score_error = ""
 
         # Keep one VST instance alive for native-editor changes, audition, and
         # the final render. All plugin interaction stays on the Tk main thread.
@@ -420,10 +989,24 @@ class VSTHostApp(tk.Tk):
         self._preview_thread = None
         self._preview_stop = threading.Event()
 
+        # Instrument rendering runs in a separate process. DawDreamer/JUCE can
+        # block inside RenderEngine.render(); keeping it out of Tk means the host
+        # remains responsive and Cancel can terminate a misbehaving VSTi.
+        self._render_proc = None
+        self._render_reader_thread = None
+        self._render_queue = queue.Queue()
+        self._render_started_at = 0.0
+        self._render_timeout = INSTRUMENT_RENDER_TIMEOUT_SECONDS
+        self._render_poll_job = None
+
         # VST3 catalog: friendly display name -> full plugin path. The cache is
         # populated by filesystem scanning only; plugins are not loaded here.
         self._vst_paths: list[str] = _load_vst_cache()
         self._vst_cache_available = bool(self._vst_paths)
+        # Plugin types (instrument / effect) found by isolated child processes.
+        self._vst_kinds: Dict[str, Dict[str, Any]] = _load_vst_kinds()
+        self._classify_thread = None
+        self._user_chose_plugin = False
         self._vst_label_to_path: Dict[str, str] = {}
         self._vst_path_to_label: Dict[str, str] = {}
         self._vst_scan_thread = None
@@ -448,13 +1031,34 @@ class VSTHostApp(tk.Tk):
         # who genuinely wanted 1.0 s of tail silently got whatever the config
         # held, and an empty parameter string could never clear a saved one.
         cfg = _load_config()
-        self._plugin_path = plugin_path if plugin_path else cfg.get("plugin_path", "")
-        self._tail   = float(cfg.get("tail_seconds", 1.0)) if tail_seconds is None else float(tail_seconds)
-        self._buf    = int(cfg.get("buffer_size", 8192))   if buffer_size  is None else int(buffer_size)
-        self._params = cfg.get("param_string", "")         if param_string is None else param_string
+        # Instrument settings live under instrument_* keys so a piano chosen for
+        # scores never replaces the reverb chosen for sounds, and vice versa.
+        px = "instrument_" if self._mode == "instrument" else ""
+        tail_default = 2.5 if self._mode == "instrument" else 1.0
+        self._plugin_path = plugin_path if plugin_path else cfg.get(px + "plugin_path", "")
+        self._tail   = float(cfg.get(px + "tail_seconds", tail_default)) if tail_seconds is None else float(tail_seconds)
+        if buffer_size is None:
+            if self._mode == "instrument":
+                # v1.9-v1.9.3 saved 8192 as the instrument default. Do not let
+                # that legacy value keep reintroducing a host-sized buffer into
+                # VSTi rendering; 512 is the new safe default. A non-8192 saved
+                # value is treated as an explicit user choice and preserved.
+                saved_buf = cfg.get(px + "buffer_size", INSTRUMENT_DEFAULT_BUFFER_SIZE)
+                self._buf = (INSTRUMENT_DEFAULT_BUFFER_SIZE
+                             if int(saved_buf) == 8192 else int(saved_buf))
+            else:
+                self._buf = int(cfg.get(px + "buffer_size", 8192))
+        else:
+            self._buf = int(buffer_size)
+        self._params = cfg.get(px + "param_string", "")         if param_string is None else param_string
+        self._velocity = int(cfg.get("instrument_velocity", 90)) if velocity is None else int(velocity)
+        self._sample_rate = int(cfg.get("instrument_sample_rate", 44100)) if sample_rate is None else int(sample_rate)
+
+        if self._mode == "instrument":
+            self._load_score()
 
         # ── Window ──────────────────────────────────────────────────────────
-        self.title("VST Host v1.7")
+        self.title("VST Host v1.9.2" + ("  -  Instrument" if self._mode == "instrument" else ""))
         self.configure(bg=_DARK)
         self.resizable(True, True)
         self.minsize(560, 200)
@@ -468,6 +1072,19 @@ class VSTHostApp(tk.Tk):
         # immediately; Scan VSTs refreshes it on demand after installations.
         if not self._vst_cache_available:
             self.after(250, lambda: self._scan_vsts(auto=True))
+        elif self._mode == "instrument" and self._unclassified_paths():
+            # Instrument mode needs to know which plugins are instruments; this
+            # is done once per plugin and cached, in the background.
+            self.after(400, self._start_classification)
+
+        if self._mode == "instrument":
+            if self._score_error:
+                self._process_btn.state(["disabled"])
+                self._audition_btn.state(["disabled"])
+                self._set_status(f"Score could not be read: {self._score_error}", _RED)
+                self._reveal_log()
+            else:
+                self._set_status("Score loaded. Pick an instrument, open its editor, audition, render.", _MUTED)
 
         self.protocol("WM_DELETE_WINDOW", self._on_cancel)
         self.bind("<Escape>", lambda _event: self._on_cancel())
@@ -563,7 +1180,8 @@ class VSTHostApp(tk.Tk):
         title_row = ttk.Frame(root)
         title_row.grid(row=0, column=0, sticky="ew")
         ttk.Label(title_row, text="VST  HOST", style="Title.TLabel").pack(side="left")
-        ttk.Label(title_row, text="OFFLINE", style="Accent.TLabel").pack(side="right")
+        mode_text = "INSTRUMENT  ·  MusicXML" if self._mode == "instrument" else "EFFECT  ·  OFFLINE"
+        ttk.Label(title_row, text=mode_text, style="Accent.TLabel").pack(side="right")
 
         ttk.Separator(root, orient="horizontal").grid(
             row=1, column=0, sticky="ew", pady=(8, 12))
@@ -597,6 +1215,15 @@ class VSTHostApp(tk.Tk):
                   anchor="w", justify="left").grid(
             row=1, column=0, columnspan=3, sticky="ew", pady=(5, 0))
 
+        # One line saying what will be played - the only score fact worth
+        # permanent space. Details go to the log.
+        if self._mode == "instrument":
+            score_text = ("Score: " + self._score_summary) if self._score_summary else \
+                         ("Score: " + (self._score_error or "not loaded"))
+            ttk.Label(plugin_row, text=score_text, style="Accent.TLabel",
+                      wraplength=640, anchor="w", justify="left").grid(
+                row=2, column=0, columnspan=3, sticky="ew", pady=(6, 0))
+
         # ── Primary actions ──────────────────────────────────────────────────
         # One editor button that toggles. v1.6 had three controls bound to two
         # actions (CLOSE VST in the title bar, Close VST UI in the plugin row,
@@ -626,7 +1253,8 @@ class VSTHostApp(tk.Tk):
                                       style="Cancel.TButton",
                                       command=self._on_cancel)
         self._cancel_btn.grid(row=0, column=4, sticky="e", padx=(12, 8))
-        self._process_btn = ttk.Button(action_row, text="Process",
+        self._process_btn = ttk.Button(action_row,
+                                       text="Render" if self._mode == "instrument" else "Process",
                                        style="Process.TButton",
                                        command=self._on_process)
         self._process_btn.grid(row=0, column=5, sticky="e")
@@ -675,14 +1303,43 @@ class VSTHostApp(tk.Tk):
                   text="Text parameters   name=value, name=value "
                        "(the plugin editor is usually the better route)",
                   style="Muted.TLabel", background=_CARD).grid(
-            row=1, column=0, columnspan=4, sticky="w", pady=(12, 4))
+            row=2, column=0, columnspan=4, sticky="w", pady=(12, 4))
         self._params_var = tk.StringVar(value=self._params)
         self._params_var.trace_add("write", self._on_text_params_changed)
         ttk.Entry(self._adv_frame, textvariable=self._params_var,
-                  font=_FONT_MONO).grid(row=2, column=0, columnspan=4, sticky="ew")
+                  font=_FONT_MONO).grid(row=3, column=0, columnspan=4, sticky="ew")
+
+        # Instrument-only controls. Velocity is used for notes the score gives
+        # no dynamics for; the sample rate is the render rate of the new Sound.
+        self._velocity_var = tk.IntVar(value=self._velocity)
+        self._sr_var = tk.IntVar(value=self._sample_rate)
+        if self._mode == "instrument":
+            inst_row = ttk.Frame(self._adv_frame, style="Card.TFrame")
+            inst_row.grid(row=1, column=0, columnspan=4, sticky="ew", pady=(10, 0))
+            ttk.Label(inst_row, text="Velocity", style="Muted.TLabel",
+                      background=_CARD).pack(side="left", padx=(0, 8))
+            ttk.Spinbox(inst_row, from_=1, to=127, increment=1,
+                        textvariable=self._velocity_var, width=5).pack(side="left")
+            ttk.Label(inst_row, text="Sample rate", style="Muted.TLabel",
+                      background=_CARD).pack(side="left", padx=(18, 8))
+            ttk.Combobox(inst_row, textvariable=self._sr_var,
+                         values=[44100, 48000, 88200, 96000],
+                         width=8, state="normal").pack(side="left")
+            ttk.Label(inst_row, text="(all parts play one instrument)",
+                      style="Muted.TLabel", background=_CARD).pack(side="left", padx=(18, 0))
+
+        self._show_all_var = tk.BooleanVar(value=False)
+        kind_word = "instruments" if self._mode == "instrument" else "effects"
+        tk.Checkbutton(self._adv_frame,
+                       text=f"List every plugin, not only {kind_word}",
+                       variable=self._show_all_var, command=self._refresh_plugin_list,
+                       bg=_CARD, fg=_MUTED, selectcolor=_PANEL,
+                       activebackground=_CARD, activeforeground=_TEXT,
+                       highlightthickness=0, bd=0, font=_FONT_BODY).grid(
+            row=5, column=0, columnspan=4, sticky="w", pady=(10, 0))
 
         adv_actions = ttk.Frame(self._adv_frame, style="Card.TFrame")
-        adv_actions.grid(row=3, column=0, columnspan=4, sticky="ew", pady=(10, 0))
+        adv_actions.grid(row=4, column=0, columnspan=4, sticky="ew", pady=(10, 0))
         ttk.Button(adv_actions, text="List parameters",
                    command=self._scan_params).pack(side="left")
 
@@ -712,7 +1369,16 @@ class VSTHostApp(tk.Tk):
 
         # The I/O paths are Praat's temp files: the user did not choose them and
         # cannot act on them. They belong in the log, not in the window.
-        self._log_append(f"Input:  {self._in_wav}")
+        if self._mode == "instrument":
+            self._log_append(f"Score:  {self._in_wav}")
+            if self._score_summary:
+                self._log_append(f"        {self._score_summary}")
+                if self._score is not None:
+                    self._log_append("        parts: " + ", ".join(self._score["parts"]))
+            if self._score_error:
+                self._log_append(f"ERROR reading score: {self._score_error}")
+        else:
+            self._log_append(f"Input:  {self._in_wav}")
         self._log_append(f"Output: {self._out_wav}")
 
     # ── Disclosure handling ──────────────────────────────────────────────────
@@ -826,17 +1492,41 @@ class VSTHostApp(tk.Tk):
         self.update_idletasks()
 
     def _set_status(self, text: str, color: str = _MUTED) -> None:
+        # An unreadable score is the one fact that must stay on screen; routine
+        # messages (scan, type identification) must not paint over it.
+        if getattr(self, "_score_error", "") and color != _RED:
+            return
         self._status_var.set(text)
         self._status_lbl.configure(foreground=color)
         self.update_idletasks()
 
     def _current_settings(self) -> Dict[str, Any]:
-        return {
+        settings = {
             "plugin_path":  self._plugin_var.get().strip(),
             "tail_seconds": self._tail_var.get(),
             "buffer_size":  int(self._buf_var.get()),
             "param_string": self._params_var.get().strip(),
         }
+        if self._mode == "instrument":
+            settings["velocity"] = max(1, min(127, int(self._velocity_var.get())))
+            settings["sample_rate"] = max(8000, int(self._sr_var.get()))
+        return settings
+
+    def _load_score(self) -> None:
+        """Parse the score once at start-up: the summary line, the audition and
+        an early, readable error all come from this single parse."""
+        try:
+            score = parse_musicxml(self._in_wav, self._velocity)
+            if not score["notes"]:
+                raise ValueError("the score contains no sounding notes")
+            to_sec, points = _tempo_mapper(score["tempos"])
+            end_t = max((to_sec(n["end_q"]) for n in score["notes"]), default=0.0)
+            self._score = score
+            self._score_end = end_t
+            self._score_summary = describe_score(score, end_t, points)
+        except Exception as exc:
+            self._score = None
+            self._score_error = str(exc)
 
     def _on_text_params_changed(self, *_args) -> None:
         # If the user types host parameters after closing the native editor,
@@ -873,6 +1563,13 @@ class VSTHostApp(tk.Tk):
 
         unique_paths.sort(key=lambda p: (Path(p).stem.casefold(), p.casefold()))
 
+        # The full catalogue is what gets cached; only the list shown is
+        # filtered by plugin type. The current plugin always stays visible.
+        all_paths = unique_paths
+        current_key = self._plugin_key(selected_path) if selected_path else ""
+        unique_paths = [p for p in all_paths
+                        if self._kind_visible(p) or self._plugin_key(p) == current_key]
+
         # Count duplicate stem names first. For duplicates show parent/vendor.
         counts: Dict[str, int] = {}
         for path in unique_paths:
@@ -899,7 +1596,7 @@ class VSTHostApp(tk.Tk):
             label_to_path[label] = path
             path_to_label[self._plugin_key(path)] = label
 
-        self._vst_paths = unique_paths
+        self._vst_paths = all_paths
         self._vst_label_to_path = label_to_path
         self._vst_path_to_label = path_to_label
         labels = list(label_to_path.keys())
@@ -911,10 +1608,100 @@ class VSTHostApp(tk.Tk):
             self._plugin_choice_var.set(label)
             self._plugin_path_display_var.set(current)
         elif labels:
-            self._select_plugin_path(label_to_path[labels[0]], add_to_catalog=False)
+            # Prefer a plugin confirmed to be of the right type over one that
+            # merely could not be identified (alphabetical order is arbitrary).
+            wanted = "instrument" if self._mode == "instrument" else "effect"
+            confirmed = [lb for lb in labels
+                         if self._kind_of(label_to_path[lb]) in (wanted, "both")]
+            first = confirmed[0] if confirmed else labels[0]
+            self._select_plugin_path(label_to_path[first], add_to_catalog=False)
         else:
             self._plugin_choice_var.set("")
             self._plugin_path_display_var.set("No VST3 plugins found yet")
+
+    # ── Plugin types (instrument / effect) ───────────────────────────────────
+
+    def _kind_of(self, path: str) -> str:
+        entry = self._vst_kinds.get(self._plugin_key(path))
+        if not entry:
+            return ""
+        # A reinstalled or updated plugin is identified again.
+        if abs(float(entry.get("mtime", 0.0)) - _plugin_mtime(path)) > 1.0:
+            return ""
+        return str(entry.get("kind", ""))
+
+    def _kind_visible(self, path: str) -> bool:
+        if getattr(self, "_show_all_var", None) is not None and self._show_all_var.get():
+            return True
+        kind = self._kind_of(path)
+        if kind in ("", "failed"):
+            return True          # unidentified plugins are listed, never hidden
+        wanted = "instrument" if self._mode == "instrument" else "effect"
+        return kind in (wanted, "both")
+
+    def _unclassified_paths(self) -> list[str]:
+        return [p for p in self._vst_paths if self._kind_of(p) == ""]
+
+    def _refresh_plugin_list(self) -> None:
+        self._populate_vst_choices(self._vst_paths, self._plugin_var.get().strip())
+
+    def _remember_kind(self, path: str, plugin) -> None:
+        """Record the type of a plugin the host has just loaded anyway."""
+        inst = getattr(plugin, "is_instrument", None)
+        eff = getattr(plugin, "is_effect", None)
+        if inst is None and eff is None:
+            return
+        kind = "both" if (inst and eff) else "instrument" if inst else "effect" if eff else "failed"
+        self._vst_kinds[self._plugin_key(path)] = {"kind": kind, "mtime": _plugin_mtime(path)}
+        _save_vst_cache(self._vst_paths, self._vst_kinds)
+
+    def _start_classification(self) -> None:
+        """Identify unclassified plugins one by one in child processes."""
+        if self._classify_thread is not None and self._classify_thread.is_alive():
+            return
+        todo = self._unclassified_paths()
+        if not todo:
+            return
+        total = len(todo)
+        self._log_append(f"Identifying the type of {total} plugin(s) (once; results are cached)...")
+
+        def worker() -> None:
+            found: Dict[str, Dict[str, Any]] = {}
+            for i, path in enumerate(todo, 1):
+                self.after(0, lambda i=i: self._set_status(
+                    f"Identifying plugin types {i}/{total}...", _AMBER))
+                found[self._plugin_key(path)] = {"kind": _classify_plugin(path),
+                                                 "mtime": _plugin_mtime(path)}
+            self.after(0, lambda: self._finish_classification(found))
+
+        self._classify_thread = threading.Thread(target=worker, daemon=True, name="VST3Classifier")
+        self._classify_thread.start()
+
+    def _finish_classification(self, found: Dict[str, Dict[str, Any]]) -> None:
+        self._vst_kinds.update(found)
+        _save_vst_cache(self._vst_paths, self._vst_kinds)
+        tally: Dict[str, int] = {}
+        for entry in found.values():
+            tally[entry["kind"]] = tally.get(entry["kind"], 0) + 1
+        self._log_append("Plugin types: " + ", ".join(f"{v} {k}" for k, v in sorted(tally.items())))
+
+        # If the host picked the first list entry itself and it turned out to
+        # be the wrong type, move to the first plugin of the right type.
+        wanted = "instrument" if self._mode == "instrument" else "effect"
+        current = self._plugin_var.get().strip()
+        if current and not self._user_chose_plugin and self._kind_of(current) not in (wanted, "both"):
+            self._plugin_var.set("")
+            self._populate_vst_choices(self._vst_paths, "")
+        else:
+            self._refresh_plugin_list()
+        listed = [self._vst_label_to_path[lb] for lb in self._plugin_combo.cget("values")
+                  if lb in self._vst_label_to_path]
+        confirmed = sum(1 for p in listed if self._kind_of(p) in (wanted, "both"))
+        unknown = sum(1 for p in listed if self._kind_of(p) in ("", "failed"))
+        text = f"{confirmed} {wanted} plugin(s) listed"
+        if unknown:
+            text += f" (+{unknown} that could not be identified)"
+        self._set_status(text + ".", _GREEN)
 
     def _select_plugin_path(self, path: str, add_to_catalog: bool = True) -> None:
         path = str(Path(path))
@@ -942,6 +1729,7 @@ class VSTHostApp(tk.Tk):
         if not path:
             return
         self._select_plugin_path(path, add_to_catalog=False)
+        self._user_chose_plugin = True
         self._set_status(f"Selected VST: {Path(path).stem}", _GREEN)
         self._log_append(f"Selected VST: {path}")
 
@@ -963,15 +1751,15 @@ class VSTHostApp(tk.Tk):
         def worker() -> None:
             try:
                 paths, roots = _scan_vst3_paths([selected] if selected else None)
-                self.after(0, lambda: self._finish_vst_scan(paths, roots, selected, None))
+                self.after(0, lambda: self._finish_vst_scan(paths, roots, selected, None, auto))
             except Exception as exc:
-                self.after(0, lambda e=exc: self._finish_vst_scan([], [], selected, str(e)))
+                self.after(0, lambda e=exc: self._finish_vst_scan([], [], selected, str(e), auto))
 
         self._vst_scan_thread = threading.Thread(target=worker, daemon=True, name="VST3Scanner")
         self._vst_scan_thread.start()
 
     def _finish_vst_scan(self, paths: list[str], roots: list[str], selected: str,
-                         error: Optional[str]) -> None:
+                         error: Optional[str], auto: bool = False) -> None:
         self._scan_vsts_btn.state(["!disabled"])
         if error:
             self._set_status("VST scan failed.", _RED)
@@ -986,11 +1774,15 @@ class VSTHostApp(tk.Tk):
                 paths.append(selected)
 
         self._populate_vst_choices(paths, selected)
-        _save_vst_cache(self._vst_paths)
+        _save_vst_cache(self._vst_paths, self._vst_kinds)
         self._set_status(f"Found {len(self._vst_paths)} VST3 plugin(s).", _GREEN)
         self._log_append(f"VST3 scan complete: {len(self._vst_paths)} plugin(s).")
         for root in roots:
             self._log_append(f"  scanned: {root}")
+        # Identify new plugins after a manual rescan, and always in instrument
+        # mode where the list is only useful once types are known.
+        if self._unclassified_paths() and (self._mode == "instrument" or not auto):
+            self._start_classification()
 
     # ── Browse ────────────────────────────────────────────────────────────────
 
@@ -1000,7 +1792,8 @@ class VSTHostApp(tk.Tk):
             filetypes=[("VST3 Plugin", "*.vst3"), ("All files", "*.*")])
         if path:
             self._select_plugin_path(path, add_to_catalog=True)
-            _save_vst_cache(self._vst_paths)
+            self._user_chose_plugin = True
+            _save_vst_cache(self._vst_paths, self._vst_kinds)
             self._set_status(f"Selected VST: {Path(path).stem}", _GREEN)
 
     def _invalidate_plugin(self) -> None:
@@ -1009,6 +1802,9 @@ class VSTHostApp(tk.Tk):
         self._native_editor_used = False
 
     def _ensure_plugin_loaded(self, apply_text_params: bool = True):
+        """Return the persistent Pedalboard effect instance (effect mode only)."""
+        if self._mode == "instrument":
+            raise RuntimeError("Internal error: instrument mode must use the DawDreamer backend.")
         plugin_path = self._plugin_var.get().strip()
         if not plugin_path:
             raise ValueError("Select a VST3 plugin first.")
@@ -1017,13 +1813,13 @@ class VSTHostApp(tk.Tk):
 
         if self._plugin_obj is None or self._plugin_obj_path != plugin_path:
             _check_dependencies()
-            from pedalboard import load_plugin
-            self._set_status("Loading plugin...", _AMBER)
+            self._set_status("Loading effect...", _AMBER)
             self.update_idletasks()
-            self._plugin_obj = load_plugin(plugin_path)
+            self._plugin_obj = _load_effect_plugin(plugin_path, self._log_append)
             self._plugin_obj_path = plugin_path
             self._native_editor_used = False
             self._log_append(f"Loaded: {self._plugin_obj}")
+            self._remember_kind(plugin_path, self._plugin_obj)
 
         if apply_text_params and not self._native_editor_used:
             _apply_param_assignments(self._plugin_obj, self._params_var.get().strip(), self._log_append)
@@ -1065,6 +1861,36 @@ class VSTHostApp(tk.Tk):
         The worker receives the current raw_state, opens the editor, then writes
         raw_state back when the window closes.
         """
+        if self._mode == "instrument":
+            if self._editor_is_open():
+                self._set_status("VST editor is already open.", _AMBER)
+                return
+            try:
+                plugin_path = self._plugin_var.get().strip()
+                if not plugin_path:
+                    raise ValueError("Select a VST3 instrument first.")
+                state_path = _dawdreamer_state_path(plugin_path)
+                state_path.parent.mkdir(parents=True, exist_ok=True)
+                worker_args = [sys.executable, os.path.abspath(__file__),
+                               "--dd-editor-worker", plugin_path, str(state_path),
+                               str(int(self._sample_rate)), str(int(self._buf))]
+                creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
+                self._editor_proc = subprocess.Popen(worker_args, stdin=subprocess.DEVNULL,
+                                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                                      creationflags=creationflags)
+                self._set_editor_buttons(True)
+                self._set_status("DawDreamer plugin editor open. Close the plugin window when finished.", _ACCENT2)
+                self._log_append("DawDreamer native VST editor opened in isolated worker process.")
+                self.after(100, self._poll_editor_process)
+                return
+            except Exception as exc:
+                self._set_editor_buttons(False)
+                self._set_status("Could not open plugin editor.", _RED)
+                self._log_append(f"ERROR opening DawDreamer editor: {exc}")
+                self._reveal_log()
+                messagebox.showerror("Plugin UI", str(exc))
+                return
+
         if self._editor_is_open():
             self._set_status("VST editor is already open.", _AMBER)
             return
@@ -1126,6 +1952,13 @@ class VSTHostApp(tk.Tk):
 
     def _close_native_editor(self) -> None:
         """Request a clean editor close, then force-kill the child if needed."""
+        if self._mode == "instrument":
+            if self._editor_is_open():
+                messagebox.showinfo("DawDreamer Editor", "Close the instrument's own editor window to return to the host.")
+            else:
+                self._set_editor_buttons(False)
+            return
+
         if not self._editor_is_open():
             self._set_editor_buttons(False)
             return
@@ -1146,7 +1979,8 @@ class VSTHostApp(tk.Tk):
                 self.after_cancel(self._editor_force_job)
             except Exception:
                 pass
-        self._editor_force_job = self.after(1500, self._force_close_editor_process)
+        self._editor_force_job = self.after(10000 if self._mode == "instrument" else 1500,
+                                                self._force_close_editor_process)
 
     def _force_close_editor_process(self) -> None:
         self._editor_force_job = None
@@ -1177,6 +2011,19 @@ class VSTHostApp(tk.Tk):
                 pass
             self._editor_force_job = None
 
+        if self._mode == "instrument":
+            self._editor_proc = None
+            self._set_editor_buttons(False)
+            if rc == 0:
+                self._native_editor_used = True
+                self._set_status("DawDreamer editor closed; instrument state saved.", _GREEN)
+                self._log_append(f"DawDreamer editor closed; state saved to {_dawdreamer_state_path(self._plugin_var.get().strip())}")
+            else:
+                self._set_status("DawDreamer editor worker failed.", _RED)
+                self._log_append(f"DawDreamer editor worker exited with code {rc}.")
+                self._reveal_log()
+            return
+
         imported = False
         try:
             if self._editor_state_out is not None and self._editor_state_out.exists():
@@ -1190,7 +2037,7 @@ class VSTHostApp(tk.Tk):
             self._log_append(f"WARNING: could not import edited VST state: {exc}")
 
         if imported:
-            self._set_status("VST editor closed; edited state imported.", _GREEN)
+            self._set_status("VST editor closed; state saved for the next fresh render instance.", _GREEN)
             self._log_append("Native editor closed; GUI state transferred back to host.")
         elif rc == 0:
             self._set_status("VST editor closed.", _GREEN)
@@ -1221,6 +2068,9 @@ class VSTHostApp(tk.Tk):
             return
         if self._preview_thread is not None and self._preview_thread.is_alive():
             self._stop_audition()
+        if self._mode == "instrument":
+            self._on_audition_instrument()
+            return
         try:
             plugin = self._ensure_plugin_loaded(apply_text_params=not self._native_editor_used)
             settings = self._current_settings()
@@ -1236,7 +2086,8 @@ class VSTHostApp(tk.Tk):
             self._set_status("Rendering audition...", _AMBER)
             self.update_idletasks()
             _reset_plugin_state(plugin, self._log_append)
-            preview = plugin(audio, sr, buffer_size=settings["buffer_size"], reset=False)
+            preview, num_channels = _run_effect(plugin, audio, sr, settings["buffer_size"],
+                                                self._log_append)
 
             # Include a short tail, capped at 2 s so audition stays immediate.
             preview_tail = min(max(float(settings["tail_seconds"]), 0.0), 2.0)
@@ -1246,6 +2097,52 @@ class VSTHostApp(tk.Tk):
                 preview = np.concatenate([preview, tail], axis=1)
 
             self._start_preview_playback(preview.astype(np.float32, copy=False), sr)
+        except Exception as exc:
+            self._set_status("Audition failed.", _RED)
+            self._log_append(f"ERROR audition: {exc}")
+            self._reveal_log()
+            messagebox.showerror("Audition Failed", str(exc))
+
+    def _on_audition_instrument(self) -> None:
+        """Render the first eight seconds through DawDreamer's instrument timeline."""
+        try:
+            import numpy as np
+            settings = self._current_settings()
+            if self._score is None:
+                raise RuntimeError(self._score_error or "Score is not loaded.")
+            score = parse_musicxml(self._in_wav, settings["velocity"])
+            to_sec, _points = _tempo_mapper(score["tempos"])
+            sr = float(settings["sample_rate"])
+            limit = min(8.0, max((to_sec(n["end_q"]) for n in score["notes"]), default=0.0))
+            tail = min(max(float(settings["tail_seconds"]), 0.0), 1.5)
+            self._set_status("Rendering DawDreamer audition...", _AMBER)
+            self.update_idletasks()
+            engine, synth = _make_dawdreamer_instrument(
+                settings["plugin_path"], sr, settings["buffer_size"],
+                param_string=settings["param_string"] if not self._native_editor_used else "",
+                emit=self._log_append, load_saved_state=True)
+            synth.clear_midi()
+            count = 0
+            for n in score["notes"]:
+                start = float(to_sec(n["start_q"]))
+                if start >= limit:
+                    continue
+                stop = min(float(to_sec(n["end_q"])), limit)
+                if stop <= start:
+                    continue
+                synth.add_midi_note(int(n["midi"]), int(n["vel"]), start, stop-start)
+                count += 1
+            engine.render(limit + tail)
+            preview = np.asarray(engine.get_audio(), dtype=np.float32)
+            if preview.ndim == 1:
+                preview = preview.reshape(1, -1)
+            if preview.shape[0] == 1:
+                preview = np.repeat(preview, 2, axis=0)
+            peak = _audio_peak(preview)
+            self._log_append(f"DawDreamer audition: {count} notes, peak {peak:.6f}")
+            if peak < INSTRUMENT_SILENCE_PEAK:
+                raise RuntimeError("DawDreamer instrument audition is silent. Open the plugin editor and load/verify the instrument preset.")
+            self._start_preview_playback(preview, sr)
         except Exception as exc:
             self._set_status("Audition failed.", _RED)
             self._log_append(f"ERROR audition: {exc}")
@@ -1310,25 +2207,42 @@ class VSTHostApp(tk.Tk):
         try:
             self._set_status("Scanning parameters...", _AMBER)
             self._log_append(f"=== Scanning: {plugin_path} ===")
-            plugin = self._ensure_plugin_loaded(apply_text_params=False)
-            params = list(plugin.parameters.keys()) if hasattr(plugin, "parameters") else []
-            lines = [f"{'Name':<45} {'Min':>10} {'Max':>10} {'Default':>10} {'Current':>10}",
-                     "-" * 90]
-            for name in params:
-                def fmt(v: Any) -> str:
+            if self._mode == "instrument":
+                settings = self._current_settings()
+                _engine, synth = _make_dawdreamer_instrument(
+                    plugin_path, float(settings["sample_rate"]), int(settings["buffer_size"]),
+                    param_string="", emit=self._log_append, load_saved_state=True)
+                desc = synth.get_parameters_description()
+                lines = [f"{'Index':>5}  {'Name':<55} {'Current':>10}", "-" * 76]
+                for i, item in enumerate(desc):
+                    idx = int(item.get("index", i))
+                    name = str(item.get("name", f"Parameter {idx}"))
                     try:
-                        return f"{float(v):>10.4g}"
-                    except (TypeError, ValueError):
-                        return f"{str(v):>10}"
-                try:
-                    p = plugin.parameters[name]
-                    mn = getattr(p, "min_value", "?")
-                    mx = getattr(p, "max_value", "?")
-                    df = getattr(p, "default_value", "?")
-                    cur = getattr(plugin, name, "?")
-                    lines.append(f"  {name:<45}{fmt(mn)}{fmt(mx)}{fmt(df)}{fmt(cur)}")
-                except Exception as exc:
-                    lines.append(f"  {name:<45}  (error: {exc})")
+                        cur = float(synth.get_parameter(idx))
+                        cur_txt = f"{cur:10.6f}"
+                    except Exception:
+                        cur_txt = f"{'?':>10}"
+                    lines.append(f"{idx:5d}  {name:<55.55} {cur_txt}")
+            else:
+                plugin = self._ensure_plugin_loaded(apply_text_params=False)
+                params = list(plugin.parameters.keys()) if hasattr(plugin, "parameters") else []
+                lines = [f"{'Name':<45} {'Min':>10} {'Max':>10} {'Default':>10} {'Current':>10}",
+                         "-" * 90]
+                for name in params:
+                    def fmt(v: Any) -> str:
+                        try:
+                            return f"{float(v):>10.4g}"
+                        except (TypeError, ValueError):
+                            return f"{str(v):>10}"
+                    try:
+                        p = plugin.parameters[name]
+                        mn = getattr(p, "min_value", "?")
+                        mx = getattr(p, "max_value", "?")
+                        df = getattr(p, "default_value", "?")
+                        cur = getattr(plugin, name, "?")
+                        lines.append(f"  {name:<45}{fmt(mn)}{fmt(mx)}{fmt(df)}{fmt(cur)}")
+                    except Exception as exc:
+                        lines.append(f"  {name:<45}  (error: {exc})")
             self._scan_done("\n".join(lines), None)
         except Exception as exc:
             self._scan_done(None, str(exc))
@@ -1359,6 +2273,8 @@ class VSTHostApp(tk.Tk):
         if "tail_seconds" in data: self._tail_var.set(float(data["tail_seconds"]))
         if "buffer_size"  in data: self._buf_var.set(int(data["buffer_size"]))
         if "param_string" in data: self._params_var.set(data["param_string"])
+        if "velocity"     in data: self._velocity_var.set(int(data["velocity"]))
+        if "sample_rate"  in data: self._sr_var.set(int(data["sample_rate"]))
         self._set_status(f"Loaded preset: {name}", _GREEN)
         self._log_append(f"Loaded preset: {name}")
 
@@ -1408,12 +2324,15 @@ class VSTHostApp(tk.Tk):
             return
 
         self._process_btn.state(["disabled"])
-        self._cancel_btn.state(["disabled"])
-        self._set_status("Loading plugin...", _AMBER)
-        self._log_append("=== Processing ===")
+        self._cancel_btn.state(["!disabled"])
+        self._log_append("=== Rendering score ===" if self._mode == "instrument" else "=== Processing ===")
+        _save_mode_config(self._mode, settings)
 
-        # Reuse the same main-thread plugin instance used by the native editor
-        # and audition so GUI changes are preserved exactly.
+        if self._mode == "instrument":
+            self._start_instrument_render_worker(settings)
+            return
+
+        # Effect mode retains the proven in-process Pedalboard path.
         try:
             loaded_plugin = self._ensure_plugin_loaded(
                 apply_text_params=not self._native_editor_used)
@@ -1422,10 +2341,6 @@ class VSTHostApp(tk.Tk):
             return
 
         self._set_status("Processing...", _AMBER)
-
-        # Run the render on the main thread (tkinter thread) so that the plugin
-        # never crosses thread boundaries — which many VST3s forbid entirely.
-        # We use after(0, …) so the UI can repaint once before the blocking call.
         def do_render() -> None:
             try:
                 run_offline(
@@ -1443,9 +2358,104 @@ class VSTHostApp(tk.Tk):
                 self._process_success()
             except Exception as exc:
                 self._process_failure(str(exc))
-
-        _save_config(settings)
         self.after(0, do_render)
+
+    def _start_instrument_render_worker(self, settings: Dict[str, Any]) -> None:
+        """Launch one isolated DawDreamer render and keep Tk responsive."""
+        if self._render_proc is not None and self._render_proc.poll() is None:
+            return
+        while True:
+            try:
+                self._render_queue.get_nowait()
+            except queue.Empty:
+                break
+
+        worker_args = [
+            sys.executable, "-u", os.path.abspath(__file__), "--dd-render-worker",
+            self._in_wav, self._out_wav, settings["plugin_path"],
+            str(float(settings["tail_seconds"])), str(int(settings["buffer_size"])),
+            settings["param_string"], str(int(settings["velocity"])),
+            str(int(settings["sample_rate"])),
+        ]
+        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
+        try:
+            self._render_proc = subprocess.Popen(
+                worker_args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT, text=True, bufsize=1,
+                creationflags=creationflags)
+        except Exception as exc:
+            self._render_proc = None
+            self._process_failure(f"Could not start DawDreamer render worker: {exc}")
+            return
+
+        proc = self._render_proc
+        def reader() -> None:
+            try:
+                if proc.stdout is not None:
+                    for line in proc.stdout:
+                        self._render_queue.put(line.rstrip("\r\n"))
+            except Exception as exc:
+                self._render_queue.put(f"WARNING: render log reader failed: {exc}")
+        self._render_reader_thread = threading.Thread(
+            target=reader, daemon=True, name="DawDreamerRenderLog")
+        self._render_reader_thread.start()
+
+        self._render_started_at = time.monotonic()
+        # A generous watchdog: the point is to catch a truly hung plugin, not to
+        # demand real-time rendering from every instrument.
+        score_duration = max(0.0, float(getattr(self, "_score_end", 0.0)))
+        self._render_timeout = max(60.0, min(300.0, score_duration * 5.0 + 30.0))
+        self._set_status("Rendering instrument... 0 s elapsed", _AMBER)
+        self._log_append(
+            f"DawDreamer render worker started (watchdog {self._render_timeout:.0f} s).")
+        self._poll_instrument_render_worker()
+
+    def _drain_render_log(self) -> None:
+        while True:
+            try:
+                line = self._render_queue.get_nowait()
+            except queue.Empty:
+                break
+            if line:
+                self._log_append(line)
+
+    def _poll_instrument_render_worker(self) -> None:
+        self._render_poll_job = None
+        self._drain_render_log()
+        proc = self._render_proc
+        if proc is None:
+            return
+        rc = proc.poll()
+        elapsed = time.monotonic() - self._render_started_at
+        if rc is None:
+            self._set_status(f"Rendering instrument... {elapsed:.0f} s elapsed  (Cancel is available)", _AMBER)
+            if elapsed >= self._render_timeout:
+                try:
+                    proc.terminate()
+                    time.sleep(0.15)
+                    if proc.poll() is None:
+                        proc.kill()
+                except Exception:
+                    pass
+                self._render_proc = None
+                self._drain_render_log()
+                self._process_failure(
+                    f"DawDreamer render timed out after {elapsed:.0f} s. "
+                    "The VSTi appears to be hanging inside offline rendering. "
+                    "Try the plugin's VST2 (.dll) build if available, or another VSTi.")
+                return
+            self._render_poll_job = self.after(200, self._poll_instrument_render_worker)
+            return
+
+        self._render_proc = None
+        self._drain_render_log()
+        if rc == 0 and os.path.isfile(self._out_wav) and os.path.getsize(self._out_wav) > 0:
+            self._log_append(f"DawDreamer worker finished in {elapsed:.1f} s.")
+            self._process_success()
+        else:
+            self._process_failure(
+                f"DawDreamer render worker exited with code {rc} after {elapsed:.1f} s. "
+                "See Log for the worker output.")
 
     def _process_success(self) -> None:
         self._preview_stop.set()
@@ -1469,7 +2479,8 @@ class VSTHostApp(tk.Tk):
         self.after(600, self.destroy)
 
     def _process_failure(self, msg: str) -> None:
-        self._process_btn.state(["!disabled"])
+        if not self._score_error:
+            self._process_btn.state(["!disabled"])
         self._cancel_btn.state(["!disabled"])
         self._set_status(f"Failed: {msg}", _RED)
         self._log_append(f"ERROR: {msg}")
@@ -1481,6 +2492,18 @@ class VSTHostApp(tk.Tk):
 
     def _on_cancel(self) -> None:
         self._preview_stop.set()
+        # Render worker is intentionally disposable: terminating it is the only
+        # reliable way to recover from a VSTi that blocks inside offline render.
+        rproc = self._render_proc
+        if rproc is not None and rproc.poll() is None:
+            try:
+                rproc.terminate()
+                time.sleep(0.10)
+                if rproc.poll() is None:
+                    rproc.kill()
+            except Exception:
+                pass
+            self._render_proc = None
         proc = self._editor_proc
         if proc is not None and proc.poll() is None:
             try:
@@ -1565,10 +2588,105 @@ def _run_editor_worker(args: list[str]) -> int:
         return 1
 
 
+def _run_dawdreamer_editor_worker(args: list[str]) -> int:
+    """Open a VST3 instrument editor through DawDreamer and persist its native state."""
+    if len(args) != 4:
+        print("Usage: --dd-editor-worker plugin.vst3 statefile sample_rate buffer_size", file=sys.stderr)
+        return 2
+    plugin_path, state_file, sr_s, buf_s = args
+    try:
+        _check_dawdreamer_dependencies()
+        import dawdreamer as daw
+        engine = daw.RenderEngine(float(sr_s), max(64, int(buf_s)))
+        synth = engine.make_plugin_processor("instrument", plugin_path)
+        state_path = Path(state_file)
+        if state_path.exists():
+            try:
+                synth.load_state(str(state_path))
+            except Exception as exc:
+                print(f"WARNING: could not load previous DawDreamer state: {exc}", file=sys.stderr)
+        synth.open_editor()
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        synth.save_state(str(state_path))
+        return 0
+    except Exception as exc:
+        print(f"ERROR DawDreamer editor worker: {exc}", file=sys.stderr)
+        return 1
+
+
+def _run_dawdreamer_render_worker(args: list[str]) -> int:
+    """Isolated MusicXML -> DawDreamer VSTi -> WAV render.
+
+    Keeping RenderEngine.render() in this process prevents a hung VST from
+    freezing Tk. The parent may terminate this worker safely on Cancel/timeout.
+    """
+    if len(args) != 8:
+        print("Usage: --dd-render-worker score.musicxml output.wav plugin tail buffer params velocity sample_rate", file=sys.stderr, flush=True)
+        return 2
+    score_path, out_wav, plugin_path, tail_s, buf_s, params, vel_s, sr_s = args
+    try:
+        print("DawDreamer worker: loading instrument...", flush=True)
+        render_instrument(
+            score_path=score_path, out_wav=out_wav, plugin_path=plugin_path,
+            tail_seconds=float(tail_s), buffer_size=int(buf_s),
+            param_string=params, velocity=int(vel_s), sample_rate=int(sr_s),
+            log=lambda text: print(text, flush=True))
+        return 0
+    except Exception as exc:
+        print(f"ERROR DawDreamer render worker: {exc}", file=sys.stderr, flush=True)
+        return 1
+
+
+def _run_classify_worker(args: list[str]) -> int:
+    """Load one plugin and print its type as a JSON line (isolated process)."""
+    if len(args) != 1:
+        print("Usage: --classify-worker plugin.vst3", file=sys.stderr)
+        return 2
+    try:
+        _check_dependencies()
+        from pedalboard import load_plugin
+        plugin = load_plugin(args[0])
+        print(json.dumps({"instrument": bool(getattr(plugin, "is_instrument", False)),
+                          "effect": bool(getattr(plugin, "is_effect", False))}))
+        sys.stdout.flush()
+        return 0
+    except Exception as exc:
+        print(f"ERROR classify: {exc}", file=sys.stderr)
+        return 1
+
+
+def _run_dump_score(args: list[str]) -> int:
+    """Print the notes a score will send to an instrument (no plugin needed)."""
+    if not args:
+        print("Usage: --dump-score score.musicxml [velocity]", file=sys.stderr)
+        return 2
+    velocity = int(args[1]) if len(args) >= 2 and args[1].strip() else 90
+    try:
+        score = parse_musicxml(args[0], velocity)
+        messages, end_t, points = build_midi_messages(score)
+        to_sec = _tempo_mapper(score["tempos"])[0]
+        print(describe_score(score, end_t, points))
+        print("parts: " + ", ".join(score["parts"]))
+        print(f"{'start_s':>9} {'end_s':>9} {'midi':>4} {'vel':>3} part")
+        for n in score["notes"]:
+            print(f"{to_sec(n['start_q']):9.3f} {to_sec(n['end_q']):9.3f} "
+                  f"{n['midi']:4d} {n['vel']:3d} {n['part'] + 1}")
+        print(f"{len(messages)} MIDI events")
+        return 0
+    except Exception as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+
+
 def _run_gui(args: list[str]) -> int:
     # args: input.wav output.wav [plugin.vst3 [tail [buf [params [sentinel [prefs_output]]]]]]
+    # instrument mode: --instrument score.musicxml output.wav ... [velocity [sample_rate]]
+    mode = "effect"
+    if args and args[0] == "--instrument":
+        mode = "instrument"
+        args = args[1:]
     if len(args) < 2:
-        _fail("GUI mode requires at least: --gui input.wav output.wav")
+        _fail("GUI mode requires at least: --gui [--instrument] input output.wav")
     def _opt(index: int) -> Optional[str]:
         """An omitted OR empty argument means 'use the saved config'."""
         if len(args) <= index:
@@ -1585,25 +2703,66 @@ def _run_gui(args: list[str]) -> int:
     sentinel  = args[6] if len(args) >= 7 else ""
     prefs_out = args[7] if len(args) >= 8 else ""
 
+    vel_arg   = _opt(8)
+    sr_arg    = _opt(9)
+
     tail = float(tail_arg) if tail_arg is not None else None
     buf  = int(buf_arg)    if buf_arg  is not None else None
+    vel  = int(float(vel_arg)) if vel_arg is not None else None
+    srate = int(float(sr_arg)) if sr_arg is not None else None
 
-    app = VSTHostApp(
-        in_wav=in_wav, out_wav=out_wav,
-        plugin_path=plugin, tail_seconds=tail,
-        buffer_size=buf, param_string=params,
-        # v1.6 parsed the sentinel but dropped this 8th argument on the floor,
-        # so Praat's "save as default plugin" request was silently ignored.
-        prefs_output_path=prefs_out,
-    )
-    app.mainloop()
-    # Always write sentinel on exit (Process, Cancel, or window close)
-    # so Praat's polling loop always unblocks cleanly.
-    _write_sentinel(sentinel)
-    return app._exit_code
+    # The sentinel is written in a finally block: if the window cannot even be
+    # created (no display, broken Tk), Praat must still stop waiting at once
+    # instead of polling out its full timeout.
+    exit_code = 1
+    try:
+        app = VSTHostApp(
+            in_wav=in_wav, out_wav=out_wav,
+            plugin_path=plugin, tail_seconds=tail,
+            buffer_size=buf, param_string=params,
+            # v1.6 parsed the sentinel but dropped this 8th argument on the floor,
+            # so Praat's "save as default plugin" request was silently ignored.
+            prefs_output_path=prefs_out,
+            mode=mode, velocity=vel, sample_rate=srate,
+        )
+        app.mainloop()
+        exit_code = app._exit_code
+    except Exception as exc:
+        print(f"ERROR: the host window could not run: {exc}", file=sys.stderr)
+    finally:
+        # Always write sentinel on exit (Process, Cancel, window close or
+        # failure) so Praat's polling loop always unblocks cleanly.
+        _write_sentinel(sentinel)
+    return exit_code
+
+
+def _run_cli_instrument(args: list[str]) -> int:
+    # score.musicxml output.wav plugin.vst3 [tail] [buf] [params] [velocity] [sample_rate]
+    if len(args) < 3 or len(args) > 8:
+        print("Usage: py host_vst.py --instrument score.musicxml output.wav plugin.vst3 "
+              "[tail_seconds] [buffer_size] [param_assignments] [velocity] [sample_rate]",
+              file=sys.stderr)
+        return 1
+
+    def opt(i: int, default: str) -> str:
+        return args[i] if len(args) > i and args[i].strip() != "" else default
+
+    try:
+        render_instrument(args[0], args[1], args[2],
+                          tail_seconds=float(opt(3, "2.5")),
+                          buffer_size=int(opt(4, str(INSTRUMENT_DEFAULT_BUFFER_SIZE))),
+                          param_string=opt(5, ""),
+                          velocity=int(float(opt(6, "90"))),
+                          sample_rate=int(float(opt(7, "44100"))))
+        return 0
+    except Exception as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
 
 
 def _run_cli(args: list[str]) -> int:
+    if args and args[0] == "--instrument":
+        return _run_cli_instrument(args[1:])
     if len(args) < 3 or len(args) > 7:
         print(
             "Usage: py host_vst.py input.wav output.wav plugin.vst3 "
@@ -1611,7 +2770,7 @@ def _run_cli(args: list[str]) -> int:
             file=sys.stderr,
         )
         print(
-            "GUI:   py host_vst.py --gui input.wav output.wav [plugin.vst3] "
+            "GUI:   py host_vst.py --gui [--instrument] input output.wav [plugin.vst3] "
             "[tail] [buf] [params]",
             file=sys.stderr,
         )
@@ -1643,8 +2802,16 @@ def main() -> None:
             pass
 
     raw_args = sys.argv[1:]
+    if raw_args and raw_args[0] == "--dd-render-worker":
+        raise SystemExit(_run_dawdreamer_render_worker(raw_args[1:]))
+    if raw_args and raw_args[0] == "--dd-editor-worker":
+        raise SystemExit(_run_dawdreamer_editor_worker(raw_args[1:]))
     if raw_args and raw_args[0] == "--editor-worker":
         raise SystemExit(_run_editor_worker(raw_args[1:]))
+    if raw_args and raw_args[0] == "--classify-worker":
+        raise SystemExit(_run_classify_worker(raw_args[1:]))
+    if raw_args and raw_args[0] == "--dump-score":
+        raise SystemExit(_run_dump_score(raw_args[1:]))
 
     gui_mode, remaining = _parse_args()
     if gui_mode:

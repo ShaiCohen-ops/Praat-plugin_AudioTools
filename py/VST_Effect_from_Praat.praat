@@ -3,33 +3,94 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.7 (2026) - Toolbar host GUI; the Praat form no longer duplicates
-#          the settings that live in the host window
+# Version: 1.9.2 (2026) - release cleanup
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   VST3 Effect - Praat -> Python host -> native VST3 editor/audition -> Praat
+#   VST3 Host - Praat -> Python host -> native plugin editor/audition -> Praat
 #
-#   This script serves as a bridge between Praat and a Python-based 
-#   GUI host for VST3 plugins. It allows users to process Praat 
-#   Sound objects through external VST3 effects while maintaining 
-#   a responsive front-end.
+#   AUDIO EFFECT       one Sound selected
+#                      Sound -> Pedalboard VST3 effect -> Sound "<name>_vst"
+#
+#   INSTRUMENT RENDER  one Strings object holding MusicXML selected
+#                      MusicXML -> parsed notes -> DawDreamer VST instrument
+#                      -> Sound "<name>_vsti"
+#
+#   Canonical Python backend filename: host_vst.py
+#   Release/version numbers are kept inside the host, not in the filename.
+#
+# Changelog v1.9.2:
+#   - Production split is now explicit: Pedalboard for effects, DawDreamer for VSTi.
+#   - Removed all experimental v1.8 instrument fallback paths.
+#   - Python dependency probe now reports the missing package(s) explicitly.
+#   - Canonical backend filename remains host_vst.py.
 #
 # Citation:
-#   Cohen, S. (2026). VST3 Host:
-#   Python GUI Bridge for Praat.
+#   Cohen, S. (2026). VST3 Host: Python GUI Bridge for Praat.
 #   Praat AudioTools Plugin.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
-#
 # ============================================================
 
-if numberOfSelected("Sound") <> 1
-    exitScript: "Please select exactly one Sound object."
+# ============================================================
+# Mode from the selection
+# ============================================================
+
+nSelected = numberOfSelected()
+if nSelected = 1 and numberOfSelected("Sound") = 1
+    mode$ = "effect"
+    sound = selected("Sound")
+    soundName$ = selected$("Sound")
+    inputName$ = soundName$
+    resultName$ = soundName$ + "_vst"
+elsif nSelected = 1 and numberOfSelected("Strings") = 1
+    mode$ = "instrument"
+    scoreStrings = selected("Strings")
+    stringsName$ = selected$("Strings")
+    inputName$ = stringsName$
+    nScoreLines = Get number of strings
+    if nScoreLines < 3
+        exitScript: "The selected Strings object is too short to be a MusicXML score."
+    endif
+    # Look for the root element near the top (declaration and DOCTYPE come first).
+    scoreKind$ = ""
+    for iLine from 1 to min(nScoreLines, 12)
+        line$ = Get string: iLine
+        if scoreKind$ = "" and index(line$, "<score-partwise") > 0
+            scoreKind$ = "partwise"
+        elsif scoreKind$ = "" and index(line$, "<score-timewise") > 0
+            scoreKind$ = "timewise"
+        endif
+    endfor
+    if scoreKind$ = "timewise"
+        exitScript: "This is a score-timewise MusicXML file; only score-partwise is supported."
+    elsif scoreKind$ = ""
+        exitScript: "The selected Strings object does not look like MusicXML (no <score-partwise> in its first lines)."
+    endif
+    # musicxml_<name> (AudioTools scripts) and <name>_musicxml (BasicPitchTranscriber)
+    baseName$ = stringsName$
+    if length(baseName$) > 9 and left$(baseName$, 9) = "musicxml_"
+        baseName$ = mid$(baseName$, 10, length(baseName$) - 9)
+    endif
+    if length(baseName$) > 9 and right$(baseName$, 9) = "_musicxml"
+        baseName$ = left$(baseName$, length(baseName$) - 9)
+    endif
+    if baseName$ = ""
+        baseName$ = "score"
+    endif
+    resultName$ = baseName$ + "_vsti"
+else
+    exitScript: "Select exactly one object:" + newline$ + "  a Sound - to process it with a VST3 effect, or" + newline$ + "  a Strings object holding MusicXML - to render it with a VST3 instrument."
 endif
 
-sound = selected("Sound")
-soundName$ = selected$("Sound")
+# Praat 7.0 gates file writing and system commands; ask once, up front.
+# The version guard keeps 6.x from evaluating askForTrust, which it lacks.
+if praatVersion >= 7000
+    trustGranted = askForTrust ()
+    if trustGranted = 0
+        exitScript: "The VST host needs permission to write temporary files and start Python."
+    endif
+endif
 
 q$ = """"
 
@@ -60,41 +121,39 @@ endif
 pluginDirRaw$ = preferencesDirectory$ + "/plugin_AudioTools/"
 pluginDir$ = replace_regex$(pluginDirRaw$, "\\", "/", 0)
 
-# Prefer the versioned host so an older installed host_vst.py cannot silently
-# shadow a newly downloaded fix. Fall back to the legacy filename for compatibility.
-pythonScript$ = pluginDir$ + "py/host_vst_v1_7.py"
-if not fileReadable(pythonScript$)
-    pythonScript$ = defaultDirectory$ + "/host_vst_v1_7.py"
-endif
-if not fileReadable(pythonScript$)
-    pythonScript$ = pluginDir$ + "py/host_vst_v1_6.py"
-endif
-if not fileReadable(pythonScript$)
-    pythonScript$ = defaultDirectory$ + "/host_vst_v1_6.py"
-endif
-if not fileReadable(pythonScript$)
-    pythonScript$ = pluginDir$ + "py/host_vst.py"
-endif
+# Canonical host filename: stable across releases.
+# The version is tracked inside host_vst.py, not in the filename.
+pythonScript$ = pluginDir$ + "py/host_vst.py"
 if not fileReadable(pythonScript$)
     pythonScript$ = defaultDirectory$ + "/host_vst.py"
 endif
+
 if not fileReadable(pythonScript$)
-    exitScript: "Cannot find Python VST host." + newline$ + "Expected host_vst_v1_7.py (preferred), host_vst_v1_6.py or host_vst.py in: " + pluginDir$ + "py/ or the current Praat directory."
+    exitScript: "Cannot find host_vst.py." + newline$ + "Copy it into: " + pluginDir$ + "py/ or the current Praat directory."
 endif
+
 
 tempDirRaw$ = temporaryDirectory$ + "/"
 tempDir$ = replace_regex$(tempDirRaw$, "\\", "/", 0)
 
 tempInput$  = tempDir$ + "vst_temp_input.wav"
+tempScore$  = tempDir$ + "vst_temp_score.musicxml"
 tempOutput$ = tempDir$ + "vst_temp_output.wav"
 tempLog$    = tempDir$ + "vst_temp_gui_log.txt"
 tempDone$   = tempDir$ + "vst_temp_done.txt"
 probePy$    = tempDir$ + "vst_temp_probe.py"
 probeMarker$= tempDir$ + "vst_temp_probe.ok"
+probeReport$= tempDir$ + "vst_temp_probe.txt"
 
 # Persistent preference: remember the last-used VST plugin
-prefsFile$ = pluginDir$ + "last_vst_plugin.txt"
-legacyPrefsFile$ = defaultDirectory$ + "/../last_vst_plugin.txt"
+# Effects and instruments are remembered separately.
+if mode$ = "instrument"
+    prefsName$ = "last_vsti_plugin.txt"
+else
+    prefsName$ = "last_vst_plugin.txt"
+endif
+prefsFile$ = pluginDir$ + prefsName$
+legacyPrefsFile$ = defaultDirectory$ + "/../" + prefsName$
 
 # Preserve an existing Praat 6-era preference when running
 # from the old plugin location under Praat 7
@@ -109,17 +168,22 @@ prefsFile$ = replace_regex$(prefsFile$, "\\", "/", 0)
 # Enforce forward slashes for all paths passed to python
 pythonScriptJ$ = replace_regex$(pythonScript$, "\\", "/", 0)
 tempInputJ$    = replace_regex$(tempInput$, "\\", "/", 0)
+tempScoreJ$    = replace_regex$(tempScore$, "\\", "/", 0)
 tempOutputJ$   = replace_regex$(tempOutput$, "\\", "/", 0)
 tempLogJ$      = replace_regex$(tempLog$, "\\", "/", 0)
 tempDoneJ$     = replace_regex$(tempDone$, "\\", "/", 0)
 probePyJ$      = replace_regex$(probePy$, "\\", "/", 0)
 probeMarkerJ$  = replace_regex$(probeMarker$, "\\", "/", 0)
+probeReportJ$  = replace_regex$(probeReport$, "\\", "/", 0)
 prefsFileJ$    = replace_regex$(prefsFile$, "\\", "/", 0)
 
 # ---- CLEANUP PROCEDURE ----
 procedure cleanUpTempFiles
     if fileReadable(tempInput$)
         deleteFile: tempInput$
+    endif
+    if fileReadable(tempScore$)
+        deleteFile: tempScore$
     endif
     if fileReadable(tempOutput$)
         deleteFile: tempOutput$
@@ -136,6 +200,9 @@ procedure cleanUpTempFiles
     if fileReadable(probeMarker$)
         deleteFile: probeMarker$
     endif
+    if fileReadable(probeReport$)
+        deleteFile: probeReport$
+    endif
 endproc
 
 @cleanUpTempFiles
@@ -144,12 +211,19 @@ endproc
 # Stage 0 — Early Python Dependency Probe
 # ===========================================================================
 
-writeFileLine: probePy$, "import sys"
-appendFileLine: probePy$, "try:"
-appendFileLine: probePy$, "    import pedalboard, soundfile, tkinter"
-appendFileLine: probePy$, "    with open(r'" + probeMarkerJ$ + "', 'w') as f: f.write('ok')"
-appendFileLine: probePy$, "except ImportError:"
-appendFileLine: probePy$, "    sys.exit(1)"
+writeFileLine: probePy$, "import importlib, sys"
+if mode$ = "instrument"
+    appendFileLine: probePy$, "mods = ['pedalboard', 'soundfile', 'tkinter', 'dawdreamer']"
+else
+    appendFileLine: probePy$, "mods = ['pedalboard', 'tkinter']"
+endif
+appendFileLine: probePy$, "missing = []"
+appendFileLine: probePy$, "for m in mods:"
+appendFileLine: probePy$, "    try: importlib.import_module(m)"
+appendFileLine: probePy$, "    except ImportError: missing.append(m)"
+appendFileLine: probePy$, "with open(r'" + probeReportJ$ + "', 'w') as f: f.write(', '.join(missing) if missing else 'OK')"
+appendFileLine: probePy$, "if missing: sys.exit(1)"
+appendFileLine: probePy$, "with open(r'" + probeMarkerJ$ + "', 'w') as f: f.write('ok')"
 
 if windows
     nCandidates = 4
@@ -171,6 +245,7 @@ endif
 # packages launched a broken command and the user waited out the full 10-minute
 # timeout instead of reading the one-line explanation.
 pythonCmd$ = ""
+lastProbe$ = ""
 
 for iCand from 1 to nCandidates
     if iCand = 1
@@ -186,13 +261,25 @@ for iCand from 1 to nCandidates
     if fileReadable(probeMarker$)
         deleteFile: probeMarker$
     endif
+    if fileReadable(probeReport$)
+        deleteFile: probeReport$
+    endif
 
     runSystem_nocheck: tryCmd$ + " """ + probePyJ$ + """"
 
     if fileReadable(probeMarker$)
         pythonCmd$ = tryCmd$
         deleteFile: probeMarker$
+        if fileReadable(probeReport$)
+            deleteFile: probeReport$
+        endif
         iCand = nCandidates + 1 ; Break early
+    elsif fileReadable(probeReport$)
+        missingHere$ = readFile$(probeReport$)
+        if missingHere$ <> "" and missingHere$ <> "OK"
+            lastProbe$ = tryCmd$ + ": missing " + missingHere$
+        endif
+        deleteFile: probeReport$
     endif
 endfor
 
@@ -200,7 +287,15 @@ deleteFile: probePy$
 
 if pythonCmd$ = ""
     @cleanUpTempFiles
-    exitScript: "Cannot find Python 3 installation with required packages." + newline$ + "Tried: python3, python, py" + newline$ + "Please install: pip install pedalboard soundfile"
+    if lastProbe$ <> ""
+        if mode$ = "instrument"
+            exitScript: "Python was found, but Instrument mode is missing required package(s)." + newline$ + lastProbe$ + newline$ + "Install into that Python with: python -m pip install pedalboard soundfile dawdreamer"
+        else
+            exitScript: "Python was found, but Effect mode is missing required package(s)." + newline$ + lastProbe$ + newline$ + "Install into that Python with: python -m pip install pedalboard"
+        endif
+    else
+        exitScript: "Cannot find a usable Python 3 installation." + newline$ + "Tried: python3, python, py"
+    endif
 endif
 
 # ============================================================
@@ -223,10 +318,25 @@ endif
 # them itself, so asking for them here made the user answer the same questions
 # twice before seeing a single plugin. Only the genuinely Praat-side decision
 # is left.
-beginPause: "VST3 Effect - Launch Host v1.7"
-    comment: "The host window handles plugin choice, the native VST3 editor and audition."
+if mode$ = "instrument"
+    pauseTitle$ = "VST3 Instrument - DawDreamer Host v1.9.2"
+    lastWord$ = "Last instrument: "
+else
+    pauseTitle$ = "VST3 Effect - Launch Host v1.9.2"
+    lastWord$ = "Last plugin: "
+endif
+# Pre-set the pause field: batch runs that auto-continue a pause never
+# assign it, and the script would otherwise stop on an unknown variable.
+play_result = 1
+beginPause: pauseTitle$
+    if mode$ = "instrument"
+        comment: "Score: " + stringsName$ + " (" + string$(nScoreLines) + " lines of MusicXML)"
+        comment: "The host lists VST3 instruments; all parts play the one instrument."
+    else
+        comment: "The host window handles plugin choice, the native VST3 editor and audition."
+    endif
     if defaultPlugin$ <> ""
-        comment: "Last plugin: " + defaultPlugin$
+        comment: lastWord$ + defaultPlugin$
     else
         comment: "No last-used plugin yet - the host will scan for installed VST3s."
     endif
@@ -239,10 +349,14 @@ endif
 
 curPlay = play_result
 
-# Empty strings tell the host "use your saved settings" (v1.7 treats an empty
-# argument and an absent argument identically).
+# Empty strings tell the host to use its saved settings. Instrument mode uses
+# an explicit DAW-sized block; effect mode keeps its own saved/default value.
 curTail$   = ""
-curBuf$    = ""
+if mode$ = "instrument"
+    curBuf$ = "512"
+else
+    curBuf$ = ""
+endif
 curParams$ = ""
 
 # The host writes the plugin the user actually picked, once a render succeeds.
@@ -252,8 +366,19 @@ prefsOutJ$ = prefsFileJ$
 # Write input WAV
 # ============================================================
 
-selectObject: sound
-Save as WAV file: tempInput$
+if mode$ = "instrument"
+    # Plain lines, as the MusicXML writers produced them. Praat writes ASCII
+    # when it can and UTF-16 otherwise; the host reads both.
+    selectObject: scoreStrings
+    Save as raw text file: tempScore$
+    hostInputJ$ = tempScoreJ$
+    modeFlag$ = " --gui --instrument"
+else
+    selectObject: sound
+    Save as WAV file: tempInput$
+    hostInputJ$ = tempInputJ$
+    modeFlag$ = " --gui"
+endif
 
 # ============================================================
 # Build command  (--gui flag → Python opens the Tkinter window)
@@ -264,8 +389,8 @@ Save as WAV file: tempInput$
 # unquoted empty string collapses to nothing on the command line and silently
 # shifts every later positional argument -- which would hand the host the
 # sentinel path as its parameter string and leave Praat polling forever.
-pyArgs$ = " --gui"
-    ... + " " + q$ + tempInputJ$ + q$
+pyArgs$ = modeFlag$
+    ... + " " + q$ + hostInputJ$ + q$
     ... + " " + q$ + tempOutputJ$ + q$
     ... + " " + q$ + defaultPlugin$ + q$
     ... + " " + q$ + curTail$ + q$
@@ -287,7 +412,13 @@ endif
 
 clearinfo
 writeInfoLine:  "=== Praat -> Python host -> native VST3 -> Praat ==="
-appendInfoLine: "Input sound:   ", soundName$
+if mode$ = "instrument"
+    appendInfoLine: "Mode:          instrument render (MusicXML -> VST3 instrument)"
+    appendInfoLine: "Input score:   ", stringsName$, " (", nScoreLines, " lines)"
+else
+    appendInfoLine: "Mode:          audio effect"
+    appendInfoLine: "Input sound:   ", soundName$
+endif
 appendInfoLine: "Platform:      ", platform$
 appendInfoLine: "Python:        ", pythonCmd$
 appendInfoLine: "VST host:      ", pythonScript$
@@ -339,10 +470,10 @@ if waited >= maxWait and not gotResult
 
 elsif fileReadable(tempOutput$)
     Read from file: tempOutput$
-    Rename: soundName$ + "_vst"
+    Rename: resultName$
     resultSound = selected("Sound")
-    
-    appendInfoLine: "Done. Created: ", soundName$ + "_vst"
+
+    appendInfoLine: "Done. Created: ", resultName$
 
     # Default VST persistence is handled by the Python GUI so the plugin
     # selected from the new VST list is the one remembered next time.
