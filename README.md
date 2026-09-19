@@ -51,9 +51,41 @@ After Praat is installed, continue with the AudioTools installation below.
    If you are installing a current version of Praat, use these locations:
 
    * **Windows:**
+
+     Place the `plugin_AudioTools` folder inside the Praat preferences folder:
+
+     `C:\Users\<YourName>\AppData\Roaming\Praat\`
+
+     For example, if the Windows account name is `User`:
+
+     `C:\Users\User\AppData\Roaming\Praat\`
+
+     The final plugin path will therefore be:
+
      `C:\Users\<YourName>\AppData\Roaming\Praat\plugin_AudioTools\`
 
+     > **Windows note:** `AppData` is normally hidden. The quickest method is to type `%APPDATA%\Praat` directly into the File Explorer address bar.
+
    * **macOS:**
+
+     Place the `plugin_AudioTools` folder inside:
+
+     `~/Library/Application Support/Praat/`
+
+     The user `Library` folder is hidden by default on macOS. To open it:
+
+     1. Open **Finder**.
+     2. Open the **Go** menu.
+     3. Hold the **Option (⌥)** key; **Library** will appear in the menu.
+     4. Choose **Library**, then open **Application Support → Praat**.
+     5. Copy the `plugin_AudioTools` folder into that `Praat` folder.
+
+     Alternatively, in Finder press **Shift + Command + G** and enter:
+
+     `~/Library/Application Support/Praat/`
+
+     The final plugin path will be:
+
      `~/Library/Application Support/Praat/plugin_AudioTools/`
 
    * **Linux:**
@@ -61,8 +93,6 @@ After Praat is installed, continue with the AudioTools installation below.
 
      If the `XDG_CONFIG_HOME` environment variable is defined, use:
      `$XDG_CONFIG_HOME/praat/plugin_AudioTools/`
-
-   > **Windows note:** `AppData` is normally a hidden folder. You can enter `%APPDATA%\Praat` directly in the File Explorer address bar.
 
    ### Praat 6.x
 
@@ -186,6 +216,12 @@ Granular resynthesis, time-stretching, beat manipulation, and temporal recomposi
 ### Hybrid Systems (66)
 
 Extended workflows bridging Praat with Python, Max/MSP, Ableton Live, IRCAM tools, VST3 plugins, neural-audio systems, and other external environments. Includes IRCAM SuperVP Transform, IRCAM RAVE Model, Latent Space Navigation, Phase-Space Composer, CNN Event Recomposer, and Praat for Max and M4L.
+
+Some **Hybrid Systems** use **Python 3** as an external processing engine for numerical analysis, machine learning, advanced audio processing, multichannel playback, and interoperability with external environments. Python is therefore required for these tools, while the standard Praat-only scripts do not require a Python installation.
+
+Dependencies vary between individual Hybrid Systems. Some tools require only lightweight scientific-audio packages, while others may depend on specialised Python libraries, machine-learning frameworks, audio engines, models, or external software. To avoid installing unnecessary components, users should install the dependencies required by the specific Hybrid System they intend to use.
+
+Praat calls the associated Python engines automatically when needed. See the installation and dependency documentation in the [`py`](py/) folder for current requirements and tool-specific notes.
 
 ### Reproducible by Design
 
