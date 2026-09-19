@@ -22,6 +22,18 @@ The research framework behind the project is presented in the 2026 *Organised So
 
 ## Installation
 
+### 0. Install Praat
+
+Praat AudioTools is a plugin for [Praat](https://www.praat.org/), so Praat must be installed first.
+
+Download and install the latest version of Praat for your operating system:
+
+https://www.praat.org/
+
+After Praat is installed, continue with the AudioTools installation below.
+
+### 1. Download AudioTools
+
 1. **Download or clone** this repository.
 
    ```bash
