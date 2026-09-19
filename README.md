@@ -1,17 +1,22 @@
 # Praat Plugin: AudioTools
 
-**Author:** [Shai Cohen](https://music.biu.ac.il/en/ShaiCohen)
-**Affiliation:** Department of Music, Bar-Ilan University, Israel
-**YouTube:** [@Shai_Cohen](https://www.youtube.com/@Shai_Cohen/videos)
+**Author:** [Shai Cohen](https://music.biu.ac.il/en/ShaiCohen)  
+**Affiliation:** Department of Music, Bar-Ilan University, Israel  
+**YouTube:** [@Shai_Cohen](https://www.youtube.com/@Shai_Cohen/videos)  
+**Research Article:** [Praat Audiotools: An Offline Analysis–Resynthesis Toolkit for Experimental Composition](https://www.cambridge.org/core/journals/organised-sound/article/praat-audiotools-an-offline-analysisresynthesis-toolkit-for-experimental-composition/5601EA626B76319A2723CA5DC56563F9), *Organised Sound*, Cambridge University Press, 2026  
+**Book:** [The Syntax of Sound: Praat AudioTools: An Offline Analysis–Resynthesis Toolkit for Experimental Composition](https://link.springer.com/book/9789819225750), Springer Nature, 2026
 
 ---
 
 ## Overview
 
-**Praat AudioTools** is a collection of **415 scripts** across **13 categories** for **audio processing, analysis, and synthesis** in [Praat](http://www.praat.org).
-The plugin adds a unified **AudioTools** menu to Praat, bringing together effects, filters, transformations, generative processes, and analysis-driven tools for sound design and experimental composition.
+**Praat AudioTools** is an open-source analysis–resynthesis toolkit for **experimental composition, sound design, and music-technology research**, built on top of [Praat](http://www.praat.org). The current documentation presents **473 scripts across 13 categories** for audio processing, analysis, synthesis, spatialisation, interoperability, and hybrid computational workflows.
 
-Developed for composers, sound designers, and researchers, the toolkit extends Praat's phonetic analysis environment into a **complete offline sound laboratory** — enabling granular synthesis, adaptive filtering, spectral transformation, fractal reverbs, multichannel spatialisation, and machine learning-driven audio effects.
+The plugin adds a unified **AudioTools** menu to Praat, bringing together effects, filters, transformations, generative processes, analysis-driven tools, and extended workflows for experimental composition.
+
+Developed for composers, sound designers, students, and researchers, the toolkit recontextualises Praat's phonetic-analysis environment as an **offline, object-centric sound laboratory**. Analysis objects can function not only as measurements but as editable compositional structures within an iterative **analyse–edit–render–listen** workflow. The environment supports granular synthesis, adaptive filtering, spectral transformation, algorithmic and stochastic processes, multichannel spatialisation, machine-learning-assisted processing, and bridges to external systems.
+
+The research framework behind the project is presented in the 2026 *Organised Sound* article and developed at book length in *The Syntax of Sound* (Springer, 2026).
 
 ---
 
@@ -85,7 +90,7 @@ Developed for composers, sound designers, and researchers, the toolkit extends P
 
 ## Scripts Documentation
 
-**Interactive HTML documentation for all 415 scripts:**
+**Interactive HTML documentation for the current AudioTools collection:**
 https://mashav.com/sha/Praat%20AudioTools/
 
 📖 [Detailed Script Overview](https://mashav.com/sha/Praat%20AudioTools/script-overview.html)
@@ -98,45 +103,47 @@ The documentation includes searchable guides with detailed parameter description
 
 ## Key Features
 
-### 415 Scripts Across 13 Categories
+### 473 Scripts Across 13 Categories
+
+The counts below follow the current public AudioTools documentation and may increase as the toolkit evolves.
 
 | Category               | Scripts |
-| ---------------------- | ------- |
-| AI & Adaptive          | 27      |
-| Analysis               | 36      |
-| Distortion             | 15      |
-| Dynamics & Envelope    | 19      |
-| Filter & Color         | 35      |
-| Generative & Synthesis | 54      |
+| ---------------------- | ------: |
+| AI & Adaptive          | 33      |
+| Analysis               | 44      |
+| Distortion             | 16      |
+| Dynamics & Envelope    | 23      |
+| Filter & Color         | 38      |
+| Generative & Synthesis | 56      |
 | Modulation             | 23      |
-| Pitch                  | 26      |
-| Reverb                 | 29      |
-| Spatial & Surround     | 36      |
-| Spectral               | 26      |
-| Time & Granular        | 44      |
-| Hybrid Systems         | 49      |
+| Pitch                  | 28      |
+| Reverb                 | 31      |
+| Spatial & Surround     | 39      |
+| Spectral               | 31      |
+| Time & Granular        | 45      |
+| Hybrid Systems         | 66      |
 
-### AI & Adaptive (27)
+### AI & Adaptive (33)
 
 Neural-network, PCA, Bayesian, HMM, NMF, and self-attention based scripts for intelligent modulation, adaptive control, recomposition, classification, and phonetic-aware transformations. Includes Neural Audio Mosaic, PCA Timbre Selector, Genetic Recomposer, Granular Attention Resynth, and Self Attention Recomposer.
 
-### Analysis (36)
+### Analysis (44)
 
 Extract MFCCs, formants, pitch, loudness, jitter, shimmer, harmonicity, tempo curves, self-similarity matrices, chord profiles, and other descriptors for musical experimentation and acoustic research. Includes DTW-Aligned Multi-Feature Analysis, Krumhansl–Schmuckler Key Profiler, Speech to MusicXML Rhythm Converter, and Spatial Trajectory Tracker.
 
-### Distortion (15)
+### Distortion (16)
 
 Waveshaping, clipping, bit-crushing, and nonlinear processing tools. Includes Adaptive Wave Shaper, Chaos Distortion, Hysteresis Distortion, Multiband Distortion, Virtual Subharmonic Generator, and Wavefolder Distortion.
 
-### Dynamics & Envelope (19)
+### Dynamics & Envelope (23)
 
 Shape amplitude with compressors, multiband dynamics, limiters, noise gates, LUFS tools, swell generators, envelope processors, and mathematically defined amplitude trajectories. Includes Vintage Glue Compressor, Kinematic Physics Envelope, and Polynomial Envelope Shaper.
 
-### Filter & Color (35)
+### Filter & Color (38)
 
 Adaptive EQ, resonators, cross-synthesis, spectral morphing, formant filtering, frequency shifting, de-essing, hum removal, FIR/IIR filter banks, and timbral shaping tools. Includes GRM-Style Resonator, Moog Ladder Filter, MFCC Transformer, Intelligent EQ Adaptive Bandpass, and Jitter-Shimmer Formant Mapping.
 
-### Generative & Synthesis (54)
+### Generative & Synthesis (56)
 
 Create sound from scratch using Markov models, stochastic processes, chaotic systems, cellular automata, Brownian motion, GENDYN-style methods, physical models, and formula-based synthesis. Includes GENDYN Synthesis, Pulsar Synthesis Engine, Karplus-Strong Texture Generator, Wave Terrain Synthesis, Grisey Spectral Becoming Engine, and Stockhausen Studie II Generator.
 
@@ -144,47 +151,79 @@ Create sound from scratch using Markov models, stochastic processes, chaotic sys
 
 LFO-driven and spectral modulation effects: vibrato, chorus, phaser, flanger, tremolo, wah-wah, and analysis-driven modulation. Includes Unified Multi-Mode Vibrato, Spectral Driven Vibrato, Metamodulator, Phonetic Tremolo-Glitch Effect, and XY Shape LFO.
 
-### Pitch (26)
+### Pitch (28)
 
 Pitch shifting, harmonization, tuning, PSOLA-based transformation, and microtonal tools. Includes Adaptive Pitch Shifter, Auto-Harmonic Layering, Breathing Pitch Waves, and analysis-driven pitch mapping and resynthesis.
 
-### Reverb (29)
+### Reverb (31)
 
 Convolution, algorithmic, fractal, and physically modelled reverberation. Includes Fractal Feedback Reverb, Gravitational Lens Reverb, Ray Tracing Room Acoustics, Quantum Uncertainty Reverb, The Lucier Machine, Ligeti Micropolyphonic Choir Machine, and Universal Convolution Generator.
 
-### Spatial & Surround (36)
+### Spatial & Surround (39)
 
 Multichannel spatialisation from stereo to 22.2, with panning laws, trajectory control, and HOA encoding/decoding. Includes 8-Channel Canon, 8-Channel Speed Deviations, Higher-Order Ambisonic Encoder/Decoder, DBAP with Movement Control, Hamasaki Square Ambience, and 22.2 Stem Renderer.
 
-### Spectral (26)
+### Spectral (31)
 
 FFT and phase-domain processing: spectral mirroring, freezing, blurring, phase manipulation, LPC morphing, and partial editing. Includes Spectral Freeze Synthesis, Fractal Spectral Hologram, LPC Voice Morphing, Self-Similarity Spectral Resynthesis, Phase Shaper, and Vocoding.
 
-### Time & Granular (44)
+### Time & Granular (45)
 
 Granular resynthesis, time-stretching, beat manipulation, and temporal recomposition. Includes Adaptive Grain Cloud Synthesis, Paulstretch, Stochastic Time Folding, Rhythmic Fractal Granulator, Phase Modulation Matrix, and Total Serialism Machine.
 
-### Hybrid Systems (49)
+### Hybrid Systems (66)
 
-Extended workflows bridging Praat with Python, Max/MSP, Ableton Live, IRCAM tools, and VST3 plugins, plus latent-space and AI-driven composition engines. Includes IRCAM SuperVP Transform, IRCAM RAVE Model, Latent Space Navigation, Phase-Space Composer, CNN Event Recomposer, and Praat for Max and M4L.
+Extended workflows bridging Praat with Python, Max/MSP, Ableton Live, IRCAM tools, VST3 plugins, neural-audio systems, and other external environments. Includes IRCAM SuperVP Transform, IRCAM RAVE Model, Latent Space Navigation, Phase-Space Composer, CNN Event Recomposer, and Praat for Max and M4L.
 
 ### Reproducible by Design
 
-Scriptable parameters, seeds captured, versioned presets, optional ablation variants for method comparison.
+Scriptable parameters, seeds captured, versioned presets, and optional ablation variants support repeatable experimentation and method comparison.
 
 ### Interoperability for Composition
 
-Cross-platform, with bridges to Python, Max/MSP, Ableton Live, VST3, and IRCAM tools.
+Cross-platform workflows connect Praat with Python, Max/MSP, Ableton Live, VST3, IRCAM tools, and other external systems while retaining Praat as the central analysis–resynthesis environment.
+
+## Research & Publications
+
+Praat AudioTools is developed as both a software environment and a research-creation framework for experimental composition.
+
+### Peer-Reviewed Article
+
+Cohen, S. (2026). **Praat Audiotools: An Offline Analysis–Resynthesis Toolkit for Experimental Composition.** *Organised Sound*, 1–9. Cambridge University Press.  
+https://doi.org/10.1017/S1355771826101204
+
+The article presents the toolkit's object-centric analysis–resynthesis methodology, its use of phonetic analysis objects as editable compositional structures, and the concept of **compositional deep time** within an iterative edit–render–listen workflow.
+
+### Book
+
+Cohen, S. (2026). **The Syntax of Sound: Praat AudioTools: An Offline Analysis–Resynthesis Toolkit for Experimental Composition.** Springer Nature Singapore.  
+https://link.springer.com/book/9789819225750
+
+The book develops the AudioTools framework across analysis, transformation, synthesis, spatial audio, algorithmic composition, interoperability, hybrid systems, and distributed studio workflows.
 
 ---
 
 ## Citation
 
-If you use this toolkit in academic work, please cite:
+If you use Praat AudioTools in academic work, please cite the peer-reviewed article:
 
+```text
+Cohen, S. (2026). Praat Audiotools: An Offline Analysis–Resynthesis Toolkit for Experimental Composition.
+Organised Sound, 1–9. https://doi.org/10.1017/S1355771826101204
 ```
-Cohen, S. (2025). Praat AudioTools: An Offline Analysis–Resynthesis Toolkit for Experimental Composition.
-GitHub Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+
+For the software itself, please also cite:
+
+```text
+Cohen, S. (2025–2026). Praat AudioTools [Software].
+https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+```
+
+For the extended book-length treatment of the project:
+
+```text
+Cohen, S. (2026). The Syntax of Sound: Praat AudioTools: An Offline Analysis–Resynthesis Toolkit for Experimental Composition.
+Springer Nature Singapore. https://link.springer.com/book/9789819225750
 ```
 
 ---
