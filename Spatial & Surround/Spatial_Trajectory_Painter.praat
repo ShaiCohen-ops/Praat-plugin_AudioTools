@@ -1,157 +1,66 @@
 # ============================================================
-# Praat AudioTools - Spatial Trajectory Painter
+# Praat AudioTools - Spatial Trajectory Painter (Demo window)
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.7.5 (2026) - compact main form + optional Advanced details
-# v0.7.5 (2026): UI ONLY - compact main form; technical mapping/render controls moved to optional Advanced details.
-# v0.7.4 (2026): CONTROL-TIER / VISUALIZATION CORRECTION - draw spatial
-#   controls with generic RealTier objects (unitless, signed values) instead of
-#   PitchTier, so Absolute azimuth/elevation are genuinely representable; reject
-#   legacy PitchTier selections with a clear migration message. When Ambisonic
-#   shared peak protection attenuates the rendered channels, apply the same
-#   factor to gainArr so heatmap/power diagnostics describe the final output.
-# v0.7.3 (2026): VISUALIZATION LAYOUT FIX - inset trajectory endpoint labels away from the adjacent panel rail; DSP unchanged.
-# v0.7.2 (2026): VISUALIZATION LAYOUT FIX - keep trajectory endpoint labels inside their panel; DSP unchanged.
-# v0.7.1 (2026): VISUALIZATION LAYOUT FIX - separate title/subtitle bands; DSP unchanged.
-# v0.7 (2026): SPATIAL VISUALIZATION STANDARDIZATION ONLY - label rails, compact summary, typography; DSP unchanged.
+# Version: 1.0 (2026) - interactive companion to Spatial_Trajectory_Painter v0.7.5
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Spatial Trajectory Painter
-#   Convert a Sound to mono, then draw a curve directly on the
-#   waveform (a RealTier opened together with the sound). The mono
-#   signal follows that curve over time and is rendered to one of
-#   two output representations (Output_representation):
+#   Draw a spatial trajectory for a Sound directly in the Demo window, in
+#   real units, hear a stereo monitor of it, and commit the multichannel
+#   result - one session instead of v0.7.5's two phases (RealTier editors
+#   with Ctrl-T points, Set range..., reselect the mono Sound + tiers, run
+#   again).
 #
-#   SPEAKER ARRAY (original mode) - the mono signal is panned across
-#     N output channels (4/6/8/12/16) by equal-power gains (cos/sin
-#     crossfade) that follow the drawn curve.
+#   Lanes (time runs left to right, aligned with the source waveform):
+#     SPEAKER ARRAY   Position lane in channel numbers (1..N; Ring: 1..N+1,
+#                     where N+1 is channel 1 again)
+#     AMBISONIC       Azimuth lane in degrees, ambiX convention:
+#                     0 = front, +90 = LEFT, -90 = right, +-180 = back
+#                     Elevation lane in degrees (-90..+90); no points =
+#                     0 deg for the whole sound (v0.7.5 "Fixed elevation")
+#   Between points the path is linear; azimuth (and Ring position) take the
+#   SHORTER way round: 170 -> -170 crosses behind the listener (20 deg), not
+#   through the front (340 deg). A full turn therefore needs points less
+#   than 180 deg (Ring: N/2 channels) apart. The map shows the path taken.
 #
-#   AMBISONIC TRAJECTORY (new in v0.5) - the drawn curve is converted
-#     to a time-varying azimuth instead of a channel position, and the
-#     mono signal is encoded directly into a moving ambiX (ACN/SN3D)
-#     B-format signal of 4 / 9 / 16 channels (1st / 2nd / 3rd order).
-#     No intermediate speaker-channel stage is used: the same drawn
-#     trajectory is mapped straight to spherical-harmonic gains at
-#     every control frame, so the drawn motion is encoded directly
-#     into the ambisonic domain at the selected control rate (gains
-#     are linearly interpolated between control frames, so encoding
-#     is exact at each frame and an approximation in between -- raise
-#     Control_rate for fast movement). Distance is held constant.
+#   The DSP is v0.7.5's, copied verbatim (frame sampling, equal-power or
+#   ACN/SN3D gain tiers, Formula multiply, shared peak protection, stacking,
+#   computeACN) and fed RealTiers built from the drawn points in its
+#   Absolute mode (speaker: Base 1, Step 1; ambisonic: degrees). A commit
+#   here equals v0.7.5 Phase 2 on the same tiers.
 #
-#     ELEVATION (new in v0.7) - elevation may be either a single FIXED
-#       value for the whole sound (the original v0.5 behaviour), or a
-#       second, INDEPENDENT drawn curve giving time-varying elevation.
-#       When Elevation_control = "Drawn elevation curve", Phase 1 opens
-#       TWO editors -- one for the azimuth curve (movement_azimuth) and
-#       one for the elevation curve (movement_elevation) -- and Phase 2
-#       encodes a genuine time-varying full-3D direction at every frame:
-#         azimuth(t)   from movement_azimuth
-#         elevation(t) from movement_elevation
-#         distance     = fixed form value
-#       The drawn elevation curve has its own Relative / Absolute mapping
-#       (Elevation_mapping), separate from the azimuth Mapping_mode.
+# DEMO WINDOW CONTROLS
+#   Click a lane          add a point; clicking at the time of an existing
+#                         point of that lane moves it instead
+#   U undo   P preview (render + stereo monitor)   Enter commit   Esc cancel
+#   Click the Demo window once so it has keyboard focus.
 #
-#   Both representations share the same drawing interface, the same
-#   two-phase workflow, and the same Relative/Absolute mapping choice:
+# STEREO MONITOR (preview and after commit) - an approximation for
+#   checking motion and timing, NOT the multichannel image:
+#     ambisonic   virtual cardioids at +-90 deg from W and Y (ACN0, ACN1)
+#     speaker     Line: channels panned 1 = left ... N = right
+#                 Ring: channel 1 at the front, increasing clockwise
+#                 (an assumption - the array's real layout is yours)
 #
-#   RELATIVE (default) - the min and max of whatever you drew are
-#     stretched to fill the whole output range: the full channel array
-#     for Speaker array, or one full 360 degree turn for Ambisonic
-#     trajectory. Convenient: draw anything, it always uses the full
-#     range. A flat curve sits in the middle (array centre, or a fixed
-#     azimuth) of that range.
+# OUTPUT (Enter): the multichannel Sound (Output_name), the control
+#   RealTier(s) in v0.7.5's names (movement / movement_azimuth +
+#   movement_elevation) if kept, the Info report, and v0.7.5's Picture-
+#   window figure if requested.
 #
-#   ABSOLUTE - a fixed scale, meaning depends on the representation:
-#     Speaker array: channel_position =
-#       (drawn_value - Base_value) / Step_value + 1, e.g. with
-#       Base=100, Step=100: value 100 -> ch.1, 200 -> ch.2, ...
-#     Ambisonic trajectory: the drawn value IS the azimuth in degrees
-#       directly (e.g. 90 -> 90 deg), wrapped to 0-360.
-#     Useful when you want precise, repeatable control, or motion
-#     confined to a small region. A flat curve stays exactly where
-#     you drew it.
-#
-# Topology (Speaker array only):
-#   Line (default) - position is clamped to [channel 1 ... channel N].
-#   Ring - position wraps around a full loop: going past the last
-#          channel brings you back toward channel 1.
-#   (Ambisonic trajectory is inherently circular: azimuth always wraps
-#   at 360 degrees, regardless of this setting.)
-#
-# Usage:
-#   PHASE 1 - Select 1 Sound -> Run -> a mono copy is made and an
-#             editor opens showing the waveform with an empty
-#             RealTier curve ("movement") on top.
-#             Click at the desired time/value inside the CURVE
-#             panel (not the waveform panel) to move the cursor
-#             there, then press Ctrl-T (Cmd-T on Mac) to drop a
-#             point. Repeat to draw the movement. One point is
-#             enough for a fixed, static pan position / direction.
-#   PHASE 2 - Back in the Objects window, select the MONO sound
-#             (name ends in "_mono") AND the "movement" RealTier
-#             -> Run again -> the multichannel result is created
-#             (N speaker channels, or 4/9/16 ambiX channels,
-#             depending on Output_representation).
-#             The mono sound and the movement RealTier are removed
-#             at the end of Phase 2 along with the other temporary
-#             objects, leaving only the final multichannel result.
-#             If you want to redraw and try again, re-run Phase 1
-#             from the original source Sound.
-#
-# Relationship to the Higher-Order Ambisonic Encoder script:
-#   That script remains a separate, dedicated STATIC point encoder
-#   (mono source, one fixed azimuth/elevation/distance). This script
-#   covers the moving case: a drawn trajectory rendered either as a
-#   speaker pan or directly as a moving ambiX signal. Do not chain
-#   this script's speaker-array output into the Ambisonic Encoder --
-#   that would collapse the motion back down to a static direction.
-#   The ACN/SN3D coefficient math used here in Ambisonic trajectory
-#   mode is the same shared convention as that script (azimuth CCW
-#   from front, +Y = left, +Z = up).
-#
-# Note: Phase 1 (mono conversion + editor opening) and Phase 2 (including
-# the Copy + Formula channel-gain application via object(id, x), which
-# replaced "Multiply" in v0.4 to avoid its silent 0.9-peak rescaling) have
-# been run and confirmed working end-to-end for the Speaker array mode,
-# including the visualization. The Ambisonic trajectory mode added in
-# v0.5 reuses the exact same sampling / gain-tier / multiply / stack
-# pipeline, substituting ACN/SN3D coefficients for speaker crossfade
-# gains at each control frame.
-#
-# Changelog:
-#   v0.7 - Optional DRAWN ELEVATION for Ambisonic trajectory mode. A
-#          second, independent RealTier (movement_elevation) can now
-#          drive elevation over time, in parallel with the azimuth curve
-#          (movement_azimuth), producing genuine full-3D movement instead
-#          of horizontal motion at a fixed height. The only change to the
-#          encoding core is that @computeACN is now called with a
-#          per-frame elevation_frame[f] instead of a single fixed
-#          elevation; with Elevation_control = "Fixed elevation" that
-#          per-frame value is constant, so v0.7 reproduces v0.5 output
-#          numerically for the same input, settings, and azimuth curve.
-#          Elevation has its own Relative / Absolute mapping and is always
-#          clamped to [-90, +90] (never wrapped). Distance stays fixed.
-#          The Ambisonic visualization gained an elevation-vs-time panel
-#          and an elevation-aware summary/report. Speaker-array mode,
-#          ACN/SN3D math, gain handling, and peak protection are unchanged.
-#
-# Citation:
-#   Cohen, S. (2026). Praat AudioTools: An Offline Analysis-Resynthesis Toolkit for Experimental Composition.
-#   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+# Changelog v1.0:
+#   - Demo-window front end for v0.7.5: lanes in real units, shortest-way
+#     wrap for azimuth / ring position, live top-down map, source waveform
+#     timeline, undo, stereo-monitor preview, commit.
+#   - Relative mapping and Base/Step are not needed (you draw in the
+#     output's own units); Distance, Rotation and Control rate stay on the
+#     optional details page.
 # ============================================================
-###############################################################################
-# Spatial Trajectory Painter (Form-Based, Two-Phase)
-#
-# A. SETUP: Select 1 Sound -> Run -> mono copy + editor open for drawing.
-# B. CREATE: Select mono Sound + RealTier "movement" -> Run -> panned
-#            or ambisonic output, per Output_representation.
-###############################################################################
 
-form Spatial Trajectory Painter v0.7.5
-    comment Main controls (unused representation-specific choices are ignored):
+form Spatial Trajectory Painter (Demo window) v1.0
+    comment Draw the trajectory in the Demo window; these fix the output format.
     optionmenu Output_representation: 1
         option Speaker array
         option Ambisonic trajectory (ambiX ACN/SN3D)
@@ -168,59 +77,37 @@ form Spatial Trajectory Painter v0.7.5
         option First order (4 ch)
         option Second order (9 ch)
         option Third order (16 ch)
-    optionmenu Elevation_control: 1
-        option Fixed elevation
-        option Drawn elevation curve
-    real Fixed_elevation_(degrees) 0
-    optionmenu Mapping_mode 1
-        option Relative (fit drawn curve to full range)
-        option Absolute (fixed value-to-position mapping)
+    word Output_name movement_output
+    boolean Keep_control_tiers 1
     boolean Edit_details 0
     boolean Draw_visualization 1
 endform
 
-# Technical defaults. These remain active unless Edit_details is opened.
-output_name$ = "movement_output"
-elevation_mapping = 1
-minimum_elevation = -45
-maximum_elevation = 45
+# ---- v0.7.5 technical defaults (same names) ----
 distance = 1.0
 trajectory_rotation = 0
-base_value = 100
-step_value = 100
 control_rate = 100
-
 if edit_details
-    beginPause: "Spatial Trajectory Painter - Advanced details"
-        comment: "Drawn elevation (Ambisonic only)"
-        optionmenu: "Elevation mapping", elevation_mapping
-            option: "Relative"
-            option: "Absolute degrees"
-        real: "Minimum elevation (degrees)", minimum_elevation
-        real: "Maximum elevation (degrees)", maximum_elevation
+    beginPause: "Spatial Trajectory Painter - details"
         comment: "Ambisonic trajectory"
         positive: "Distance (meters)", distance
         real: "Trajectory rotation (degrees)", trajectory_rotation
-        comment: "Absolute mapping - Speaker array only"
-        positive: "Base value", base_value
-        positive: "Step value", step_value
-        comment: "Output / technical"
-        word: "Output name", output_name$
+        comment: "Rendering"
         positive: "Control rate (Hz)", control_rate
         comment: "Distance is inverse-distance amplitude only; no near-field compensation."
-    advancedClicked = endPause: "Use defaults", "Apply", 2, 1
+    detailsClicked = endPause: "Use defaults", "Apply", 2, 1
 endif
-
-# drawnElevation is true only for Ambisonic mode with a drawn elevation curve.
-# In Speaker-array mode the elevation controls are ignored entirely, and in
-# Ambisonic fixed-elevation mode only Fixed_elevation is used.
-drawnElevation = 0
-if output_representation = 2 and elevation_control = 2
-    drawnElevation = 1
-endif
+# Absolute mapping in the drawn units (v0.7.5 names)
+mapping_mode = 2
+elevation_mapping = 2
+base_value = 1
+step_value = 1
+fixed_elevation = 0
+minimum_elevation = -45
+maximum_elevation = 45
 
 if output_representation = 1
-    n_ch = number(number_of_channels$)
+    n_ch = number (number_of_channels$)
     orderName$ = ""
 else
     if ambisonic_order = 1
@@ -233,33 +120,7 @@ else
         n_ch = 16
         orderName$ = "3rd"
     endif
-    # Clamp the FIXED elevation value to a valid range, same convention as the
-    # Ambisonic Encoder. Used only when Elevation_control = Fixed elevation.
-    if fixed_elevation > 90
-        fixed_elevation = 90
-    elsif fixed_elevation < -90
-        fixed_elevation = -90
-    endif
-    # Validate / clamp the drawn-elevation TARGET range (Relative mapping).
-    # Reverse ranges are an error rather than silently swapped.
-    if elevation_control = 2
-        if minimum_elevation > maximum_elevation
-            exitScript: "Error: Minimum_elevation (" + fixed$(minimum_elevation, 1) + " deg) is greater than Maximum_elevation (" + fixed$(maximum_elevation, 1) + " deg). Set Minimum_elevation <= Maximum_elevation; the values are not reversed automatically."
-        endif
-        if minimum_elevation > 90
-            minimum_elevation = 90
-        elsif minimum_elevation < -90
-            minimum_elevation = -90
-        endif
-        if maximum_elevation > 90
-            maximum_elevation = 90
-        elsif maximum_elevation < -90
-            maximum_elevation = -90
-        endif
-    endif
 endif
-
-# Channel / component labels, used for object names, legends, and info text.
 for c to n_ch
     if output_representation = 1
         chLabel$[c] = "Ch" + string$(c)
@@ -268,297 +129,258 @@ for c to n_ch
     endif
 endfor
 
-###############################################################################
-# WORKFLOW DETECTOR
-###############################################################################
-
-n_sounds = numberOfSelected("Sound")
-n_tiers = numberOfSelected("RealTier")
-n_legacyPitchTiers = numberOfSelected("PitchTier")
-
-# v0.7.4 changed the drawing objects from PitchTier to generic RealTier so
-# signed/unitless Absolute coordinates are directly representable. Do not
-# silently treat an old PitchTier selection as a fresh Phase 1 request.
-if n_legacyPitchTiers > 0
-    exitScript: "Legacy control tier detected: v0.7.4+ uses RealTier instead of PitchTier. Re-run Phase 1 from the original Sound to create the new 'movement' RealTier(s), then draw/process those. Existing v0.7.3 PitchTiers are not consumed automatically."
+# ---- input ----
+if numberOfSelected ("Sound") <> 1
+    exitScript: "Select exactly one Sound."
 endif
-
-if n_sounds = 1 and n_tiers = 0
-    # === PHASE 1: SETUP ===
-
-    sound_in = selected("Sound")
-    sound_name$ = selected$("Sound")
-    xmin = Get start time
-    xmax = Get end time
-
-    selectObject: sound_in
-    Convert to mono
-    mono = selected("Sound")
-    Rename: sound_name$ + "_mono"
-
-    if drawnElevation = 1
-        # --- Two independent curves: azimuth + elevation ---
-        # Both RealTiers share the mono Sound's time domain. Each opens in
-        # its own editor so azimuth and elevation can be drawn separately.
-        movement_az = Create RealTier: "movement_azimuth", xmin, xmax
-        movement_el = Create RealTier: "movement_elevation", xmin, xmax
-
-        selectObject: mono
-        plusObject: movement_az
-        View & Edit
-
-        selectObject: mono
-        plusObject: movement_el
-        View & Edit
-
-        writeInfoLine: "=== PHASE 1: TWO EDITORS OPENED (Ambisonic, drawn elevation) ==="
-        appendInfoLine: "Two editors were opened on the same mono Sound:"
-        appendInfoLine: "  * Editor with 'movement_azimuth'   -> draws AZIMUTH over time."
-        appendInfoLine: "  * Editor with 'movement_elevation' -> draws ELEVATION over time."
-        appendInfoLine: "In EACH editor:"
-        appendInfoLine: "1. Click at the desired time/value INSIDE THE CURVE PANEL"
-        appendInfoLine: "   (not the waveform panel) to position the cursor there."
-        appendInfoLine: "2. Press Ctrl-T (Windows/Linux) or Cmd-T (Mac) to drop a point."
-        appendInfoLine: "   Repeat to draw the curve. Drag existing points to reshape."
-        appendInfoLine: "   Draw at least one point in BOTH editors."
-        appendInfoLine: "   These are unitless RealTier editors (signed values are allowed)."
-        appendInfoLine: "   If Absolute azimuth needs values outside the visible range, use RealTier > Set range... (for example -180 to 180 or 0 to 360)."
-        appendInfoLine: "   For Absolute elevation, -90 to +90 fits inside the default RealTier range."
-        appendInfoLine: "   Output: Ambisonic trajectory (" + orderName$ + " order, 'n_ch' ambiX channels)."
-        appendInfoLine: "   Azimuth mapping (Mapping_mode):"
-        appendInfoLine: "     Relative -> drawn range maps to one full 360-degree turn (+Rotation)."
-        appendInfoLine: "     Absolute -> drawn value IS azimuth in degrees (+Rotation), wrapped 0-360."
-        if elevation_mapping = 1
-            appendInfoLine: "   Elevation mapping: Relative -> drawn range maps to [" + fixed$(minimum_elevation, 1) + ", " + fixed$(maximum_elevation, 1) + "] deg."
-        else
-            appendInfoLine: "   Elevation mapping: Absolute -> drawn value IS elevation in degrees, clamped to [-90, +90]."
-        endif
-        appendInfoLine: "   Distance stays fixed at 'distance:2' m."
-        appendInfoLine: "3. Go back to the Objects window."
-        appendInfoLine: "4. Select the mono Sound '" + sound_name$ + "_mono' AND BOTH"
-        appendInfoLine: "   'movement_azimuth' AND 'movement_elevation'."
-        appendInfoLine: "5. Run this script again."
-
-        exitScript: "Phase 1 complete. Draw both curves, select the mono Sound + both tiers, and run again."
-    else
-        # --- Single curve: azimuth / channel position only ---
-        movement = Create RealTier: "movement", xmin, xmax
-
-        selectObject: mono
-        plusObject: movement
-        View & Edit
-
-        writeInfoLine: "=== PHASE 1: EDITOR OPENED ==="
-        appendInfoLine: "1. Click at the desired time/value INSIDE THE CURVE PANEL"
-        appendInfoLine: "   (not the waveform panel) to position the cursor there."
-        appendInfoLine: "2. Press Ctrl-T (Windows/Linux) or Cmd-T (Mac) to drop a point."
-        appendInfoLine: "   Repeat to draw the movement. Drag existing points to reshape."
-        appendInfoLine: "   This is a unitless RealTier editor: signed values are allowed."
-        if mapping_mode = 2
-            if output_representation = 1
-                speakerAbsMax = base_value + step_value * (n_ch - 1)
-                appendInfoLine: "   For Speaker Absolute mode, set the RealTier view range to include at least Base=" + fixed$(base_value, 1) + " through channel " + string$(n_ch) + " value=" + fixed$(speakerAbsMax, 1) + " (RealTier > Set range...)."
-            else
-                appendInfoLine: "   For Absolute azimuth beyond the visible range, use RealTier > Set range... (e.g. -180 to 180 or 0 to 360)."
-            endif
-        endif
-        if output_representation = 1
-            appendInfoLine: "   Output: Speaker array ('n_ch' channels)."
-            appendInfoLine: "   With Mapping_mode = Relative (default): whatever range you"
-            appendInfoLine: "   draw is stretched to cover the whole channel array."
-            appendInfoLine: "   With Mapping_mode = Absolute: 'base_value' = channel 1,"
-            appendInfoLine: "   " + string$(base_value + step_value) + " = channel 2, etc. (fixed scale)."
-        else
-            appendInfoLine: "   Output: Ambisonic trajectory (" + orderName$ + " order, 'n_ch' ambiX channels)."
-            appendInfoLine: "   With Mapping_mode = Relative (default): the drawn range maps to"
-            appendInfoLine: "   one full 360-degree turn (plus Trajectory_rotation)."
-            appendInfoLine: "   With Mapping_mode = Absolute: the drawn value IS the azimuth in"
-            appendInfoLine: "   degrees directly (plus Trajectory_rotation), wrapped to 0-360 --"
-            appendInfoLine: "   e.g. 360 wraps to the same as 0 (front), so there is no need to"
-            appendInfoLine: "   draw a value of 0 to reach front."
-            appendInfoLine: "   Elevation and distance stay fixed at 'fixed_elevation:1' deg / 'distance:2' m."
-        endif
-        appendInfoLine: "3. Go back to the Objects window."
-        appendInfoLine: "4. Select BOTH '" + sound_name$ + "_mono' AND 'movement'."
-        appendInfoLine: "5. Run this script again."
-
-        exitScript: "Phase 1 complete. Draw the curve, select both objects, and run again."
-    endif
-
-elsif n_sounds = 1 and (n_tiers = 1 or n_tiers = 2)
-    # === PHASE 2: PROCESSING ===
-
-    mono = selected("Sound")
-    mono_name$ = selected$("Sound")
-
-    # Capture the selected RealTier id(s) and name(s) NOW, before any
-    # selectObject narrows the selection (which would drop the tiers).
-    for i to n_tiers
-        selTierId[i] = selected("RealTier", i)
-        selTierName$[i] = selected$("RealTier", i)
-    endfor
-
-    # --- Sound safety checks (shared by both phases) ---
-    selectObject: mono
-    n_channels_check = Get number of channels
-    if n_channels_check <> 1
-        exitScript: "Error: the selected Sound must be mono (it has 'n_channels_check' channels). Run Phase 1 first."
-    endif
-    mono_xmin = Get start time
-    mono_xmax = Get end time
-
-    if drawnElevation = 1
-        # --- Drawn-elevation mode expects EXACTLY two named tiers ---
-        if n_tiers <> 2
-            # Self-diagnosing message: the cause is almost always either
-            # (a) Elevation_control was 'Fixed' during Phase 1 (so only a single
-            #     'movement' tier exists) but 'Drawn' now, or
-            # (b) only one of the two drawn tiers was selected.
-            diag$ = ""
-            for i to n_tiers
-                diag$ = diag$ + "'" + selTierName$[i] + "'"
-                if i < n_tiers
-                    diag$ = diag$ + ", "
-                endif
-            endfor
-            if n_tiers = 1 and selTierName$[1] = "movement"
-                exitScript: "Error: Elevation_control mismatch. The selected tier 'movement' was created by a Phase 1 run with Elevation_control = Fixed elevation (azimuth only), but this run has Elevation_control = Drawn elevation curve, which needs TWO curves. Fix by EITHER (1) re-running Phase 1 with Elevation_control = Drawn elevation curve to create 'movement_azimuth' + 'movement_elevation', OR (2) setting Elevation_control = Fixed elevation to process this 'movement' tier as-is. Elevation_control must be the SAME in Phase 1 and Phase 2."
-            elsif n_tiers = 1 and selTierName$[1] = "movement_azimuth"
-                exitScript: "Error: only 'movement_azimuth' is selected; the elevation curve 'movement_elevation' is missing from the selection. In the Objects window select the mono Sound PLUS BOTH 'movement_azimuth' and 'movement_elevation', then run again. (If 'movement_elevation' is not in the list, re-run Phase 1 with Elevation_control = Drawn elevation curve.)"
-            elsif n_tiers = 1 and selTierName$[1] = "movement_elevation"
-                exitScript: "Error: only 'movement_elevation' is selected; the azimuth curve 'movement_azimuth' is missing from the selection. Select the mono Sound PLUS BOTH tiers and run again."
-            elsif n_tiers = 1
-                exitScript: "Error: 'Drawn elevation curve' needs TWO RealTiers named 'movement_azimuth' and 'movement_elevation', but only 1 is selected (" + diag$ + "). Select the mono Sound plus BOTH tiers, or re-run Phase 1 in drawn-elevation mode. Elevation_control must match between Phase 1 and Phase 2."
-            else
-                exitScript: "Error: 'Drawn elevation curve' needs EXACTLY two RealTiers ('movement_azimuth' and 'movement_elevation'), but 'n_tiers' are selected (" + diag$ + "). Deselect any extra RealTiers and select only the mono Sound + those two."
-            endif
-        endif
-
-        # Identify tiers by exact name -- order-independent.
-        movement_az = 0
-        movement_el = 0
-        for i to n_tiers
-            tid = selTierId[i]
-            tname$ = selTierName$[i]
-            if tname$ = "movement_azimuth"
-                movement_az = tid
-            elsif tname$ = "movement_elevation"
-                movement_el = tid
-            endif
-        endfor
-        if movement_az = 0
-            exitScript: "Error: no RealTier named 'movement_azimuth' is selected. Select the mono Sound plus 'movement_azimuth' and 'movement_elevation' created in Phase 1."
-        endif
-        if movement_el = 0
-            exitScript: "Error: no RealTier named 'movement_elevation' is selected. Select the mono Sound plus 'movement_azimuth' and 'movement_elevation' created in Phase 1."
-        endif
-
-        # movement drives azimuth for the shared sampling / range code below.
-        movement = movement_az
-
-        # Time-domain checks for BOTH tiers.
-        selectObject: movement_az
-        az_xmin = Get start time
-        az_xmax = Get end time
-        if abs(az_xmin - mono_xmin) > 0.001 or abs(az_xmax - mono_xmax) > 0.001
-            exitScript: "Error: 'movement_azimuth' time domain does not match the Sound's. Use the tiers created together with this Sound in Phase 1."
-        endif
-        n_points = Get number of points
-        if n_points < 1
-            exitScript: "Error: draw at least 1 point on 'movement_azimuth' before running Phase 2."
-        endif
-
-        selectObject: movement_el
-        el_xmin = Get start time
-        el_xmax = Get end time
-        if abs(el_xmin - mono_xmin) > 0.001 or abs(el_xmax - mono_xmax) > 0.001
-            exitScript: "Error: 'movement_elevation' time domain does not match the Sound's. Use the tiers created together with this Sound in Phase 1."
-        endif
-        n_el_points = Get number of points
-        if n_el_points < 1
-            exitScript: "Error: draw at least 1 point on 'movement_elevation' before running Phase 2."
-        endif
-    else
-        # --- Fixed-elevation / Speaker mode expects EXACTLY one tier ---
-        if n_tiers <> 1
-            hasAz = 0
-            hasEl = 0
-            for i to n_tiers
-                if selTierName$[i] = "movement_azimuth"
-                    hasAz = 1
-                elsif selTierName$[i] = "movement_elevation"
-                    hasEl = 1
-                endif
-            endfor
-            if n_tiers = 2 and hasAz = 1 and hasEl = 1
-                exitScript: "Error: Elevation_control mismatch. You selected the two drawn curves 'movement_azimuth' + 'movement_elevation', but this run has Elevation_control = Fixed elevation, which expects ONE 'movement' tier. Set Elevation_control = Drawn elevation curve to use both curves."
-            else
-                exitScript: "Error: this mode needs ONE RealTier ('movement'), but 'n_tiers' are selected. To draw a moving elevation, set Elevation_control = Drawn elevation curve and re-run Phase 1."
-            endif
-        endif
-
-        movement = selTierId[1]
-        movement_el = 0
-
-        selectObject: movement
-        tier_xmin = Get start time
-        tier_xmax = Get end time
-        if abs(tier_xmin - mono_xmin) > 0.001 or abs(tier_xmax - mono_xmax) > 0.001
-            exitScript: "Error: the 'movement' tier's time domain does not match the Sound's. Use the tier created together with this Sound in Phase 1."
-        endif
-
-        n_points = Get number of points
-        if n_points < 1
-            exitScript: "Error: draw at least 1 point on the curve before running Phase 2."
-        endif
-    endif
-
-    if output_representation = 1
-        repName$ = "SPEAKER-ARRAY PAN"
-    else
-        repName$ = "AMBISONIC TRAJECTORY (" + orderName$ + " order)"
-    endif
-
-    writeInfoLine: "=== PHASE 2: GENERATING ", repName$, " ==="
-    appendInfoLine: "Channels: 'n_ch'"
-    appendInfoLine: "Points drawn (azimuth): 'n_points'"
-    if drawnElevation = 1
-        appendInfoLine: "Points drawn (elevation): 'n_el_points'"
-    endif
-    if mapping_mode = 1
-        appendInfoLine: "Azimuth mapping: Relative (fit to full range)"
-    else
-        if output_representation = 1
-            appendInfoLine: "Mapping: Absolute (Base='base_value', Step='step_value')"
-        else
-            appendInfoLine: "Azimuth mapping: Absolute (drawn value = azimuth in degrees)"
-        endif
-    endif
-    if output_representation = 2
-        if drawnElevation = 0
-            appendInfoLine: "Elevation: Fixed 'fixed_elevation:1' deg, Distance: 'distance:2' m, Rotation: 'trajectory_rotation:1' deg"
-        else
-            if elevation_mapping = 1
-                appendInfoLine: "Elevation: Drawn (Relative -> [" + fixed$(minimum_elevation, 1) + ", " + fixed$(maximum_elevation, 1) + "] deg), Distance: 'distance:2' m, Rotation: 'trajectory_rotation:1' deg"
-            else
-                appendInfoLine: "Elevation: Drawn (Absolute degrees), Distance: 'distance:2' m, Rotation: 'trajectory_rotation:1' deg"
-            endif
-        endif
-    endif
-
-else
-    exitScript: "SELECTION ERROR: To start, select 1 Sound. To finish, select the mono Sound AND the 'movement' RealTier (or, for drawn elevation, 'movement_azimuth' AND 'movement_elevation')."
-endif
-
-###############################################################################
-# MAIN LOGIC (Runs only in Phase 2)
-###############################################################################
-
-selectObject: mono
+sound_in = selected ("Sound")
+sound_name$ = selected$ ("Sound")
+selectObject: sound_in
 xmin = Get start time
 xmax = Get end time
-duration = xmax - xmin
+dur = xmax - xmin
+duration = dur
+Convert to mono
+mono = selected ("Sound")
+Rename: sound_name$ + "_mono"
+mono_name$ = sound_name$ + "_mono"
+wavePeak = Get absolute extremum: 0, 0, "None"
+if wavePeak <= 0
+    wavePeak = 1
+endif
 
+# ---- lanes ----
+amb = output_representation = 2
+ring = output_representation = 1 and topology = 2
+nLanes = if amb then 2 else 1 fi
+if amb
+    laneLo[1] = -180
+    laneHi[1] = 180
+    laneLo[2] = -90
+    laneHi[2] = 90
+    period = 360
+elsif ring
+    laneLo[1] = 1
+    laneHi[1] = n_ch + 1
+    period = n_ch
+else
+    laneLo[1] = 1
+    laneHi[1] = n_ch
+    period = 0
+endif
+nP[1] = 0
+nP[2] = 0
+nHist = 0
+status$ = "Click the " + if amb then "azimuth" else "position" fi + " lane to draw the trajectory."
+finalView = 0
+
+# ---- Demo layout (window units 0..100, y upward; sx/sy/flipH for tests) ----
+sx = 1
+sy = 1
+flipH = 0
+ttlB = 92
+ttlT = 99
+mapL = 7.5
+mapR = 36
+mapB = 47
+mapT = 75.5
+lnL = 44
+lnR = 96.25
+if amb
+    l1B = 64
+    l1T = 84
+    l2B = 38
+    l2T = 57
+else
+    l1B = 38
+    l1T = 84
+endif
+wvB = 17
+wvT = 29
+sumB = 1.5
+sumT = 11
+
+cPrim$  = "{0.20, 0.48, 0.75}"
+cSec$   = "{0.85, 0.38, 0.18}"
+cGrey$  = "{0.55, 0.55, 0.60}"
+cPanel$ = "{0.97, 0.97, 0.97}"
+cGrid$  = "{0.80, 0.80, 0.80}"
+cSub$   = "{0.35, 0.35, 0.50}"
+cSumTx$ = "{0.25, 0.25, 0.35}"
+cSum$   = "{0.94, 0.94, 0.94}"
+
+
+###############################################################################
+# POINT EDITING (sorted arrays per lane; shared undo stack)
+###############################################################################
+procedure addOrMove: .lane, .x, .y
+    .tol = dur * 0.004
+    .hit = 0
+    for .i to nP[.lane]
+        if .hit = 0 and abs (pT[.lane, .i] - .x) <= .tol
+            .hit = .i
+        endif
+    endfor
+    nHist += 1
+    hLane[nHist] = .lane
+    if .hit > 0
+        hKind[nHist] = 2
+        hT[nHist] = pT[.lane, .hit]
+        hV[nHist] = pV[.lane, .hit]
+        pV[.lane, .hit] = .y
+        .verb$ = "Moved"
+    else
+        .n = nP[.lane]
+        .pos = .n + 1
+        for .i to .n
+            if .pos = .n + 1 and pT[.lane, .i] > .x
+                .pos = .i
+            endif
+        endfor
+        for .m to .n - .pos + 1
+            .j = .n - .m + 1
+            .jn = .j + 1
+            pT[.lane, .jn] = pT[.lane, .j]
+            pV[.lane, .jn] = pV[.lane, .j]
+        endfor
+        pT[.lane, .pos] = .x
+        pV[.lane, .pos] = .y
+        nP[.lane] = .n + 1
+        hKind[nHist] = 1
+        hT[nHist] = .x
+        hV[nHist] = .y
+        .verb$ = "Added"
+    endif
+    .u$ = if amb then (if .lane = 1 then " deg azimuth" else " deg elevation" fi) else "" fi
+    .v$ = if amb then fixed$ (round (.y), 0) else "channel " + fixed$ (.y, 2) fi
+    status$ = .verb$ + " point at " + fixed$ (.x, 2) + " s: " + .v$ + .u$ + "."
+endproc
+
+procedure undoLast
+    if nHist = 0
+        status$ = "Nothing to undo."
+    else
+        .lane = hLane[nHist]
+        .idx = 0
+        for .i to nP[.lane]
+            if pT[.lane, .i] = hT[nHist]
+                .idx = .i
+            endif
+        endfor
+        if hKind[nHist] = 2 and .idx > 0
+            pV[.lane, .idx] = hV[nHist]
+            status$ = "Undid move."
+        elsif .idx > 0
+            for .i from .idx to nP[.lane] - 1
+                .j = .i + 1
+                pT[.lane, .i] = pT[.lane, .j]
+                pV[.lane, .i] = pV[.lane, .j]
+            endfor
+            nP[.lane] -= 1
+            status$ = "Undid add."
+        endif
+        nHist -= 1
+    endif
+endproc
+
+procedure routeClick: .x, .y
+    .u = (.x - lnL) / (lnR - lnL)
+    if .u < 0 or .u > 1
+        status$ = "Click inside a lane (right-hand panels)."
+    elsif .y >= l1B and .y <= l1T
+        .v = laneLo[1] + (.y - l1B) / (l1T - l1B) * (laneHi[1] - laneLo[1])
+        if amb
+            .v = round (.v)
+        endif
+        @addOrMove: 1, xmin + .u * dur, .v
+    elsif amb and .y >= l2B and .y <= l2T
+        .v = round (laneLo[2] + (.y - l2B) / (l2T - l2B) * (laneHi[2] - laneLo[2]))
+        @addOrMove: 2, xmin + .u * dur, .v
+    else
+        status$ = "Click inside a lane (right-hand panels)."
+    endif
+endproc
+
+###############################################################################
+# DRAWN POINTS -> UNWRAPPED VALUES (shorter way round) -> path sampling
+###############################################################################
+# unwrapped values of lane 1 into uV[i] (azimuth / ring position)
+procedure unwrapLane1
+    for .i to nP[1]
+        if .i = 1 or period = 0
+            uV[.i] = pV[1, .i]
+        else
+            .d = pV[1, .i] - pV[1, .i - 1]
+            .d = .d - period * round (.d / period)
+            .ip = .i - 1
+            uV[.i] = uV[.ip] + .d
+        endif
+    endfor
+endproc
+
+# value of a lane at time .t (held before the first / after the last point),
+# lane 1 from the unwrapped values; result for display is wrapped back
+procedure laneAt: .lane, .t
+    .n = nP[.lane]
+    if .n = 0
+        .result = 0
+    else
+        .j = 0
+        for .i to .n
+            if pT[.lane, .i] <= .t
+                .j = .i
+            endif
+        endfor
+        if .lane = 1
+            if .j = 0
+                .result = uV[1]
+            elsif .j = .n
+                .result = uV[.n]
+            else
+                .k = .j + 1
+                .result = uV[.j] + (uV[.k] - uV[.j]) * (.t - pT[1, .j]) / max (1e-12, pT[1, .k] - pT[1, .j])
+            endif
+        else
+            if .j = 0
+                .result = pV[2, 1]
+            elsif .j = .n
+                .result = pV[2, .n]
+            else
+                .k = .j + 1
+                .result = pV[2, .j] + (pV[2, .k] - pV[2, .j]) * (.t - pT[2, .j]) / max (1e-12, pT[2, .k] - pT[2, .j])
+            endif
+        endif
+    endif
+endproc
+
+###############################################################################
+# RENDER (v0.7.5 DSP on tiers built from the drawing)
+###############################################################################
+procedure buildTiers
+    @unwrapLane1
+    if amb and nP[2] > 0
+        drawnElevation = 1
+        movement = Create RealTier: "movement_azimuth", xmin, xmax
+        for .i to nP[1]
+            Add point: pT[1, .i], uV[.i]
+        endfor
+        movement_el = Create RealTier: "movement_elevation", xmin, xmax
+        for .i to nP[2]
+            Add point: pT[2, .i], pV[2, .i]
+        endfor
+        n_el_points = nP[2]
+    else
+        drawnElevation = 0
+        movement = Create RealTier: "movement", xmin, xmax
+        for .i to nP[1]
+            Add point: pT[1, .i], uV[.i]
+        endfor
+        movement_el = 0
+    endif
+    n_points = nP[1]
+endproc
+
+procedure renderDSP
 # --- Relative mode: find the value range of the drawn azimuth points ---
 if mapping_mode = 1
     selectObject: movement
@@ -852,28 +674,446 @@ endfor
 result = Combine to stereo
 Rename: output_name$
 
-###############################################################################
-# VISUALIZATION (optional)
-#
-# Draws an 8x8-canvas Picture-window overview of the movement, using the
-# suite's standard outer-viewport-title / inner-viewport-data pattern (the
-# small gap between each panel's outer and inner viewport is the title
-# strip). Uses gainArr[c,f], captured above while the gain AmplitudeTiers
-# were built, instead of re-querying the AmplitudeTier objects via
-# object(id,x) -- that lookup pattern has been a recurring source of bugs
-# elsewhere in this suite, so it's avoided here entirely.
-#
-# Speaker array: Panel B shows a speaker map (Line row / Ring circle).
-# Ambisonic trajectory: Panel B shows a top-view (azimuth) path instead,
-# since there is no physical speaker layout to draw.
-#
-# Phase 2 and the Picture-window visualization have been tested
-# end-to-end in Praat for Speaker array output. For 12/16-channel output,
-# watch for label crowding in Panels B/C; channelFontSize and
-# maxSpeakerDiameter below scale down automatically above 8 channels, but
-# very dense arrays may still benefit from a manual check.
-###############################################################################
+endproc
 
+procedure freeRender: .keepResult
+    for .c to n_ch
+        removeObject: gain_id[.c], ch_id[.c]
+    endfor
+    if .keepResult = 0
+        removeObject: result
+    endif
+endproc
+
+procedure freeTiers
+    removeObject: movement
+    if movement_el > 0
+        removeObject: movement_el
+    endif
+endproc
+
+# stereo monitor of the current multichannel result
+procedure monitorMix
+    selectObject: result
+    .mon = Create Sound from formula: "monitor", 2, xmin, xmax, sampleRateMono, "0"
+    for .c to n_ch
+        if amb
+            if .c = 1
+                .gl = 0.5
+                .gr = 0.5
+            elsif .c = 2
+                .gl = 0.5
+                .gr = -0.5
+            else
+                .gl = 0
+                .gr = 0
+            endif
+        elsif ring
+            .a = (.c - 1) / n_ch * 2 * pi
+            .gl = 0.5 * (1 - sin (.a))
+            .gr = 0.5 * (1 + sin (.a))
+        else
+            .xx = if n_ch > 1 then (.c - 1) / (n_ch - 1) else 0.5 fi
+            .gl = cos (.xx * pi / 2)
+            .gr = sin (.xx * pi / 2)
+        endif
+        if .gl <> 0 or .gr <> 0
+            selectObject: .mon
+            Formula: "self + object[" + string$ (result) + ", " + string$ (.c) + ", col] * (if row = 1 then " + string$ (.gl) + " else " + string$ (.gr) + " fi)"
+        endif
+    endfor
+    selectObject: .mon
+    .pk = Get absolute extremum: 0, 0, "None"
+    if .pk > 0
+        Scale peak: 0.9
+    endif
+    .result = .mon
+endproc
+
+procedure preview
+    if nP[1] = 0
+        status$ = "Draw at least one " + if amb then "azimuth" else "position" fi + " point first."
+    else
+        status$ = "Rendering the preview..."
+        @drawAll
+        @buildTiers
+        @renderDSP
+        @monitorMix
+        Play
+        removeObject: monitorMix.result
+        @freeRender: 0
+        @freeTiers
+        status$ = "Preview played (stereo monitor - an approximation, not the multichannel image)."
+    endif
+endproc
+
+###############################################################################
+# DRAWING
+###############################################################################
+procedure vp: .x1, .x2, .y1, .y2
+    if flipH > 0
+        demo Select inner viewport: .x1 * sx, .x2 * sx, flipH - .y2 * sy, flipH - .y1 * sy
+    else
+        demo Select inner viewport: .x1 * sx, .x2 * sx, .y1 * sy, .y2 * sy
+    endif
+endproc
+
+procedure caption: .x1, .x2, .yT, .text$
+    demo Font size: 8
+    @vp: .x1, .x2, .yT, .yT + 3
+    demo Axes: 0, 1, 0, 1
+    demo Colour: "Black"
+    demo Text: 0, "left", 0.2, "half", .text$
+endproc
+
+procedure niceStep: .span, .target
+    .raw = .span / .target
+    .mag = 10 ^ floor (log10 (.raw))
+    .result = 10 * .mag
+    if 5 * .mag >= .raw
+        .result = 5 * .mag
+    endif
+    if 2 * .mag >= .raw
+        .result = 2 * .mag
+    endif
+    if .mag >= .raw
+        .result = .mag
+    endif
+endproc
+
+procedure drawTitle
+    demo Font size: 12
+    @vp: 7.5, 96.25, ttlB, ttlT
+    demo Axes: 0, 1, 0, 1
+    demo Colour: "Black"
+    demo Text: 0.5, "centre", 0.72, "half", "##SPATIAL TRAJECTORY PAINTER" + if finalView then " \-- RESULT" else "" fi + "##"
+    .nm$ = replace$ (sound_name$, "_", "\_ ", 0)
+    demo Font size: 7
+    @vp: 7.5, 96.25, ttlB, ttlT
+    demo Axes: 0, 1, 0, 1
+    demo Colour: cSub$
+    demo Text: 0.5, "centre", 0.12, "half", .nm$ + "   |   " + fixed$ (dur, 2) + " s   |   "
+        ... + if amb then orderName$ + " order ambiX (" + string$ (n_ch) + " ch)" else string$ (n_ch) + "-channel " + if ring then "ring" else "line" fi fi
+endproc
+
+# ---- lanes -----------------------------------------------------------------
+procedure drawLane: .lane, .yB, .yT
+    .lo = laneLo[.lane]
+    .hi = laneHi[.lane]
+    demo Font size: 7
+    @vp: lnL, lnR, .yB, .yT
+    demo Axes: xmin, xmax, .lo, .hi
+    demo Paint rectangle: cPanel$, xmin, xmax, .lo, .hi
+    demo Colour: cGrid$
+    demo Dotted line
+    if amb and .lane = 1
+        for .g from -1 to 1
+            demo Draw line: xmin, .g * 90, xmax, .g * 90
+        endfor
+    elsif amb
+        demo Draw line: xmin, 0, xmax, 0
+        demo Draw line: xmin, 45, xmax, 45
+        demo Draw line: xmin, -45, xmax, -45
+    else
+        for .g from 1 to n_ch + ring
+            demo Draw line: xmin, .g, xmax, .g
+        endfor
+    endif
+    demo Solid line
+    # the path actually rendered, sampled (lane 1 wrapped back for display)
+    if nP[.lane] > 0
+        demo Colour: if .lane = 1 then cPrim$ else cSec$ fi
+        demo Line width: 2
+        .ns = 300
+        for .s from 0 to .ns
+            .t = xmin + .s / .ns * dur
+            @laneAt: .lane, .t
+            .v = laneAt.result
+            if .lane = 1 and period > 0
+                .v = laneLo[1] + (.v - laneLo[1]) - period * floor ((.v - laneLo[1]) / period)
+            endif
+            if .s > 0
+                if abs (.v - .pv) < period / 2 or period = 0 or .lane = 2
+                    demo Draw line: .pt, .pv, .t, .v
+                endif
+            endif
+            .pt = .t
+            .pv = .v
+        endfor
+        demo Line width: 1
+        for .i to nP[.lane]
+            demo Paint circle (mm): if .lane = 1 then cPrim$ else cSec$ fi, pT[.lane, .i], pV[.lane, .i], 1.6
+        endfor
+    elsif .lane = 2
+        demo Colour: cSec$
+        demo Line width: 2
+        demo Draw line: xmin, 0, xmax, 0
+        demo Line width: 1
+    endif
+    demo Font size: 6
+    @vp: lnL, lnR, .yB, .yT
+    demo Axes: xmin, xmax, .lo, .hi
+    if .lane = 2 and nP[2] = 0
+        demo Colour: cSub$
+        demo Text: xmax, "right", 80, "top", "no points: 0 deg throughout "
+    endif
+    demo Font size: 7
+    @vp: lnL, lnR, .yB, .yT
+    demo Axes: xmin, xmax, .lo, .hi
+    demo Colour: "Black"
+    demo Draw inner box
+    if amb and .lane = 1
+        demo One mark left: 180, "no", "yes", "no", "back"
+        demo One mark left: 90, "no", "yes", "no", "L 90"
+        demo One mark left: 0, "no", "yes", "no", "front"
+        demo One mark left: -90, "no", "yes", "no", "R -90"
+        demo One mark left: -180, "no", "yes", "no", "back"
+        @caption: lnL, lnR, .yT + 1, "##Azimuth (ambiX, +90 = left)##   shorter way round between points"
+    elsif amb
+        demo Marks left every: 1, 45, "yes", "yes", "no"
+        @caption: lnL, lnR, .yT + 1, "##Elevation (deg)##"
+    else
+        for .g from 1 to n_ch
+            demo One mark left: .g, "no", "yes", "no", string$ (.g)
+        endfor
+        if ring
+            demo One mark left: n_ch + 1, "no", "yes", "no", "1"
+        endif
+        @caption: lnL, lnR, .yT + 1, "##Position (channel)##   " + if ring then "ring: top row = channel 1 again; shorter way round" else "line: clamped at 1 and " + string$ (n_ch) fi
+    endif
+endproc
+
+# ---- source waveform: the timeline the lanes share ---------------------------
+procedure drawWave
+    demo Font size: 7
+    @vp: lnL, lnR, wvB, wvT
+    demo Axes: xmin, xmax, -wavePeak, wavePeak
+    demo Paint rectangle: cPanel$, xmin, xmax, -wavePeak, wavePeak
+    selectObject: mono
+    demo Colour: cGrey$
+    demo Draw: 0, 0, -wavePeak, wavePeak, "no", "Curve"
+    @vp: lnL, lnR, wvB, wvT
+    demo Axes: xmin, xmax, -wavePeak, wavePeak
+    demo Colour: "Black"
+    demo Draw inner box
+    @niceStep: dur, 8
+    demo Marks bottom every: 1, niceStep.result, "yes", "yes", "no"
+    demo Text bottom: "yes", "Time (s)"
+    @caption: lnL, lnR, wvT + 1, "##Source (mono)##"
+endproc
+
+# ---- top-down map --------------------------------------------------------------
+procedure drawMap
+    demo Font size: 7
+    @vp: mapL, mapR, mapB, mapT
+    demo Axes: -1.35, 1.35, -1.35, 1.35
+    demo Paint rectangle: cPanel$, -1.35, 1.35, -1.35, 1.35
+    demo Colour: cGrid$
+    # reference circles as polylines, mapped exactly like the path, so both
+    # deform together if the Demo window is not square
+    if amb or ring
+        @ring: 1
+        demo Dotted line
+        if amb
+            @ring: cos (45 * pi / 180)
+        endif
+        demo Solid line
+    endif
+    # speakers (array modes)
+    if amb = 0
+        for .c to n_ch
+            if ring
+                .a = (.c - 1) / n_ch * 2 * pi
+                .sxp = sin (.a)
+                .syp = cos (.a)
+            else
+                .sxp = -1 + 2 * (.c - 1) / max (1, n_ch - 1)
+                .syp = 0.6
+            endif
+            demo Paint circle (mm): cGrey$, .sxp, .syp, 2.2
+        endfor
+    endif
+    # path
+    if nP[1] > 0
+        @unwrapLane1
+        demo Colour: cPrim$
+        demo Line width: 2
+        .ns = 200
+        for .s from 0 to .ns
+            .t = xmin + .s / .ns * dur
+            @laneAt: 1, .t
+            .v = laneAt.result
+            if amb
+                @laneAt: 2, .t
+                .el = laneAt.result
+                .r = cos (.el * pi / 180)
+                .px = -.r * sin (.v * pi / 180)
+                .py = .r * cos (.v * pi / 180)
+            elsif ring
+                .a = (.v - 1) / n_ch * 2 * pi
+                .px = sin (.a)
+                .py = cos (.a)
+            else
+                .vv = max (1, min (n_ch, .v))
+                .px = -1 + 2 * (.vv - 1) / max (1, n_ch - 1)
+                .py = 0.6
+            endif
+            if .s > 0
+                demo Draw line: .ppx, .ppy, .px, .py
+            endif
+            if .s = 0
+                .sx0 = .px
+                .sy0 = .py
+            endif
+            .ppx = .px
+            .ppy = .py
+        endfor
+        demo Line width: 1
+        demo Paint circle (mm): cSec$, .sx0, .sy0, 2.2
+        demo Paint circle (mm): cPrim$, .px, .py, 2.2
+    endif
+    demo Paint circle (mm): "{0.25, 0.25, 0.35}", 0, if amb or ring then 0 else -0.4 fi, 2.4
+    demo Font size: 6
+    @vp: mapL, mapR, mapB, mapT
+    demo Axes: -1.35, 1.35, -1.35, 1.35
+    demo Colour: cSub$
+    if amb or ring
+        demo Text: 0, "centre", 1.22, "half", "front"
+        demo Text: -1.25, "centre", 0, "half", "L"
+        demo Text: 1.25, "centre", 0, "half", "R"
+    else
+        demo Text: -1, "centre", 0.85, "half", "1"
+        demo Text: 1, "centre", 0.85, "half", string$ (n_ch)
+    endif
+    demo Colour: cSec$
+    demo Text: -1.3, "left", -1.25, "bottom", "orange = start"
+    demo Font size: 7
+    @vp: mapL, mapR, mapB, mapT
+    demo Axes: -1.35, 1.35, -1.35, 1.35
+    demo Colour: "Black"
+    demo Draw inner box
+    @caption: mapL, mapR, mapT + 1, "##Map (top-down)##"
+    demo Font size: 6
+    @vp: mapL, mapR, mapB - 9, mapB - 1
+    demo Axes: 0, 1, 0, 1
+    demo Colour: cSub$
+    if amb
+        demo Text: 0, "left", 0.75, "half", "radius = cos (elevation): elevated"
+        demo Text: 0, "left", 0.35, "half", "positions sit inside the circle"
+    elsif ring
+        demo Text: 0, "left", 0.75, "half", "assumed layout: channel 1 front,"
+        demo Text: 0, "left", 0.35, "half", "increasing clockwise"
+    else
+        demo Text: 0, "left", 0.75, "half", "line array: channel 1 ... " + string$ (n_ch)
+        demo Text: 0, "left", 0.35, "half", "left to right"
+    endif
+endproc
+
+procedure ring: .r
+    for .s from 1 to 96
+        .a0 = (.s - 1) / 96 * 2 * pi
+        .a1 = .s / 96 * 2 * pi
+        demo Draw line: .r * sin (.a0), .r * cos (.a0), .r * sin (.a1), .r * cos (.a1)
+    endfor
+endproc
+
+procedure drawSummary
+    demo Font size: 7
+    @vp: 7.5, 96.25, sumB, sumT
+    demo Axes: 0, 1, 0, 1
+    demo Paint rectangle: cSum$, 0, 1, 0, 1
+    demo Colour: cSumTx$
+    if finalView
+        demo Text: 0.01, "left", 0.78, "half", "##Done.## The multichannel Sound is in the Objects window; the report is in the Info window."
+    else
+        demo Text: 0.01, "left", 0.78, "half", "##Click## a lane: add / move point   ##U## undo   ##P## preview (stereo monitor)   ##Enter## commit   ##Esc## cancel"
+    endif
+    demo Text: 0.01, "left", 0.46, "half", "##" + string$ (nP[1]) + "## " + if amb then "azimuth" else "position" fi + " point(s)" + if amb then ", ##" + string$ (nP[2]) + "## elevation point(s)" else "" fi
+        ... + "   control rate " + string$ (control_rate) + " Hz" + if amb then ", distance " + fixed$ (distance, 2) + " m, rotation " + fixed$ (trajectory_rotation, 0) + " deg" else "" fi
+    demo Text: 0.01, "left", 0.16, "half", "##Status:## " + replace$ (status$, "_", "\_ ", 0)
+    @vp: 7.5, 96.25, sumB, sumT
+    demo Axes: 0, 1, 0, 1
+    demo Colour: "Black"
+    demo Draw inner box
+endproc
+
+procedure drawAll
+    demo Erase all
+    @drawTitle
+    @drawMap
+    @drawLane: 1, l1B, l1T
+    if amb
+        @drawLane: 2, l2B, l2T
+    endif
+    @drawWave
+    @drawSummary
+    demo Font size: 7
+    @vp: 0, 100, 0, 100
+    demo Axes: 0, 100, 0, 100
+endproc
+
+###############################################################################
+# SESSION
+###############################################################################
+selectObject: mono
+sampleRateMono = Get sampling frequency
+@drawAll
+
+# >>> INPUT LOOP
+action$ = ""
+while action$ = ""
+    demoWaitForInput ()
+    if demoClicked ()
+        @routeClick: demoX (), demoY ()
+        @drawAll
+    elsif demoKeyPressed ()
+        key$ = demoKey$ ()
+        if key$ = newline$ or key$ = unicode$ (13) or key$ = unicode$ (65293)
+            if nP[1] = 0
+                status$ = "Draw at least one " + if amb then "azimuth" else "position" fi + " point before committing."
+                @drawAll
+            else
+                action$ = "commit"
+            endif
+        elsif key$ = unicode$ (27) or key$ = unicode$ (65307)
+            action$ = "cancel"
+        elsif key$ = "u" or key$ = "U"
+            @undoLast
+            @drawAll
+        elsif key$ = "p" or key$ = "P"
+            @preview
+            @drawAll
+        endif
+    endif
+endwhile
+# <<< INPUT LOOP
+
+if action$ = "cancel"
+    removeObject: mono
+    status$ = "Cancelled - nothing was created."
+    @drawAll
+    exitScript: "Spatial Trajectory Painter cancelled."
+endif
+
+###############################################################################
+# COMMIT
+###############################################################################
+writeInfoLine: "=== Spatial Trajectory Painter (Demo) v1.0 ==="
+status$ = "Rendering..."
+@drawAll
+@buildTiers
+@renderDSP
+appendInfoLine: "Representation: ", if amb then orderName$ + " order ambiX ACN/SN3D (" + string$ (n_ch) + " ch)" else string$ (n_ch) + "-channel speaker array, " + if ring then "ring" else "line" fi fi
+appendInfoLine: "Points: ", nP[1], if amb then " azimuth, " + string$ (nP[2]) + " elevation" else " position" fi
+appendInfoLine: "Mapping: Absolute in drawn units (" + if amb then "degrees" else "channel numbers: Base 1, Step 1" fi + "), unwrapped the shorter way round"
+if amb
+    appendInfoLine: "Azimuth range: " + fixed$ (azMinActual, 1) + " to " + fixed$ (azMaxActual, 1) + " deg (0-360, ambiX)"
+    appendInfoLine: "Elevation: " + elevModeDesc$ + ", range " + fixed$ (elevMinActual, 1) + " to " + fixed$ (elevMaxActual, 1) + " deg"
+    appendInfoLine: "Distance: " + fixed$ (distance, 2) + " m (fixed), rotation " + fixed$ (trajectory_rotation, 1) + " deg"
+endif
+appendInfoLine: "Control rate: ", control_rate, " Hz"
+
+# v0.7.5's Picture-window figure, verbatim
 if draw_visualization = 1
 
     # --- suite channel-colour palette (cycles every 8 channels) ---
@@ -1578,68 +1818,32 @@ if draw_visualization = 1
 
 endif
 
-###############################################################################
-# CLEANUP -- removes all working objects, leaving only the final
-# multichannel result. To draw a new movement curve after this,
-# re-run Phase 1 from the original source Sound.
-###############################################################################
-
-for c to n_ch
-    removeObject: gain_id[c]
-    removeObject: ch_id[c]
-endfor
-removeObject: mono
-# In drawn-elevation mode, 'movement' is the azimuth tier (movement_azimuth);
-# the elevation tier (movement_elevation) is removed separately when present.
-removeObject: movement
-if drawnElevation = 1
-    removeObject: movement_el
-endif
-
-if output_representation = 1
-    doneDesc$ = "speaker array"
-else
-    doneDesc$ = orderName$ + " order ambiX"
-endif
-
+@freeRender: 1
 selectObject: result
-appendInfoLine: "Done! Created: 'output_name$' ('n_ch' channels, " + doneDesc$ + ")."
-if output_representation = 1
-    Play
-else
-    appendInfoLine: ""
-    appendInfoLine: "--- Ambisonic trajectory report ---"
-    appendInfoLine: "Representation: Ambisonic trajectory"
-    appendInfoLine: "Order: " + orderName$
-    appendInfoLine: "Channels: " + string$(n_ch)
-    appendInfoLine: "Azimuth control: drawn"
-    if mapping_mode = 1
-        appendInfoLine: "Azimuth mapping: Relative"
-    else
-        appendInfoLine: "Azimuth mapping: Absolute"
-    endif
-    if drawnElevation = 0
-        appendInfoLine: "Elevation control: Fixed (" + fixed$(fixed_elevation, 1) + " deg)"
-    else
-        appendInfoLine: "Elevation control: Drawn"
-        if elevation_mapping = 1
-            appendInfoLine: "Elevation mapping: Relative -> [" + fixed$(minimum_elevation, 1) + ", " + fixed$(maximum_elevation, 1) + "] deg"
-        else
-            appendInfoLine: "Elevation mapping: Absolute degrees"
-        endif
-    endif
-    appendInfoLine: "Elevation range: " + fixed$(elevMinActual, 1) + " to " + fixed$(elevMaxActual, 1) + " deg"
-    appendInfoLine: "Distance: " + fixed$(distance, 2) + " m (fixed)"
-    appendInfoLine: "Control rate: " + string$(control_rate) + " Hz"
-    appendInfoLine: "Output convention: ambiX ACN/SN3D Full 3D"
-    appendInfoLine: ""
-    appendInfoLine: "Ambisonic output created (raw ACN/SN3D field components)."
-    appendInfoLine: "Playing these channels directly is not a valid spatial playback --"
-    appendInfoLine: "decode through a speaker-array or binaural ambisonic decoder first."
+Rename: output_name$
+if keep_control_tiers = 0
+    @freeTiers
 endif
 
+appendInfoLine: ""
+appendInfoLine: "Created: ", output_name$, " (", n_ch, " ch)", if keep_control_tiers then " + control tier(s) " + if drawnElevation then "movement_azimuth, movement_elevation" else "movement" fi else "" fi
+if amb
+    appendInfoLine: "Raw ACN/SN3D field components: decode through a speaker-array or binaural"
+    appendInfoLine: "ambisonic decoder for real spatial playback."
+endif
+appendInfoLine: "The stereo monitor is an approximation for checking motion and timing only."
+
+finalView = 1
+status$ = "Committed: " + output_name$ + ". Playing the stereo monitor."
+@drawAll
+@monitorMix
+Play
+removeObject: monitorMix.result
+removeObject: mono
+selectObject: result
+
 ###############################################################################
-# PROCEDURES
+# PROCEDURES (v0.7.5)
 ###############################################################################
 
 # Compute the 16 ACN/SN3D encoding coefficients for a direction (degrees).
