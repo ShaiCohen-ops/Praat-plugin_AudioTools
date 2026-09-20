@@ -4,6 +4,9 @@
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+# 2026-09 interoperability update: clarified ITU-R BS.2159 / AES 22.2 order.
+# 2026-09 level-policy fix: General mode now leaves float HOA gain unchanged by default;
+# PCM export can apply export-only peak protection without altering the Praat object.
 #
 # Purpose
 #   Encode either:
@@ -67,7 +70,7 @@ form Ambisonic Encoder
         option "7.1.4 (L,R,C,LFE,Ls,Rs,Lb,Rb,TpFL,TpFR,TpBL,TpBR)"
         option "12-channel horizontal ring (ch1 = front, CCW)"
         option "16-channel horizontal ring (ch1 = front, CCW)"
-        option "22.2 (NHK / Spat channel order)"
+        option "22.2 (ITU-R BS.2159 / AES 24-channel order)"
         option "Even horizontal ring (use all input channels)"
     optionmenu Lfe_handling: 1
         option "Ignore LFE (recommended)"
@@ -86,7 +89,8 @@ form Ambisonic Encoder
     optionmenu Mode: 1
         option "General encoder"
         option "Fixed-media submission (3rd-order ambiX, combined WAV)"
-    boolean Peak_protect_only 1
+    comment Level policy: OFF preserves HOA gain in Praat float objects; enable only when you intentionally want object-level attenuation.
+    boolean Peak_protect_only 0
     boolean Verify_encoding 1
     boolean Save_wav 0
     text Wav_folder
@@ -345,7 +349,9 @@ if input_mode = 2
     elsif resolvedLayout = 12
         layoutName$ = "22.2"
         expectedBedChannels = 24
-        # NHK / Spat channel order. ambiX sign convention: +azimuth = left.
+        # ITU-R BS.2159 / AES 24-channel order. ambiX sign convention: +azimuth = left.
+        # This external 24ch order is NOT the internal Spat5 virtualspeakers~ 22.2 order;
+        # AudioTools binaural bridges adapt it before HRTF rendering.
         bedAz[1] = 45
         bedAz[2] = -45
         bedAz[3] = 0
@@ -519,11 +525,16 @@ if peak_protect_only and globalPeak > 0.99
     endfor
 endif
 if protectDb < 0
-    peakInfo$ = "  -> shared protection " + fixed$ (protectDb, 2) + " dB"
+    peakInfo$ = "  -> shared object protection " + fixed$ (protectDb, 2) + " dB"
+elsif globalPeak > 0.99 and not peak_protect_only
+    peakInfo$ = "  (object protection OFF; float HOA intentionally exceeds 0.99)"
 else
     peakInfo$ = "  (no shared attenuation needed)"
 endif
 appendInfoLine: "Peak:       ", fixed$ (globalPeak, 6), peakInfo$
+if globalPeak > 0.99 and not peak_protect_only
+    appendInfoLine: "Level:      HOA object gain preserved. PCM export, if requested, is protected on an export-only copy."
+endif
 
 # ============================================================
 # COMBINED OUTPUT
@@ -562,7 +573,22 @@ if save_wav
             dupN += 1
             wavPath$ = outFolder$ + "/" + wavBase$ + "_" + string$ (dupN) + ".wav"
         endwhile
-        selectObject: combinedResult
+
+        exportObject = combinedResult
+        exportIsCopy = 0
+        exportProtectDb = 0
+        if globalPeak > 0.99 and not peak_protect_only
+            selectObject: combinedResult
+            exportObject = Copy: "__hoa_pcm_export_safe"
+            exportIsCopy = 1
+            exportScale = 0.99 / globalPeak
+            exportProtectDb = 20 * log10 (exportScale)
+            selectObject: exportObject
+            Formula: "self * " + fixed$ (exportScale, 12)
+            appendInfoLine: "WAV level:  export-only protection ", fixed$ (exportProtectDb, 2), " dB; in-memory HOA object unchanged."
+        endif
+
+        selectObject: exportObject
         Save as 24-bit WAV file: wavPath$
         savedSamples = Get number of samples
         savedSr = Get sampling frequency
@@ -573,6 +599,9 @@ if save_wav
         removeObject: check
         if chkCh <> numChannels or chkSr <> savedSr or chkSamples <> savedSamples
             deleteFile: wavPath$
+            if exportIsCopy
+                removeObject: exportObject
+            endif
             if mode = 2
                 exitScript: "WAV validation failed; the non-conformant file was deleted."
             else
@@ -581,7 +610,11 @@ if save_wav
         else
             appendInfoLine: "WAV:        ", wavPath$
             appendInfoLine: "            validated ", chkCh, " ch @ ", chkSr, " Hz, ", chkSamples, " samples (24-bit PCM)"
+            if exportIsCopy
+                removeObject: exportObject
+            endif
         endif
+        selectObject: combinedResult
     endif
 endif
 

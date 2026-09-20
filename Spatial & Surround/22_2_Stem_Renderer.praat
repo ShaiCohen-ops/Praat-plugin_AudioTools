@@ -3,7 +3,10 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.1.1 (2025)
+# Version: 1.2.0 (2026)
+# v1.2.0 (2026): 24-channel output reordered to ITU-R BS.2159 / AES 22.2 channel order.
+#                 DSP roles are unchanged; channel routing, binaural HRIR indexing, and
+#                 visualization metadata are remapped consistently.
 # v1.1 (2026): SPATIAL VISUALIZATION STANDARDIZATION ONLY - label rails, compact summary, typography; DSP unchanged.
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
@@ -14,38 +17,34 @@
 #       (1) a 24-channel synthetic surround render
 #       (2) an optional headphone output
 #
-#   The 24-channel render is arranged as:
-#       Middle Layer (10)
-#         Ch  1 — FL   (Front Left)
-#         Ch  2 — FR   (Front Right)
-#         Ch  3 — FC   (Front Center)
-#         Ch  4 — FWL  (Front Wide Left)
-#         Ch  5 — FWR  (Front Wide Right)
-#         Ch  6 — SiL  (Side Left)
-#         Ch  7 — SiR  (Side Right)
-#         Ch  8 — BL   (Back Left)
-#         Ch  9 — BR   (Back Right)
-#         Ch 10 — BC   (Back Center)
+#   The 24-channel render follows the ITU-R BS.2159 / AES 22.2 order:
+#         Ch  1 — FL    (Front Left)
+#         Ch  2 — FR    (Front Right)
+#         Ch  3 — FC    (Front Center)
+#         Ch  4 — LFE1  (LFE-1)
+#         Ch  5 — BL    (Back Left)
+#         Ch  6 — BR    (Back Right)
+#         Ch  7 — FLc   (Front Left Center)
+#         Ch  8 — FRc   (Front Right Center)
+#         Ch  9 — BC    (Back Center)
+#         Ch 10 — LFE2  (LFE-2)
+#         Ch 11 — SiL   (Side Left)
+#         Ch 12 — SiR   (Side Right)
+#         Ch 13 — TpFL  (Top Front Left)
+#         Ch 14 — TpFR  (Top Front Right)
+#         Ch 15 — TpFC  (Top Front Center)
+#         Ch 16 — TpC   (Top Center)
+#         Ch 17 — TpBL  (Top Back Left)
+#         Ch 18 — TpBR  (Top Back Right)
+#         Ch 19 — TpSiL (Top Side Left)
+#         Ch 20 — TpSiR (Top Side Right)
+#         Ch 21 — TpBC  (Top Back Center)
+#         Ch 22 — BtFC  (Bottom Front Center)
+#         Ch 23 — BtFL  (Bottom Front Left)
+#         Ch 24 — BtFR  (Bottom Front Right)
 #
-#       Upper Layer (9)
-#         Ch 11 — TpFL  (Top Front Left)
-#         Ch 12 — TpFR  (Top Front Right)
-#         Ch 13 — TpFC  (Top Front Center)
-#         Ch 14 — TpSiL (Top Side Left)
-#         Ch 15 — TpSiR (Top Side Right)
-#         Ch 16 — TpBL  (Top Back Left)
-#         Ch 17 — TpBR  (Top Back Right)
-#         Ch 18 — TpBC  (Top Back Center)
-#         Ch 19 — TpC   (Top Center)
-#
-#       Lower Layer (3)
-#         Ch 20 — BFL  (Bottom Front Left)
-#         Ch 21 — BFR  (Bottom Front Right)
-#         Ch 22 — BFC  (Bottom Front Center)
-#
-#       LFE (2)
-#         Ch 23 — LFE1
-#         Ch 24 — LFE2
+#   Note: Spat5 virtualspeakers~ uses a different internal 22.2 order.
+#   Use IRCAM_Multichannel_to_Binaural.praat for automatic adaptation.
 #
 #   This is a practical signal-processing approximation, not a
 #   claim of physically accurate 22.2 capture, decoding, or
@@ -113,6 +112,12 @@
 #      verified HRIR pair exists are used. If required mapped
 #      files are missing, binaural rendering aborts cleanly
 #      rather than producing a partial, tonally corrupted render.
+#
+# Changelog v1.2.0:
+#   - Reordered 24-channel output to ITU-R BS.2159 / AES 22.2 order
+#   - Renamed FWL/FWR -> FLc/FRc and BFC/BFL/BFR -> BtFC/BtFL/BtFR
+#   - Remapped optional CNMAT KEMAR binaural indexing to the new channel order
+#   - Updated visualization labels and per-channel metadata
 #
 # Changelog v1.1:
 #   - Established stable 24-channel 22.2-style synthetic render
@@ -358,27 +363,27 @@ endproc
 @build_channel: 1, stem_FL, 0, 0, nyq, 0.0, "FL"
 @build_channel: 2, stem_FR, 0, 0, nyq, 0.0, "FR"
 @build_channel: 3, stem_FC, 0, 0, nyq, 0.0, "FC"
-@build_channel: 4, stem_FW_L, 5, 0, nyq, fw_gain_dB, "FWL"
-@build_channel: 5, stem_FW_R, 5 + decorr_ms, 0, nyq, fw_gain_dB, "FWR"
-@build_channel: 6, stem_Amb_L, side_delay, hp_rear, lp_rear, amb_gain_dB, "SiL"
-@build_channel: 7, stem_Amb_R, side_delay + decorr_ms, hp_rear, lp_rear, amb_gain_dB, "SiR"
-@build_channel: 8, stem_Amb_L, side_delay + 10, hp_rear, lp_rear, rear_gain_dB, "BL"
-@build_channel: 9, stem_Amb_R, side_delay + 10 + decorr_ms, hp_rear, lp_rear, rear_gain_dB, "BR"
-@build_channel: 10, stem_Mid, side_delay + 15, hp_rear, lp_rear, rear_gain_dB - 3.0, "BC"
-@build_channel: 11, stem_FL, upper_delay, hp_top, lp_top, upper_gain_dB, "TpFL"
-@build_channel: 12, stem_FR, upper_delay + decorr_ms, hp_top, lp_top, upper_gain_dB, "TpFR"
-@build_channel: 13, stem_FC, upper_delay + 5, hp_top, lp_top, upper_gain_dB - 3.0, "TpFC"
-@build_channel: 14, stem_Amb_L, upper_delay + side_delay, hp_top, lp_top, upper_gain_dB, "TpSiL"
-@build_channel: 15, stem_Amb_R, upper_delay + side_delay + decorr_ms, hp_top, lp_top, upper_gain_dB, "TpSiR"
-@build_channel: 16, stem_Amb_L, upper_delay + side_delay + 10, hp_top, lp_top, upper_gain_dB, "TpBL"
-@build_channel: 17, stem_Amb_R, upper_delay + side_delay + 10 + decorr_ms, hp_top, lp_top, upper_gain_dB, "TpBR"
-@build_channel: 18, stem_Mid, upper_delay + side_delay + 15, hp_top, lp_top, upper_gain_dB - 3.0, "TpBC"
-@build_channel: 19, stem_Mid, upper_delay + 25, hp_top, lp_top, upper_gain_dB - 3.0, "TpC"
-@build_channel: 20, stem_FL, 4, 300, 3000, lower_gain_dB, "BFL"
-@build_channel: 21, stem_FR, 4 + decorr_ms, 300, 3000, lower_gain_dB, "BFR"
-@build_channel: 22, stem_FC, 4 + decorr_ms / 2, 300, 3000, lower_gain_dB - 3.0, "BFC"
-@build_channel: 23, stem_LFE, 0, 20, lfe_hz, 0.0, "LFE1"
-@build_channel: 24, stem_LFE, 0, 20, lfe_hz, 0.0, "LFE2"
+@build_channel: 4, stem_LFE, 0, 20, lfe_hz, 0.0, "LFE1"
+@build_channel: 5, stem_Amb_L, side_delay + 10, hp_rear, lp_rear, rear_gain_dB, "BL"
+@build_channel: 6, stem_Amb_R, side_delay + 10 + decorr_ms, hp_rear, lp_rear, rear_gain_dB, "BR"
+@build_channel: 7, stem_FW_L, 5, 0, nyq, fw_gain_dB, "FLc"
+@build_channel: 8, stem_FW_R, 5 + decorr_ms, 0, nyq, fw_gain_dB, "FRc"
+@build_channel: 9, stem_Mid, side_delay + 15, hp_rear, lp_rear, rear_gain_dB - 3.0, "BC"
+@build_channel: 10, stem_LFE, 0, 20, lfe_hz, 0.0, "LFE2"
+@build_channel: 11, stem_Amb_L, side_delay, hp_rear, lp_rear, amb_gain_dB, "SiL"
+@build_channel: 12, stem_Amb_R, side_delay + decorr_ms, hp_rear, lp_rear, amb_gain_dB, "SiR"
+@build_channel: 13, stem_FL, upper_delay, hp_top, lp_top, upper_gain_dB, "TpFL"
+@build_channel: 14, stem_FR, upper_delay + decorr_ms, hp_top, lp_top, upper_gain_dB, "TpFR"
+@build_channel: 15, stem_FC, upper_delay + 5, hp_top, lp_top, upper_gain_dB - 3.0, "TpFC"
+@build_channel: 16, stem_Mid, upper_delay + 25, hp_top, lp_top, upper_gain_dB - 3.0, "TpC"
+@build_channel: 17, stem_Amb_L, upper_delay + side_delay + 10, hp_top, lp_top, upper_gain_dB, "TpBL"
+@build_channel: 18, stem_Amb_R, upper_delay + side_delay + 10 + decorr_ms, hp_top, lp_top, upper_gain_dB, "TpBR"
+@build_channel: 19, stem_Amb_L, upper_delay + side_delay, hp_top, lp_top, upper_gain_dB, "TpSiL"
+@build_channel: 20, stem_Amb_R, upper_delay + side_delay + decorr_ms, hp_top, lp_top, upper_gain_dB, "TpSiR"
+@build_channel: 21, stem_Mid, upper_delay + side_delay + 15, hp_top, lp_top, upper_gain_dB - 3.0, "TpBC"
+@build_channel: 22, stem_FC, 4 + decorr_ms / 2, 300, 3000, lower_gain_dB - 3.0, "BtFC"
+@build_channel: 23, stem_FL, 4, 300, 3000, lower_gain_dB, "BtFL"
+@build_channel: 24, stem_FR, 4 + decorr_ms, 300, 3000, lower_gain_dB, "BtFR"
 
 # ============================================================
 # 6. HEADPHONE / BINAURAL ENGINE
@@ -428,38 +433,38 @@ if render_headphone_output = 1
         kMapR$[3] = "L12e000a.wav"
 
         # Side pair
-        kMapL$[6] = "L12e072a.wav"
-        kMapR$[6] = "L12e288a.wav"
-        kMapL$[7] = "L12e288a.wav"
-        kMapR$[7] = "L12e072a.wav"
+        kMapL$[11] = "L12e072a.wav"
+        kMapR$[11] = "L12e288a.wav"
+        kMapL$[12] = "L12e288a.wav"
+        kMapR$[12] = "L12e072a.wav"
 
         # Back pair
-        kMapL$[8] = "L12e144a.wav"
-        kMapR$[8] = "L12e216a.wav"
-        kMapL$[9] = "L12e216a.wav"
-        kMapR$[9] = "L12e144a.wav"
+        kMapL$[5] = "L12e144a.wav"
+        kMapR$[5] = "L12e216a.wav"
+        kMapL$[6] = "L12e216a.wav"
+        kMapR$[6] = "L12e144a.wav"
 
         # Top front pair
-        kMapL$[11] = "L-53e036a.wav"
-        kMapR$[11] = "L-53e324a.wav"
-        kMapL$[12] = "L-53e324a.wav"
-        kMapR$[12] = "L-53e036a.wav"
+        kMapL$[13] = "L-53e036a.wav"
+        kMapR$[13] = "L-53e324a.wav"
+        kMapL$[14] = "L-53e324a.wav"
+        kMapR$[14] = "L-53e036a.wav"
 
         # Top side pair
-        kMapL$[14] = "L53e072a.wav"
-        kMapR$[14] = "L53e288a.wav"
-        kMapL$[15] = "L53e288a.wav"
-        kMapR$[15] = "L53e072a.wav"
+        kMapL$[19] = "L53e072a.wav"
+        kMapR$[19] = "L53e288a.wav"
+        kMapL$[20] = "L53e288a.wav"
+        kMapR$[20] = "L53e072a.wav"
 
         # Top back pair
-        kMapL$[16] = "L53e144a.wav"
-        kMapR$[16] = "L53e216a.wav"
-        kMapL$[17] = "L53e216a.wav"
-        kMapR$[17] = "L53e144a.wav"
+        kMapL$[17] = "L53e144a.wav"
+        kMapR$[17] = "L53e216a.wav"
+        kMapL$[18] = "L53e216a.wav"
+        kMapR$[18] = "L53e144a.wav"
 
         # Top center
-        kMapL$[19] = "L90e000a.wav"
-        kMapR$[19] = "L90e000a.wav"
+        kMapL$[16] = "L90e000a.wav"
+        kMapR$[16] = "L90e000a.wav"
 
         Create Sound from formula: "ear_L", 1, 0, dur, sr, "0"
         ear_L = selected ("Sound")
@@ -519,22 +524,22 @@ if render_headphone_output = 1
                     if i = 3
                         scale = 0.12
                     endif
-                    if i = 6 or i = 7
+                    if i = 11 or i = 12
                         scale = 0.10
                     endif
-                    if i = 8 or i = 9
+                    if i = 5 or i = 6
                         scale = 0.08
                     endif
-                    if i = 11 or i = 12
+                    if i = 13 or i = 14
                         scale = 0.06
                     endif
-                    if i = 14 or i = 15
+                    if i = 19 or i = 20
                         scale = 0.05
                     endif
-                    if i = 16 or i = 17
+                    if i = 17 or i = 18
                         scale = 0.04
                     endif
-                    if i = 19
+                    if i = 16
                         scale = 0.03
                     endif
 
@@ -645,7 +650,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.65, "half", "##22.2 Synthetic Stem Renderer v1.1.1##"
+    Text: 0.5, "centre", 0.65, "half", "##22.2 Synthetic Stem Renderer v1.2.0##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
     Text: 0.5, "centre", -0.25, "half",
@@ -801,23 +806,23 @@ if draw_visualization
     Text: 0.76, "centre", 0.82, "half", "Front (1-3)"
     
     Paint rectangle: "{0.78, 0.88, 0.96}", 0.62, 0.90, 0.66, 0.74
-    Text: 0.76, "centre", 0.70, "half", "Wides (4-5)"
+    Text: 0.76, "centre", 0.70, "half", "Rear/Wide (5-9)"
     
     Paint rectangle: "{0.78, 0.88, 0.96}", 0.62, 0.90, 0.56, 0.64
-    Text: 0.76, "centre", 0.60, "half", "Surr (6-10)"
+    Text: 0.76, "centre", 0.60, "half", "Side (11-12)"
     
     Paint rectangle: "{0.82, 0.78, 0.60}", 0.62, 0.90, 0.44, 0.54
     Font size: 6
     Colour: "{0.52, 0.35, 0.12}"
-    Text: 0.76, "centre", 0.49, "half", "Upper (11-19)"
+    Text: 0.76, "centre", 0.49, "half", "Upper (13-21)"
     
     Paint rectangle: "{0.72, 0.88, 0.75}", 0.62, 0.90, 0.34, 0.42
     Colour: "{0.22, 0.52, 0.28}"
-    Text: 0.76, "centre", 0.38, "half", "Lower (20-22)"
+    Text: 0.76, "centre", 0.38, "half", "Bottom (22-24)"
     
     Paint rectangle: "{0.95, 0.82, 0.82}", 0.62, 0.90, 0.24, 0.32
     Colour: "{0.65, 0.18, 0.18}"
-    Text: 0.76, "centre", 0.28, "half", "LFE (23-24)"
+    Text: 0.76, "centre", 0.28, "half", "LFE (4, 10)"
 
     # --- Arrows
     Colour: "{0.75, 0.75, 0.75}"
@@ -867,73 +872,73 @@ if draw_visualization
     chDelay[2]   = 0.0
     chGainDb[3]  = 0.0
     chDelay[3]   = 0.0
-    chGainDb[4]  = fw_gain_dB
-    chDelay[4]   = 5.0
-    chGainDb[5]  = fw_gain_dB
-    chDelay[5]   = 5.0 + decorr_ms
-    chGainDb[6]  = amb_gain_dB
-    chDelay[6]   = side_delay
-    chGainDb[7]  = amb_gain_dB
-    chDelay[7]   = side_delay + decorr_ms
-    chGainDb[8]  = rear_gain_dB
-    chDelay[8]   = side_delay + 10
-    chGainDb[9]  = rear_gain_dB
-    chDelay[9]   = side_delay + 10 + decorr_ms
-    chGainDb[10] = rear_gain_dB - 3.0
-    chDelay[10]  = side_delay + 15
-    chGainDb[11] = upper_gain_dB
-    chDelay[11]  = upper_delay
-    chGainDb[12] = upper_gain_dB
-    chDelay[12]  = upper_delay + decorr_ms
-    chGainDb[13] = upper_gain_dB - 3.0
-    chDelay[13]  = upper_delay + 5
+    chGainDb[4]  = 0.0
+    chDelay[4]   = 0.0
+    chGainDb[5]  = rear_gain_dB
+    chDelay[5]   = side_delay + 10
+    chGainDb[6]  = rear_gain_dB
+    chDelay[6]   = side_delay + 10 + decorr_ms
+    chGainDb[7]  = fw_gain_dB
+    chDelay[7]   = 5.0
+    chGainDb[8]  = fw_gain_dB
+    chDelay[8]   = 5.0 + decorr_ms
+    chGainDb[9]  = rear_gain_dB - 3.0
+    chDelay[9]   = side_delay + 15
+    chGainDb[10] = 0.0
+    chDelay[10]  = 0.0
+    chGainDb[11] = amb_gain_dB
+    chDelay[11]  = side_delay
+    chGainDb[12] = amb_gain_dB
+    chDelay[12]  = side_delay + decorr_ms
+    chGainDb[13] = upper_gain_dB
+    chDelay[13]  = upper_delay
     chGainDb[14] = upper_gain_dB
-    chDelay[14]  = upper_delay + side_delay
-    chGainDb[15] = upper_gain_dB
-    chDelay[15]  = upper_delay + side_delay + decorr_ms
-    chGainDb[16] = upper_gain_dB
-    chDelay[16]  = upper_delay + side_delay + 10
+    chDelay[14]  = upper_delay + decorr_ms
+    chGainDb[15] = upper_gain_dB - 3.0
+    chDelay[15]  = upper_delay + 5
+    chGainDb[16] = upper_gain_dB - 3.0
+    chDelay[16]  = upper_delay + 25
     chGainDb[17] = upper_gain_dB
-    chDelay[17]  = upper_delay + side_delay + 10 + decorr_ms
-    chGainDb[18] = upper_gain_dB - 3.0
-    chDelay[18]  = upper_delay + side_delay + 15
-    chGainDb[19] = upper_gain_dB - 3.0
-    chDelay[19]  = upper_delay + 25
-    chGainDb[20] = lower_gain_dB
-    chDelay[20]  = 4.0
-    chGainDb[21] = lower_gain_dB
-    chDelay[21]  = 4.0 + decorr_ms
+    chDelay[17]  = upper_delay + side_delay + 10
+    chGainDb[18] = upper_gain_dB
+    chDelay[18]  = upper_delay + side_delay + 10 + decorr_ms
+    chGainDb[19] = upper_gain_dB
+    chDelay[19]  = upper_delay + side_delay
+    chGainDb[20] = upper_gain_dB
+    chDelay[20]  = upper_delay + side_delay + decorr_ms
+    chGainDb[21] = upper_gain_dB - 3.0
+    chDelay[21]  = upper_delay + side_delay + 15
     chGainDb[22] = lower_gain_dB - 3.0
     chDelay[22]  = 4.0 + decorr_ms / 2
-    chGainDb[23] = 0.0
-    chDelay[23]  = 0.0
-    chGainDb[24] = 0.0
-    chDelay[24]  = 0.0
+    chGainDb[23] = lower_gain_dB
+    chDelay[23]  = 4.0
+    chGainDb[24] = lower_gain_dB
+    chDelay[24]  = 4.0 + decorr_ms
 
     chName$[1]  = "FL"
     chName$[2]  = "FR"
     chName$[3]  = "FC"
-    chName$[4]  = "FWL"
-    chName$[5]  = "FWR"
-    chName$[6]  = "SiL"
-    chName$[7]  = "SiR"
-    chName$[8]  = "BL"
-    chName$[9]  = "BR"
-    chName$[10] = "BC"
-    chName$[11] = "TpFL"
-    chName$[12] = "TpFR"
-    chName$[13] = "TpFC"
-    chName$[14] = "TpSiL"
-    chName$[15] = "TpSiR"
-    chName$[16] = "TpBL"
-    chName$[17] = "TpBR"
-    chName$[18] = "TpBC"
-    chName$[19] = "TpC"
-    chName$[20] = "BFL"
-    chName$[21] = "BFR"
-    chName$[22] = "BFC"
-    chName$[23] = "LFE1"
-    chName$[24] = "LFE2"
+    chName$[4]  = "LFE1"
+    chName$[5]  = "BL"
+    chName$[6]  = "BR"
+    chName$[7]  = "FLc"
+    chName$[8]  = "FRc"
+    chName$[9]  = "BC"
+    chName$[10] = "LFE2"
+    chName$[11] = "SiL"
+    chName$[12] = "SiR"
+    chName$[13] = "TpFL"
+    chName$[14] = "TpFR"
+    chName$[15] = "TpFC"
+    chName$[16] = "TpC"
+    chName$[17] = "TpBL"
+    chName$[18] = "TpBR"
+    chName$[19] = "TpSiL"
+    chName$[20] = "TpSiR"
+    chName$[21] = "TpBC"
+    chName$[22] = "BtFC"
+    chName$[23] = "BtFL"
+    chName$[24] = "BtFR"
 
     Axes: 0, 1, 0.2, 24.8
     Paint rectangle: "{0.96, 0.96, 0.96}", 0, 1, 0.2, 24.8

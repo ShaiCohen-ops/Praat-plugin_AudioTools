@@ -4,6 +4,9 @@
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+# 2026-09 interoperability update: clarified ITU-R BS.2159 / AES 22.2 order; decoder DSP unchanged.
+# Level note: per-speaker amplitude depends on output geometry and directional-speaker count;
+# use the same speaker layout for round-trip level comparisons.
 #
 # Purpose
 #   Decode Full-3D ambiX B-format (ACN/SN3D), orders 1..5, to a selected
@@ -41,11 +44,12 @@ form Ambisonic Decoder
         option "12-channel horizontal ring"
         option "16-channel horizontal ring"
         option "7.1.4 (11 directional + silent LFE)"
-        option "22.2 (22 directional + 2 silent LFE)"
+        option "22.2 (ITU-R BS.2159; 22 directional + 2 silent LFE)"
     optionmenu Decode_method: 1
         option "Basic sampling / projection"
         option "Max-rE order weighting"
         option "In-phase order weighting"
+    comment Level note: projection distributes energy across the selected layout; individual speaker peaks are not layout-invariant.
     boolean Peak_protect_only 1
     boolean Draw_visualization 1
     boolean Play_result 1
@@ -273,7 +277,9 @@ elsif resolvedPreset = 14
 else
     presetName$ = "22.2"
     numSpeakers = 24
-    # NHK / Spat channel order, ambiX convention (+azimuth = left).
+    # ITU-R BS.2159 / AES 24-channel order, ambiX convention (+azimuth = left).
+    # This output order is for interchange. Spat5 virtualspeakers~ uses a different
+    # internal 22.2 channel order; use the AudioTools binaural adapter for Spat delivery.
     speakerAz[1] = 45
     speakerAz[2] = -45
     speakerAz[3] = 0
@@ -450,6 +456,9 @@ if horizontal
     appendInfoLine: "Geometry:   horizontal; Full-3D vertical modes cannot all be reconstructed."
 endif
 appendInfoLine: "Method:     ", methodName$, " sampling/projection"
+if speaker_preset = 1
+    appendInfoLine: "Level note: Auto selected ", presetName$, "; per-speaker peak is not directly comparable with a different source-bed layout."
+endif
 if resolvedPreset = 14 or resolvedPreset = 15
     appendInfoLine: "Note:       irregular 3D array; projection is approximate even when the geometry is full rank."
 endif
