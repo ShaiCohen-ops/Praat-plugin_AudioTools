@@ -1,12 +1,12 @@
 """
-spat_binaural_bridge.py  v1.4 -- Multichannel-to-Binaural via Spat5
+spat_binaural_bridge.py  v1.5.1 -- Multichannel-to-Binaural via Spat5
 
 One render per call: multichannel WAV + speaker-layout token ->
 spat5.virtualspeakers~ -> binaural WAV, followed by an output ANALYSIS
 that the Praat side uses to decide whether to accept the render or to
 re-render with more input attenuation.
 
-Called by IRCAM_Multichannel_to_Binaural.praat (v1.4) via runSubprocess:
+Called by IRCAM_Multichannel_to_Binaural.praat (v1.5.1) via runSubprocess:
 
     spat_binaural_bridge.py <in_wav> <out_wav> <log_file> <tools_dir>
                             <layout> <sofa> <itd> <room> <stats_file>
@@ -29,6 +29,17 @@ Stats file (key=value, one per line), e.g.
     overshoot=0                          1 = float peak > 1: NOT clipped,
                                              recoverable by scaling down
     correlation=0.43
+
+Changelog v1.5.1
+  - FIX: Spat5 virtualspeakers -f 22.2 requires 24 input channels. External
+    NHK/AES 24ch is therefore REORDERED, not reduced: the 22 directional
+    channels are placed first, followed by LFE1 and LFE2 at channels 23/24.
+    The empirical channel walk showed that inputs 1..22 map to the 22 HRTF
+    directions while inputs 23/24 are the non-directional LFE positions.
+
+Changelog v1.5.0
+  - Superseded adapter experiment: removed LFE slots 4 and 10, producing
+    22 channels. Spat5 rejects that file for -f 22.2; v1.5.1 corrects this.
 
 Changelog v1.4
   - NEW: peak / full-scale / flat-top-run / crest analysis. v1.3 checked
@@ -148,6 +159,77 @@ def read_wav(path):
         else:
             chans.append([x / scale for x in flat[c::nch]])
     return name, nch, sr, chans
+
+
+def write_wav(path, fmt_name, sr, chans):
+    """Write channels using the input WAV's numeric format."""
+    nch = len(chans)
+    n = len(chans[0]) if nch else 0
+    if fmt_name.startswith("float"):
+        tag, bits = 3, (32 if fmt_name == "float32" else 64)
+    else:
+        tag, bits = 1, int(fmt_name[3:])
+    width = bits // 8
+    if np is not None:
+        inter = np.vstack([np.asarray(c, dtype=np.float64) for c in chans]).T.reshape(-1)
+        if tag == 3:
+            data = inter.astype("<f4" if bits == 32 else "<f8").tobytes()
+        else:
+            full = float(2 ** (bits - 1))
+            q = np.clip(np.round(inter * full), -full, full - 1).astype(np.int64)
+            if bits == 16:
+                data = q.astype("<i2").tobytes()
+            elif bits == 32:
+                data = q.astype("<i4").tobytes()
+            elif bits == 24:
+                u = (q & 0xFFFFFF).astype(np.uint32)
+                b = np.empty((u.size, 3), dtype=np.uint8)
+                b[:, 0] = u & 0xFF
+                b[:, 1] = (u >> 8) & 0xFF
+                b[:, 2] = (u >> 16) & 0xFF
+                data = b.tobytes()
+            else:
+                raise ValueError("unsupported PCM bit depth %d" % bits)
+    else:
+        parts = []
+        full = float(2 ** (bits - 1))
+        for i in range(n):
+            for c in range(nch):
+                v = chans[c][i]
+                if tag == 3:
+                    parts.append(struct.pack("<f" if bits == 32 else "<d", v))
+                else:
+                    q = int(max(-full, min(full - 1, round(v * full))))
+                    parts.append(q.to_bytes(width, "little", signed=True))
+        data = b"".join(parts)
+    ba = nch * width
+    hdr = (b"RIFF" + struct.pack("<I", 36 + len(data)) + b"WAVE" + b"fmt "
+           + struct.pack("<IHHIIHH", 16, tag, nch, sr, sr * ba, ba, bits)
+           + b"data" + struct.pack("<I", len(data)))
+    with open(path, "wb") as f:
+        f.write(hdr + data)
+
+
+def prepare_virtualspeaker_input(in_wav, out_wav, layout, log_file):
+    """Adapt external channel order to the 24-channel order expected by Spat5."""
+    if layout.strip() != "22.2":
+        return in_wav, None
+    fmt, nch, sr, chans = read_wav(in_wav)
+    if nch != 24:
+        raise ValueError("Spat5 layout 22.2 requires 24 input channels; got %d" % nch)
+    # External NHK/AES order:
+    #   1 FL, 2 FR, 3 FC, 4 LFE1, 5 BL, 6 BR, 7 FLc, 8 FRc,
+    #   9 BC, 10 LFE2, 11 SiL, 12 SiR, 13..24 remaining directional feeds.
+    # Empirical Spat5 order:
+    #   22 directional feeds contiguously, then LFE1, LFE2 at positions 23,24.
+    order = [0, 1, 2, 4, 5, 6, 7, 8, 10, 11, 12, 13, 14, 15, 16, 17,
+             18, 19, 20, 21, 22, 23, 3, 9]
+    temp = os.path.splitext(out_wav)[0] + "_22spat_input.wav"
+    if os.path.isfile(temp):
+        os.remove(temp)
+    write_wav(temp, fmt, sr, [chans[i] for i in order])
+    log(log_file, "22.2 adapter: NHK/AES 24ch -> Spat 24ch; reordered to 22 directional feeds + LFE1/LFE2 at channels 23/24.\n")
+    return temp, temp
 
 
 FULL_SCALE = {  # the top positive code of each PCM format, as a fraction
@@ -299,7 +381,7 @@ def main():
     virtualspeakers = os.path.join(tools_path, f"spat5.virtualspeakers~{ext}")
 
     with open(log_file, "w") as f:
-        f.write("=== Spat5 Binaural Bridge v1.4 ===\n")
+        f.write("=== Spat5 Binaural Bridge v1.5.0 ===\n")
         f.write(f"Input:   {in_wav}\nOutput:  {out_wav}\nLayout:  {layout}\n")
         f.write(f"SOFA:    {sofa}\nITD:     {itd}\nRoom:    {room}\n")
         f.write(f"binary:  {virtualspeakers}\nsupport: {support_path}\n")
@@ -317,9 +399,16 @@ def main():
     if sys.platform == "win32":
         env["PATH"] = support_path + os.pathsep + env.get("PATH", "")
 
-    run_cmd([virtualspeakers, "-i", in_wav, "-f", layout, "-o", out_wav,
-             "-s", sofa, "-I", itd, "-R", room], log_file, env)
-    analyse_output(out_wav, log_file, stats_file)
+    adapted_input = in_wav
+    temp_input = None
+    try:
+        adapted_input, temp_input = prepare_virtualspeaker_input(in_wav, out_wav, layout, log_file)
+        run_cmd([virtualspeakers, "-i", adapted_input, "-f", layout, "-o", out_wav,
+                 "-s", sofa, "-I", itd, "-R", room], log_file, env)
+        analyse_output(out_wav, log_file, stats_file)
+    finally:
+        if temp_input and os.path.isfile(temp_input):
+            os.remove(temp_input)
 
 
 if __name__ == "__main__":

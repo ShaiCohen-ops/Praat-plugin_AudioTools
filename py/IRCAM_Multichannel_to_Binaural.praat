@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.4.1 (2026) - Safe Binaural Render
+# Version: 1.5.0 (2026) - Safe Binaural Render
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -32,7 +32,7 @@
 #     8 ch  7.1       L R C LFE Ls Rs Lss Rss
 #    10 ch  7.1.2     7.1 + TpFL TpFR
 #    12 ch  7.1.4     7.1 + TpFL TpFR TpBL TpBR
-#    24 ch  22.2      Spat5 22.2 order (NHK)
+#    24 ch  22.2      NHK/AES order; bridge reorders to 22 directional + LFE1/LFE2 at 23/24
 #
 #   CHANNEL-ORDER TEST: tick "Create channel-order test Sound" to get a
 #   Sound for the chosen layout in which only one channel sounds at a time
@@ -78,6 +78,10 @@
 #               attenuation, render peak, normalisation, net gain).
 #   v1.3 - robust 3-candidate Python detection; macOS/Linux; platform info
 #   v1.2 - tools folder in the form; Room_preset fix; log kept on failure
+#   v1.5.1 - FIX: 22.2 external 24-channel NHK/AES input is adapted before
+#            virtualspeakers: external LFE1/LFE2 are moved from slots 4/10 to
+#            slots 23/24, leaving the 22 directional feeds contiguous first.
+#            Spat5 requires all 24 channels for its 22.2 preset.
 # ============================================================
 
 # ---- INPUT CHECK ----
@@ -97,7 +101,7 @@ helper_py$      = defaultDirectory$ + "/spat_binaural_bridge.py"
 working_folder$ = defaultDirectory$ + "/"
 
 # ---- FORM ----
-form Multichannel to Binaural v1.4.1
+form Multichannel to Binaural v1.5.1
     comment Folder containing spat5.virtualspeakers~
     sentence Tools_folder C:/Users/User/Documents/Max 9/Packages/spat5-x64/media/tools/
     optionmenu Layout_preset: 1
@@ -194,7 +198,7 @@ tokOrder$[6] = "Spat5 7.0 order"
 tokOrder$[7] = "L R C LFE Ls Rs Lss Rss"
 tokOrder$[8] = "L R C LFE Ls Rs Lss Rss TpFL TpFR"
 tokOrder$[9] = "L R C LFE Ls Rs Lss Rss TpFL TpFR TpBL TpBR"
-tokOrder$[10] = "Spat5 22.2 order (NHK)"
+tokOrder$[10] = "NHK/AES 24ch; LFE1=4, LFE2=10 (reordered to Spat slots 23/24)"
 
 if layout_preset = 1
     layoutIdx = 0
@@ -237,11 +241,13 @@ if tokN[layoutIdx] <> numCh
         ... + string$(numCh) + ". Spat5 would refuse it or map the channels wrongly." + newline$
         ... + "Choose the matching layout (or Auto)."
 endif
-hasLFE = layoutToken$ = "5.1" or layoutToken$ = "7.1" or layoutToken$ = "7.1.2" or layoutToken$ = "7.1.4"
+hasLFE = layoutToken$ = "5.1" or layoutToken$ = "7.1" or layoutToken$ = "7.1.2" or layoutToken$ = "7.1.4" or layoutToken$ = "22.2"
 if mute_LFE and hasLFE = 0
     appendInfoLine: "Note: Mute_LFE ignored - layout " + layoutToken$ + " has no LFE at a known position."
 endif
-muteLFE = mute_LFE and hasLFE
+# For 22.2 the bridge reorders LFE1/LFE2 to channels 23/24 before virtualspeakers.
+# muteLFE here is only the Praat-side zeroing used by the legacy layouts.
+muteLFE = mute_LFE and hasLFE and layoutToken$ <> "22.2"
 
 # ---- GUARDS ----
 if not fileReadable(helper_py$)
@@ -266,7 +272,7 @@ if srcPeak <= 0
     exitScript: "The Sound is silent (peak 0)."
 endif
 srcPeakDb = 20 * log10 (srcPeak)
-nActive = numCh - muteLFE
+nActive = if layoutToken$ = "22.2" then 22 else numCh - muteLFE fi
 # largest gain that keeps the exported 16-bit WAV at or below -1 dBFS
 exportSafeDb = -1 - srcPeakDb
 if headroom = 1
@@ -303,11 +309,13 @@ elsif macintosh
 else
     platform$ = "Linux"
 endif
-writeInfoLine:  "=== Multichannel to Binaural v1.4.1 (safe render) ==="
+writeInfoLine:  "=== Multichannel to Binaural v1.5.1 (safe render) ==="
 appendInfoLine: "Platform: ", platform$
 appendInfoLine: "Source:   ", sourceName$, "  (", numCh, " ch  /  ", fixed$(duration, 2), " s  @  ", sr, " Hz)  peak ", fixed$(srcPeakDb, 1), " dBFS"
 appendInfoLine: "Layout:   ", layoutToken$, "  assumed order: ", tokOrder$[layoutIdx]
-if muteLFE
+if layoutToken$ = "22.2"
+    appendInfoLine: "LFE:      NHK/AES channels 4/10 reordered to Spat channels 23/24 (24ch retained)"
+elsif muteLFE
     appendInfoLine: "LFE:      channel 4 muted"
 endif
 appendInfoLine: "HRTF:     ", actualSOFA$, "  ITD=", fixed$(itd_percent, 1), "%   Room: ", roomName$
@@ -524,7 +532,7 @@ if draw_visualization
     Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##Multichannel to Binaural v1.4.1##"
+    Text: 0.5, "centre", 0.68, "half", "##Multichannel to Binaural v1.5.1##"
     Font size: 7
     Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
