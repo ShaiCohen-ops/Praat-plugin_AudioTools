@@ -3,9 +3,11 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3.1 (2026) - grid validation, self-contained export,
+# Version: 0.4.0 (2026) - HOA1-5 support, grid validation, self-contained export
+# v0.4.0 (2026): EXTENDED ORDER SUPPORT - accepts 4/9/16/25/36-channel
+#                  Full-3D ACN/SN3D stems (orders 1..5). Summing DSP is unchanged.
+# v0.3.1 (2026): grid validation, self-contained export, explicit gain mapping, no direct playback
 # v0.3 (2026): SPATIAL VISUALIZATION STANDARDIZATION ONLY - label rails, compact summary, typography; DSP unchanged.
-#                        explicit gain mapping, no direct playback
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -15,13 +17,13 @@
 #   single combined bed, the way independently-encoded point
 #   sources correctly combine in a linear ambisonic soundfield.
 #
-#   Supported orders: 1st (4ch) / 2nd (9ch) / 3rd (16ch) only.
-#   This script does NOT support or imply 4th/5th order.
+#   Supported orders: 1st (4ch) / 2nd (9ch) / 3rd (16ch) /
+#   4th (25ch) / 5th (36ch).
 #
 #   ASSUMPTION (cannot be verified from the samples themselves):
-#   every input is Full-3D ACN/SN3D B-format. A 16-channel Sound
-#   could equally be ACN/N3D, FuMa-derived, or an unrelated
-#   16-channel recording - channel count alone does not confirm
+#   every input is Full-3D ACN/SN3D B-format. A 4/9/16/25/36-channel
+#   Sound could equally use another normalisation/convention, or be an
+#   unrelated multichannel recording - channel count alone does not confirm
 #   the convention. Encode all stems with the same library
 #   (Higher-Order Ambisonic Encoder) to keep this assumption safe.
 #
@@ -88,7 +90,7 @@ refXmin = 0
 refSamples = 0
 mismatch$ = ""
 
-writeInfoLine: "=== Ambisonic Bed Mixer v0.3 ==="
+writeInfoLine: "=== Ambisonic Bed Mixer v0.4.0 ==="
 appendInfoLine: "Assumption: every selected input is Full-3D ACN/SN3D B-format."
 appendInfoLine: "(Channel count alone cannot confirm this - verify at encode time.)"
 appendInfoLine: ""
@@ -140,14 +142,23 @@ if mismatch$ <> ""
 endif
 
 if refCh = 4
+    orderNumber = 1
     orderName$ = "1st"
 elsif refCh = 9
+    orderNumber = 2
     orderName$ = "2nd"
 elsif refCh = 16
+    orderNumber = 3
     orderName$ = "3rd"
+elsif refCh = 25
+    orderNumber = 4
+    orderName$ = "4th"
+elsif refCh = 36
+    orderNumber = 5
+    orderName$ = "5th"
 else
     exitScript: "Selected sounds have " + string$(refCh)
-        ... + " channels - not a supported ambisonic channel count (this script supports 1st/2nd/3rd order: 4, 9, or 16 ch)."
+        ... + " channels - not a supported Full-3D HOA channel count (supported orders 1..5: 4, 9, 16, 25, or 36 ch)."
 endif
 
 refDur = refSamples / refSR
@@ -336,11 +347,11 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.65, "half", "##Ambisonic Bed Mixer v0.3.1##"
+    Text: 0.5, "centre", 0.65, "half", "##Ambisonic Bed Mixer v0.4.0##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
     Text: 0.5, "centre", -0.25, "half",
-        ... resultName$ + "  |  " + orderName$ + " order  |  " + string$(numSounds) + " stems"
+        ... resultName$ + "  |  HOA" + string$(orderNumber) + " (" + orderName$ + ")  |  " + string$(numSounds) + " stems"
 
     # Stem gain bars - dynamic axis, supports negative gains
     gMin = gain#[1]
@@ -423,7 +434,7 @@ if draw_visualization
     Font size: 6
     Colour: "{0.30, 0.30, 0.30}"
     Text: 0.02, "left", 0.64, "half",
-        ... string$(numSounds) + " stems  |  " + orderName$ + " order ("
+        ... string$(numSounds) + " stems  |  HOA" + string$(orderNumber) + " / " + orderName$ + " order ("
         ... + string$(refCh) + " ch)  |  " + fixed$(refDur, 2) + " s  |  " + string$(refSR) + " Hz"
     Text: 0.02, "left", 0.28, "half",
         ... "Peak pre-protect: " + fixed$(peakVal, 3)
@@ -444,7 +455,7 @@ selectObject: resultID
 appendInfoLine: ""
 appendInfoLine: "=== COMPLETE ==="
 appendInfoLine: "Result: ", resultName$
-appendInfoLine: "Order: ", orderName$, " (", refCh, " channels, ACN, assumed SN3D)"
+appendInfoLine: "Order: HOA", orderNumber, " / ", orderName$, " (", refCh, " channels, ACN, assumed SN3D)"
 appendInfoLine: "Duration: ", fixed$(refDur, 3), " s  |  ", refSR, " Hz"
 appendInfoLine: "Time: ", fixed$(elapsed, 1), " s"
 appendInfoLine: ""
