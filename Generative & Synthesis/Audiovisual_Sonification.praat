@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 5.1.1 reviewed (2026)
+# Version: 5.2 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -36,6 +36,29 @@
 #   • Build {r,g,b} colour strings via string$() concatenation,
 #     never via '.var' interpolation.
 #
+#
+# v5.2:
+#   - SYNC: frames are scheduled by ABSOLUTE time. Every stopwatch reading is
+#     summed into the elapsed time since playback started, and each frame
+#     draws the state for the CURRENT audio time: late frames are skipped
+#     (counted as dropped), early ones wait for the next frame boundary.
+#     v5.1 slept "80 ms - render time" per frame, so sleep overshoot and
+#     loop overhead accumulated (45 ms per 20 s measured on Linux; timer
+#     granularity makes it larger on Windows) and every late frame shifted
+#     all later frames for good.
+#   - Visual delay (ms): delays the visuals to match the audio device's
+#     output latency. Adjust live with - / + (10 ms steps).
+#   - Esc stops the animation (demoPeekInput, non-blocking). The sound keeps
+#     playing to its end: Praat has no script command to stop an
+#     asynchronous Play.
+#   - STAGE: all geometry lives on a square stage (0-100 x 0-100 world
+#     units) mapped to a physically square region via Window aspect
+#     (width/height of the Demo window; Praat cannot report it). Calibrate
+#     live with [ and ] until the faint stage frame is square; the value is
+#     kept for the next run. v5.1 drew positions in stretched window units
+#     but circles in fixed millimetres, so figures distorted with the window
+#     shape and circles did not scale with it; circles are now in stage
+#     units too (Poly circles now match the polygons' size).
 #
 # v5.1 reviewed:
 #   - Replaced 80-ms chunk-by-chunk Play with one continuous `asynchronous Play`
@@ -73,6 +96,8 @@ master_volume     = 0.85
 show_trails       = 1
 randomize_initial_phase = 1
 random_seed        = 0
+window_aspect      = 1.0
+visual_delay       = 0
 
 # ============================================================
 # FORM (persistent — re-opens after each run)
@@ -133,6 +158,9 @@ beginPause: "AudioTools v5.1 — Select Mode & Configure"
     real: "Total duration", total_duration
     real: "Master volume", master_volume
     boolean: "Show trails (Poly mode)", show_trails
+    comment: "════  DISPLAY (adjust live: [ ] aspect,  - + delay,  Esc stop)  ════"
+    real: "Window aspect (width/height)", window_aspect
+    real: "Visual delay (ms)", visual_delay
     boolean: "Randomize initial phase", randomize_initial_phase
     integer: "Random seed (0 = unpredictable)", random_seed
 
@@ -161,6 +189,8 @@ endif
 if master_volume > 0.98
     master_volume = 0.98
 endif
+window_aspect = max (0.25, min (4, window_aspect))
+visual_delay = max (0, min (1000, visual_delay))
 if random_seed < 0
     exitScript: "Random seed must be 0 (unpredictable) or a positive integer."
 endif
@@ -213,9 +243,8 @@ if mode = 1
     # AV PHASE 1: GENERATE MASTER AUDIO (2-channel stereo)
     # ----------------------------------------------------------
     demo Erase all
-    demo Select inner viewport: 0, 100, 0, 100
-    demo Axes: 0, 100, 0, 100
-    demo Paint rectangle: "Black", 0, 100, 0, 100
+    @stage
+    @blank
     demo Font size: 14
     demo Colour: "White"
     demo Text: 50, "centre", 50, "half", "Synthesizing and Routing Audio..."
@@ -269,7 +298,7 @@ if mode = 1
     # ----------------------------------------------------------
     # AV PHASE 2: PRE-COMPUTE ANALYSIS DATA
     # ----------------------------------------------------------
-    demo Paint rectangle: "Black", 0, 100, 0, 100
+    @blank
     demo Colour: "White"
     demo Text: 50, "centre", 60, "half", "Pre-computing signal analysis..."
     demo Font size: 10
@@ -314,7 +343,7 @@ if mode = 1
     pitchMin = 1e30
     pitchMax = 0
     if preset = 2
-        demo Paint rectangle: "Black", 0, 100, 0, 100
+        @blank
         demo Colour: "White"
         demo Text: 50, "centre", 60, "half", "Running pitch tracker..."
         demoShow()
@@ -373,10 +402,10 @@ if mode = 1
     # ----------------------------------------------------------
     selectObject: masterSound
     asynchronous Play
-    lateFrames = 0
-
-    for frame from 0 to total_frames - 1
-        stopwatch
+    @beginSchedule
+    while running
+        @nextFrame
+        if drawNow
         t        = frame * frame_step
         t_end    = t + frame_step
         t_offset = t + time_offset
@@ -388,16 +417,16 @@ if mode = 1
             pitch_val = 200
         endif
 
-        demo Paint rectangle: "Black", 0, 100, 0, 100
+        @blank
 
         if preset = 1
             .rmsNorm = min(1, rms_val / rmsMax)
-            .radius = 6 + 30 * .rmsNorm
+            .radius = 3 + 22 * .rmsNorm
             .color$ = "White"
             if .rmsNorm > 0.70
                 .color$ = "Red"
             endif
-            demo Paint circle (mm): .color$, 50, 50, .radius
+            demo Paint circle: .color$, 50, 50, .radius
 
         elsif preset = 2
             .pitchNorm = (pitch_val - pitchMin) / (pitchMax - pitchMin)
@@ -405,7 +434,7 @@ if mode = 1
             .y_pos = 15 + 70 * .pitchNorm
             demo Colour: "{0.2, 0.2, 0.2}"
             demo Draw line: 0, .y_pos, 100, .y_pos
-            demo Paint circle (mm): "Cyan", 50, .y_pos, 5
+            demo Paint circle: "Cyan", 50, .y_pos, 2.5
 
         elsif preset = 3
             .mod = 0.5 - 0.5 * cos(2*pi * 0.5 * t_offset)
@@ -439,7 +468,7 @@ if mode = 1
                 demo Draw line: 50, 50, pos_x[.v], pos_y[.v]
             endfor
             for .v from 1 to 5
-                demo Paint circle (mm): "Cyan", pos_x[.v], pos_y[.v], 3
+                demo Paint circle: "Cyan", pos_x[.v], pos_y[.v], 1.6
             endfor
 
         elsif preset = 5
@@ -455,7 +484,7 @@ if mode = 1
                 if .dot_size < 0.05
                     .dot_size = 0.05
                 endif
-                demo Paint circle (mm): "{0.0, 1.0, 0.5}", .x, .y, .dot_size
+                demo Paint circle: "{0.0, 1.0, 0.5}", .x, .y, .dot_size * 0.5
             endfor
 
         elsif preset = 6
@@ -493,14 +522,14 @@ if mode = 1
                 demo Draw line: liss_x[.idx1], liss_y[.idx1], liss_x[.idx2], liss_y[.idx2]
             endfor
             .midIdx = frame * liss_points + round(liss_points / 2)
-            demo Paint circle (mm): "White", liss_x[.midIdx], liss_y[.midIdx], 3.5
+            demo Paint circle: "White", liss_x[.midIdx], liss_y[.midIdx], 1.8
 
         endif
 
         ; HUD: report the actual control / measurement shown.
         demo Font size: 10
         demo Colour: "{0.6, 0.6, 0.6}"
-        demo Text: 2, "left", 98, "half", title$
+        demo Text: stX0 + 2, "left", stY1 - 2, "half", title$
         .hud$ = "t = " + fixed$(t, 2) + " s"
         if preset = 1
             .hud$ = .hud$ + "   |   measured RMS = " + fixed$(rms_val, 3)
@@ -517,27 +546,21 @@ if mode = 1
         elsif preset = 7
             .hud$ = .hud$ + "   |   path = measured L/R samples"
         endif
-        demo Text: 2, "left", 94, "half", .hud$
+        demo Text: stX0 + 2, "left", stY1 - 6, "half", .hud$
+        @hudKeys
         demoShow()
-
-        .renderTime = stopwatch
-        .frameBudget = min(frame_step, totalDur - t)
-        .sleepTime = .frameBudget - .renderTime
-        if .sleepTime > 0
-            sleep(.sleepTime)
-        else
-            lateFrames = lateFrames + 1
+        @endFrame
         endif
-    endfor
+    endwhile
 
     removeObject: masterSound
-    demo Paint rectangle: "Black", 0, 100, 0, 100
+    @blank
     demo Font size: 14
     demo Colour: "White"
-    demo Text: 50, "centre", 54, "half", "AV run complete."
+    demo Text: 50, "centre", 54, "half", if stoppedEarly then "Visuals stopped (Esc) - the sound plays to its end." else "AV run complete." fi
     demo Font size: 8
     demo Colour: "{0.55, 0.55, 0.55}"
-    demo Text: 50, "centre", 45, "half", "late visual frames: " + string$(lateFrames)
+    demo Text: 50, "centre", 45, "half", "frames drawn: " + string$(framesDrawn) + "   dropped to stay in sync: " + string$(droppedFrames)
     demoShow()
 
 # ============================================================
@@ -578,9 +601,8 @@ elsif mode = 2
     # POLY PHASE 1: SYNTHESISE AUDIO
     # ----------------------------------------------------------
     demo Erase all
-    demo Select inner viewport: 0, 100, 0, 100
-    demo Axes: 0, 100, 0, 100
-    demo Paint rectangle: "Black", 0, 100, 0, 100
+    @stage
+    @blank
     demo Font size: 14
     demo Colour: "White"
     demo Text: 50, "centre", 55, "half", "Synthesising voices..."
@@ -660,14 +682,14 @@ elsif mode = 2
     # ----------------------------------------------------------
     selectObject: masterSound
     asynchronous Play
-    lateFrames = 0
-
-    for frame from 0 to total_frames - 1
-        stopwatch
+    @beginSchedule
+    while running
+        @nextFrame
+        if drawNow
         t     = frame * frame_step
         t_off = t + time_offset
 
-        demo Paint rectangle: "Black", 0, 100, 0, 100
+        @blank
 
         for v from 1 to n_voices
             vphase = voice_phase[v]
@@ -786,7 +808,7 @@ elsif mode = 2
                     if tr_sz < 0.15
                         tr_sz = 0.15
                     endif
-                    demo Paint circle (mm): tr_col$, trail_x'v'[.h], trail_y'v'[.h], tr_sz
+                    demo Paint circle: tr_col$, trail_x'v'[.h], trail_y'v'[.h], tr_sz * 0.5
                     .h = .h - 1
                 endwhile
             endif
@@ -799,7 +821,7 @@ elsif mode = 2
             demo Colour: col_str$
 
             if shape = 1
-                demo Paint circle (mm): col_str$, cx, cy, shape_r
+                demo Paint circle: col_str$, cx, cy, shape_r
 
             elsif shape = 2
                 for .s from 0 to 2
@@ -850,7 +872,7 @@ elsif mode = 2
                 demo Paint rectangle: col_str$, cx - shape_r*0.7, cx + shape_r*0.7, cy - shape_r*0.7, cy + shape_r*0.7
 
             elsif shape = 8
-                demo Paint circle (mm): col_str$, cx, cy, 2.5
+                demo Paint circle: col_str$, cx, cy, 1.3
 
             elsif shape = 9
                 demo Line width: 2
@@ -863,31 +885,134 @@ elsif mode = 2
         ; HUD
         demo Font size: 9
         demo Colour: "{0.45, 0.45, 0.45}"
-        demo Text: 2, "left", 98, "half", "Poly Composition  |  voices: " + string$(n_voices) + "  |  visual X -> stereo pan"
-        demo Text: 2, "left", 94, "half", "t = " + fixed$(t, 2) + " s"
+        demo Text: stX0 + 2, "left", stY1 - 2, "half", "Poly Composition  |  voices: " + string$(n_voices) + "  |  visual X -> stereo pan"
+        demo Text: stX0 + 2, "left", stY1 - 6, "half", "t = " + fixed$(t, 2) + " s"
+        @hudKeys
         demoShow()
-
-        .renderTime = stopwatch
-        .frameBudget = min(frame_step, totalDur - t)
-        .sleepTime = .frameBudget - .renderTime
-        if .sleepTime > 0
-            sleep(.sleepTime)
-        else
-            lateFrames = lateFrames + 1
+        @endFrame
         endif
-
-    endfor   ; end animation loop
+    endwhile   ; end animation loop
 
     removeObject: masterSound
-    demo Paint rectangle: "Black", 0, 100, 0, 100
+    @blank
     demo Font size: 14
     demo Colour: "White"
-    demo Text: 50, "centre", 54, "half", "Composition complete."
+    demo Text: 50, "centre", 54, "half", if stoppedEarly then "Visuals stopped (Esc) - the sound plays to its end." else "Composition complete." fi
     demo Font size: 8
     demo Colour: "{0.55, 0.55, 0.55}"
-    demo Text: 50, "centre", 45, "half", "late visual frames: " + string$(lateFrames)
+    demo Text: 50, "centre", 45, "half", "frames drawn: " + string$(framesDrawn) + "   dropped to stay in sync: " + string$(droppedFrames)
     demoShow()
 
 endif   ; end mode branch
 
 until 0
+
+# ============================================================
+# DISPLAY PROCEDURES (v5.2)
+# ============================================================
+
+# Square stage: world 0..100 x 0..100 is physically square when
+# window_aspect = Demo window width / height; the rest is black margin.
+procedure stage
+    demo Select inner viewport: 0, 100, 0, 100
+    if window_aspect >= 1
+        stX0 = 50 - 50 * window_aspect
+        stX1 = 50 + 50 * window_aspect
+        stY0 = 0
+        stY1 = 100
+    else
+        stX0 = 0
+        stX1 = 100
+        stY0 = 50 - 50 / window_aspect
+        stY1 = 50 + 50 / window_aspect
+    endif
+    demo Axes: stX0, stX1, stY0, stY1
+endproc
+
+procedure blank
+    demo Paint rectangle: "Black", stX0, stX1, stY0, stY1
+    # faint stage frame: calibrate [ ] until it is square
+    demo Colour: "{0.13, 0.13, 0.15}"
+    demo Draw rectangle: 0, 100, 0, 100
+endproc
+
+# ---- absolute-time frame scheduling ----
+# Every stopwatch reading is added to elapsed (a read resets the stopwatch,
+# so the running sum is the wall time since playback started). Each frame
+# draws the state at the current audio time; late frames are skipped.
+procedure beginSchedule
+    @stage
+    running = 1
+    lastFrame = -1
+    droppedFrames = 0
+    framesDrawn = 0
+    stoppedEarly = 0
+    stopRequested = 0
+    elapsed = 0
+    stopwatch
+endproc
+
+procedure nextFrame
+    drawNow = 0
+    elapsed = elapsed + stopwatch
+    @pollKeys
+    tAudio = elapsed - visual_delay / 1000
+    if stopRequested
+        running = 0
+        stoppedEarly = 1
+    elsif tAudio >= totalDur
+        running = 0
+    elsif tAudio < 0
+        sleep (min (0.01, -tAudio))
+    else
+        .f = min (total_frames - 1, floor (tAudio / frame_step))
+        if .f <= lastFrame
+            sleep (0.002)
+        else
+            if .f > lastFrame + 1
+                droppedFrames = droppedFrames + (.f - lastFrame - 1)
+            endif
+            frame = .f
+            drawNow = 1
+        endif
+    endif
+endproc
+
+procedure endFrame
+    lastFrame = frame
+    framesDrawn = framesDrawn + 1
+    elapsed = elapsed + stopwatch
+    .wait = (frame + 1) * frame_step + visual_delay / 1000 - elapsed
+    if .wait > 0
+        sleep (.wait)
+    endif
+endproc
+
+# non-blocking keys during the animation
+procedure pollKeys
+    if demoPeekInput ()
+        if demoKeyPressed ()
+            .k$ = demoKey$ ()
+            if .k$ = unicode$ (27) or .k$ = unicode$ (65307)
+                stopRequested = 1
+            elsif .k$ = "["
+                window_aspect = max (0.25, window_aspect / 1.05)
+                @stage
+            elsif .k$ = "]"
+                window_aspect = min (4, window_aspect * 1.05)
+                @stage
+            elsif .k$ = "-"
+                visual_delay = max (0, visual_delay - 10)
+            elsif .k$ = "+" or .k$ = "="
+                visual_delay = min (1000, visual_delay + 10)
+            endif
+        endif
+    endif
+endproc
+
+procedure hudKeys
+    demo Font size: 8
+    demo Colour: "{0.35, 0.35, 0.38}"
+    demo Text: stX0 + 2, "left", stY0 + 3, "half", "Esc stop   [ ] aspect " + fixed$ (window_aspect, 2)
+        ... + "   - + delay " + fixed$ (visual_delay, 0) + " ms   dropped " + string$ (droppedFrames)
+endproc
