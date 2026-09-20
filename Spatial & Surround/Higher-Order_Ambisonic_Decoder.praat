@@ -24,12 +24,7 @@ form Ambisonic Decoder
     optionmenu Input_mode: 1
         option "Combined ambiX Sound (one multichannel object)"
         option "Separate mono ACN channels (legacy, selected in ACN order)"
-    optionmenu Ambisonic_order: 1
-        option "1st order (4 channels)"
-        option "2nd order (9 channels)"
-        option "3rd order (16 channels)"
-        option "4th order (25 channels)"
-        option "5th order (36 channels)"
+    comment Ambisonic order is AUTO-DETECTED from the input: 4/9/16/25/36 components.
     comment ─────────────────────────────────────────
     optionmenu Speaker_preset: 1
         option "Auto full-rank if available"
@@ -92,11 +87,21 @@ if input_mode = 1
         channelName$[ch] = "ACN" + string$ (ch - 1)
     endfor
     fromCombined = 1
+    orderSource$ = "auto-detected from combined channel count"
 else
-    order = ambisonic_order
-    expectedChannels = (order + 1) ^ 2
-    if numberOfSelected ("Sound") <> expectedChannels
-        exitScript: "Separate-channel mode requires exactly " + string$ (expectedChannels) + " mono Sounds selected in ACN order."
+    expectedChannels = numberOfSelected ("Sound")
+    if expectedChannels = 4
+        order = 1
+    elsif expectedChannels = 9
+        order = 2
+    elsif expectedChannels = 16
+        order = 3
+    elsif expectedChannels = 25
+        order = 4
+    elsif expectedChannels = 36
+        order = 5
+    else
+        exitScript: "Separate-channel mode: select exactly 4, 9, 16, 25 or 36 mono Sounds in ACN order; got " + string$ (expectedChannels) + "."
     endif
     inputName$ = "separate_ACN_channels"
     for ch from 1 to expectedChannels
@@ -121,6 +126,7 @@ else
         endif
     endfor
     fromCombined = 0
+    orderSource$ = "auto-detected from selected mono ACN channel count"
 endif
 
 if order = 1
@@ -432,6 +438,7 @@ endfor
 writeInfoLine: "=== Higher-Order Ambisonic Decoder ==="
 appendInfoLine: "Input:      ", inputName$
 appendInfoLine: "Format:     ", orderName$, " order, ", expectedChannels, " ch ACN/SN3D"
+appendInfoLine: "Order:      ", orderSource$
 appendInfoLine: "Layout:     ", presetName$, "  (", numSpeakers, " output ch; ", numDirectional, " directional; ", numLFE, " LFE)"
 if fullRank
     rankInfo$ = "  (full rank)"

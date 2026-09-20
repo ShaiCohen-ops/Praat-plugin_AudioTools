@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.0 (2026) - interactive companion to Spatial_Trajectory_Painter v0.7.5
+# Version: 1.1 (2026) - interactive HOA1-5 trajectory authoring
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -26,9 +26,10 @@
 #   through the front (340 deg). A full turn therefore needs points less
 #   than 180 deg (Ring: N/2 channels) apart. The map shows the path taken.
 #
-#   The DSP is v0.7.5's, copied verbatim (frame sampling, equal-power or
+#   The DSP uses frame sampling, equal-power speaker gains or full-3D
 #   ACN/SN3D gain tiers, Formula multiply, shared peak protection, stacking,
-#   computeACN) and fed RealTiers built from the drawn points in its
+#   and a general real-spherical-harmonic encoder supporting HOA orders 1-5.
+#   It is fed RealTiers built from the drawn points in its
 #   Absolute mode (speaker: Base 1, Step 1; ambisonic: degrees). A commit
 #   here equals v0.7.5 Phase 2 on the same tiers.
 #
@@ -45,10 +46,16 @@
 #                 Ring: channel 1 at the front, increasing clockwise
 #                 (an assumption - the array's real layout is yours)
 #
-# OUTPUT (Enter): the multichannel Sound (Output_name), the control
-#   RealTier(s) in v0.7.5's names (movement / movement_azimuth +
-#   movement_elevation) if kept, the Info report, and v0.7.5's Picture-
-#   window figure if requested.
+# OUTPUT (Enter): the multichannel Sound (Output_name), the Info report,
+#   and the Picture-window figure if requested. The temporary control
+#   RealTier(s) are always removed after rendering.
+#
+# Changelog v1.1:
+#   - Ambisonic trajectory mode extended from HOA1-3 to HOA1-5: 4/9/16/25/36
+#     channel ambiX ACN/SN3D output.
+#   - Replaced the hard-coded ACN0-15 formulas with the same general SN3D
+#     real-spherical-harmonic engine used by the upgraded HOA Encoder.
+#   - Visualization density adjusted for 25/36-channel Ambisonic fields.
 #
 # Changelog v1.0:
 #   - Demo-window front end for v0.7.5: lanes in real units, shortest-way
@@ -59,7 +66,7 @@
 #     optional details page.
 # ============================================================
 
-form Spatial Trajectory Painter (Demo window) v1.0
+form Spatial Trajectory Painter (Demo window) v1.1
     comment Draw the trajectory in the Demo window; these fix the output format.
     optionmenu Output_representation: 1
         option Speaker array
@@ -77,13 +84,14 @@ form Spatial Trajectory Painter (Demo window) v1.0
         option First order (4 ch)
         option Second order (9 ch)
         option Third order (16 ch)
+        option Fourth order (25 ch)
+        option Fifth order (36 ch)
     word Output_name movement_output
-    boolean Keep_control_tiers 1
     boolean Edit_details 0
     boolean Draw_visualization 1
 endform
 
-# ---- v0.7.5 technical defaults (same names) ----
+# ---- technical defaults (compatible with the previous Painter controls) ----
 distance = 1.0
 trajectory_rotation = 0
 control_rate = 100
@@ -97,7 +105,7 @@ if edit_details
         comment: "Distance is inverse-distance amplitude only; no near-field compensation."
     detailsClicked = endPause: "Use defaults", "Apply", 2, 1
 endif
-# Absolute mapping in the drawn units (v0.7.5 names)
+# Absolute mapping in the drawn units
 mapping_mode = 2
 elevation_mapping = 2
 base_value = 1
@@ -116,9 +124,15 @@ else
     elsif ambisonic_order = 2
         n_ch = 9
         orderName$ = "2nd"
-    else
+    elsif ambisonic_order = 3
         n_ch = 16
         orderName$ = "3rd"
+    elsif ambisonic_order = 4
+        n_ch = 25
+        orderName$ = "4th"
+    else
+        n_ch = 36
+        orderName$ = "5th"
     endif
 endif
 for c to n_ch
@@ -354,7 +368,7 @@ procedure laneAt: .lane, .t
 endproc
 
 ###############################################################################
-# RENDER (v0.7.5 DSP on tiers built from the drawing)
+# RENDER (shared AudioTools spatial DSP on tiers built from the drawing)
 ###############################################################################
 procedure buildTiers
     @unwrapLane1
@@ -364,6 +378,8 @@ procedure buildTiers
         for .i to nP[1]
             Add point: pT[1, .i], uV[.i]
         endfor
+        selectObject: mono
+        minusObject: mono
         movement_el = Create RealTier: "movement_elevation", xmin, xmax
         for .i to nP[2]
             Add point: pT[2, .i], pV[2, .i]
@@ -556,7 +572,7 @@ if output_representation = 2
         # Full-3D direction per frame: azimuth AND elevation both vary in time
         # (elevation_frame[f] is constant in Fixed mode, so this reduces exactly
         # to the v0.5 fixed-elevation call there).
-        @computeACN: azimuth_frame[f], elevation_frame[f]
+        @computeACN: azimuth_frame[f], elevation_frame[f], ambisonic_order
         for c to n_ch
             acnFrame[c,f] = acn[c] * distanceGain
         endfor
@@ -1098,7 +1114,7 @@ endif
 ###############################################################################
 # COMMIT
 ###############################################################################
-writeInfoLine: "=== Spatial Trajectory Painter (Demo) v1.0 ==="
+writeInfoLine: "=== Spatial Trajectory Painter (Demo) v1.1 ==="
 status$ = "Rendering..."
 @drawAll
 @buildTiers
@@ -1113,7 +1129,7 @@ if amb
 endif
 appendInfoLine: "Control rate: ", control_rate, " Hz"
 
-# v0.7.5's Picture-window figure, verbatim
+# Picture-window diagnostic
 if draw_visualization = 1
 
     # --- suite channel-colour palette (cycles every 8 channels) ---
@@ -1149,8 +1165,11 @@ if draw_visualization = 1
         chanB[c] = palB[palIndex]
     endfor
 
-    # --- scale labels / dots down for denser 9-, 12- and 16-channel arrays ---
-    if n_ch > 8
+    # --- scale labels / dots down for dense higher-order fields ---
+    if n_ch > 16
+        channelFontSize = 3
+        maxSpeakerDiameter = 2.7
+    elsif n_ch > 8
         channelFontSize = 4
         maxSpeakerDiameter = 3.2
     else
@@ -1307,7 +1326,7 @@ if draw_visualization = 1
     Axes: 0, 1, 0, 1
     Colour: "Black"
     Font size: 12
-    Text: 0.5, "Centre", 0.5, "Half", "##SPATIAL TRAJECTORY PAINTER v0.7.5##"
+    Text: 0.5, "Centre", 0.5, "Half", "##SPATIAL TRAJECTORY PAINTER##"
     Select outer viewport: 0, 8, 0.30, 0.55
     Select inner viewport: 0.60, 7.70, 0.31, 0.54
     Axes: 0, 1, 0, 1
@@ -1821,12 +1840,11 @@ endif
 @freeRender: 1
 selectObject: result
 Rename: output_name$
-if keep_control_tiers = 0
-    @freeTiers
-endif
+# Control tiers are implementation details only; never leave them in Objects.
+@freeTiers
 
 appendInfoLine: ""
-appendInfoLine: "Created: ", output_name$, " (", n_ch, " ch)", if keep_control_tiers then " + control tier(s) " + if drawnElevation then "movement_azimuth, movement_elevation" else "movement" fi else "" fi
+appendInfoLine: "Created: ", output_name$, " (", n_ch, " ch)"
 if amb
     appendInfoLine: "Raw ACN/SN3D field components: decode through a speaker-array or binaural"
     appendInfoLine: "ambisonic decoder for real spatial playback."
@@ -1843,41 +1861,65 @@ removeObject: mono
 selectObject: result
 
 ###############################################################################
-# PROCEDURES (v0.7.5)
+# PROCEDURES
 ###############################################################################
 
-# Compute the 16 ACN/SN3D encoding coefficients for a direction (degrees).
-# Writes global acn[1..16] (acn[1]=ACN0 ... acn[16]=ACN15). Shared math with
-# the Higher-Order Ambisonic Encoder script, so a moving trajectory here and
-# a static point there stay numerically consistent.
+# Compute real ACN/SN3D coefficients for Full-3D HOA orders 1..5.
+# Writes global acn[1..(maxOrder+1)^2], where acn[1] = ACN0.
+# This is the same general associated-Legendre implementation used by the
+# upgraded Higher-Order Ambisonic Encoder, so static and moving encoding stay
+# numerically consistent through fifth order.
 # Convention: azimuth CCW from front (+X), +Y = left, +Z = up.
-procedure computeACN: .azDeg, .elDeg
+procedure computeACN: .azDeg, .elDeg, .maxOrder
     .az = .azDeg * pi / 180
-    .el = .elDeg * pi / 180
-    .ca = cos(.az)
-    .sa = sin(.az)
-    .ce = cos(.el)
-    .se = sin(.el)
-    .ce2 = .ce * .ce
-    .se2 = .se * .se
-    .c2a = cos(2 * .az)
-    .s2a = sin(2 * .az)
-    .c3a = cos(3 * .az)
-    .s3a = sin(3 * .az)
-    acn[1]  = 1.0
-    acn[2]  = .sa * .ce
-    acn[3]  = .se
-    acn[4]  = .ca * .ce
-    acn[5]  = sqrt(3) * .s2a * .ce2 * 0.5
-    acn[6]  = sqrt(3) * .sa * .se * .ce
-    acn[7]  = 0.5 * (3 * .se2 - 1)
-    acn[8]  = sqrt(3) * .ca * .se * .ce
-    acn[9]  = sqrt(3) * .c2a * .ce2 * 0.5
-    acn[10] = sqrt(5/8) * .s3a * .ce * .ce2
-    acn[11] = sqrt(15) * .s2a * .se * .ce2 * 0.5
-    acn[12] = sqrt(3/8) * .sa * .ce * (5 * .se2 - 1)
-    acn[13] = 0.5 * .se * (5 * .se2 - 3)
-    acn[14] = sqrt(3/8) * .ca * .ce * (5 * .se2 - 1)
-    acn[15] = sqrt(15) * .c2a * .se * .ce2 * 0.5
-    acn[16] = sqrt(5/8) * .c3a * .ce * .ce2
+    .x = sin (.elDeg * pi / 180)
+    .ce = cos (.elDeg * pi / 180)
+
+    # Clear the complete HOA5 range so a lower-order call cannot retain values.
+    for .i from 1 to 36
+        acn[.i] = 0
+    endfor
+
+    # Unnormalised associated Legendre functions without the Condon-Shortley
+    # phase. The recurrence is evaluated at x = sin(elevation), which matches
+    # the ambiX coordinate convention used throughout AudioTools.
+    for .l from 0 to .maxOrder
+        for .m from 0 to .maxOrder
+            assocP[.l + 1, .m + 1] = 0
+        endfor
+    endfor
+    assocP[1, 1] = 1
+
+    for .m from 1 to .maxOrder
+        assocP[.m + 1, .m + 1] = (2 * .m - 1) * .ce * assocP[.m, .m]
+    endfor
+
+    for .m from 0 to .maxOrder - 1
+        assocP[.m + 2, .m + 1] = (2 * .m + 1) * .x * assocP[.m + 1, .m + 1]
+    endfor
+
+    for .m from 0 to .maxOrder
+        for .l from .m + 2 to .maxOrder
+            assocP[.l + 1, .m + 1] = ((2 * .l - 1) * .x * assocP[.l, .m + 1] - (.l + .m - 1) * assocP[.l - 1, .m + 1]) / (.l - .m)
+        endfor
+    endfor
+
+    # ACN index n = l(l+1)+m, represented here as array index n+1.
+    # SN3D normalization for m>0 is sqrt(2 (l-m)!/(l+m)!).
+    for .l from 0 to .maxOrder
+        .idx0 = .l * .l + .l + 1
+        acn[.idx0] = assocP[.l + 1, 1]
+        for .m from 1 to .l
+            .ratio = 1
+            for .k from .l - .m + 1 to .l + .m
+                .ratio = .ratio / .k
+            endfor
+            .norm = sqrt (2 * .ratio)
+            .base = .norm * assocP[.l + 1, .m + 1]
+            .idxPos = .l * .l + .l + .m + 1
+            .idxNeg = .l * .l + .l - .m + 1
+            acn[.idxPos] = .base * cos (.m * .az)
+            acn[.idxNeg] = .base * sin (.m * .az)
+        endfor
+    endfor
 endproc
