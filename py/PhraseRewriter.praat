@@ -146,6 +146,7 @@ form Phrase Rewriter
     integer Seed 42
     boolean Run_variation 0
     boolean Draw_visualization 1
+    boolean Draw_transformation_map 1
     boolean Play_result 1
     comment ── Constellation controls (ignored by other modes) ──────────────
     real Pitch_shift_semitones 0.0
@@ -393,6 +394,8 @@ for ei from 0 to 127
     ev_start_'ei' = 0
     ev_end_'ei'   = 0
     ev_str_'ei'   = 0
+    ev_act_'ei'   = -1
+    ev_ten_'ei'   = -1
 endfor
 
 for pli from 0 to 255
@@ -400,6 +403,8 @@ for pli from 0 to 255
     pl_start_'pli' = 0
     pl_dur_'pli'   = 1
     pl_gain_'pli'  = 0.5
+    pl_eff_'pli'   = 0
+    pl_role_'pli'$ = ""
 endfor
 
 if fileReadable(tempStats$)
@@ -443,17 +448,22 @@ if fileReadable(tempStats$)
             nEvParsed = 128
         endif
     endif
+    # ev_i = start,end,strength[,activity,tension]
+    # Three fields is the pre-v1.1 layout; activity/tension then stay -1 and
+    # the feature panel falls back to strength, exactly as before.
     for ei from 0 to nEvParsed - 1
         @parseStatLine: statsText$, "ev_" + string$(ei) + "="
         raw$ = parseStatLine.result$
         if raw$ <> "?"
-            c1 = index(raw$, ",")
-            rest_ev$ = mid$(raw$, c1 + 1, length(raw$) - c1)
-            c2b = index(rest_ev$, ",")
-            if c1 > 0 and c2b > 0
-                ev_start_'ei' = number(left$(raw$, c1 - 1))
-                ev_end_'ei'   = number(left$(rest_ev$, c2b - 1))
-                ev_str_'ei'   = number(mid$(rest_ev$, c2b + 1, length(rest_ev$) - c2b))
+            @splitFields: raw$
+            if splitFields.n >= 3
+                ev_start_'ei' = number(splitFields.f1$)
+                ev_end_'ei'   = number(splitFields.f2$)
+                ev_str_'ei'   = number(splitFields.f3$)
+            endif
+            if splitFields.n >= 5
+                ev_act_'ei' = number(splitFields.f4$)
+                ev_ten_'ei' = number(splitFields.f5$)
             endif
         endif
     endfor
@@ -464,28 +474,57 @@ if fileReadable(tempStats$)
             nPlParsed = 256
         endif
     endif
+    # pl_i = src,start,dur_scale,gain[,effective_duration[,role]]
+    # The effective duration is the renderer's own target length. Without it
+    # (older stats file) the map falls back to source duration x dur_scale.
     for pli from 0 to nPlParsed - 1
         @parseStatLine: statsText$, "pl_" + string$(pli) + "="
         raw$ = parseStatLine.result$
         if raw$ <> "?"
-            c1 = index(raw$, ",")
-            rest1$ = mid$(raw$, c1 + 1, length(raw$) - c1)
-            c2 = index(rest1$, ",")
-            rest2$ = mid$(rest1$, c2 + 1, length(rest1$) - c2)
-            c3 = index(rest2$, ",")
-            if c1 > 0 and c2 > 0 and c3 > 0
-                pl_src_'pli'   = number(left$(raw$, c1 - 1))
-                pl_start_'pli' = number(left$(rest1$, c2 - 1))
-                pl_dur_'pli'   = number(left$(rest2$, c3 - 1))
-                pl_gain_'pli'  = number(mid$(rest2$, c3 + 1, length(rest2$) - c3))
+            @splitFields: raw$
+            if splitFields.n >= 4
+                pl_src_'pli'   = number(splitFields.f1$)
+                pl_start_'pli' = number(splitFields.f2$)
+                pl_dur_'pli'   = number(splitFields.f3$)
+                pl_gain_'pli'  = number(splitFields.f4$)
             endif
+            if splitFields.n >= 5
+                pl_eff_'pli' = number(splitFields.f5$)
+            endif
+            if splitFields.n >= 6
+                pl_role_'pli'$ = splitFields.f6$
+            endif
+        endif
+    endfor
+    for pli from 0 to nPlParsed - 1
+        if pl_eff_'pli' <= 0
+            .si = pl_src_'pli'
+            pl_eff_'pli' = (ev_end_'.si' - ev_start_'.si') * pl_dur_'pli'
         endif
     endfor
 
     appendInfoLine: ""
     appendInfoLine: "--- Stats ---"
     appendInfoLine: statsText$
+    if mode = 7
+        appendInfoLine: ""
+        appendInfoLine: "Duration policy: archetype-controlled."
+        appendInfoLine: "Mass uses its intrinsic compact-cluster duration; the global"
+        appendInfoLine: "duration policy (keep / shorter / longer) is deliberately not applied."
+    endif
 endif
+
+# display maxima for the map's activity/tension ticks (display only)
+actMapMax = 0.001
+tenMapMax = 0.001
+for ei from 0 to nEvParsed - 1
+    if ev_act_'ei' > actMapMax
+        actMapMax = ev_act_'ei'
+    endif
+    if ev_ten_'ei' > tenMapMax
+        tenMapMax = ev_ten_'ei'
+    endif
+endfor
 
 ###############################################################################
 # VISUALIZATION
@@ -616,11 +655,27 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.96, 0.96, 0.98}", 0, 1, 0, 1
 
+    # Activity and Tension are now the values the backend actually computed
+    # (ev_act_ / ev_ten_). Only the display is normalised; the exported
+    # numbers are untouched. An old stats file without them (-1) falls back
+    # to strength for both, which is the previous behaviour.
     if nEvParsed > 1
+        actMax = 0.001
+        tenMax = 0.001
         strMax = 0.001
+        haveAT = 1
         for ei from 0 to nEvParsed - 1
             if ev_str_'ei' > strMax
                 strMax = ev_str_'ei'
+            endif
+            if ev_act_'ei' < 0 or ev_ten_'ei' < 0
+                haveAT = 0
+            endif
+            if ev_act_'ei' > actMax
+                actMax = ev_act_'ei'
+            endif
+            if ev_ten_'ei' > tenMax
+                tenMax = ev_ten_'ei'
             endif
         endfor
 
@@ -632,16 +687,22 @@ if draw_visualization
         for ei from 0 to nEvParsed - 1
             eS = ev_start_'ei'
             eE = ev_end_'ei'
-            eStr = ev_str_'ei'
 
             xL = eS / totalDur
             xR = eE / totalDur
-            normStr = eStr / strMax
 
-            actH = 0.08 + 0.40 * normStr
+            if haveAT
+                normAct = ev_act_'ei' / actMax
+                normTen = ev_ten_'ei' / tenMax
+            else
+                normAct = ev_str_'ei' / strMax
+                normTen = normAct
+            endif
+
+            actH = 0.08 + 0.40 * normAct
             Paint rectangle: "{0.22, 0.48, 0.80}", xL + 0.002, xR - 0.002, 0.08, actH
 
-            tenH = 0.55 + 0.38 * normStr
+            tenH = 0.55 + 0.38 * normTen
             Paint rectangle: "{0.78, 0.28, 0.22}", xL + 0.002, xR - 0.002, 0.55, tenH
         endfor
     endif
@@ -656,7 +717,11 @@ if draw_visualization
     Colour: "Black"
     Font size: 5
     Text bottom: "yes", "Event time axis (original)"
-    Text top: "no", "Phrase shape per event  (bar height = strength)"
+    if haveAT
+        Text top: "no", "Phrase shape per event  (bar height = measured activity / tension)"
+    else
+        Text top: "no", "Phrase shape per event  (bar height = strength; older stats file has no activity/tension)"
+    endif
 
     # =========================================================
     # Rewrite plan panel
@@ -765,10 +830,15 @@ if draw_visualization
     Text: 0.02, "left", 0.90, "half", "Summary:"
     Font size: 6
     Colour: "{0.30, 0.30, 0.30}"
+    if mode = 7
+        durPolShow$ = "archetype-controlled"
+    else
+        durPolShow$ = durPolStat$
+    endif
     Text: 0.02, "left", 0.70, "half",
         ... "Events=" + nEvStat$
         ... + " | Plan steps=" + nPlanStat$
-        ... + " | Dur policy=" + durPolStat$
+        ... + " | Dur policy=" + durPolShow$
         ... + " | Variation=" + varStat$
     Text: 0.02, "left", 0.50, "half",
         ... "Duration: " + inDurStat$ + " s -> " + outDurStat$ + " s"
@@ -794,6 +864,28 @@ if draw_visualization
     Font size: 10
     Colour: "Black"
 
+endif
+
+###############################################################################
+# DRAW TRANSFORMATION MAP
+#   Complementary to the analytical panels above: those show phrase
+#   behaviour, this shows compositional rewriting. When both are requested
+#   the panels are drawn first and the map replaces them after a prompt, so
+#   the existing workflow is unchanged for anyone who ignores the new box.
+###############################################################################
+if draw_transformation_map and nEvParsed > 0
+    mapClicked = 2
+    if draw_visualization
+        beginPause: "Phrase Rewriter"
+            comment: "The analytical panels are in the Picture window."
+            comment: "Draw the Transformation Map now? It replaces the current picture."
+        mapClicked = endPause: "Keep panels", "Draw map", 2, 1
+    endif
+    if mapClicked <> 1
+        appendInfoLine: ""
+        appendInfoLine: "Drawing Transformation Map..."
+        @drawTransformationMap
+    endif
 endif
 
 # ============================================================
@@ -823,6 +915,46 @@ endif
 # ============================================================
 # Procedures
 # ============================================================
+
+# Splits a comma-separated stats value into up to 6 fields. Missing fields
+# stay empty and .n reports how many were present, so older stats files with
+# fewer fields parse without error.
+procedure splitFields: .raw$
+    .n = 0
+    .f1$ = ""
+    .f2$ = ""
+    .f3$ = ""
+    .f4$ = ""
+    .f5$ = ""
+    .f6$ = ""
+    .rest$ = .raw$
+    .more = 1
+    while .more and .n < 6
+        .c = index(.rest$, ",")
+        if .c > 0
+            .piece$ = left$(.rest$, .c - 1)
+            .rest$ = mid$(.rest$, .c + 1, length(.rest$) - .c)
+        else
+            .piece$ = .rest$
+            .rest$ = ""
+            .more = 0
+        endif
+        .n += 1
+        if .n = 1
+            .f1$ = .piece$
+        elsif .n = 2
+            .f2$ = .piece$
+        elsif .n = 3
+            .f3$ = .piece$
+        elsif .n = 4
+            .f4$ = .piece$
+        elsif .n = 5
+            .f5$ = .piece$
+        else
+            .f6$ = .piece$
+        endif
+    endwhile
+endproc
 
 procedure parseStatLine: .text$, .key$
     .result$ = "?"
@@ -857,5 +989,312 @@ procedure cleanUpTempFiles
     endif
     if fileReadable(probeMarker$)
         deleteFile: probeMarker$
+    endif
+endproc
+
+###############################################################################
+# TRANSFORMATION MAP
+#   Source segmentation -> compositional rewrite -> rendered phrase.
+#   One grammar for all eight modes: colour = source event identity, so the
+#   same colour appearing several times below is the same material reused.
+#   Mode-specific accents stay small (Constellation role line styles, Center
+#   focus band) rather than eight separate visualisers.
+###############################################################################
+procedure drawTransformationMap
+    Erase all
+    Select outer viewport: 0, 8, 0, 5.9
+    Black
+    Line width: 1
+    Solid line
+
+    .srcDur = dur
+    if .srcDur < 0.001
+        .srcDur = 0.001
+    endif
+    .outDur = number(outDurStat$)
+    if .outDur = undefined or .outDur < 0.001
+        .outDur = .srcDur
+    endif
+
+    # --- title ---
+    Font size: 12
+    Select inner viewport: 0.6, 7.7, 0.02, 0.50
+    Axes: 0, 1, 0, 1
+    Colour: "Black"
+    Text: 0.5, "centre", 0.70, "half", "##Phrase Rewriter \--  Transformation Map##"
+    Font size: 7
+    Select inner viewport: 0.6, 7.7, 0.02, 0.50
+    Axes: 0, 1, 0, 1
+    Colour: "{0.35, 0.35, 0.45}"
+    Text: 0.5, "centre", 0.22, "half", "Source segmentation \-> compositional rewrite \-> rendered phrase"
+
+    # --- map body: one coordinate system, manual bands ---
+    Select inner viewport: 0.6, 7.7, 0.95, 4.75
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.975, 0.975, 0.985}", 0, 1, 0, 1
+
+    .srcTop = 0.965
+    .srcBot = 0.800
+    .outTop = 0.215
+    .outBot = 0.050
+
+    # strength range for source block weight
+    .sMax = 0.001
+    for .ei from 0 to nEvParsed - 1
+        if ev_str_'.ei' > .sMax
+            .sMax = ev_str_'.ei'
+        endif
+    endfor
+
+    # which source event is used most (Center focus, and general interest)
+    .topSrc = -1
+    .topUse = 0
+    for .ei from 0 to nEvParsed - 1
+        .uses = 0
+        for .pi from 0 to nPlParsed - 1
+            if pl_src_'.pi' = .ei
+                .uses += 1
+            endif
+        endfor
+        use_'.ei' = .uses
+        if .uses > .topUse
+            .topUse = .uses
+            .topSrc = .ei
+        endif
+    endfor
+
+    # Center: mark the organising focus behind its source block
+    if modeStat$ = "Center" and .topSrc >= 0
+        .fx1 = ev_start_'.topSrc' / .srcDur
+        .fx2 = ev_end_'.topSrc' / .srcDur
+        Paint rectangle: "{0.93, 0.90, 0.80}", .fx1 - 0.004, .fx2 + 0.004, .srcBot - 0.030, .srcTop + 0.030
+    endif
+
+    # ================= A. SOURCE PHRASE =================
+    for .ei from 0 to nEvParsed - 1
+        .x1 = ev_start_'.ei' / .srcDur
+        .x2 = ev_end_'.ei' / .srcDur
+        if .x2 - .x1 < 0.002
+            .x2 = .x1 + 0.002
+        endif
+        @eventColour: .ei
+        .norm = ev_str_'.ei' / .sMax
+        # unused source events are drawn hollow: they disappeared in the rewrite
+        if use_'.ei' = 0
+            Colour: "{0.72, 0.72, 0.76}"
+            Draw rectangle: .x1, .x2, .srcBot, .srcTop
+        else
+            .h = .srcBot + (.srcTop - .srcBot) * (0.45 + 0.55 * .norm)
+            Paint rectangle: eventColour.col$, .x1, .x2, .srcBot, .h
+            Colour: "{0.55, 0.55, 0.60}"
+            Draw rectangle: .x1, .x2, .srcBot, .srcTop
+        endif
+        # activity (left tick) and tension (right tick) inside the block
+        if ev_act_'.ei' >= 0
+            Line width: 1
+            Colour: "{0.22, 0.48, 0.80}"
+            .ay = .srcBot + (.srcTop - .srcBot) * min(1, ev_act_'.ei' / max(0.001, actMapMax))
+            Draw line: .x1 + 0.0015, .srcBot, .x1 + 0.0015, .ay
+            Colour: "{0.78, 0.28, 0.22}"
+            .ty = .srcBot + (.srcTop - .srcBot) * min(1, ev_ten_'.ei' / max(0.001, tenMapMax))
+            Draw line: .x2 - 0.0015, .srcBot, .x2 - 0.0015, .ty
+        endif
+    endfor
+    Font size: 5
+    Colour: "{0.30, 0.30, 0.38}"
+    for .ei from 0 to nEvParsed - 1
+        .x1 = ev_start_'.ei' / .srcDur
+        .x2 = ev_end_'.ei' / .srcDur
+        if .x2 - .x1 > 0.022
+            Text: (.x1 + .x2) / 2, "centre", .srcTop + 0.012, "bottom", string$(.ei)
+        endif
+    endfor
+
+    # Lane assignment for the output band: each rendered block goes in the
+    # lowest lane whose previous block has already ended, so simultaneous
+    # copies stack instead of painting over each other. Cloud and Mass are
+    # unreadable on a single baseline - their density IS the result.
+    .maxLanes = 6
+    for .k from 1 to .maxLanes
+        laneEnd_'.k' = -1
+    endfor
+    .lanesUsed = 1
+    for .pi from 0 to nPlParsed - 1
+        .bs = pl_start_'.pi'
+        .be = pl_start_'.pi' + pl_eff_'.pi'
+        .placed = 0
+        for .k from 1 to .maxLanes
+            if .placed = 0 and laneEnd_'.k' <= .bs + 0.0005
+                lane_'.pi' = .k
+                laneEnd_'.k' = .be
+                .placed = 1
+                if .k > .lanesUsed
+                    .lanesUsed = .k
+                endif
+            endif
+        endfor
+        if .placed = 0
+            # more than maxLanes at once: reuse the lane that frees first
+            .best = 1
+            for .k from 2 to .maxLanes
+                if laneEnd_'.k' < laneEnd_'.best'
+                    .best = .k
+                endif
+            endfor
+            lane_'.pi' = .best
+            laneEnd_'.best' = .be
+            .lanesUsed = .maxLanes
+        endif
+    endfor
+    .laneH = (.outTop - .outBot) / .lanesUsed
+
+    # ================= B. REWRITE MAP =================
+    for .pi from 0 to nPlParsed - 1
+        .si = pl_src_'.pi'
+        @eventColour: .si
+        .sx = (ev_start_'.si' + ev_end_'.si') / 2 / .srcDur
+        .ox = (pl_start_'.pi' + pl_eff_'.pi' / 2) / .outDur
+        .g = pl_gain_'.pi'
+        if .g < 0
+            .g = 0
+        endif
+        if .g > 1
+            .g = 1
+        endif
+        Line width: 0.4 + 2.2 * .g
+        Solid line
+        .role$ = pl_role_'.pi'$
+        if .role$ = "echo"
+            Dotted line
+        elsif .role$ = "shadow"
+            Dashed line
+        elsif .role$ = "star"
+            Line width: 1.2 + 2.2 * .g
+        endif
+        Colour: eventColour.col$
+        .ly = .outBot + lane_'.pi' * .laneH
+        Draw line: .sx, .srcBot - 0.012, .ox, .ly + 0.004
+        Solid line
+    endfor
+    Line width: 1
+
+    # ================= C. REWRITTEN PHRASE =================
+    for .pi from 0 to nPlParsed - 1
+        .si = pl_src_'.pi'
+        @eventColour: .si
+        .x1 = pl_start_'.pi' / .outDur
+        .x2 = (pl_start_'.pi' + pl_eff_'.pi') / .outDur
+        if .x2 - .x1 < 0.0025
+            .x2 = .x1 + 0.0025
+        endif
+        .g = pl_gain_'.pi'
+        if .g < 0
+            .g = 0
+        endif
+        if .g > 1
+            .g = 1
+        endif
+        .role$ = pl_role_'.pi'$
+        .hfrac = 0.40 + 0.60 * .g
+        if .role$ = "echo" or .role$ = "shadow"
+            .hfrac = .hfrac * 0.55
+        endif
+        .y0 = .outBot + (lane_'.pi' - 1) * .laneH
+        .h = .y0 + .laneH * 0.86 * .hfrac
+        Paint rectangle: eventColour.col$, .x1, .x2, .y0 + .laneH * 0.06, .h
+    endfor
+    # faint lane rules, so stacking reads as simultaneity
+    Colour: "{0.88, 0.88, 0.91}"
+    Line width: 1
+    for .k from 1 to .lanesUsed - 1
+        Draw line: 0, .outBot + .k * .laneH, 1, .outBot + .k * .laneH
+    endfor
+    Colour: "{0.55, 0.55, 0.60}"
+    Draw line: 0, .outBot, 1, .outBot
+    Draw line: 0, .srcTop, 1, .srcTop
+
+    # band labels + time rulers
+    Font size: 6
+    Colour: "{0.30, 0.30, 0.38}"
+    Text: 0.002, "left", .srcTop + 0.038, "bottom", "##SOURCE PHRASE##   " + fixed$(.srcDur, 2) + " s, " + string$(nEvParsed) + " events"
+    Text: 0.002, "left", .outTop + 0.050, "bottom", "##REWRITTEN PHRASE##   " + fixed$(.outDur, 2) + " s, " + string$(nPlParsed) + " events"
+    Font size: 5
+    Colour: "{0.45, 0.45, 0.52}"
+    Text: 0.998, "right", .srcTop + 0.038, "bottom", "hollow block = event not used"
+    if .lanesUsed > 1
+        Text: 0.998, "right", .outTop + 0.050, "bottom", "width = rendered duration, height = gain, stacked = simultaneous (" + string$(.lanesUsed) + " lanes)"
+    else
+        Text: 0.998, "right", .outTop + 0.050, "bottom", "width = rendered duration, height = gain"
+    endif
+
+    Colour: "Black"
+    Draw inner box
+
+    # ================= metadata strip =================
+    Font size: 6
+    Select inner viewport: 0.6, 7.7, 4.95, 5.70
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    Colour: "{0.25, 0.25, 0.35}"
+    if modeStat$ = "Mass"
+        .policy$ = "archetype-controlled (Mass keeps its intrinsic compact-cluster duration; the global duration policy is not applied)"
+    else
+        .policy$ = durPolStat$
+    endif
+    Text: 0.01, "left", 0.80, "half", "##Mode:## " + modeStat$ + "    ##Preserve:## " + preserveStat$ +
+        ... "    ##Rewrite intensity:## " + intensStat$ + "    ##Variation:## " + varStat$ + "    ##Seed:## " + string$(seedToUse)
+    Text: 0.01, "left", 0.50, "half", "##Duration policy:## " + .policy$
+    @modeHint: modeStat$
+    Text: 0.01, "left", 0.20, "half", "##Reading it:## colour = source event identity; a colour reappearing below is the same material reused.    " + modeHint.text$
+    Colour: "Black"
+    Draw inner box
+
+    Select outer viewport: 0, 8, 0, 5.9
+    Font size: 10
+    Line width: 1
+endproc
+
+# eight-colour identity palette, cycled by source-event index
+procedure eventColour: .idx
+    .k = .idx mod 8
+    if .k = 0
+        .col$ = "{0.20, 0.44, 0.74}"
+    elsif .k = 1
+        .col$ = "{0.85, 0.42, 0.16}"
+    elsif .k = 2
+        .col$ = "{0.25, 0.58, 0.45}"
+    elsif .k = 3
+        .col$ = "{0.60, 0.35, 0.68}"
+    elsif .k = 4
+        .col$ = "{0.80, 0.62, 0.15}"
+    elsif .k = 5
+        .col$ = "{0.35, 0.60, 0.78}"
+    elsif .k = 6
+        .col$ = "{0.72, 0.28, 0.35}"
+    else
+        .col$ = "{0.42, 0.45, 0.52}"
+    endif
+endproc
+
+# one short sentence per mode: what the map should show if the mode worked
+procedure modeHint: .mode$
+    if .mode$ = "Constellation"
+        .text$ = "##Constellation:## many short fragments; solid = star/satellite, dotted = echo, dashed = shadow."
+    elsif .mode$ = "Cloud"
+        .text$ = "##Cloud:## overlapping copies \--  look for blocks stacked in the same time region."
+    elsif .mode$ = "Resonance"
+        .text$ = "##Resonance:## selected events plus trailing echo extensions of the same colour."
+    elsif .mode$ = "Center"
+        .text$ = "##Center:## one highlighted source event returns repeatedly as the organising focus."
+    elsif .mode$ = "Becoming"
+        .text$ = "##Becoming:## a left-to-right gradient \— early output keeps the source, later output departs from it."
+    elsif .mode$ = "Distance"
+        .text$ = "##Distance:## growing separation and silence between blocks."
+    elsif .mode$ = "Mass"
+        .text$ = "##Mass:## accumulation into one dense compact cluster."
+    elsif .mode$ = "Multiplication"
+        .text$ = "##Multiplication:## one-to-many fans \--  a single source colour repeated across the output."
+    else
+        .text$ = ""
     endif
 endproc

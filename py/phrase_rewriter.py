@@ -607,9 +607,9 @@ def generate_plan(events, mode, preserve, intensity, duration_policy, variation,
                     })
             plan_entries.extend(_companions)
 
-            # Strip internal keys before handing off to the renderer
-            for _e in plan_entries:
-                _e.pop("_role", None)
+            # _role is kept: the renderer ignores keys it does not read, and
+            # the stats layer exports it so the Transformation Map can show
+            # star / satellite / echo / shadow. No effect on rendering.
 
             target = plan_entries
 
@@ -820,7 +820,28 @@ def generate_plan(events, mode, preserve, intensity, duration_policy, variation,
     return sorted(target, key=lambda r: r["start"])
 
 
-def render_plan(audio, sr, clips, events, plan):
+_DEFAULT_MIN_RENDER_SEC = 0.250  # perceptual floor — prevents sub-click bursts
+
+
+def _estimate_rendered_samples(clip_len, row, sr, default_min=_DEFAULT_MIN_RENDER_SEC):
+    """Length in samples that the renderer will actually produce for `row`.
+
+    Mirrors the render loop exactly (offset -> onset trim -> dur_scale, with
+    the per-row minimum as a floor) but reads the keys instead of popping
+    them, so it can be used for buffer allocation before rendering.
+    """
+    floor_samples = int(row.get("_min_render_sec", default_min) * sr)
+    length = int(clip_len)
+    frag_offset = row.get("_frag_offset_sec", 0.0)
+    if frag_offset and frag_offset > 0.0:
+        length -= min(length - 1, int(round(frag_offset * sr)))
+    onset_trim = row.get("_onset_trim_sec", None)
+    if onset_trim is not None:
+        length = min(length, max(floor_samples, int(round(onset_trim * sr))))
+    return max(floor_samples, int(round(length * row["dur_scale"])))
+
+
+def render_plan(audio, sr, clips, events, plan, render_log=None):
     import numpy as np
     if audio.ndim == 1:
         n_channels = 1
@@ -828,14 +849,6 @@ def render_plan(audio, sr, clips, events, plan):
         n_channels = audio.shape[1]
     if not plan:
         return audio.astype(np.float32, copy=True)
-
-    ends = []
-    for row in plan:
-        ev = events[row["src"]]
-        dur = (ev["end_time"] - ev["start_time"]) * row["dur_scale"]
-        ends.append(row["start"] + dur)
-    n_out = max(1, int(round(max(ends) * sr)) + int(0.05 * sr))
-    output = np.zeros((n_out, n_channels), dtype=np.float32) if n_channels > 1 else np.zeros(n_out, dtype=np.float32)
 
     main_end_by_src = {}
     resolved_plan = []
@@ -856,7 +869,18 @@ def render_plan(audio, sr, clips, events, plan):
             else:
                 pass
 
-    _default_min_render_sec = 0.250  # perceptual floor — prevents sub-click bursts
+    # Allocate from the SAME effective durations the render loop will use:
+    # a 250 ms floor lengthens short events, while Constellation's onset trim
+    # and fragment offset shorten them. Echo rows are resolved above first, so
+    # their final start times are included. The small safety tail is kept.
+    ends = []
+    for row in resolved_plan:
+        est = _estimate_rendered_samples(len(clips[row["src"]]), row, sr)
+        ends.append(row["start"] + est / sr)
+    n_out = max(1, int(round(max(ends) * sr)) + int(0.05 * sr))
+    output = np.zeros((n_out, n_channels), dtype=np.float32) if n_channels > 1 else np.zeros(n_out, dtype=np.float32)
+
+    _default_min_render_sec = _DEFAULT_MIN_RENDER_SEC
     for row in resolved_plan:
         # Per-row override lets Constellation emit short point-fragments.
         # All other modes leave this key absent and get the 250 ms default.
@@ -873,6 +897,15 @@ def render_plan(audio, sr, clips, events, plan):
             _trim_samps = max(int(_row_floor), min(len(clip), int(round(_onset_trim * sr))))
             clip = clip[:_trim_samps]
         target_len = max(_row_floor, int(round(len(clip) * row["dur_scale"])))
+        if render_log is not None:
+            render_log.append({
+                "src": row["src"],
+                "start": row["start"],
+                "eff_dur": target_len / float(sr),
+                "dur_scale": row["dur_scale"],
+                "gain": row["gain"],
+                "role": row.get("_role", ""),
+            })
         proc = _resample_linear(clip, target_len)
         if row["blur"] > 0.001:
             proc = _spectral_blur(proc, row["blur"])
@@ -914,7 +947,7 @@ def normalize_audio(x, ref_rms=None):
     return x
 
 
-def write_stats(path, mode, preserve, intensity, duration_policy, variation, events, plan, in_dur, out_dur, rms_in=None, rms_out=None):
+def write_stats(path, mode, preserve, intensity, duration_policy, variation, events, plan, in_dur, out_dur, rms_in=None, rms_out=None, render_log=None):
     with open(path, "w") as f:
         f.write("mode=%s\n" % mode)
         f.write("preserve_source=%.3f\n" % preserve)
@@ -929,10 +962,25 @@ def write_stats(path, mode, preserve, intensity, duration_policy, variation, eve
             f.write("rms_in=%.6f\n" % rms_in)
         if rms_out is not None:
             f.write("rms_out=%.6f\n" % rms_out)
+        # ev_i = start,end,strength,activity,tension
         for i, ev in enumerate(events[:128]):
-            f.write("ev_%d=%.4f,%.4f,%.4f\n" % (i, ev["start_time"], ev["end_time"], ev["strength"]))
-        for i, row in enumerate(plan[:256]):
-            f.write("pl_%d=%d,%.4f,%.4f,%.4f\n" % (i, row["src"], row["start"], row["dur_scale"], row["gain"]))
+            f.write("ev_%d=%.4f,%.4f,%.4f,%.4f,%.4f\n" % (
+                i, ev["start_time"], ev["end_time"], ev["strength"],
+                ev.get("activity", 0.0), ev.get("tension", 0.0)))
+        # pl_i = src,start,dur_scale,gain,effective_duration[,role]
+        # The effective duration is the renderer's own target length, not
+        # source_duration * dur_scale, which Constellation trimming and the
+        # minimum-render floor make wrong.
+        rows = render_log if render_log else None
+        if rows:
+            for i, row in enumerate(rows[:256]):
+                f.write("pl_%d=%d,%.4f,%.4f,%.4f,%.4f,%s\n" % (
+                    i, row["src"], row["start"], row["dur_scale"], row["gain"],
+                    row["eff_dur"], row.get("role", "") or "-"))
+        else:
+            for i, row in enumerate(plan[:256]):
+                f.write("pl_%d=%d,%.4f,%.4f,%.4f\n" % (
+                    i, row["src"], row["start"], row["dur_scale"], row["gain"]))
 
 
 def cleanup(paths):
@@ -1015,7 +1063,8 @@ def main():
                          fragment_length_scale=args.fragment_length if mode == "Constellation" else 1.0)
 
     print("[Py 4/6] Rendering rewritten phrase...")
-    output = render_plan(audio, sr, clips, events, plan)
+    render_log = []
+    output = render_plan(audio, sr, clips, events, plan, render_log=render_log)
 
     print("[Py 5/6] Normalizing + writing output...")
     # Use active-region RMS of the input as the normalization target.
@@ -1044,7 +1093,7 @@ def main():
     rms_out_val = _active_rms(output, in_ref)
     write_stats(args.stats_txt, mode, preserve, intensity, args.duration_policy, variation,
                 events, plan, len(audio) / sr, len(output) / sr,
-                rms_in=rms_in_val, rms_out=rms_out_val)
+                rms_in=rms_in_val, rms_out=rms_out_val, render_log=render_log)
 
     if args.cleanup:
         cleanup([args.input_wav, args.features_csv])
