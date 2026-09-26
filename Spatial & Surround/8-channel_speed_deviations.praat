@@ -3,8 +3,11 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.5 (2026)
+# Version: 0.7 (2026)
+# v0.7 (2026): ADDED MAX MC DEVIATE PRESET. Every run creates a fresh random 8-voice varispeed field. Existing DSP paths remain unchanged.
+# v0.6 (2026): ADDED MC-STYLE VARISPEED ENGINE + ODD/EVEN STEREO ROUTING. Existing PSOLA DSP remains the default and is unchanged.
 # v0.5 (2026): SPATIAL VISUALIZATION STANDARDIZATION ONLY - label rails, compact summary, typography; DSP unchanged.
+# UI update (2026): compact form; manual Ch1-Ch8 speeds and PSOLA pitch range are grouped into vector fields. DSP unchanged.
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -20,6 +23,32 @@
 #   Duration is D / s, so a speed factor is not a duration percentage:
 #   -15% speed is +17.65% duration, +15% speed is -13.04% duration.
 #   The speed set is symmetric about 1; the durations are not.
+#
+# Changelog v0.7 (2026):
+#   - NEW PRESET: "MAX MC Deviate (fresh random every run)".
+#     This is a convenience configuration for the simple Max/MSP patch:
+#       deviate $1 1 -> mc.sig~ @chans 8 -> mc.groove~ -> mc.stereo~
+#     It forces Random deviation + MC-style varispeed + odd/even MC stereo.
+#     The existing Speed deviation factor becomes the Max-style deviation
+#     amount around unity: d -> uniform rates in [1-d, 1+d].
+#     Random seed is forced to 0 so every execution draws a new field.
+#     No existing preset or DSP path was changed.
+#
+# Changelog v0.6 (2026):
+#   - NEW: Processing engine selector. The existing pitch-preserving
+#     PSOLA path is still the default and its DSP is unchanged.
+#   - NEW: MC-style varispeed path. Each of the eight constant speed
+#     factors becomes a true playback-rate change: duration and pitch
+#     move together, as with groove~/tape-speed playback. Offline this
+#     is implemented by overriding each copy's sampling frequency to
+#     source_sr * speed, then resampling to one common output rate so
+#     all voices can be combined without undoing the varispeed effect.
+#   - NEW: Output format 6 emulates mc.stereo~ without a pan signal:
+#     odd voices (1,3,5,7) feed L and even voices (2,4,6,8) feed R.
+#     Convert-to-mono averages each four-voice bank, equivalent to the
+#     2/8 = 0.25 per-voice gain used by mc.stereo~ @autogain 1.
+#   - Existing presets, modes, output formats 1-5, normalization, and
+#     visualization remain available.
 #
 # Changelog v0.5 (2026):
 #   - FIX (critical): Random mode was not random. It used
@@ -103,9 +132,8 @@ if numberOfSelected("Sound") <> 1
     exitScript: "Please select exactly one Sound object."
 endif
 
-form 8-Channel Speed Deviations
-    comment === PRESETS ===
-    optionmenu Preset: 1
+form: "8-Channel Speed Deviations"
+    optionmenu: "Preset", 1
         option: "Custom (use mode below)"
         option: "Subtle (speed ±5%)"
         option: "Moderate (speed ±15%)"
@@ -113,50 +141,72 @@ form 8-Channel Speed Deviations
         option: "Extreme (speed ±50%)"
         option: "Ascending channel speeds (0.7 to 1.3)"
         option: "Descending channel speeds (1.3 to 0.7)"
+        option: "MAX MC Deviate (fresh random every run)"
 
-    comment === MODE ===
-    optionmenu Mode: 1
+    optionmenu: "Mode", 1
         option: "Automatic (using factor)"
         option: "Manual (input all values)"
         option: "Random deviation"
 
-    comment === Automatic mode: deviation factor, 0 to below 1 ===
-    real Speed_deviation_factor 0.15
+    optionmenu: "Processing engine", 1
+        option: "Pitch-preserving PSOLA (existing)"
+        option: "MC-style varispeed (pitch follows speed)"
 
-    comment === Manual mode settings ===
-    positive Channel_1_speed 0.85
-    positive Channel_2_speed 0.88
-    positive Channel_3_speed 0.91
-    positive Channel_4_speed 0.94
-    positive Channel_5_speed 1.06
-    positive Channel_6_speed 1.09
-    positive Channel_7_speed 1.12
-    positive Channel_8_speed 1.15
+    real: "Speed deviation factor", "0.15"
+    sentence: "Manual speeds", "0.85 0.88 0.91 0.94 1.06 1.09 1.12 1.15"
 
-    comment === Random mode settings (0 seed = unpredictable) ===
-    positive Random_min_speed 0.80
-    positive Random_max_speed 1.20
-    integer Random_seed 42
+    positive: "Random min speed", "0.80"
+    positive: "Random max speed", "1.20"
+    integer: "Random seed", "42"
 
-    comment === Audio settings ===
-    positive Min_pitch 75
-    positive Max_pitch 600
-    boolean Override_sampling_frequency 0
-    positive Target_sampling_frequency 44100
+    sentence: "Pitch range", "75 600"
+    boolean: "Override sampling frequency", 0
+    positive: "Target sampling frequency", "44100"
 
-    comment === OUTPUT FORMAT ===
-    optionmenu Output_format: 1
+    optionmenu: "Output format", 1
         option: "8 channels - octophonic (Ch1-Ch8)"
         option: "4 symmetric speed pairs (Ch1|Ch8, Ch2|Ch7, Ch3|Ch6, Ch4|Ch5)"
         option: "2 quad groups (Ch1-Ch4 slower bank, Ch5-Ch8 faster bank)"
         option: "4-channel fold-down (Ch1+Ch8, Ch2+Ch7, Ch3+Ch6, Ch4+Ch5)"
         option: "Stereo mix (L: Ch1-Ch4, R: Ch5-Ch8)"
+        option: "MC stereo mix (L: odd Ch1/3/5/7, R: even Ch2/4/6/8)"
 
-    comment === Output ===
-    real Scale_peak 0.95
-    boolean Draw_visualization 1
-    boolean Play_result 1
+    real: "Scale peak", "0.95"
+    boolean: "Draw visualization", 1
+    boolean: "Play result", 1
 endform
+
+# Compact-form unpacking: plain text fields keep the form small and avoid
+# Praat's vector Formula selector. DSP variables below remain unchanged.
+manual_tokens$# = splitByWhitespace$# (manual_speeds$)
+if size(manual_tokens$#) <> 8
+    exitScript: "Manual speeds must contain exactly 8 positive values (Ch1-Ch8), separated by spaces."
+endif
+for i from 1 to 8
+    manual_value = number(manual_tokens$#[i])
+    if manual_value = undefined or manual_value <= 0
+        exitScript: "Manual speed ", i, " must be a positive number."
+    endif
+    channel_speed[i] = manual_value
+endfor
+channel_1_speed = channel_speed[1]
+channel_2_speed = channel_speed[2]
+channel_3_speed = channel_speed[3]
+channel_4_speed = channel_speed[4]
+channel_5_speed = channel_speed[5]
+channel_6_speed = channel_speed[6]
+channel_7_speed = channel_speed[7]
+channel_8_speed = channel_speed[8]
+
+pitch_tokens$# = splitByWhitespace$# (pitch_range$)
+if size(pitch_tokens$#) <> 2
+    exitScript: "Pitch range must contain exactly 2 positive values: Min_pitch Max_pitch."
+endif
+min_pitch = number(pitch_tokens$#[1])
+max_pitch = number(pitch_tokens$#[2])
+if min_pitch = undefined or max_pitch = undefined or min_pitch <= 0 or max_pitch <= 0
+    exitScript: "Pitch range must contain exactly 2 positive numbers: Min_pitch Max_pitch."
+endif
 
 # === Apply Presets ===
 if preset = 2
@@ -199,6 +249,23 @@ elsif preset = 7
     channel_7_speed = 0.7857
     channel_8_speed = 0.7000
     presetName$ = "Descending"
+elsif preset = 8
+    # v0.7: convenience preset for the Max/MSP MC patch. Keep the
+    # user's Speed deviation factor as the single deviation control,
+    # equivalent to the value sent to: deviate $1 1.
+    mcDeviation = speed_deviation_factor
+    if mcDeviation < 0
+        mcDeviation = 0
+    elsif mcDeviation > 0.95
+        mcDeviation = 0.95
+    endif
+    mode = 3
+    processing_engine = 2
+    output_format = 6
+    random_seed = 0
+    random_min_speed = 1 - mcDeviation
+    random_max_speed = 1 + mcDeviation
+    presetName$ = "MAX_MC_Deviate"
 else
     if mode = 1
         presetName$ = "Auto"
@@ -228,12 +295,24 @@ if speed_deviation_factor > 0.95
 endif
 
 if mode = 3 and random_min_speed >= random_max_speed
-    exitScript: "Random_min_speed (", random_min_speed,
-        ... ") must be below Random_max_speed (", random_max_speed, ")."
+    # MAX MC Deviate with d = 0 is a valid special case: all voices
+    # stay exactly at unity, just as deviate 0 1 would do.
+    if preset <> 8 or mcDeviation <> 0
+        exitScript: "Random_min_speed (", random_min_speed,
+            ... ") must be below Random_max_speed (", random_max_speed, ")."
+    endif
 endif
 
 if scale_peak <= 0 or scale_peak > 1
     scale_peak = 0.95
+endif
+
+if processing_engine = 1
+    engineName$ = "Pitch-preserving PSOLA"
+    engineShort$ = "PSOLA"
+else
+    engineName$ = "MC-style varispeed"
+    engineShort$ = "VARISPEED"
 endif
 
 # === Calculate speed factors ===
@@ -256,18 +335,24 @@ else
     # sequence with a constant step, so the eight channels formed a
     # ramp rather than a scatter, and a few seeds collapsed them onto
     # one or two values.
-    if random_seed > 0
-        random_initializeWithSeedUnsafelyButPredictably (random_seed)
-        seedApplied = 1
+    if preset = 8 and mcDeviation = 0
+        for i from 1 to 8
+            speedFactor[i] = 1
+        endfor
     else
+        if random_seed > 0
+            random_initializeWithSeedUnsafelyButPredictably (random_seed)
+            seedApplied = 1
+        else
+            random_initializeSafelyAndUnpredictably ()
+        endif
+        for i from 1 to 8
+            speedFactor[i] = randomUniform(random_min_speed, random_max_speed)
+        endfor
+        # Leave the generator unpredictable so this script does not seed
+        # whatever the user runs next.
         random_initializeSafelyAndUnpredictably ()
     endif
-    for i from 1 to 8
-        speedFactor[i] = randomUniform(random_min_speed, random_max_speed)
-    endfor
-    # Leave the generator unpredictable so this script does not seed
-    # whatever the user runs next.
-    random_initializeSafelyAndUnpredictably ()
 endif
 
 # Validate every factor, whatever the mode produced
@@ -341,19 +426,32 @@ for i from 1 to 8
     targetDur = original_dur / sf
     durationRatio = targetDur / original_dur
 
-    selectObject: tempID
-    Lengthen (overlap-add): min_pitch, max_pitch, durationRatio
-    processedID = selected("Sound")
+    if processing_engine = 1
+        # Existing v0.5 path: pitch-preserving PSOLA. DSP unchanged.
+        selectObject: tempID
+        Lengthen (overlap-add): min_pitch, max_pitch, durationRatio
+        processedID = selected("Sound")
 
-    if override_sampling_frequency
-        selectObject: processedID
-        Resample: target_sampling_frequency, 50
-        resampledID = selected("Sound")
-        # v0.5: capture the new id BEFORE removing the old one. v0.3
-        # called selected() after removeObject, relying on the survivor
-        # staying selected.
-        removeObject: processedID
-        processedID = resampledID
+        if override_sampling_frequency
+            selectObject: processedID
+            Resample: target_sampling_frequency, 50
+            resampledID = selected("Sound")
+            # v0.5: capture the new id BEFORE removing the old one. v0.3
+            # called selected() after removeObject, relying on the survivor
+            # staying selected.
+            removeObject: processedID
+            processedID = resampledID
+        endif
+    else
+        # v0.6 MC-style varispeed: true playback-rate change. Overriding
+        # the sampling frequency changes pitch and duration together.
+        # Resampling afterwards to one common working rate preserves that
+        # transformed sound while making all eight voices combinable.
+        playbackSr = original_sr * sf
+        selectObject: tempID
+        Override sampling frequency: playbackSr
+        Resample: workingSr, 50
+        processedID = selected("Sound")
     endif
 
     channel[i] = processedID
@@ -424,9 +522,12 @@ elsif output_format = 3
 elsif output_format = 4
     formatName$ = "4-channel fold-down"
     mapLine$ = "1=Ch1+Ch8  2=Ch2+Ch7  3=Ch3+Ch6  4=Ch4+Ch5"
-else
+elsif output_format = 5
     formatName$ = "Stereo mix (L Ch1-4 / R Ch5-8)"
     mapLine$ = "L = Ch1+Ch2+Ch3+Ch4    R = Ch5+Ch6+Ch7+Ch8"
+else
+    formatName$ = "MC stereo mix (odd/even)"
+    mapLine$ = "L = Ch1+Ch3+Ch5+Ch7    R = Ch2+Ch4+Ch6+Ch8  (mc.stereo~ topology)"
 endif
 
 needFold = 0
@@ -534,7 +635,7 @@ elsif output_format = 4
     outChannels = 4
     removeObject: fold[1], fold[2], fold[3], fold[4]
 
-else
+elsif output_format = 5
     selectObject: mixL, mixR
     Combine to stereo
     out[1] = selected("Sound")
@@ -543,6 +644,38 @@ else
     downmixNorm = 1
     outCount = 1
     outChannels = 2
+
+else
+    # v0.6: mc.stereo~ topology without a pan signal: odd channels to
+    # left, even channels to right. Convert to mono averages each bank
+    # of four, i.e. 0.25 per voice, matching @autogain 1 for 8 -> 2.
+    selectObject: channel[1], channel[3], channel[5], channel[7]
+    Combine to stereo
+    oddBank = selected("Sound")
+    Convert to mono
+    mcL = selected("Sound")
+    Rename: "sd_mcL"
+    removeObject: oddBank
+
+    selectObject: channel[2], channel[4], channel[6], channel[8]
+    Combine to stereo
+    evenBank = selected("Sound")
+    Convert to mono
+    mcR = selected("Sound")
+    Rename: "sd_mcR"
+    removeObject: evenBank
+
+    selectObject: mcL, mcR
+    Combine to stereo
+    out[1] = selected("Sound")
+    Rename: originalName$ + "_speed_MCstereo_" + presetName$
+    # Keep AudioTools' normalised-output convention after the exact
+    # odd/even + 0.25 topology; this changes only overall level.
+    Scale peak: scale_peak
+    downmixNorm = 1
+    outCount = 1
+    outChannels = 2
+    removeObject: mcL, mcR
 endif
 
 if output_format = 2 or output_format = 3
@@ -571,10 +704,11 @@ endif
 # ============================================================
 # INFO
 # ============================================================
-writeInfoLine: "=== 8-Channel Speed Deviations v0.5 ==="
+writeInfoLine: "=== 8-Channel Speed Deviations v0.7 ==="
 appendInfoLine: "Source: ", originalName$, "  (", fixed$(original_dur, 2), " s @ ",
     ... original_sr, " Hz)"
 appendInfoLine: "Preset: ", presetName$
+appendInfoLine: "Processing engine: ", engineName$
 if mode = 1
     appendInfoLine: "Mode: Automatic, deviation factor ", fixed$(speed_deviation_factor, 3)
     if devClamped = 1
@@ -606,10 +740,16 @@ appendInfoLine: "  -15% speed gives +17.65% duration; +15% speed gives -13.04%."
 appendInfoLine: "  The speed set is symmetric about 1, the durations are not."
 appendInfoLine: "Each channel holds ONE constant speed for its whole length; the"
 appendInfoLine: "speed changes between channels, not within one."
-appendInfoLine: "PSOLA aims to preserve perceived pitch while changing duration."
-appendInfoLine: "  That depends on the pitch analysis succeeding between ",
-    ... fixed$(min_pitch, 0), " and ", fixed$(max_pitch, 0), " Hz."
-appendInfoLine: "  Polyphonic, noisy or poorly tracked material will show artefacts."
+if processing_engine = 1
+    appendInfoLine: "PSOLA aims to preserve perceived pitch while changing duration."
+    appendInfoLine: "  That depends on the pitch analysis succeeding between ",
+        ... fixed$(min_pitch, 0), " and ", fixed$(max_pitch, 0), " Hz."
+    appendInfoLine: "  Polyphonic, noisy or poorly tracked material will show artefacts."
+else
+    appendInfoLine: "MC-style varispeed couples pitch and duration, like tape/groove~ playback."
+    appendInfoLine: "  0.90x -> longer + lower; 1.10x -> shorter + higher."
+    appendInfoLine: "  Pitch range is ignored in this engine; no PSOLA pitch tracking is used."
+endif
 appendInfoLine: ""
 
 appendInfoLine: "Channels (requested vs achieved):"
@@ -635,9 +775,15 @@ appendInfoLine: "  The mean duration exceeds the original even when the mean spe
 appendInfoLine: "  is exactly 1, because 1/s is convex."
 if slowWarn > 0
     appendInfoLine: ""
-    appendInfoLine: "  NOTE: ", slowWarn, " channel(s) outside 0.25x to 4x. A factor of"
-    appendInfoLine: "        0.1 asks PSOLA for a tenfold stretch; it runs, but the"
-    appendInfoLine: "        result degrades."
+    if processing_engine = 1
+        appendInfoLine: "  NOTE: ", slowWarn, " channel(s) outside 0.25x to 4x. A factor of"
+        appendInfoLine: "        0.1 asks PSOLA for a tenfold stretch; it runs, but the"
+        appendInfoLine: "        result degrades."
+    else
+        appendInfoLine: "  NOTE: ", slowWarn, " channel(s) outside 0.25x to 4x. Extreme"
+        appendInfoLine: "        varispeed factors require correspondingly strong resampling"
+        appendInfoLine: "        and can reduce usable bandwidth."
+    endif
 endif
 
 appendInfoLine: ""
@@ -755,6 +901,7 @@ if draw_visualization
     Text: 0.5, "centre", -0.22, "half",
         ... originalName$
         ... + "  |  " + presetName$ + " / " + modeStr$
+        ... + "  |  " + engineShort$
         ... + "  |  " + fixed$(original_dur, 2) + " s"
         ... + "  |  Speed " + fixed$(minSpeed, 2) + "-" + fixed$(maxSpeed, 2) + "x"
         ... + "  |  " + formatName$
@@ -971,6 +1118,11 @@ if draw_visualization
 
     Font size: 6
     Colour: "{0.28, 0.28, 0.28}"
+    if processing_engine = 1
+        engineSummary$ = "PSOLA " + fixed$(min_pitch, 0) + "-" + fixed$(max_pitch, 0) + " Hz"
+    else
+        engineSummary$ = "VARISPEED (pitch follows speed)"
+    endif
     Text: 0.02, "left", 0.72, "half",
         ... "##" + presetName$ + "##"
         ... + "  " + originalName$
@@ -985,8 +1137,7 @@ if draw_visualization
         ... + "  " + fixed$(speedFactor[3], 2) + "  " + fixed$(speedFactor[4], 2)
         ... + "  " + fixed$(speedFactor[5], 2) + "  " + fixed$(speedFactor[6], 2)
         ... + "  " + fixed$(speedFactor[7], 2) + "  " + fixed$(speedFactor[8], 2)
-        ... + "   [Ch1-Ch8]  |  PSOLA " + fixed$(min_pitch, 0) + "-"
-        ... + fixed$(max_pitch, 0) + " Hz"
+        ... + "   [Ch1-Ch8]  |  " + engineSummary$
 
     Text: 0.02, "left", 0.18, "half",
         ... "Format: " + formatName$
