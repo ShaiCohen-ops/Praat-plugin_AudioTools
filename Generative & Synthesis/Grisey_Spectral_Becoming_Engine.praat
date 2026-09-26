@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 2.1.3 adaptive sum-headroom fix (2026)
+# Version: 2.2 spectral balance + direction (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -118,6 +118,38 @@
 #    Combination tones are OFF by default in that preset; they are not treated
 #    as the historical cause of the opening spectral reveal.
 #
+# v2.2 spectral balance + direction:
+#   - FUNDAMENTAL / HARMONIC BALANCE is now a control. Until now the only
+#     way to change it was the rolloff alpha, while the emphasis-peak
+#     envelope quietly worked against the fundamental: each partial is
+#     weighted by max(Envelope floor, Lorentzian), and a low fundamental
+#     sits far from every peak. In the Partiels-inspired preset the
+#     fundamental therefore got the 0.086 floor while partial 5 sat on the
+#     450 Hz peak at 0.898, leaving partial 5 about 5.3 dB LOUDER than the
+#     fundamental (partials 4 and 6 also above it).
+#       Fundamental emphasis (dB)   tilt applied to the lowest partials
+#       Emphasis span (partials)    how many partials the tilt covers, so
+#                                   the bass thickens instead of a single
+#                                   sine being pasted on top
+#       Envelope floor              the former hard-coded 0.08
+#     The emphasis enters the energy reference as well, so peak protection
+#     and the global scaling adapt to it.
+#   - INHARMONIC DIRECTION is no longer upward-only. The exponent of each
+#     partial is 1 + d(n) * inharmonicity:
+#       Upward stretch        d = +1   f_target(n) = f0 n^(1+i)
+#       Downward compression  d = -1   f_target(n) = f0 n^(1-i)   partials
+#                                      fall towards the fundamental
+#       Splay                 low partials d = -1, high partials d = +1,
+#                                      the field opens from the middle
+#   - PROCESS DIRECTION can be reversed: "Inharmonic -> harmonic" starts at
+#     the detuned field and arrives at the harmonic one, and the threshold
+#     splits close (1 - m) instead of opening. Rolloff, macro form, noise
+#     dissolution and the respiratory modulation keep their own directions.
+#   - Adaptive render-rate planning now takes the highest of the actual
+#     start and target frequencies (a downward target no longer plans the
+#     rate from a frequency the spectrum never reaches, and an upward one
+#     is unchanged).
+#
 # v2.1.3 adaptive sum-headroom fix:
 #   - Adaptive internal render-rate planning now includes the highest possible
 #     explicit sum-frequency component from the low-partial pair set actually
@@ -183,6 +215,14 @@ form Spectral Becoming Engine v2.1.3
     integer Number_of_partials 24
     positive Duration_s 30
     real Inharmonicity_target 0.05
+    optionmenu Inharmonicity_direction 1
+        option Upward stretch (partials rise)
+        option Downward compression (partials fall)
+        option Splay (low fall, high rise)
+    optionmenu Process_direction 1
+        option Harmonic -> inharmonic
+        option Inharmonic -> harmonic
+    real Fundamental_emphasis_dB 0
     positive Threshold_split_strength 1.0
 
     optionmenu Temporal_curve 1
@@ -220,6 +260,8 @@ formant_Q = 4.0
 
 start_rolloff_alpha = 1.00
 end_rolloff_alpha = 0.78
+emphasis_span_partials = 3
+envelope_floor = 0.08
 companion_mix = 0.20
 family_instability_depth = 0.25
 
@@ -373,6 +415,8 @@ if edit_spectral_details
         positive: "Emphasis Q", formant_Q
         positive: "Start rolloff alpha", start_rolloff_alpha
         positive: "End rolloff alpha", end_rolloff_alpha
+        integer: "Emphasis span partials", emphasis_span_partials
+        positive: "Envelope floor", envelope_floor
         real: "Threshold companion mix (0..0.6)", companion_mix
         real: "Family instability depth (0..0.8)", family_instability_depth
     endPause: "Continue", 1
@@ -404,8 +448,20 @@ endif
 if duration_s <= 0 or duration_s > 180
     exitScript: "Duration must be > 0 and <= 180 seconds."
 endif
-if inharmonicity_target < 0 or inharmonicity_target > 0.60
-    exitScript: "Inharmonicity target must be between 0 and 0.60."
+if inharmonicity_target < -0.60 or inharmonicity_target > 0.60
+    exitScript: "Inharmonicity target must be between -0.60 and 0.60 (the sign is also set by Inharmonicity direction)."
+endif
+if fundamental_emphasis_dB < -24 or fundamental_emphasis_dB > 36
+    exitScript: "Fundamental emphasis must be between -24 and +36 dB."
+endif
+if emphasis_span_partials < 1
+    exitScript: "Emphasis span must be at least 1 partial."
+endif
+if emphasis_span_partials > number_of_partials
+    emphasis_span_partials = number_of_partials
+endif
+if envelope_floor <= 0 or envelope_floor > 1
+    exitScript: "Envelope floor must be greater than 0 and at most 1."
 endif
 if threshold_split_strength <= 0 or threshold_split_strength > 5
     exitScript: "Threshold split strength must be > 0 and <= 5."
@@ -443,6 +499,20 @@ duration = duration_s
 nPartials = number_of_partials
 inharm = inharmonicity_target
 detStrength = threshold_split_strength
+reverseProcess = process_direction = 2
+
+if inharmonicity_direction = 1
+    directionName$ = "upward stretch"
+elsif inharmonicity_direction = 2
+    directionName$ = "downward compression"
+else
+    directionName$ = "splay (low fall, high rise)"
+endif
+if reverseProcess
+    processDirName$ = "inharmonic -> harmonic"
+else
+    processDirName$ = "harmonic -> inharmonic"
+endif
 
 # Correct temporal semantics.
 if temporal_curve = 1
@@ -480,9 +550,41 @@ familyLowMax = max(1,floor(nPartials/4))
 familyMidMax = max(familyLowMax+1,floor(2*nPartials/3))
 familyMidMax = min(nPartials-1,familyMidMax)
 
+# Per-partial inharmonic exponent: 1 + d(n)*inharmonicity.
+# d(n) = +1 upward, -1 downward, or -1/+1 below/above the midpoint (splay).
+expo# = zero#(nPartials)
+splayPivot = max(2,round(nPartials/3))
+for pn from 1 to nPartials
+    if inharmonicity_direction = 1
+        dirSign = 1
+    elsif inharmonicity_direction = 2
+        dirSign = -1
+    else
+        if pn <= splayPivot
+            dirSign = -1
+        else
+            dirSign = 1
+        endif
+    endif
+    expo#[pn] = 1+dirSign*inharm
+endfor
+
+# Fundamental / harmonic balance: a tilt over the lowest partials.
+# w(n) = max(0, 1-(n-1)/span), gain = 10^(emphasis dB/20 * w(n)).
+emphGain# = zero#(nPartials)
+for pn from 1 to nPartials
+    .w = max(0,1-(pn-1)/emphasis_span_partials)
+    emphGain#[pn] = 10^(fundamental_emphasis_dB/20*.w)
+endfor
+
 maxSplitHz = 24*detStrength*(1+family_instability_depth)
-requestedTop =
-    ... fundamental_Hz*nPartials^(1+inharm)+maxSplitHz
+# The spectrum may move up OR down, so plan from the highest frequency that
+# is actually reached, start or target.
+rawTop = 0
+for pn from 1 to nPartials
+    rawTop = max(rawTop,max(fundamental_Hz*pn,fundamental_Hz*pn^expo#[pn]))
+endfor
+requestedTop = rawTop+maxSplitHz
 
 # If explicit sum-frequency consequences are enabled, adaptive render-rate
 # planning must also include the highest sum that can actually be synthesized.
@@ -496,8 +598,8 @@ if combination_layer = 3
             ... fundamental_Hz*(pairLimitForTop-1)
 
         sumTopTarget =
-            ... fundamental_Hz*pairLimitForTop^(1+inharm)+
-            ... fundamental_Hz*(pairLimitForTop-1)^(1+inharm)
+            ... fundamental_Hz*pairLimitForTop^expo#[pairLimitForTop]+
+            ... fundamental_Hz*(pairLimitForTop-1)^expo#[pairLimitForTop-1]
 
         requestedTop = max(requestedTop,max(sumTopStart,sumTopTarget))
     endif
@@ -668,8 +770,17 @@ bw2 = effectiveFormant2/formant_Q
 bw3 = effectiveFormant3/formant_Q
 
 for pn from 1 to nPartials
-    fS = effectiveF0*pn
-    fT = effectiveF0*pn^(1+inharm)
+    # harmonic field and detuned field; the process direction decides which
+    # one is the start and which the target
+    .harmonic = effectiveF0*pn
+    .detuned = effectiveF0*pn^expo#[pn]
+    if reverseProcess
+        fS = .detuned
+        fT = .harmonic
+    else
+        fS = .harmonic
+        fT = .detuned
+    endif
 
     fStart#[pn] = fS
     fTarget#[pn] = fT
@@ -698,20 +809,30 @@ for pn from 1 to nPartials
         r2 = bw2*bw2/(bw2*bw2+(fS-effectiveFormant2)^2)
         r3 = bw3*bw3/(bw3*bw3+(fS-effectiveFormant3)^2)
         envS = max(max(r1,r2),r3)
-        envS = max(0.08,envS)
+        envS = max(envelope_floor,envS)
 
         r1 = bw1*bw1/(bw1*bw1+(fT-effectiveFormant1)^2)
         r2 = bw2*bw2/(bw2*bw2+(fT-effectiveFormant2)^2)
         r3 = bw3*bw3/(bw3*bw3+(fT-effectiveFormant3)^2)
         envE = max(max(r1,r2),r3)
-        envE = max(0.08,envE)
+        envE = max(envelope_floor,envE)
     endif
 
-    ampStartRef#[pn] = rollS*envS
-    ampEndRef#[pn] = rollE*envE
+    ampStartRef#[pn] = rollS*envS*emphGain#[pn]
+    ampEndRef#[pn] = rollE*envE*emphGain#[pn]
 
     sumStartEnergy = sumStartEnergy+ampStartRef#[pn]^2
     sumEndEnergy = sumEndEnergy+ampEndRef#[pn]^2
+endfor
+
+# loudest partial above the fundamental, for the balance report
+balanceLoudRef = 0
+balanceLoudIdx = 0
+for pn from 2 to nPartials
+    if ampStartRef#[pn] > balanceLoudRef
+        balanceLoudRef = ampStartRef#[pn]
+        balanceLoudIdx = pn
+    endif
 endfor
 
 energyReference = max(sumStartEnergy,sumEndEnergy)
@@ -730,7 +851,13 @@ appendInfoLine: "Concept: Grisey-inspired process engine, not score reconstructi
 appendInfoLine: "Fundamental / effective: ",
     ... fixed$(fundamental_Hz,2), " / ", fixed$(effectiveF0,2), " Hz"
 appendInfoLine: "Partials: ", nPartials
-appendInfoLine: "Harmonic -> inharmonic target: ", fixed$(inharm,4)
+appendInfoLine: "Inharmonicity: ", fixed$(inharm,4), "  direction: ", directionName$
+appendInfoLine: "Process direction: ", processDirName$
+appendInfoLine: "Fundamental emphasis: ", fixed$(fundamental_emphasis_dB,1),
+    ... " dB over ", emphasis_span_partials, " partial(s); envelope floor ", fixed$(envelope_floor,3)
+appendInfoLine: "  partial 1 / loudest partial at start: ",
+    ... fixed$(20*log10(ampStartRef#[1]/max(1e-12,balanceLoudRef)),1), " dB vs partial ",
+    ... balanceLoudIdx, " (negative = that partial is louder than the fundamental)"
 appendInfoLine: "Temporal morph: ", curveName$
 appendInfoLine: "Process form: ", processName$
 appendInfoLine: "Spectral envelope: ", envelopeName$
@@ -793,11 +920,11 @@ procedure synthPrimaryPair: .pn
         .r3$ = "(" + fixed$(bw3*bw3,9) + "/("
             ... + fixed$(bw3*bw3,9) + "+(" + .fObj$ + "-"
             ... + fixed$(effectiveFormant3,9) + ")^2))"
-        .specExpr$ = "max(0.08,max(max(" + .r1$ + "," + .r2$
+        .specExpr$ = "max(" + fixed$(envelope_floor,9) + ",max(max(" + .r1$ + "," + .r2$
             ... + ")," + .r3$ + "))"
     endif
 
-    .ampExpr$ = fixed$(globalAmpScale,9) + "*"
+    .ampExpr$ = fixed$(globalAmpScale*emphGain#[.pn],9) + "*"
         ... + .rollExpr$ + "*" + .specExpr$
         ... + "*object[" + string$(macroControl) + ",1,col]"
         ... + "*(1+" + fixed$(respiratory_depth,9)
@@ -839,8 +966,15 @@ procedure synthPrimaryPair: .pn
         endif
     endif
 
+    # the split opens with the process, or closes again when the process
+    # runs from the inharmonic field back to the harmonic one
+    if reverseProcess
+        .splitRamp$ = "(1-object[" + string$(morphControl) + ",1,col])"
+    else
+        .splitRamp$ = "object[" + string$(morphControl) + ",1,col]"
+    endif
     .splitExpr$ = fixed$(.sign*.split,9)
-        ... + "*object[" + string$(morphControl) + ",1,col]"
+        ... + "*" + .splitRamp$
         ... + "*(1+" + fixed$(family_instability_depth,9)
         ... + "*object[" + string$(.familyID) + ",1,col])"
 
@@ -859,10 +993,14 @@ procedure synthPrimaryPair: .pn
     Formula: "if col=1 then 0 else self[col-1]+2*pi*object["
         ... + string$(.compFreq) + ",1,col]/" + string$(sr) + " fi"
 
+    if reverseProcess
+        .compRamp$ = "(1.00-0.60*object[" + string$(morphControl) + ",1,col])"
+    else
+        .compRamp$ = "(0.40+0.60*object[" + string$(morphControl) + ",1,col])"
+    endif
     Formula: "object[" + string$(.amp) + ",1,col]*"
         ... + fixed$(companion_mix,9)
-        ... + "*(0.40+0.60*object[" + string$(morphControl)
-        ... + ",1,col])*sin(self+" + fixed$(.phase,9) + ")"
+        ... + "*" + .compRamp$ + "*sin(self+" + fixed$(.phase,9) + ")"
 
     selectObject: accumulator
     Formula: "self+object[" + string$(.comp) + ",1,col]"
