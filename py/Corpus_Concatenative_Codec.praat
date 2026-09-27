@@ -3,6 +3,35 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
+# Version: 1.12.0 (2026) - Draw moved from the RealTier editor to the Demo window
+#   v1.12.0 replaces the interactive RealTier editor with a Demo-window drawing
+#   surface. Reason: the old flow opened a RealTier editor, held the script in
+#   a pause window while the editor was live, then removed the RealTier (which
+#   destroys its editor) and immediately blocked Praat in runSubprocess. That
+#   editor-lifetime sequence is the only part of Draw that could take Praat
+#   down, and Draw runs from a saved contour file never went through it.
+#   The Demo window owns no Praat object, so nothing is destroyed underneath
+#   the user. New behaviour:
+#     - click adds a point; click a point to select it, click again to move
+#       it there; shift-click deletes; U undo, S stretch toggle, R reset,
+#       Enter render, Esc cancel - every action also has an on-screen button
+#       (Demo-window key codes differ per platform; the buttons always work).
+#     - the corpus's own brightness distribution (log spectral centroid of
+#       every grain, read from the index JSON) is shown as a density strip
+#       and as shaded bands; brightness ranges with NO grains are tinted red.
+#     - an orange step line previews which grain brightness each grain-rate
+#       step will snap to (nearest grain; the repeat penalty is not included).
+#     - VALUE SEMANTICS CHANGE: the drawing axis is now absolute 0..1 on the
+#       corpus's normalised log-brightness scale. The old RealTier path always
+#       min/max-stretched whatever was drawn to 0..1 in Python. That legacy
+#       behaviour is still available as "Stretch drawn range" (dialog field or
+#       S key), and the preview shows the stretched result when it is on.
+#     - Praat writes the drawn gesture directly as a corpus_draw_contour file,
+#       so the backend's --tier/RealTier path is no longer used by this script
+#       (the Python backend is unchanged and still accepts --tier).
+#     - closing the Demo window while drawing stops the script (Praat's own
+#       Demo-window behaviour); no objects or temp files exist at that point.
+#   The Contour file source and the whole synthesis path are unchanged.
 # Version: 1.11.0 (2026) - Reusable Draw contours
 #   v1.11.0 keeps the RealTier editor as the interactive Draw interface, but
 #   no longer lets the gesture disappear when the editor closes. Every Draw
@@ -24,7 +53,7 @@
 #   success branch (index found on disk) printed its confirmation and fell
 #   through to "goto END" without ever calling cleanUpTempFiles, so every
 #   successful build left an empty ccc_pylog_<tag>.txt behind (Build mode
-#   never creates tempInput$/tempOutput$/tempMeta$/tempTG$/tempTier$, so
+#   never creates tempInput$/tempOutput$/tempMeta$/tempTG$/tempDrawn$, so
 #   only the log - and rarely tempCrash$ - could ever be present here, but
 #   nothing removed even those). Fixed by adding the same @cleanUpTempFiles
 #   call as the failure branch already had. The internal corpus cache itself is not
@@ -118,7 +147,7 @@
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 # ============================================================
 
-form Corpus Concatenative Synthesis (codec) v1.11.0
+form Corpus Concatenative Synthesis (codec) v1.12.0
     comment ── Mode ──
     optionmenu Mode: 1
         option Match (synthesise from corpus)
@@ -157,6 +186,7 @@ draw_duration_s = 4.0
 grain_rate_ms = 80
 draw_source = 1
 contour_file$ = ""
+stretch_drawn_range = 0
 
 # Matching preset + matching (Match mode; some also shared by Draw/Gesture)
 match_preset = 1
@@ -217,15 +247,15 @@ elsif mode = 3
     # ---- DRAW MODE ----
     beginPause: "Draw mode: gesture source + synthesis"
         optionMenu: "Draw source", draw_source
-            option: "Interactive RealTier"
+            option: "Interactive (Demo window)"
             option: "Contour file"
         sentence: "Contour file", contour_file$
-        comment: "Interactive: leave Contour file empty; the normalized gesture is auto-saved."
-        comment: "Contour file: paste a previously saved corpus_draw_contour path; its own duration is reused."
+        comment: "Interactive: draw in the Demo window; the gesture is auto-saved as a contour file."
+        comment: "Contour file: paste a saved corpus_draw_contour path; its own duration is reused."
         positive: "Draw duration s", draw_duration_s
         positive: "Grain rate ms", grain_rate_ms
-        comment: "Draw duration applies to Interactive RealTier; saved contours replay their stored duration."
-        comment: "Crossfade / repeat penalty:"
+        boolean: "Stretch drawn range", stretch_drawn_range
+        comment: "Stretch = legacy behaviour: the drawn min..max is expanded to the full 0..1 range."
         positive: "Crossfade ms", crossfade_ms
         real: "Repeat penalty", repeat_penalty
     endPause: "Continue", 1
@@ -419,12 +449,15 @@ tempInput$  = tempDir$ + "ccc_input_" + runTag$ + ".wav"
 tempOutput$ = tempDir$ + "ccc_output_" + runTag$ + ".wav"
 tempMeta$   = tempDir$ + "ccc_meta_" + runTag$ + ".json"
 tempTG$     = tempDir$ + "ccc_output_" + runTag$ + ".TextGrid"
-tempTier$   = tempDir$ + "ccc_curve_" + runTag$ + ".RealTier"
+# Scratch copy of the gesture drawn in the Demo window (corpus_draw_contour
+# format). The backend reads it with --contour and writes the persistent copy
+# to usedContour$, so this one is deleted at cleanup like the other scratch files.
+tempDrawn$  = tempDir$ + "ccc_drawn_" + runTag$ + ".txt"
 tempLog$    = tempDir$ + "ccc_pylog_" + runTag$ + ".txt"
 probeMarker$ = tempDir$ + "ccc_probe_" + runTag$ + ".txt"
 tempBuildMarker$ = tempDir$ + "ccc_build_ok_" + runTag$ + ".txt"
 # Persistent, normalized Draw trajectory actually used by this run. Unlike the
-# RealTier scratch export, this is NOT deleted at cleanup: it is the reusable
+# scratch drawn-gesture file (tempDrawn$), this is NOT deleted at cleanup: it is the reusable
 # compositional gesture / reproducibility record.
 usedContour$ = drawContourDir$ + "draw_contour_" + runTag$ + ".txt"
 
@@ -477,8 +510,8 @@ procedure cleanUpTempFiles
     if fileReadable(tempTG$)
         deleteFile: tempTG$
     endif
-    if fileReadable(tempTier$)
-        deleteFile: tempTier$
+    if fileReadable(tempDrawn$)
+        deleteFile: tempDrawn$
     endif
     if fileReadable(tempLog$)
         deleteFile: tempLog$
@@ -516,6 +549,592 @@ procedure showPyLog
         removeObject: .logId
     endif
 endproc
+
+# ============================================================
+# DRAW MODE - Demo-window gesture surface (v1.12.0)
+# All state lives in globals prefixed "dd" so nothing collides with the rest
+# of the script. The Demo window is 0..100 in both directions with y pointing
+# UP; every hit test is done in those percent units, with the full-window
+# viewport re-selected first so demoX()/demoY() return percent coordinates.
+# ============================================================
+
+procedure ddLoadCorpusBrightness: .jsonPath$
+    # Same brightness scale as the backend's draw(): log spectral centroid of
+    # every grain, normalised to 0..1 over the corpus. The index JSON is
+    # tokenised on its "centroid_hz" keys (one token per grain), so the scan
+    # is one pass regardless of how many other fields each grain carries.
+    .raw$ = readFile$(.jsonPath$)
+    .raw$ = replace$(.raw$, "@", "", 0)
+    .raw$ = replace$(.raw$, """centroid_hz"":", "@", 0)
+    Create Strings as tokens: .raw$, "@"
+    .strId = selected("Strings")
+    .nTok = Get number of strings
+    ddNG = 0
+    ddLogC# = zero#(max(1, .nTok - 1))
+    for .i from 2 to .nTok
+        selectObject: .strId
+        .tok$ = Get string: .i
+        .c = extractNumber(.tok$, "")
+        if .c <> undefined
+            ddNG = ddNG + 1
+            ddLogC#[ddNG] = ln(max(.c, 1e-6))
+        endif
+    endfor
+    removeObject: .strId
+    if ddNG = 0
+        exitScript: "This corpus index has no per-grain brightness data (built with an" + newline$
+            ... + "older version). Rebuild the corpus to use Draw mode."
+    endif
+    .cmin = ddLogC#[1]
+    .cmax = ddLogC#[1]
+    for .i to ddNG
+        .cmin = min(.cmin, ddLogC#[.i])
+        .cmax = max(.cmax, ddLogC#[.i])
+    endfor
+    ddBright# = zero#(ddNG)
+    for .i to ddNG
+        ddBright#[.i] = (ddLogC#[.i] - .cmin) / (.cmax - .cmin + 1e-9)
+    endfor
+    ddCentroidMin = exp(.cmin)
+    ddCentroidMax = exp(.cmax)
+
+    # density histogram of grain brightness, used for the strip and bands
+    ddNB = 40
+    ddHist# = zero#(ddNB)
+    for .i to ddNG
+        .b = min(ddNB, floor(ddBright#[.i] * ddNB) + 1)
+        ddHist#[.b] = ddHist#[.b] + 1
+    endfor
+    ddHistMax = max(ddHist#)
+    ddEmptyBins = 0
+    for .b to ddNB
+        if ddHist#[.b] = 0
+            ddEmptyBins = ddEmptyBins + 1
+        endif
+    endfor
+endproc
+
+procedure ddInit: .dur, .rateMs, .stretch
+    ddDur = .dur
+    ddStep = max(0.001, .rateMs / 1000)
+    ddStretch = .stretch
+    ddState = 0
+    ddSel = 0
+    ddUndoDepth = 0
+    ddUndoMax = 60
+    ddMsg$ = ""
+    # geometry (Demo-window percent units, y up)
+    ddX1 = 8
+    ddX2 = 82
+    ddY1 = 27
+    ddY2 = 86
+    ddSX1 = 86
+    ddSX2 = 96
+    ddHitRadius = 2.0
+    # buttons: 1 Undo, 2 Reset, 3 Stretch, 4 Cancel, 5 Render
+    ddBy1 = 8
+    ddBy2 = 14
+    ddBx1[1] = 3
+    ddBx2[1] = 16
+    ddBx1[2] = 18
+    ddBx2[2] = 31
+    ddBx1[3] = 33
+    ddBx2[3] = 52
+    ddBx1[4] = 64
+    ddBx2[4] = 79
+    ddBx1[5] = 81
+    ddBx2[5] = 97
+    @ddResetPoints
+endproc
+
+procedure ddResetPoints
+    # same starting gesture as the old RealTier default: a dark-to-bright ramp
+    ddN = 2
+    ddT[1] = 0
+    ddV[1] = 0
+    ddT[2] = ddDur
+    ddV[2] = 1
+    ddSel = 0
+endproc
+
+procedure ddPushUndo
+    if ddUndoDepth >= ddUndoMax
+        for .k to ddUndoMax - 1
+            .kn = .k + 1
+            ddUN[.k] = ddUN[.kn]
+            for .i to ddUN[.k]
+                ddUT[.k, .i] = ddUT[.kn, .i]
+                ddUV[.k, .i] = ddUV[.kn, .i]
+            endfor
+        endfor
+        ddUndoDepth = ddUndoMax - 1
+    endif
+    ddUndoDepth = ddUndoDepth + 1
+    ddUN[ddUndoDepth] = ddN
+    for .i to ddN
+        ddUT[ddUndoDepth, .i] = ddT[.i]
+        ddUV[ddUndoDepth, .i] = ddV[.i]
+    endfor
+endproc
+
+procedure ddUndo
+    if ddUndoDepth = 0
+        ddMsg$ = "nothing to undo"
+    else
+        ddN = ddUN[ddUndoDepth]
+        for .i to ddN
+            ddT[.i] = ddUT[ddUndoDepth, .i]
+            ddV[.i] = ddUV[ddUndoDepth, .i]
+        endfor
+        ddUndoDepth = ddUndoDepth - 1
+        ddSel = 0
+    endif
+endproc
+
+procedure ddInsert: .t, .v
+    # sorted insert; a point at (numerically) the same time is replaced,
+    # because a tier holds one value per time
+    .eps = 1e-6 * ddDur
+    .found = 0
+    for .i to ddN
+        if abs(ddT[.i] - .t) < .eps
+            .found = .i
+        endif
+    endfor
+    if .found > 0
+        ddV[.found] = .v
+    else
+        .pos = ddN + 1
+        for .i to ddN
+            if .pos = ddN + 1
+                if ddT[.i] > .t
+                    .pos = .i
+                endif
+            endif
+        endfor
+        for .j to ddN - .pos + 1
+            .src = ddN - .j + 1
+            ddT[.src + 1] = ddT[.src]
+            ddV[.src + 1] = ddV[.src]
+        endfor
+        ddT[.pos] = .t
+        ddV[.pos] = .v
+        ddN = ddN + 1
+    endif
+endproc
+
+procedure ddDelete: .k
+    for .i from .k to ddN - 1
+        ddT[.i] = ddT[.i + 1]
+        ddV[.i] = ddV[.i + 1]
+    endfor
+    ddN = ddN - 1
+endproc
+
+procedure ddInteriorTime: .t
+    # interior points never land on (or beyond) the locked end points
+    .eps = 0.002 * ddDur
+    ddIT = min(max(.t, .eps), ddDur - .eps)
+endproc
+
+procedure ddMovePoint: .k, .t, .v
+    @ddPushUndo
+    if .k = 1 or .k = ddN
+        # end points are locked in time, free in value
+        ddV[.k] = .v
+    else
+        @ddDelete: .k
+        @ddInteriorTime: .t
+        @ddInsert: ddIT, .v
+    endif
+endproc
+
+procedure ddNearest: .px, .py
+    ddNear = 0
+    ddNearDist = 1e30
+    for .i to ddN
+        .x = ddX1 + ddT[.i] / ddDur * (ddX2 - ddX1)
+        .y = ddY1 + ddV[.i] * (ddY2 - ddY1)
+        .d = sqrt((.x - .px) ^ 2 + (.y - .py) ^ 2)
+        if .d < ddNearDist
+            ddNearDist = .d
+            ddNear = .i
+        endif
+    endfor
+endproc
+
+procedure ddEffective
+    # ddE[] = the values actually written to the contour file. Without
+    # stretch they are the drawn values; with stretch they reproduce the
+    # legacy RealTier behaviour (drawn min..max -> 0..1, flat -> 0.5).
+    .vmin = ddV[1]
+    .vmax = ddV[1]
+    for .i to ddN
+        .vmin = min(.vmin, ddV[.i])
+        .vmax = max(.vmax, ddV[.i])
+    endfor
+    for .i to ddN
+        if ddStretch
+            if .vmax - .vmin > 1e-9
+                ddE[.i] = (ddV[.i] - .vmin) / (.vmax - .vmin)
+            else
+                ddE[.i] = 0.5
+            endif
+        else
+            ddE[.i] = ddV[.i]
+        endif
+    endfor
+endproc
+
+procedure ddInterp: .t
+    # linear interpolation of ddE[], held flat beyond the ends (= np.interp)
+    if .t <= ddT[1]
+        ddInterpV = ddE[1]
+    elsif .t >= ddT[ddN]
+        ddInterpV = ddE[ddN]
+    else
+        .done = 0
+        for .i to ddN - 1
+            if .done = 0
+                .i1 = .i + 1
+                if .t <= ddT[.i1]
+                    .span = ddT[.i1] - ddT[.i]
+                    if .span > 0
+                        ddInterpV = ddE[.i] + (ddE[.i1] - ddE[.i]) * (.t - ddT[.i]) / .span
+                    else
+                        ddInterpV = ddE[.i1]
+                    endif
+                    .done = 1
+                endif
+            endif
+        endfor
+    endif
+endproc
+
+procedure ddNiceStep: .raw
+    .p = 10 ^ floor(log10(.raw))
+    .m = .raw / .p
+    if .m < 1.5
+        ddNice = .p
+    elsif .m < 3.5
+        ddNice = 2 * .p
+    elsif .m < 7.5
+        ddNice = 5 * .p
+    else
+        ddNice = 10 * .p
+    endif
+endproc
+
+procedure ddVP: .x1, .x2, .y1, .y2, .ax1, .ax2, .ay1, .ay2
+    # Font size must already be set: Praat derives the drawing frame from
+    # the font size current at selection time.
+    demo Select inner viewport: .x1, .x2, .y1, .y2
+    demo Axes: .ax1, .ax2, .ay1, .ay2
+endproc
+
+procedure ddRedraw
+    @ddEffective
+    demo Erase all
+    demo Colour: "Black"
+    demo Line width: 1
+
+    # ---- title strip ----
+    demo Font size: 16
+    @ddVP: 0, 100, 91, 99, 0, 1, 0, 1
+    demo Text: 0.5, "centre", 0.70, "half", "##Corpus Concatenative Codec — Draw brightness contour##"
+    demo Font size: 11
+    @ddVP: 0, 100, 91, 99, 0, 1, 0, 1
+    .stretchTxt$ = if ddStretch then "on" else "off" fi
+    .sub$ = string$(ddNG) + " corpus grains  ·  " + fixed$(ddDur, 2) + " s  ·  grain rate "
+        ... + fixed$(ddStep * 1000, 0) + " ms  ·  stretch " + .stretchTxt$
+        ... + "  ·  " + string$(ddN) + " points"
+    if ddSel > 0
+        .sub$ = .sub$ + "  ·  point " + string$(ddSel) + " selected: click where it should go"
+    endif
+    if ddMsg$ <> ""
+        .sub$ = .sub$ + "  ·  " + ddMsg$
+    endif
+    demo Text: 0.5, "centre", 0.18, "half", .sub$
+
+    # ---- legend line above the main panel ----
+    demo Font size: 10
+    @ddVP: ddX1, ddX2, ddY2 + 0.5, 90.5, 0, 1, 0, 1
+    demo Colour: {0.20, 0.40, 0.80}
+    demo Text: 0.0, "left", 0.5, "half", "blue: your gesture"
+    demo Colour: {0.90, 0.50, 0.10}
+    demo Text: 0.2, "left", 0.5, "half", "orange: grain brightness each step will select"
+    demo Colour: {0.45, 0.45, 0.45}
+    demo Text: 0.62, "left", 0.5, "half", "shading: grain density"
+    demo Colour: {0.80, 0.25, 0.25}
+    demo Text: 0.83, "left", 0.5, "half", "red: no grains"
+    demo Colour: "Black"
+
+    # ---- main panel: density bands ----
+    demo Font size: 10
+    @ddVP: ddX1, ddX2, ddY1, ddY2, 0, ddDur, 0, 1
+    for .b to ddNB
+        .y0 = (.b - 1) / ddNB
+        .y1 = .b / ddNB
+        if ddHist#[.b] = 0
+            demo Paint rectangle: {0.99, 0.90, 0.90}, 0, ddDur, .y0, .y1
+        else
+            .g = sqrt(ddHist#[.b] / ddHistMax)
+            .col# = {1.00, 1.00, 1.00} - 0.30 * .g * {0.80, 0.60, 0.20}
+            demo Paint rectangle: .col#, 0, ddDur, .y0, .y1
+        endif
+    endfor
+    demo Colour: {0.75, 0.75, 0.75}
+    demo Dotted line
+    for .q to 3
+        demo Draw line: 0, .q / 4, ddDur, .q / 4
+    endfor
+    demo Solid line
+
+    # ---- preview: nearest grain brightness per grain-rate step ----
+    # Mirrors the backend's selection without the repeat penalty.
+    demo Colour: {0.90, 0.50, 0.10}
+    demo Line width: 1.5
+    .nSteps = max(1, round(ddDur / ddStep))
+    .prevB = 0
+    for .k from 0 to .nSteps - 1
+        .t0 = .k * ddStep
+        if .t0 < ddDur
+            .t1 = min(ddDur, .t0 + ddStep)
+            @ddInterp: .t0
+            .d# = abs#(ddBright# - ddInterpV)
+            .b = ddBright#[imin(.d#)]
+            demo Draw line: .t0, .b, .t1, .b
+            if .k > 0
+                demo Draw line: .t0, .prevB, .t0, .b
+            endif
+            .prevB = .b
+        endif
+    endfor
+
+    # ---- the drawn gesture ----
+    if ddStretch
+        # thin dashed curve = what stretch actually sends to the backend
+        demo Colour: {0.20, 0.40, 0.80}
+        demo Line width: 1
+        demo Dashed line
+        for .i to ddN - 1
+            demo Draw line: ddT[.i], ddE[.i], ddT[.i + 1], ddE[.i + 1]
+        endfor
+        demo Solid line
+    endif
+    demo Colour: {0.20, 0.40, 0.80}
+    demo Line width: 2.5
+    for .i to ddN - 1
+        demo Draw line: ddT[.i], ddV[.i], ddT[.i + 1], ddV[.i + 1]
+    endfor
+    demo Line width: 1
+    for .i to ddN
+        if .i = ddSel
+            demo Paint circle (mm): {0.85, 0.15, 0.15}, ddT[.i], ddV[.i], 3.2
+            demo Paint circle (mm): {1.00, 1.00, 1.00}, ddT[.i], ddV[.i], 2.0
+        endif
+        demo Paint circle (mm): {0.10, 0.10, 0.10}, ddT[.i], ddV[.i], 1.2
+    endfor
+    demo Colour: "Black"
+    @ddVP: ddX1, ddX2, ddY1, ddY2, 0, ddDur, 0, 1
+    demo Draw inner box
+    @ddVP: ddX1, ddX2, ddY1, ddY2, 0, ddDur, 0, 1
+    demo Marks left every: 1, 0.25, "yes", "yes", "no"
+    @ddNiceStep: ddDur / 5
+    demo Marks bottom every: 1, ddNice, "yes", "yes", "no"
+    demo Text left: "yes", "brightness (0 dark, 1 bright)"
+    demo Text bottom: "yes", "time (s)"
+
+    # ---- corpus density strip ----
+    demo Font size: 10
+    @ddVP: ddSX1, ddSX2, ddY1, ddY2, 0, 1, 0, 1
+    for .b to ddNB
+        .y0 = (.b - 1) / ddNB
+        .y1 = .b / ddNB
+        if ddHist#[.b] = 0
+            demo Paint rectangle: {0.99, 0.90, 0.90}, 0, 1, .y0, .y1
+        else
+            demo Paint rectangle: {0.20, 0.40, 0.80}, 0, ddHist#[.b] / ddHistMax, .y0, .y1
+        endif
+    endfor
+    @ddVP: ddSX1, ddSX2, ddY1, ddY2, 0, 1, 0, 1
+    demo Draw inner box
+    @ddVP: ddSX1, ddSX2, ddY1, ddY2, 0, 1, 0, 1
+    demo Text: 0.5, "centre", 1.01, "bottom", fixed$(ddCentroidMax, 0) + " Hz"
+    demo Text: 0.5, "centre", -0.015, "top", fixed$(ddCentroidMin, 0) + " Hz"
+    demo Text: 0.5, "centre", -0.075, "top", "corpus grains"
+
+    # ---- control panel (grey), axes = percent units ----
+    demo Font size: 11
+    @ddVP: 0, 100, 1.5, 17.5, 0, 100, 1.5, 17.5
+    demo Paint rectangle: {0.94, 0.94, 0.94}, 0, 100, 1.5, 17.5
+    for .k to 5
+        if .k = 1
+            .lab$ = "Undo (U)"
+            .col# = {1.00, 1.00, 1.00}
+        elsif .k = 2
+            .lab$ = "Reset (R)"
+            .col# = {1.00, 1.00, 1.00}
+        elsif .k = 3
+            .lab$ = "Stretch (S): " + .stretchTxt$
+            .col# = if ddStretch then {0.82, 0.88, 0.97} else {1.00, 1.00, 1.00} fi
+        elsif .k = 4
+            .lab$ = "Cancel (Esc)"
+            .col# = {0.98, 0.88, 0.88}
+        else
+            .lab$ = "##Render (Enter)##"
+            .col# = {0.86, 0.94, 0.86}
+        endif
+        demo Paint rectangle: .col#, ddBx1[.k], ddBx2[.k], ddBy1, ddBy2
+        demo Colour: "Black"
+        demo Draw rectangle: ddBx1[.k], ddBx2[.k], ddBy1, ddBy2
+        demo Text: (ddBx1[.k] + ddBx2[.k]) / 2, "centre", (ddBy1 + ddBy2) / 2, "half", .lab$
+    endfor
+    demo Font size: 10
+    @ddVP: 0, 100, 1.5, 17.5, 0, 100, 1.5, 17.5
+    demo Text: 50, "centre", 4.5, "half",
+        ... "click empty space: add point  ·  click a point, then click elsewhere: move it  ·  shift-click a point: delete  ·  end points move vertically only"
+    @ddVP: 0, 100, 1.5, 17.5, 0, 100, 1.5, 17.5
+    demo Draw inner box
+    demoShow()
+endproc
+
+procedure ddHandleInput
+    demo Select inner viewport: 0, 100, 0, 100
+    demo Axes: 0, 100, 0, 100
+    ddMsg$ = ""
+    if demoClicked()
+        .px = demoX()
+        .py = demoY()
+        .shift = demoShiftKeyPressed()
+        if .px >= ddX1 - 1.5 and .px <= ddX2 + 1.5 and .py >= ddY1 - 1.5 and .py <= ddY2 + 1.5
+            @ddClickPanel: .px, .py, .shift
+        else
+            .hit = 0
+            for .k to 5
+                if .px >= ddBx1[.k] and .px <= ddBx2[.k] and .py >= ddBy1 and .py <= ddBy2
+                    .hit = .k
+                endif
+            endfor
+            if .hit > 0
+                @ddAction: .hit
+            endif
+        endif
+    elsif demoKeyPressed()
+        # Key codes differ per platform (Enter is 13 on Windows/macOS but
+        # 65293 on Linux/GTK), so all known variants are accepted; the
+        # on-screen buttons are the platform-independent route.
+        .k$ = demoKey$()
+        if .k$ = "u" or .k$ = "U"
+            @ddAction: 1
+        elsif .k$ = "r" or .k$ = "R"
+            @ddAction: 2
+        elsif .k$ = "s" or .k$ = "S"
+            @ddAction: 3
+        elsif .k$ = unicode$(27)
+            @ddAction: 4
+        elsif .k$ = unicode$(13) or .k$ = unicode$(10) or .k$ = unicode$(65293) or .k$ = unicode$(65421)
+            @ddAction: 5
+        elsif .k$ = "x" or .k$ = "X" or .k$ = unicode$(8) or .k$ = unicode$(127)
+            ... or .k$ = unicode$(65288) or .k$ = unicode$(65535)
+            @ddAction: 6
+        endif
+    endif
+endproc
+
+procedure ddAction: .a
+    if .a = 1
+        @ddUndo
+    elsif .a = 2
+        @ddPushUndo
+        @ddResetPoints
+        ddMsg$ = "reset to the default ramp (U undoes)"
+    elsif .a = 3
+        ddStretch = 1 - ddStretch
+    elsif .a = 4
+        ddState = 2
+    elsif .a = 5
+        ddState = 1
+    elsif .a = 6
+        if ddSel > 1 and ddSel < ddN
+            @ddPushUndo
+            @ddDelete: ddSel
+            ddSel = 0
+        elsif ddSel > 0
+            ddMsg$ = "end points cannot be deleted"
+        else
+            ddMsg$ = "select a point first"
+        endif
+    endif
+endproc
+
+procedure ddClickPanel: .px, .py, .shift
+    .t = min(max((.px - ddX1) / (ddX2 - ddX1) * ddDur, 0), ddDur)
+    .v = min(max((.py - ddY1) / (ddY2 - ddY1), 0), 1)
+    @ddNearest: .px, .py
+    .near = if ddNearDist <= ddHitRadius then ddNear else 0 fi
+    if .shift
+        if .near > 1 and .near < ddN
+            @ddPushUndo
+            @ddDelete: .near
+            ddSel = 0
+        elsif .near > 0
+            ddMsg$ = "end points cannot be deleted"
+        else
+            ddMsg$ = "shift-click ON a point to delete it"
+        endif
+    elsif ddSel > 0
+        if .near = ddSel
+            ddSel = 0
+        elsif .near > 0
+            ddSel = .near
+        else
+            @ddMovePoint: ddSel, .t, .v
+            ddSel = 0
+        endif
+    elsif .near > 0
+        ddSel = .near
+    else
+        @ddPushUndo
+        @ddInteriorTime: .t
+        @ddInsert: ddIT, .v
+    endif
+endproc
+
+procedure ddShowRendering
+    # last frame before Praat blocks in runSubprocess, so the window does not
+    # look frozen mid-edit
+    demo Font size: 12
+    @ddVP: 0, 100, 1.5, 17.5, 0, 100, 1.5, 17.5
+    demo Paint rectangle: {0.94, 0.94, 0.94}, 0, 100, 1.5, 17.5
+    demo Colour: "Black"
+    demo Text: 50, "centre", 9.5, "half",
+        ... "##Rendering…## Praat is busy until the synthesis finishes; progress and results go to the Info window."
+    @ddVP: 0, 100, 1.5, 17.5, 0, 100, 1.5, 17.5
+    demo Draw inner box
+    demoShow()
+endproc
+
+procedure ddWriteContour: .path$
+    # Writes the corpus_draw_contour 1 format read by the backend's
+    # read_draw_contour(); values are the EFFECTIVE (post-stretch) ones.
+    @ddEffective
+    .src$ = if ddStretch then "praat_demo_window (stretched)" else "praat_demo_window" fi
+    .txt$ = "# Praat AudioTools - Corpus Concatenative Codec Draw contour" + newline$
+    .txt$ = .txt$ + "# time_s normalized_brightness   (0=dark, 1=bright)" + newline$
+    .txt$ = .txt$ + "# source: " + .src$ + newline$
+    .txt$ = .txt$ + "format corpus_draw_contour 1" + newline$
+    .txt$ = .txt$ + "duration " + fixed$(ddDur, 6) + newline$
+    .txt$ = .txt$ + "[CURVE]" + newline$
+    for .i to ddN
+        # rounding first keeps fixed$ from printing long tails for tiny values
+        .t = round(ddT[.i] * 1e6) / 1e6
+        .v = round(ddE[.i] * 1e6) / 1e6
+        .txt$ = .txt$ + fixed$(.t, 6) + " " + fixed$(.v, 6) + newline$
+    endfor
+    writeFile: .path$, .txt$
+endproc
+
 
 # ============================================================
 # BUILD CORPUS MODE
@@ -558,7 +1177,7 @@ if mode = 2
         appendInfoLine: "You can now run Match mode on a selected Sound."
         # Only tempLog$ (and, rarely, tempCrash$) can exist at this point -
         # build mode never touches tempInput$/tempOutput$/tempMeta$/tempTG$/
-        # tempTier$ - but this branch never cleaned up either of them, so
+        # tempDrawn$ - but this branch never cleaned up either of them, so
         # every successful build left an empty ccc_pylog_<tag>.txt behind.
         # The corpus index itself is untouched: it isn't part of this list.
         @cleanUpTempFiles
@@ -578,9 +1197,10 @@ endif
 
 # ============================================================
 # DRAW MODE - a brightness contour navigates the corpus
-# The RealTier editor remains the interactive interface, but the actual control
-# representation is now explicit and persistent: time -> normalized brightness.
-# A saved contour can be loaded directly for exact replay / batch work.
+# The gesture is drawn in the Demo window (v1.12.0; previously the RealTier
+# editor) and written straight to the explicit, persistent representation:
+# time -> normalized brightness. A saved contour can be loaded directly for
+# exact replay / batch work.
 # ============================================================
 if mode = 3
     # index must exist (Draw needs the corpus's per-grain brightness)
@@ -594,34 +1214,44 @@ if mode = 3
     drawBackendDuration$ = "0"
 
     if draw_source = 1
-        # ---- INTERACTIVE REALTIER ----
-        # Create a RealTier exactly as before. Its raw values are only an editor
-        # convenience; the backend normalises them and writes the exact reusable
-        # control trajectory to usedContour$.
-        Create RealTier: "ccc_curve", 0, draw_duration_s
-        tier = selected("RealTier")
-        Add point: 0, 0
-        Add point: draw_duration_s, 1
+        # ---- INTERACTIVE (DEMO WINDOW) ----
+        # v1.12.0: replaces the RealTier editor. Nothing in this branch creates
+        # a Praat object, so there is no editor whose lifetime the script has
+        # to manage, and nothing is destroyed underneath the user before the
+        # blocking runSubprocess call below.
+        @ddLoadCorpusBrightness: corpusIndexPath$ + ".json"
+        @ddInit: draw_duration_s, grain_rate_ms, stretch_drawn_range
+        demoWindowTitle: "Corpus Concatenative Codec - Draw brightness contour"
 
-        View & Edit
-        beginPause: "Draw your brightness contour"
-            comment: "Draw a curve in the RealTier editor (click to add points,"
-            comment: "drag to shape). Value axis = brightness: low picks dark/low"
-            comment: "corpus grains, high picks bright/high ones."
-            comment: "Click Continue when your gesture is ready."
-        endPause: "Continue", 1
+        # The wait stays at the TOP LEVEL of the script, not inside a
+        # procedure: demoWaitForInput suspends the interpreter and resumes it
+        # at this very line when the user clicks or types in the Demo window.
+        # Closing the Demo window here stops the script (Praat's own
+        # behaviour); no objects or temp files exist yet at this point.
+        while ddState = 0
+            @ddRedraw
+            ddDummy = demoWaitForInput()
+            @ddHandleInput
+        endwhile
 
-        selectObject: tier
-        Save as text file: tempTier$
-        removeObject: tier
-
-        if not fileReadable(tempTier$)
-            exitScript: "Could not export the drawn RealTier."
+        if ddState = 2
+            @cleanUpTempFiles
+            exitScript: "Draw cancelled - nothing was rendered."
         endif
 
-        drawSourceArg$ = "--tier"
-        drawSourcePath$ = tempTier$
-        drawBackendDuration$ = string$(draw_duration_s)
+        @ddShowRendering
+        @ddWriteContour: tempDrawn$
+        if not fileReadable(tempDrawn$)
+            @cleanUpTempFiles
+            exitScript: "Could not write the drawn contour to:" + newline$ + tempDrawn$
+        endif
+
+        # The drawn gesture is handed over in the same corpus_draw_contour
+        # format a saved contour uses. It carries its own duration
+        # (= Draw duration s), so the backend is told not to stretch it.
+        drawSourceArg$ = "--contour"
+        drawSourcePath$ = tempDrawn$
+        drawBackendDuration$ = "0"
 
     else
         # ---- SAVED CONTOUR FILE ----
@@ -642,7 +1272,8 @@ if mode = 3
     appendInfoLine: "=== Draw mode (brightness contour) ==="
     appendInfoLine: "Corpus: ", corpusIndexPath$
     if draw_source = 1
-        appendInfoLine: "Gesture source: Interactive RealTier"
+        appendInfoLine: "Gesture source: Interactive (Demo window)",
+            ... if ddStretch then "   [stretched to 0..1]" else "" fi
         appendInfoLine: "Duration: ", string$(draw_duration_s), " s   Grain rate: ", string$(grain_rate_ms), " ms"
     else
         appendInfoLine: "Gesture source: saved contour file"
@@ -690,7 +1321,7 @@ if mode = 3
         Rename: "drawn_grains"
     endif
 
-    # Scratch RealTier/output/meta/TextGrid/log files are temporary. The saved
+    # Scratch drawn-gesture/output/meta/TextGrid/log files are temporary. The saved
     # normalized contour under draw_contours/ is intentional persistent data.
     @cleanUpTempFiles
 
