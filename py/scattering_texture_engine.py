@@ -47,6 +47,11 @@ joined with equal-power crossfades. Measured on a 17 s file, one core:
 Preview 55 s -> 17 s (measured); Standard 55 s (v0.2 Standard was not re-measured on
 this file; ~4 min estimated from its per-iteration cost).
 
+v0.3.2 (speed): carriers cached across calibration rounds, batched
+modulation IFFTs, scipy.fft in direct synthesis, no repeated analysis in
+Preview, single-precision modulation gains. Preview 1.6x faster, output
+within 5e-8 of v0.3.1.
+
 Dependencies: numpy, scipy, kymatio. Nothing is downloaded, no model weights.
 """
 
@@ -559,7 +564,8 @@ def direct_synthesis(sc, src_win, tg, w, rnd, rng, rounds, hist, si):
     import numpy as np
     N, J = sc.N, sc.J
     Tn, hop = sc.T_frames, 2 ** sc.J
-    fft = np.fft
+    import scipy.fft as fft          # same FFT_WORKERS policy as the analysis
+    fftw = {"workers": FFT_WORKERS}
 
     # effective order-1 target: w1 blends the full trajectory with a neutral one
     # (time-averaged, blurred over one octave -> no trajectory, no fine identity)
@@ -570,9 +576,9 @@ def direct_synthesis(sc, src_win, tg, w, rnd, rng, rounds, hist, si):
     L1_eff = w[1] * tg.L1 + (1 - w[1]) * L1_neutral
 
     # carrier spectrum: |source| (0 %) ... smoothed envelope (100 %), random phase
-    X = fft.fft(src_win)
+    X = fft.fft(src_win, **fftw)
     P = np.abs(X) ** 2
-    Psm = np.abs(fft.fft(smooth_spectrum_noise(src_win, rng))) ** 2
+    Psm = np.abs(fft.fft(smooth_spectrum_noise(src_win, rng), **fftw)) ** 2
     mag = np.sqrt((1 - rnd) * P / max(P.mean(), 1e-30) + rnd * Psm / max(Psm.mean(), 1e-30))
     Xr = mag * np.exp(1j * rng.uniform(0, 2 * np.pi, N))
 
@@ -586,24 +592,44 @@ def direct_synthesis(sc, src_win, tg, w, rnd, rng, rounds, hist, si):
         while (N >> (kd + 1)) >= 8 * Tn and 0.5 / 2 ** (kd + 1) > 1.25 * xmax:
             kd += 1
         Md = N >> kd
-        WR = np.zeros((len(pidx), Md), dtype=np.float32)
-        for r, p in enumerate(pidx):
-            F0 = np.asarray(sc.psi2[sc.path_n2[p]]["levels"][0])
-            Fd = F0 if Md == N else np.concatenate([F0[:Md // 2], F0[N - Md // 2:]])
-            wv = fft.ifft((rng.standard_normal(Md) + 1j * rng.standard_normal(Md)) * Fd)
-            wv /= max(np.mean(np.abs(wv)), 1e-30)
-            WR[r] = wv.real
+        if len(pidx):
+            # draw the noise exactly as v0.3.1 did (real then imaginary, path by
+            # path) so realizations are unchanged, then ONE batched IFFT per band
+            spec = np.empty((len(pidx), Md), dtype=complex)
+            for r, p in enumerate(pidx):
+                F0 = np.asarray(sc.psi2[sc.path_n2[p]]["levels"][0])
+                Fd = F0 if Md == N else np.concatenate([F0[:Md // 2], F0[N - Md // 2:]])
+                spec[r] = (rng.standard_normal(Md) + 1j * rng.standard_normal(Md)) * Fd
+            wv = fft.ifft(spec, axis=-1, **fftw)
+            wv /= np.maximum(np.mean(np.abs(wv), axis=1, keepdims=True), 1e-30)
+            WR = wv.real.astype(np.float32)
+        else:
+            WR = np.zeros((0, Md), dtype=np.float32)
         var = (WR.astype(np.float64) ** 2).mean(axis=1) if len(pidx) else np.zeros(0)
         bands.append({"pidx": pidx, "Md": Md, "WR": WR, "var": var,
                       "plan": _interp_plan(Md, N, Tn, hop)})
-    cnorm = np.zeros(len(sc.psi1))
+    # carriers do not change between calibration rounds: compute once.
+    # Only the real part is kept (the envelope is real: Re(c*env) = Re(c)*env).
+    carriers = np.empty((len(sc.psi1), N), dtype=np.float32)
     for n1, f1 in enumerate(sc.psi1):
-        c = fft.ifft(Xr * f1["levels"][0])
-        cnorm[n1] = max(np.sqrt(np.mean(np.abs(c) ** 2)), 1e-30)
+        c = fft.ifft(Xr * f1["levels"][0], **fftw)
+        carriers[n1] = c.real / max(np.sqrt(np.mean(np.abs(c) ** 2)), 1e-30)
 
     def lerp(vals, plan):
         i0, i1, fr = plan
         return vals[..., i0] * (1 - fr) + vals[..., i1] * fr
+
+    def lerp32(vals, plan32):
+        # single-precision gain interpolation for the modulation paths
+        i0, i1, fr, one_minus = plan32
+        v = vals.astype(np.float32)
+        return v[:, i0] * one_minus + v[:, i1] * fr
+
+    for b in bands:
+        i0, i1, fr = b["plan"]
+        f32 = fr.astype(np.float32)
+        b["plan32"] = (i0, i1, f32, (1 - f32))
+        b["var32"] = b["var"].astype(np.float32)[:, None]
 
     def synth(a, g):
         x = np.zeros(N)
@@ -611,22 +637,22 @@ def direct_synthesis(sc, src_win, tg, w, rnd, rng, rounds, hist, si):
             b = bands[n1]
             env_d = lerp(a[n1], b["plan"])
             if len(b["pidx"]):
-                gt = lerp(g[b["pidx"]], b["plan"])
+                gt = lerp32(g[b["pidx"]], b["plan32"])
                 # LINEAR modulation 1 + sum g*m, softly rectified. (v0.3 draft used
                 # exp(sum g*m): a log-normal envelope whose tails produced clicks,
                 # crest factor 32-36 dB against 18 dB in the source.)
-                sd = np.sqrt(((gt ** 2) * b["var"][:, None]).sum(axis=0))
+                sd = np.sqrt(np.einsum("pt,pt,p->t", gt, gt, b["var32"][:, 0], optimize=False))
                 cap = np.minimum(1.0, SIGMA_MAX / np.maximum(sd, 1e-12))
-                z = 1.0 + cap * (gt * b["WR"]).sum(axis=0)
+                z = 1.0 + cap * np.einsum("pt,pt->t", gt, b["WR"], optimize=False)
                 env_d = env_d * np.logaddexp(0.0, 4.0 * z) / 4.0
             if b["Md"] < N:
-                E = fft.rfft(env_d)
+                E = fft.rfft(env_d, **fftw)
                 Eu = np.zeros(N // 2 + 1, dtype=complex)
                 Eu[:len(E)] = E
-                env = fft.irfft(Eu, n=N) * (N / b["Md"])
+                env = fft.irfft(Eu, n=N, **fftw) * (N / b["Md"])
             else:
                 env = env_d
-            x += (fft.ifft(Xr * f1["levels"][0]) / cnorm[n1] * env).real
+            x += carriers[n1] * env
         return x
 
     def measure(x):
@@ -703,7 +729,8 @@ def segment_job(job):
     hist = []
     x = direct_synthesis(sc, src_win, tg, w, job["rnd"], rng, job["rounds"], hist, si)
     x *= np.sqrt(np.mean(src_win ** 2)) / max(np.sqrt(np.mean(x ** 2)), 1e-12)
-    L_direct = sum(loss_parts(sc, tg, w, *sc.forward(x)[:3]))
+    Sx = sc.forward(x)[:3]
+    L_direct = sum(loss_parts(sc, tg, w, *Sx))
     log("direct synthesis done in %.1f s (loss %.4f)" % (time.time() - t0, L_direct))
     loss_start = sum(hist[0][2:])
     fail = ""
@@ -744,7 +771,10 @@ def segment_job(job):
             fail = "seg %d: refinement stopped on %s, best iterate kept" % (si + 1, e)
         x = best["x"]
 
-    So0, So1, So2, _ = sc.forward(x)
+    if iters > 0:
+        So0, So1, So2, _ = sc.forward(x)
+    else:
+        So0, So1, So2 = Sx          # waveform unchanged since L_direct: no second analysis
     L_end = sum(loss_parts(sc, tg, w, So0, So1, So2))
     log("finished in %.1f s (loss %.4f)" % (time.time() - t0, L_end))
 
@@ -898,7 +928,7 @@ def run(a, rep):
 
     # workers: one process per segment, bounded by cores and a memory estimate
     ncpu = os.cpu_count() or 1
-    per_worker = Nseg * (len(sc.psi1) * 8 * 3 + 16 * 40)      # bytes, rough
+    per_worker = Nseg * (len(sc.psi1) * (8 * 3 + 4) + 16 * 40)  # bytes, rough (incl. cached carriers)
     nwork = a.workers if a.workers > 0 else max(1, min(ncpu, len(jobs), 8, int(3e9 // per_worker)))
     rep.set("workers", nwork)
     rep.log("%d segment(s), %d worker process(es); direct synthesis (%d calibration rounds)%s"

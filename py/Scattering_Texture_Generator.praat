@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3.1 (2026) - calibrated direct synthesis, parallel segments
+# Version: 0.3.2 (2026) - calibrated direct synthesis, parallel segments
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -41,6 +41,20 @@
 #             -> [name]_ScatteringTexture
 #
 #   Not a neural model: no training, no downloaded weights, CPU only.
+#
+# v0.3.2 (speed, same sound; engine only):
+#   - Band carriers computed once per segment instead of in every one of the
+#     six synthesis passes (only the real part is kept: the envelope is real).
+#   - Modulation sources generated with one batched IFFT per band, from the
+#     same random numbers in the same order (realizations unchanged).
+#   - Direct synthesis uses scipy.fft with the shared thread policy.
+#   - Preview reuses its last analysis instead of analysing the same
+#     waveform twice.
+#   - Modulation-gain arithmetic in single precision.
+#   - Measured on a 17 s file, one core: Preview 17.4 s -> 10.8 s (1.6x),
+#     Standard 54.5 s -> 47.5 s (the refinement stage is unchanged).
+#     Output identical to v0.3.1 within 5e-8 (Preview); same loss to 6
+#     digits; all 15 validation checks pass.
 #
 # v0.3.1 (cleanup, safety, semantics; external review + user report):
 #   - Temporary folders are now REMOVED after every run. Praat deleted the
@@ -119,7 +133,7 @@
 #           (python -m pip install numpy scipy kymatio).
 # ============================================================
 
-form Scattering Texture Generator v0.3.1
+form Scattering Texture Generator v0.3.2
     comment Presets set the three Preserve weights; Custom uses the values below
     optionmenu Preset: 1
         option Custom
@@ -350,7 +364,7 @@ outRms = Get root-mean-square: 0, 0
 # ------------------------------------------------------------
 @rep: "silent_input"
 silentIn = rep$ = "1"
-writeInfoLine: "=== Scattering Texture Generator v0.3.1 ==="
+writeInfoLine: "=== Scattering Texture Generator v0.3.2 ==="
 appendInfoLine: "Source: ", sourceName$, " (", srcCh, " ch -> mono analysis, ", fixed$(srcDur, 3), " s, ", srcSr, " Hz)"
 appendInfoLine: "Output: ", outName$, " (", fixed$(resDur, 3), " s, peak ", fixed$(outPeak, 3), ", RMS matched to source)"
 if silentIn
