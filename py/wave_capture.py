@@ -4,7 +4,26 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 2.0 (2026) - Conventions aligned with ai_conductor_mix.py
+# Version: 2.4 (2026) - MIDI activity report: which CCs the ring really sends
+#
+# v2.4: a take with the wrong CC numbers used to look "fine" - the three
+#   values just stayed at their start value 64 (= 0.504) and the render
+#   played almost one sound. Now every take logs ALL incoming MIDI: each
+#   CC number with its message count and value range (plus channels), and
+#   any non-CC message types (pitch bend, notes...). If a configured CC
+#   shows no or almost no activity, a WARNING names the active CCs to use
+#   instead. Nothing is remapped automatically - the user decides.
+#   Also fixed: the old "no MIDI received" warning could never fire (a
+#   sample row is written every tick whether MIDI arrived or not).
+#   Header example corrected to the real defaults (CC 1/2/3).
+#
+# v2.1: Praat runs this helper with runSystem, which WAITS until Python
+#   exits - so if any MIDI call blocks (port enumeration, opening a port
+#   held by another app, a stuck BLE-MIDI driver), Praat freezes with it.
+#   A watchdog thread now ends the process after
+#   countdown + seconds + 20 s, writing "error" to the done file and the
+#   stage it was stuck in to the log. Every potentially blocking call is
+#   logged BEFORE it runs, so wave_log.txt shows where it stopped.
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -27,14 +46,35 @@
 # I/O contract (mirrors ai_conductor_mix.py):
 #   wave_capture.py <gesture_csv> <log_file> <done_file>
 #       --seconds 8.0 --take 1 --port "" --countdown 3
-#       --cc_tilt 16 --cc_pan 17 --cc_roll 18 --rate_hz 100
+#       --cc_tilt 1 --cc_pan 2 --cc_roll 3 --rate_hz 100
 # ============================================================
 
 import argparse
 import csv
 import os
 import sys
+import threading
 import time
+
+STAGE = ["starting"]          # last stage reached, reported by the watchdog
+
+
+def start_watchdog(limit_s, log, done_path):
+    """Hard stop so a blocking MIDI call can never freeze Praat forever."""
+    def fire():
+        try:
+            log(f"ERROR: watchdog - no progress after {limit_s:.0f} s, "
+                f"stuck at stage: {STAGE[0]}")
+            log("  Likely causes: the MIDI port is held by another program "
+                "(Softwave, a DAW), or the BLE-MIDI driver is not responding. "
+                "Close other MIDI apps / re-pair the ring and try again.")
+            write_done(done_path, "error")
+        finally:
+            os._exit(3)
+    t = threading.Timer(limit_s, fire)
+    t.daemon = True
+    t.start()
+    return t
 
 
 def beep(freq_hz=880, ms=200):
@@ -85,7 +125,10 @@ def pick_port(requested, log):
     a port whose name looks like the Wave / a BLE-MIDI bridge; else the
     first available port."""
     import mido
+    STAGE[0] = "listing MIDI input ports (mido.get_input_names)"
+    log("Listing MIDI input ports...")
     names = mido.get_input_names()
+    log(f"  {len(names)} port(s): " + (", ".join(names) if names else "none"))
     if requested:
         for n in names:
             if n == requested:
@@ -134,6 +177,7 @@ def capture(seconds, take, port, countdown, cc_tilt, cc_pan, cc_roll,
     log(f"Using MIDI port: {port_name}")
 
     # Countdown so the performer can get ready.
+    STAGE[0] = "countdown"
     for c in range(countdown, 0, -1):
         log(f"Take {take}: starting in {c}...")
         beep(660, 120)          # short mid tick each second
@@ -142,6 +186,8 @@ def capture(seconds, take, port, countdown, cc_tilt, cc_pan, cc_roll,
     beep(990, 400)              # higher, longer = GO / record start
 
     tilt = pan = roll = 64                  # latest CC values (0..127)
+    cc_stats = {}       # cc -> [count, min, max, set(channels)]
+    other_types = {}    # non-CC message type -> count
     rows = []
     sample_dt = 1.0 / max(1.0, rate_hz)
 
@@ -150,19 +196,30 @@ def capture(seconds, take, port, countdown, cc_tilt, cc_pan, cc_roll,
     next_sample = t0
 
     try:
+        STAGE[0] = f"opening MIDI port '{port_name}'"
+        log(f"Opening port '{port_name}'...")
         with mido.open_input(port_name) as inport:
+            STAGE[0] = "recording"
             while True:
                 now = time.monotonic()
                 if now >= t_end:
                     break
                 for msg in inport.iter_pending():
                     if msg.type == "control_change":
+                        st = cc_stats.setdefault(msg.control,
+                                                 [0, 127, 0, set()])
+                        st[0] += 1
+                        st[1] = min(st[1], msg.value)
+                        st[2] = max(st[2], msg.value)
+                        st[3].add(getattr(msg, "channel", 0) + 1)
                         if msg.control == cc_tilt:
                             tilt = msg.value
                         elif msg.control == cc_pan:
                             pan = msg.value
                         elif msg.control == cc_roll:
                             roll = msg.value
+                    else:
+                        other_types[msg.type] = other_types.get(msg.type, 0) + 1
                 if now >= next_sample:
                     rows.append((now - t0,
                                  tilt / 127.0, pan / 127.0, roll / 127.0))
@@ -175,13 +232,44 @@ def capture(seconds, take, port, countdown, cc_tilt, cc_pan, cc_roll,
     beep(440, 250)              # lower = record finished, stop moving
     log(f"Take {take}: recording finished.")
 
+    report_midi_activity(cc_stats, other_types, seconds,
+                         {"Tilt": cc_tilt, "Pan": cc_pan, "Roll": cc_roll}, log)
+
     if not rows:
-        log("WARNING: no MIDI received; writing a flat (centre) path so "
-            "the render can still proceed.")
         rows = [(0.0, 0.5, 0.5, 0.5), (seconds, 0.5, 0.5, 0.5)]
 
     log(f"Take {take}: captured {len(rows)} samples.")
     return rows
+
+
+def report_midi_activity(cc_stats, other_types, seconds, wanted, log):
+    """Log what actually arrived, and warn when a configured CC was silent."""
+    if not cc_stats and not other_types:
+        log("WARNING: NO MIDI messages arrived during the take - the gesture "
+            "is flat (all values 0.50). Is the ring awake and sending on "
+            "this port?")
+        return
+    log("Detected CC activity (this take):")
+    for cc, (cnt, lo, hi, chans) in sorted(cc_stats.items(),
+                                            key=lambda kv: -kv[1][0]):
+        tags = [name for name, num in wanted.items() if num == cc]
+        tag = ("  <- " + "/".join(tags)) if tags else ""
+        ch = ",".join(str(c) for c in sorted(chans))
+        log(f"  CC {cc:3d}: {lo:3d}-{hi:3d}   ({cnt} messages, ch {ch}){tag}")
+    for t, cnt in sorted(other_types.items(), key=lambda kv: -kv[1]):
+        log(f"  {t}: {cnt} messages")
+    # "active" = enough messages to be a gesture stream, with real movement
+    min_msgs = max(10, int(2 * seconds))
+    active = [cc for cc, (cnt, lo, hi, _) in cc_stats.items()
+              if cnt >= min_msgs and hi - lo >= 8]
+    for name, num in wanted.items():
+        cnt, lo, hi = (cc_stats[num][:3] if num in cc_stats else (0, 0, 0))
+        if cnt < min_msgs or hi - lo < 8:
+            others = [c for c in active if c not in wanted.values()]
+            hint = (" Active CCs detected: " + ", ".join(str(c) for c in sorted(others))
+                    + ".") if others else ""
+            log(f"WARNING: configured {name} CC {num} showed almost no "
+                f"activity ({cnt} messages, range {lo}-{hi}).{hint}")
 
 
 # -----------------------------------------------------------------------------
@@ -252,10 +340,14 @@ def main():
         pass
 
     log = Logger(args.log_file)
-    log("=== Wave Gesture Capture v2 ===")
+    log("=== Wave Gesture Capture v2.4 ===")
     log(f"Take: {args.take} | {args.seconds:.1f}s | "
         f"CC tilt/pan/roll = {args.cc_tilt}/{args.cc_pan}/{args.cc_roll}")
 
+    # watchdog: countdown + take + generous margin for port setup
+    start_watchdog(args.countdown + args.seconds + 20.0, log, args.done_file)
+
+    STAGE[0] = "importing mido"
     try:
         import mido  # noqa
     except ImportError:
@@ -271,6 +363,7 @@ def main():
         write_done(args.done_file, "error")
         sys.exit(1)
 
+    STAGE[0] = "writing gesture CSV"
     write_gesture_csv(args.gesture_csv, rows)
     log(f"Gesture CSV: {args.gesture_csv} ({len(rows)} rows)")
     write_done(args.done_file, "ok")
