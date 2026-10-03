@@ -2,7 +2,59 @@
 # ============================================================
 # Praat AudioTools - partial_stretch.py
 # Author: Shai Cohen
-# Version: 1.3 (2026) - Fixed track selection, dual sub-frames
+# Affiliation: Department of Music, Bar-Ilan University, Israel
+# Version: 1.4 (2026)
+# License: MIT License
+# Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Description:
+#   Backend for IRCAM_Partial_Stretch.praat. PM2 partial analysis ->
+#   partial tracks -> one of five track operations -> additive
+#   resynthesis -> automatic level balancing.
+#
+#   Modes (what they actually do):
+#     spectral_stretch  tracks above the split frequency are time-stretched;
+#                       they also get an AUTOMATIC amplitude boost (x1..x8,
+#                       from the lower/upper RMS ratio) so they stay audible
+#     band_stretch      three bands, each with its own time-stretch factor
+#                       and an AUTOMATIC per-band boost (x1..x8)
+#     freeze            the partials at one instant held as a drone
+#     partial_thin      above a threshold, keep every N-th track
+#                       (tracks ordered by mean frequency)
+#     spectral_blur     moving average of each track's AMPLITUDE envelope;
+#                       frequencies are untouched (amplitude-envelope
+#                       smoothing, not a frequency blur)
+#
+#   Resynthesis: sum of sinusoids, phase obtained by integrating each
+#   track's frequency from zero (PM2's measured phases are parsed but not
+#   used — kept deliberately, see changelog). After synthesis an automatic
+#   LEVEL BALANCING stage evens out 0.5 s blocks toward their median peak
+#   (gain <= x10, 0.1 s smoothing), then peak-normalises to 0.9 and applies
+#   Output gain (capped at 2) with hard clipping. Level balancing can be
+#   switched off; peak normalisation always runs.
+#
+# Changelog v1.4:
+#   - PM2 window: nearest power of two to the requested length (v1.3
+#     rounded up: 46.44 ms at 48 kHz became 85 ms). Unchanged at 44.1 kHz.
+#   - Sample rate taken from the input file (was fixed at 44.1 kHz): PM2
+#     window/hop are now computed in the file's own samples, and the
+#     output is written at the input rate. Output for 44.1 kHz input is
+#     unchanged (verified sample-identical against v1.3).
+#   - Parameters read from a key=value file (one path argument), like the
+#     SuperVP bridge; the command-line form still works.
+#   - Session-prefixed temporary files, removed on every exit path.
+#   - Manifest with what the algorithm did: selected tracks per band,
+#     group counts, stretch factors, automatic boosts, level-balancing gain
+#     range, normalisation factor, clipped samples, durations, sample rate.
+#   - Visualisation data: input and output partial tracks (decimated) and
+#     the level-balancing gain curve.
+#   - Level balancing switchable (default on = v1.3 behaviour).
+#   - Clear errors instead of silent fixes: Thin every N < 2, non-positive
+#     stretch factors, missing numpy/soundfile.
+#   - Phase reconstruction NOT changed: PM2-phase-aware resynthesis would
+#     change the sound and should be A/B tested as a separate option.
+#
+# Changelog v1.3: fixed track selection, dual sub-frames
 # ============================================================
 
 import argparse
@@ -19,9 +71,13 @@ try:
 except ImportError:
     HAS_NUMPY = False
 
-VERSION = "1.3"
+VERSION = "1.4"
 DEFAULT_PM2_DIR = r"C:\Users\User\Pm2\bin"
-DEFAULT_SR = 44100
+DEFAULT_SR = 44100          # only a fallback; the input file's rate is used
+
+
+class PSError(Exception):
+    pass
 
 
 # =============================================================================
@@ -70,10 +126,13 @@ def resolve_pm2(pm2_dir):
 #  PM2 ANALYSIS
 # =============================================================================
 
-def run_pm2_analysis(pm2_exe, input_wav, output_txt, args, log_path):
-    sr = DEFAULT_SR
+def run_pm2_analysis(pm2_exe, input_wav, output_txt, args, log_path, sr):
     raw_win = max(16, round(args.analysis_window_ms * sr / 1000.0))
-    win_samples = next_power_of_two(raw_win)
+    # nearest power of two (v1.3 rounded UP, which nearly doubled the window
+    # at 48 kHz: 2229 -> 4096 samples). Identical at 44.1 kHz (2048 exact).
+    up = next_power_of_two(raw_win)
+    down = max(16, up // 2)
+    win_samples = up if (up / raw_win) <= (raw_win / down) else down
     hop_samples = max(1, round(args.hop_ms * sr / 1000.0))
 
     sdif_base = output_txt
@@ -92,6 +151,9 @@ def run_pm2_analysis(pm2_exe, input_wav, output_txt, args, log_path):
     cmd_str = " ".join(f'"{a}"' if " " in str(a) else str(a) for a in cmd)
     print(f"  PM2 CMD: {cmd_str}", flush=True)
     append_log(log_path, f"PM2 CMD: {cmd_str}\n")
+    STATS["pm2_cmd"] = cmd_str
+    STATS["pm2_window"] = f"{win_samples} samples ({1000.0 * win_samples / sr:.2f} ms at {sr} Hz)"
+    STATS["pm2_hop"] = f"{hop_samples} samples ({1000.0 * hop_samples / sr:.2f} ms)"
 
     if args.dry_run:
         return 0
@@ -281,6 +343,11 @@ def parse_to_tracks(txt_path, max_partials=80, log_path=None):
                 break
     print(f"  Selected {len(selected_ids)} tracks (stratified by freq band)", flush=True)
     print(f"  Per band: {band_counts}", flush=True)
+    STATS["tracks_found"] = len(all_ids)
+    STATS["tracks_selected"] = len(selected_ids)
+    STATS["time_steps"] = len(sorted_times)
+    STATS["selected_per_band"] = "  ".join(f"{lo}-{hi}: {band_counts.get(f'{lo}-{hi}', 0)}"
+                                           for lo, hi in bands)
 
     # Pass 3: build tracks
     tracks = {}
@@ -317,8 +384,8 @@ def parse_to_tracks(txt_path, max_partials=80, log_path=None):
 #  ADDITIVE RESYNTHESIS — block-normalised
 # =============================================================================
 
-def resynthesize(tracks, sr=DEFAULT_SR, output_gain=1.0):
-    if not HAS_NUMPY or not tracks:
+def resynthesize(tracks, sr=DEFAULT_SR, output_gain=1.0, level_balance=True):
+    if not tracks:
         return np.zeros(sr, dtype=np.float32), sr
 
     max_time = 0.0
@@ -376,7 +443,48 @@ def resynthesize(tracks, sr=DEFAULT_SR, output_gain=1.0):
             audio[s0:s1] += amp_env * np.sin(inst_phase)
             phase = inst_phase[-1] % (2.0 * math.pi)
 
-    # Block normalization
+    raw_peak = float(np.max(np.abs(audio)))
+    gain_env = np.ones(n_samples, dtype=np.float64)
+    if level_balance:
+        gain_env = block_balance_gain(audio, sr, n_samples)
+        audio *= gain_env
+
+    peak = np.max(np.abs(audio))
+    norm = 0.9 / peak if peak > 1e-10 else 1.0
+    audio = audio * norm
+    g = min(output_gain, 2.0)
+    audio *= g
+    n_clip = int(np.sum(np.abs(audio) > 1.0))
+    np.clip(audio, -1.0, 1.0, out=audio)
+
+    final_peak = float(np.max(np.abs(audio)))
+    final_rms = float(np.sqrt(np.mean(audio ** 2)))
+    n_silent = int(np.sum(np.abs(audio) < 1e-6))
+    print(f"  Resynth: {n_samples/sr:.2f}s  peak={final_peak:.4f}  rms={final_rms:.6f}  "
+          f"silent={100*n_silent/max(1,n_samples):.1f}%", flush=True)
+
+    STATS["sample_rate"] = sr
+    STATS["output_duration"] = round(n_samples / sr, 4)
+    STATS["level_balance"] = "on" if level_balance else "off"
+    if level_balance:
+        STATS["balance_gain_range"] = f"{gain_env.min():.2f}..{gain_env.max():.2f}"
+    STATS["peak_after_synthesis"] = round(raw_peak, 6)
+    STATS["peak_before_norm"] = round(float(peak), 6)
+    STATS["normalise_factor"] = round(norm, 6)
+    STATS["output_gain_applied"] = g
+    STATS["clipped_samples"] = n_clip
+    STATS["output_peak"] = round(final_peak, 4)
+    STATS["output_rms"] = round(final_rms, 6)
+    total = gain_env * norm * g                         # overall gain curve after synthesis
+    step = max(1, n_samples // 1500)
+    VIZ["gain"] = [(i / sr, float(total[i])) for i in range(0, n_samples, step)]
+    return audio.astype(np.float32), sr
+
+
+def block_balance_gain(audio, sr, n_samples):
+    """Automatic level balancing (v1.3 behaviour, unchanged): gain per 0.5 s
+    block toward the median non-silent block peak, at most x10, smoothed
+    over 0.1 s."""
     block_dur = 0.5
     block_len = int(block_dur * sr)
     n_blocks = max(1, int(math.ceil(n_samples / block_len)))
@@ -401,22 +509,7 @@ def resynthesize(tracks, sr=DEFAULT_SR, output_gain=1.0):
     if smooth_len > 1 and len(gain_env) > smooth_len:
         kernel = np.ones(smooth_len) / smooth_len
         gain_env = np.convolve(gain_env, kernel, mode="same")
-
-    audio *= gain_env
-
-    peak = np.max(np.abs(audio))
-    if peak > 1e-10:
-        audio = audio / peak * 0.9
-    audio *= min(output_gain, 2.0)
-    np.clip(audio, -1.0, 1.0, out=audio)
-
-    final_peak = float(np.max(np.abs(audio)))
-    final_rms = float(np.sqrt(np.mean(audio ** 2)))
-    n_silent = int(np.sum(np.abs(audio) < 1e-6))
-    print(f"  Resynth: {n_samples/sr:.2f}s  peak={final_peak:.4f}  rms={final_rms:.6f}  "
-          f"silent={100*n_silent/max(1,n_samples):.1f}%", flush=True)
-
-    return audio.astype(np.float32), sr
+    return gain_env
 
 
 # =============================================================================
@@ -447,6 +540,10 @@ def mode_spectral_stretch(tracks, total_dur, args, log_path):
         boost = max(1.0, min(8.0, lo_avg / hi_avg * 0.7))
 
     print(f"  Lower: {n_lo}  Upper: {n_hi}  Boost: {boost:.2f}x", flush=True)
+    STATS["groups"] = f"below {split:.0f} Hz: {n_lo} tracks x1.00 time, gain x1.00 | " \
+                      f"above: {n_hi} tracks x{hi_factor:.2f} time, AUTO gain x{boost:.2f}"
+    STATS["auto_boost"] = round(boost, 3)
+    GROUP_OF.update({t.track_id: (0 if t.mean_freq() < split else 1) for t in tracks if t.mean_freq() > 0})
 
     new_tracks = []
     for track in tracks:
@@ -495,6 +592,14 @@ def mode_band_stretch(tracks, total_dur, args, log_path):
         new_tracks.append(stretched)
 
     print(f"  Tracks: {band_n}  Boosts: [{boosts[0]:.2f}, {boosts[1]:.2f}, {boosts[2]:.2f}]", flush=True)
+    names = [f"0-{lo_hi:.0f} Hz", f"{lo_hi:.0f}-{mid_hi:.0f} Hz", f"above {mid_hi:.0f} Hz"]
+    STATS["groups"] = " | ".join(f"{names[i]}: {band_n[i]} tracks x{factors[i]:.2f} time, "
+                                 f"AUTO gain x{boosts[i] if boosts[i] > 1.01 else 1.0:.2f}" for i in range(3))
+    STATS["auto_boost"] = " ".join(f"{(b if b > 1.01 else 1.0):.3f}" for b in boosts)
+    for t in tracks:
+        mf = t.mean_freq()
+        if mf > 0:
+            GROUP_OF[t.track_id] = 0 if mf < lo_hi else (1 if mf < mid_hi else 2)
     return new_tracks
 
 
@@ -525,12 +630,18 @@ def mode_freeze(tracks, total_dur, args, log_path):
         new_tracks.append(new)
 
     print(f"  Frozen: {len(new_tracks)} tracks", flush=True)
+    STATS["groups"] = f"{len(new_tracks)} partials frozen at {freeze_t:.3f} s, held {freeze_dur:.2f} s " \
+                      f"(fade {fade * 1000:.0f} ms)"
+    STATS["freeze_time_s"] = round(freeze_t, 4)
+    GROUP_OF.update({t.track_id: 0 for t in tracks})
     return new_tracks
 
 
 def mode_partial_thin(tracks, total_dur, args, log_path):
     threshold = args.thin_above_hz
-    keep_every = max(2, args.thin_every_n)
+    if args.thin_every_n < 2:
+        raise PSError(f"Thin every N must be >= 2 (got {args.thin_every_n}); 1 would keep everything")
+    keep_every = args.thin_every_n
     print(f"  Mode: partial_thin  above={threshold:.0f} Hz  keep 1/{keep_every}", flush=True)
 
     sortable = sorted([(t, t.mean_freq()) for t in tracks], key=lambda x: x[1])
@@ -546,6 +657,14 @@ def mode_partial_thin(tracks, total_dur, args, log_path):
                 new_tracks.append(track.copy())
 
     print(f"  Kept: {len(new_tracks)} / {len(tracks)}", flush=True)
+    kept = {t.track_id for t in new_tracks}
+    n_below = sum(1 for t, mf in sortable if 0 < mf < threshold)
+    n_above = sum(1 for t, mf in sortable if mf >= threshold)
+    STATS["groups"] = f"below {threshold:.0f} Hz: {n_below} kept | above: {len(new_tracks) - n_below} " \
+                      f"of {n_above} kept (1/{keep_every})"
+    for t, mf in sortable:
+        if mf > 0:
+            GROUP_OF[t.track_id] = 0 if mf < threshold else (1 if t.track_id in kept else 2)
     return new_tracks
 
 
@@ -573,6 +692,9 @@ def mode_spectral_blur(tracks, total_dur, args, log_path):
         new_tracks.append(new)
 
     print(f"  Blurred: {len(new_tracks)} tracks", flush=True)
+    STATS["groups"] = f"{len(new_tracks)} tracks, amplitude envelopes smoothed over {blur_frames} frames " \
+                      f"({blur_frames * hop_ms:.0f} ms); frequencies unchanged"
+    GROUP_OF.update({t.track_id: 0 for t in tracks})
     return new_tracks
 
 
@@ -589,13 +711,68 @@ MODES = {
 #  MAIN
 # =============================================================================
 
+STATS = {}
+VIZ = {}
+GROUP_OF = {}
+POSITIONAL = ["input_wav", "done_file"]
+
+
+def params_to_argv(path):
+    d = {}
+    with open(path, "r", encoding="utf-8") as fh:
+        for line in fh:
+            line = line.rstrip("\r\n")
+            if "=" in line and not line.lstrip().startswith("#"):
+                k, v = line.split("=", 1)
+                d[k.strip()] = v.strip()
+    argv = [d.pop(k, "") for k in POSITIONAL]
+    for k, v in d.items():
+        if v == "":
+            continue
+        if k == "dry_run":
+            if v not in ("0", "no", "false"):
+                argv.append("--dry_run")
+            continue
+        argv += ["--" + k, v]
+    return argv
+
+
+def track_points(tracks, max_points=20000):
+    """(tid, time, freq, amp) rows, decimated in time so the figure stays fast."""
+    n = sum(len(t.times) for t in tracks)
+    stride = max(1, int(math.ceil(n / max_points)))
+    rows = []
+    for t in tracks:
+        for i in range(0, len(t.times), stride):
+            rows.append((t.track_id, t.times[i], t.freqs[i], t.amps[i]))
+    return rows
+
+
+def write_viz(prefix, in_tracks, out_tracks):
+    def dump(path, rows):
+        with open(path, "w", encoding="utf-8", newline="\n") as fh:
+            for tid, tt, f, a in rows:
+                fh.write(f"{tid} {GROUP_OF.get(tid, 0)} {tt:.5f} {f:.2f} {a:.7f}\n")
+    dump(prefix + "tracks_in.txt", track_points(in_tracks))
+    dump(prefix + "tracks_out.txt", track_points(out_tracks))
+    with open(prefix + "gain.txt", "w", encoding="utf-8", newline="\n") as fh:
+        for tt, g in VIZ.get("gain", []):
+            fh.write(f"{tt:.5f} {g:.6f}\n")
+
+
 def main():
-    ap = argparse.ArgumentParser(description=f"Partial Stretch v{VERSION}")
+    class _Parser(argparse.ArgumentParser):
+        def error(self, message):
+            raise PSError("invalid parameter - " + message)
+
+    ap = _Parser(description=f"Partial Stretch v{VERSION}")
     ap.add_argument("input_wav", type=str)
     ap.add_argument("done_file", type=str)
     ap.add_argument("--pm2_dir", type=str, default=DEFAULT_PM2_DIR)
     ap.add_argument("--result_wav", type=str, default="")
     ap.add_argument("--log_path", type=str, default="")
+    ap.add_argument("--tmp_prefix", type=str, default="")
+    ap.add_argument("--manifest", type=str, default="")
     ap.add_argument("--mode", type=str, default="spectral_stretch", choices=list(MODES))
     ap.add_argument("--dry_run", action="store_true")
     ap.add_argument("--max_partials", type=int, default=200)
@@ -614,13 +791,28 @@ def main():
     ap.add_argument("--thin_every_n", type=int, default=2)
     ap.add_argument("--blur_window_ms", type=float, default=100.0)
     ap.add_argument("--output_gain", type=float, default=1.0)
-    args = ap.parse_args()
+    ap.add_argument("--level_balance", type=int, default=1)
+
+    argv = sys.argv[1:]
+    if len(argv) == 1 and os.path.isfile(argv[0]):
+        argv = params_to_argv(argv[0])
+    done_guess = argv[1] if len(argv) > 1 else ""
+    try:
+        args = ap.parse_args(argv)
+    except PSError as e:
+        if done_guess:
+            append_log(os.path.join(os.path.dirname(done_guess), "ps_log.txt"), "ERROR: " + str(e))
+            write_done(done_guess, "error")
+        print("ERROR: " + str(e), flush=True)
+        return
 
     if not args.result_wav:
         base, _ = os.path.splitext(args.input_wav)
         args.result_wav = f"{base}_ps_{args.mode}.wav"
-
-    log_path = args.log_path or os.path.join(os.path.dirname(args.done_file), "ps_log.txt")
+    tmp_dir = os.path.dirname(args.done_file)
+    prefix = args.tmp_prefix or os.path.join(tmp_dir, "ps_")
+    log_path = args.log_path or prefix + "log.txt"
+    manifest = args.manifest or prefix + "manifest.txt"
     if os.path.isfile(log_path):
         os.remove(log_path)
 
@@ -629,57 +821,87 @@ def main():
     print(f"Input:   {args.input_wav}", flush=True)
 
     pm2_exe = resolve_pm2(args.pm2_dir)
-    tmp_dir = os.path.dirname(args.done_file)
+    analysis_txt = prefix + "analysis.sdif.txt"
+    analysis_sdif = prefix + "analysis.sdif"
+
+    def log(msg):
+        print(msg, flush=True)
+        append_log(log_path, msg)
 
     try:
-        print("[1/3] Analysing with PM2...", flush=True)
-        analysis_txt = os.path.join(tmp_dir, "ps_analysis.sdif.txt")
-        analysis_sdif = os.path.join(tmp_dir, "ps_analysis.sdif")
+        if not HAS_NUMPY:
+            raise PSError("numpy and soundfile are required (pip install numpy soundfile)")
+        for name in ("upper_stretch_factor", "band_lo_stretch", "band_mid_stretch", "band_hi_stretch",
+                     "freeze_duration", "blur_window_ms", "analysis_window_ms", "hop_ms"):
+            if getattr(args, name) <= 0:
+                raise PSError(f"{name} must be > 0 (got {getattr(args, name)})")
+        if args.band_lo_hz >= args.band_mid_hz:
+            raise PSError("Band low edge must be below the band mid edge")
+        if not os.path.isfile(pm2_exe):
+            raise PSError(f"PM2 binary not found: {pm2_exe}")
+        info = sf.info(args.input_wav)
+        sr = int(info.samplerate)
+        STATS["input_duration"] = round(info.duration, 4)
+        STATS["input_sample_rate"] = sr
 
-        rc = run_pm2_analysis(pm2_exe, args.input_wav, analysis_txt, args, log_path)
-        if rc != 0 and not args.dry_run:
-            write_done(args.done_file, "error")
-            return
+        log("[1/3] Analysing with PM2...")
+        rc = run_pm2_analysis(pm2_exe, args.input_wav, analysis_txt, args, log_path, sr)
         if args.dry_run:
+            write_manifest(manifest, args)
             write_done(args.done_file, "ok")
             return
+        if rc != 0:
+            raise PSError(f"PM2 returned code {rc} (see log)")
 
-        print("[2/3] Processing partials...", flush=True)
+        log("[2/3] Processing partials...")
         tracks, total_dur = parse_to_tracks(analysis_txt, args.max_partials, log_path)
         if not tracks:
-            write_done(args.done_file, "error")
-            return
-
+            raise PSError("PM2 produced no partial tracks")
         active = [t for t in tracks if t.max_amp() > 1e-8]
         if not active:
-            print("  ERROR: All tracks silent.", flush=True)
-            write_done(args.done_file, "error")
-            return
+            raise PSError("all partial tracks are silent")
 
         processed = MODES[args.mode](active, total_dur, args, log_path)
         if not processed:
-            print("  ERROR: 0 tracks after processing.", flush=True)
-            write_done(args.done_file, "error")
-            return
+            raise PSError("0 tracks after processing")
 
-        print("[3/3] Resynthesizing...", flush=True)
-        audio, out_sr = resynthesize(processed, output_gain=args.output_gain)
+        log("[3/3] Resynthesizing...")
+        audio, out_sr = resynthesize(processed, sr=sr, output_gain=args.output_gain,
+                                     level_balance=bool(args.level_balance))
         sf.write(args.result_wav, audio, out_sr)
-        print(f"  Written: {args.result_wav}", flush=True)
-
-        for p in [analysis_txt, analysis_sdif]:
-            if os.path.isfile(p):
-                try: os.remove(p)
-                except OSError: pass
-
+        log(f"  Written: {args.result_wav}")
+        STATS["tracks_processed"] = len(processed)
+        write_viz(prefix, active, processed)
+        write_manifest(manifest, args)
         write_done(args.done_file, "ok")
         print("OK: done.", flush=True)
 
+    except PSError as e:
+        log("ERROR: " + str(e))
+        STATS["error"] = str(e)
+        write_manifest(manifest, args)
+        write_done(args.done_file, "error")
     except Exception:
         msg = traceback.format_exc()
-        print(f"ERROR: {msg}", flush=True)
-        append_log(log_path, msg)
+        log("ERROR (internal):\n" + msg)
         write_done(args.done_file, "error")
+    finally:
+        for p in [analysis_txt, analysis_sdif]:
+            if os.path.isfile(p):
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
+
+
+def write_manifest(path, args):
+    try:
+        with open(path, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(f"version={VERSION}\nmode={args.mode}\n")
+            for k, v in STATS.items():
+                fh.write(f"{k}={v}\n")
+    except OSError:
+        pass
 
 
 if __name__ == "__main__":
