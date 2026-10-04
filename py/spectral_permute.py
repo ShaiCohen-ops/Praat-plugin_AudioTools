@@ -1,5 +1,5 @@
 """
-spectral_permute.py — Spectral Permutation Engine  v2.0
+spectral_permute.py — Spectral Permutation Engine  v2.3.1
 
 Part of Praat AudioTools plugin
 Author: Shai Cohen, Department of Music, Bar-Ilan University
@@ -12,8 +12,44 @@ Usage (called by Praat, not directly):
         --kind random_shuffle [--custom_order 3,1,4,2] --seed 42
         --phase_mode lock
         --fft_size 2048 --hop_size 512 --edge_fade_ms 15.0
-        --num_variants 1
+        --num_variants 1 --energy_mode magnitude
         [--cleanup]
+
+═══════════════════════════════════════════════════════════════════════════
+WHAT CHANGED IN v2.3.1
+═══════════════════════════════════════════════════════════════════════════
+  - band_energy now uses conservative power rebinning (energy preserved
+    exactly per frame, also for single-bin peaks). v2.3 interpolated
+    magnitudes and normalised afterwards, which could erase a narrow peak
+    completely and then had nothing left to rescale.
+
+═══════════════════════════════════════════════════════════════════════════
+WHAT CHANGED IN v2.3
+═══════════════════════════════════════════════════════════════════════════
+  - time_freq: one phase policy for every band. Magnitude comes from the
+    source band at the source time block; phase ALWAYS comes from the
+    destination band at the destination time. v2.0 used destination phase
+    when a band moved but took the whole complex block (source-time phase)
+    when the band permutation happened to leave a band in place, so one
+    result mixed two phase behaviours. Phase lock is not applied on
+    time_freq: the destination phase is already the original continuous
+    trajectory, and rotating it would break that.
+  - --energy_mode for freq / time_freq: "magnitude" (v2.0 behaviour,
+    default) linearly resamples magnitudes between bands of different
+    width, which also changes energy (a wide band squeezed into a narrow
+    one loses most of it, a narrow band spread over a wide one gains);
+    "band_energy" rescales every frame so the destination band carries the
+    source band's energy (sum |Z|^2).
+  - Phase lock leaves the DC and Nyquist bins unrotated, so they stay
+    real. Described as identity-phase-locking-INSPIRED seam alignment: the
+    correction is computed at peaks and shared by each peak's region, but
+    applied once per block, not frame by frame as in a phase vocoder.
+  - Stats: real block boundaries (seconds, region-relative) for the
+    figure; variant_assigned_bands / unique_orders / bands_differing_from_
+    master instead of a count that included repeated or master orders; a
+    warning when every variant has the same permutation (deterministic
+    kinds); a seam metric measured only around the block boundaries.
+  - stats.txt is written last and is the completion marker.
 
 ═══════════════════════════════════════════════════════════════════════════
 WHAT CHANGED IN v2.0 — and why
@@ -30,7 +66,9 @@ magnitudes agreed to about 21%, essentially all of it at the joins.
 v2.0 makes the operation actually spectral. Five permutation axes:
 
   time        Legacy v1 behaviour, kept and fixed. Global time-block
-              permutation. Equivalent to a time-domain splice; retained
+              permutation. With phase_mode off, equivalent to a
+              time-domain splice (lock rotates block phases, so then it is
+              not exactly one); retained
               as a reference and because it is a musically useful
               starting point.
 
@@ -55,9 +93,10 @@ v2.0 makes the operation actually spectral. Five permutation axes:
               also permuted.
 
   mag_phase   Magnitude time-blocks are permuted while phase runs
-              CONTINUOUSLY in its original order. No seams of any kind —
-              spectral content is rearranged onto the original phase
-              trajectory. Smooth, and unavailable in the time domain.
+              CONTINUOUSLY in its original order. No phase seams;
+              magnitude can still change abruptly at a block boundary.
+              Spectral content is rearranged onto the original phase
+              trajectory, which is unavailable in the time domain.
 
 Two defects from v1 are fixed:
 
@@ -119,6 +158,7 @@ AXES = ["time", "band_time", "freq", "time_freq", "mag_phase"]
 KINDS = ["reverse", "rotate", "random_shuffle", "custom_order"]
 SPACINGS = ["linear", "log", "mel", "bark", "erb"]
 PHASE_MODES = ["off", "lock"]
+ENERGY_MODES = ["magnitude", "band_energy"]
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -204,14 +244,17 @@ def build_band_orders(n_blocks, n_bands, kind, custom_str, seed, decorrelation):
     master = master_order(n_blocks, kind, custom_str, seed)
     rng = np.random.RandomState(seed + 7919)
     orders = []
-    n_indep = 0
+    n_assigned = 0
     for b in range(n_bands):
         if decorrelation > 0 and rng.random_sample() < decorrelation:
             orders.append(variant_order(n_blocks, kind, custom_str, seed, b, master))
-            n_indep += 1
+            n_assigned += 1
         else:
             orders.append(list(master))
-    return master, orders, n_indep
+    counts = {"assigned": n_assigned,
+              "unique": len({tuple(o) for o in orders}),
+              "differ": sum(1 for o in orders if o != master)}
+    return master, orders, counts
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -283,7 +326,7 @@ def band_edges(n_bins, sr, n_fft, n_bands, spacing):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Phase continuation (Laroche-Dolson identity phase locking)
+# Seam phase alignment (inspired by Laroche-Dolson identity phase locking)
 # ═══════════════════════════════════════════════════════════════════════════
 
 def peak_regions(mag):
@@ -331,6 +374,13 @@ def lock_phase(prev_frame, block, bin_offset, n_fft, hop):
     delta_all = (np.angle(prev_frame) + advance) - np.angle(first)
     owner = peak_regions(mag)               # local (band-relative) indices
     delta = delta_all[owner]
+    # DC and Nyquist must stay real (v2.0 rotated them too; irfft then
+    # silently dropped the imaginary part)
+    n_bins_total = n_fft // 2 + 1
+    for kk in (0, n_bins_total - 1):
+        loc = kk - bin_offset
+        if 0 <= loc < block.shape[0]:
+            delta[loc] = 0.0
     return block * np.exp(1j * delta)[:, None]
 
 
@@ -352,6 +402,47 @@ def resample_band(mag_src, n_dst):
     for j in range(mag_src.shape[1]):
         out[:, j] = np.interp(xd, xs, mag_src[:, j])
     return out
+
+
+def rebin_matrix(n_src, n_dst):
+    """Conservative rebinning weights W (n_dst x n_src). Source bin i covers
+    [i/n_src, (i+1)/n_src) of the band, destination bin j covers
+    [j/n_dst, (j+1)/n_dst); W[j, i] is the fraction of source bin i that
+    falls in destination bin j. Every column sums to 1, so W @ power
+    preserves the total power exactly — no peak can fall between samples."""
+    import numpy as np
+    W = np.zeros((n_dst, n_src))
+    for i in range(n_src):
+        a0, a1 = i / n_src, (i + 1) / n_src
+        j0 = int(np.floor(a0 * n_dst))
+        j1 = min(n_dst - 1, int(np.ceil(a1 * n_dst)) - 1)
+        for j in range(j0, j1 + 1):
+            ov = min(a1, (j + 1) / n_dst) - max(a0, j / n_dst)
+            if ov > 0:
+                W[j, i] = ov * n_src
+    return W
+
+
+def transplant(src_cplx, dst_cplx, energy_mode):
+    """Magnitude of a source band patch on the destination band's bin grid,
+    with the destination's phase.
+      magnitude    linear interpolation of magnitudes (v2.2 behaviour;
+                   band energy changes with band width)
+      band_energy  conservative POWER rebinning: |Z|^2 is shared among the
+                   destination bins by overlap, then sqrt. Energy per frame
+                   is preserved exactly, sparse/tonal content included.
+                   (v2.3 interpolated first and normalised afterwards, which
+                   lost a narrow peak that fell between interpolation points:
+                   [0,1,0] onto 2 bins gave [0,0] and stayed silent.)"""
+    import numpy as np
+    mag_src = np.abs(src_cplx)
+    n_dst = dst_cplx.shape[0]
+    if energy_mode == "band_energy":
+        W = rebin_matrix(mag_src.shape[0], n_dst)
+        patch = np.sqrt(W @ (mag_src ** 2))
+    else:
+        patch = resample_band(mag_src, n_dst)
+    return patch * np.exp(1j * np.angle(dst_cplx))
 
 
 def permute_region(Z, f0, f1, cfg):
@@ -399,7 +490,7 @@ def permute_region(Z, f0, f1, cfg):
                     mag[lo:hi, starts[src]:starts[src] + blk]
         Zout[:, g0:g0 + used] = (newmag[:, g0:g0 + used] *
                                  np.exp(1j * np.angle(Z[:, g0:g0 + used])))
-        return Zout, {"tail_frames": tail, "block_frames": blk}
+        return Zout, {"tail_frames": tail, "block_frames": blk, "starts": starts}
 
     for b, (lo, hi) in enumerate(bands):
         order = orders[b]
@@ -408,19 +499,25 @@ def permute_region(Z, f0, f1, cfg):
         width = hi - lo
 
         if axis == "freq":
-            patch = resample_band(np.abs(Z[slo:shi, g0:g0 + used]), width)
-            Zout[lo:hi, g0:g0 + used] = patch * np.exp(1j * np.angle(Z[lo:hi, g0:g0 + used]))
+            Zout[lo:hi, g0:g0 + used] = transplant(Z[slo:shi, g0:g0 + used],
+                                                   Z[lo:hi, g0:g0 + used], cfg["energy_mode"])
+            continue
+
+        if axis == "time_freq":
+            # one policy for every band: magnitude from (source band, source
+            # block), phase from (destination band, destination time). No
+            # phase lock: the destination phase is already continuous.
+            for i, src in enumerate(order):
+                s, d = starts[src], starts[i]
+                Zout[lo:hi, d:d + blk] = transplant(Z[slo:shi, s:s + blk], Z[lo:hi, d:d + blk],
+                                                    cfg["energy_mode"])
             continue
 
         prev = Z[lo:hi, g0 - 1] if (phase_mode == "lock" and g0 >= 1) else None
         for i, src in enumerate(order):
             s = starts[src]
             d = starts[i]
-            if axis == "time_freq" and src_band != b:
-                patch = resample_band(np.abs(Z[slo:shi, s:s + blk]), width)
-                block = patch * np.exp(1j * np.angle(Z[lo:hi, d:d + blk]))
-            else:
-                block = Z[lo:hi, s:s + blk].copy()
+            block = Z[lo:hi, s:s + blk].copy()
 
             if phase_mode == "lock":
                 block = lock_phase(prev, block, lo, n_fft, hop)
@@ -428,7 +525,7 @@ def permute_region(Z, f0, f1, cfg):
             Zout[lo:hi, d:d + blk] = block
             prev = block[:, -1]
 
-    return Zout, {"tail_frames": tail, "block_frames": blk}
+    return Zout, {"tail_frames": tail, "block_frames": blk, "starts": starts}
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -508,12 +605,42 @@ def process_channel(audio_ch, sr, start_i, end_i, cfg, fade_n):
         y = np.pad(y, (0, lead + region_len - len(y)))
     out = y[lead:lead + region_len]
     info["interior_frames"] = f1 - f0
+    # Real block boundaries, in seconds from the region start. Frame m is
+    # centred on seg sample m*hop; the boundary between two consecutive
+    # frames is taken half a hop before the first frame of a block.
+    blk = info["block_frames"]
+    edges = [s for s in info["starts"]] + [info["starts"][-1] + blk]
+    info["bounds_s"] = [((m * hop - hop / 2.0) - lead) / sr for m in edges]
+    info["bounds_samples"] = [int(round(m * hop - hop / 2.0 - lead)) for m in edges]
     return apply_edge_fade(out, fade_n), info
 
 
+def seam_metric(src, out, bounds_samples, sr, win_ms=5.0):
+    """Largest sample-to-sample step within +-win_ms of each INTERIOR block
+    boundary, output vs source at the same place. Returns (ratio, worst
+    output step, matching source step). ratio ~1 means the joins are no
+    rougher than the source was there."""
+    import numpy as np
+    w = max(2, int(round(win_ms / 1000.0 * sr)))
+    ratios, worst = [], (0.0, 0.0)
+    for b in bounds_samples[1:-1]:
+        a0, a1 = max(1, b - w), min(len(out), len(src), b + w)
+        if a1 - a0 < 2:
+            continue
+        so = float(np.max(np.abs(np.diff(out[a0 - 1:a1]))))
+        ss = float(np.max(np.abs(np.diff(src[a0 - 1:a1]))))
+        ratios.append(so / max(ss, 1e-9))
+        if so > worst[0]:
+            worst = (so, ss)
+    if not ratios:
+        return None, 0.0, 0.0
+    return float(np.median(ratios)), worst[0], worst[1]
+
+
 def max_step(x):
-    """Largest sample-to-sample jump. A seam metric that can be compared
-    against the source, unlike a count of corrections applied."""
+    """Largest sample-to-sample jump over the WHOLE clip. Not a seam
+    measure (any transient or added high-frequency energy dominates it);
+    kept for continuity of the report. seam_metric() is the seam measure."""
     import numpy as np
     if len(x) < 2:
         return 0.0
@@ -550,6 +677,7 @@ def main():
     p.add_argument("--hop_size", type=int, default=512)
     p.add_argument("--edge_fade_ms", type=float, default=15.0)
     p.add_argument("--num_variants", type=int, default=1)
+    p.add_argument("--energy_mode", type=str, default="magnitude", choices=ENERGY_MODES)
     p.add_argument("--cleanup", action="store_true")
     args = p.parse_args()
 
@@ -611,7 +739,7 @@ def main():
             t_kind, t_custom = "rotate", ""     # unused; time is held fixed
         else:
             t_kind, t_custom = args.kind, args.custom_order
-        master, band_orders, n_indep = build_band_orders(
+        master, band_orders, counts = build_band_orders(
             n_blocks, n_bands, t_kind, t_custom, seed, decor)
 
         if args.axis in ("freq", "time_freq"):
@@ -632,7 +760,8 @@ def main():
 
         cfg = {"axis": args.axis, "n_blocks": n_blocks, "bands": bands,
                "band_orders": band_orders, "band_order": b_order,
-               "phase_mode": args.phase_mode, "n_fft": n_fft, "hop": hop}
+               "phase_mode": args.phase_mode, "n_fft": n_fft, "hop": hop,
+               "energy_mode": args.energy_mode}
 
         print("  [Py 3/4] Variant %d/%d (seed %d): permuting..." % (v + 1, n_variants, seed))
 
@@ -660,9 +789,12 @@ def main():
         written.append(out_path)
 
         probe = res if res.ndim == 1 else res[:, 0]
+        seam = (None, 0.0, 0.0)
+        if "bounds_samples" in info and args.axis != "freq":
+            seam = seam_metric(src_metric, probe, info["bounds_samples"], sr)
         stats_blocks.append({
             "seed": seed, "master": master, "band_orders": band_orders,
-            "band_order": b_order, "n_indep": n_indep, "warn": warn, "info": info,
+            "band_order": b_order, "counts": counts, "warn": warn, "info": info, "seam": seam,
             "path": out_path,
             "step_in": max_step(src_metric), "step_out": max_step(probe),
             "peak": float(np.max(np.abs(res))) if res.size else 0.0,
@@ -674,7 +806,8 @@ def main():
     print("  [Py 4/4] Writing stats...")
     s0 = stats_blocks[0]
     nyq = sr / 2.0
-    with open(args.stats_txt, "w") as f:
+    stats_tmp = args.stats_txt + ".part"
+    with open(stats_tmp, "w") as f:
         f.write("start_time=%.4f\n" % start_t)
         f.write("end_time=%.4f\n" % end_t)
         f.write("region_duration=%.4f\n" % (end_t - start_t))
@@ -688,8 +821,16 @@ def main():
         f.write("num_bands=%d\n" % n_bands)
         f.write("band_spacing=%s\n" % args.band_spacing)
         f.write("decorrelation=%.3f\n" % decor)
-        f.write("independent_bands=%d\n" % s0["n_indep"])
+        f.write("variant_assigned_bands=%d\n" % s0["counts"]["assigned"])
+        f.write("unique_orders=%d\n" % s0["counts"]["unique"])
+        f.write("bands_differing_from_master=%d\n" % s0["counts"]["differ"])
+        f.write("energy_mode=%s\n" % (args.energy_mode if args.axis in ("freq", "time_freq") else "n/a"))
         f.write("phase_mode=%s\n" % args.phase_mode)
+        f.write("phase_effective=%s\n" % (
+            "lock (seam alignment)" if args.phase_mode == "lock" and args.axis in ("time", "band_time")
+            else "off" if args.axis in ("time", "band_time")
+            else "destination phase kept (lock not applicable)" if args.axis in ("freq", "time_freq")
+            else "original phase trajectory kept (lock not applicable)"))
         f.write("fft_size=%d\n" % n_fft)
         f.write("hop_size=%d\n" % hop)
         f.write("edge_fade_ms=%.2f\n" % args.edge_fade_ms)
@@ -700,6 +841,16 @@ def main():
         f.write("tail_frames=%d\n" % s0["info"].get("tail_frames", 0))
         f.write("max_step_in=%.6f\n" % s0["step_in"])
         f.write("max_step_out=%.6f\n" % s0["step_out"])
+        sr_, so_, ss_ = s0["seam"]
+        f.write("seam_ratio=%s\n" % ("n/a" if sr_ is None else "%.3f" % sr_))
+        f.write("seam_worst_out=%.6f\n" % so_)
+        f.write("seam_worst_src=%.6f\n" % ss_)
+        bs = s0["info"].get("bounds_s")
+        f.write("block_bounds_s=%s\n" % (",".join("%.5f" % v for v in bs)
+                                        if (bs and args.axis != "freq") else "none"))
+        if bs:
+            f.write("interior_start_s=%.5f\n" % bs[0])
+            f.write("interior_end_s=%.5f\n" % bs[-1])
         f.write("peak_out=%.6f\n" % s0["peak"])
         if args.axis == "freq":
             f.write("master_order=n/a\n")
@@ -725,11 +876,19 @@ def main():
             f.write("variant_%d_seed=%d\n" % (i + 1, sb["seed"]))
             f.write("variant_%d_file=%s\n" % (i + 1, os.path.basename(sb["path"])))
         allwarn = []
+        if n_variants > 1:
+            sig = lambda sb: (tuple(sb["master"]), tuple(map(tuple, sb["band_orders"])), tuple(sb["band_order"]))
+            if all(sig(sb) == sig(stats_blocks[0]) for sb in stats_blocks[1:]):
+                allwarn.append("all %d variants have the same permutation for this parameter "
+                               "combination (deterministic kind); the extra files are identical"
+                               % n_variants)
         for sb in stats_blocks:
             for w in sb["warn"]:
                 if w not in allwarn:
                     allwarn.append(w)
         f.write("warning=%s\n" % ("; ".join(allwarn) if allwarn else "none"))
+
+    os.replace(stats_tmp, args.stats_txt)       # appears only when complete
 
     if args.cleanup and _is_praat_temp(args.input_wav) and os.path.exists(args.input_wav):
         os.remove(args.input_wav)

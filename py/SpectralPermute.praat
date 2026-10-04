@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 2.2 (2026)
+# Version: 2.3.1 (2026)
 #
 # Description:
 #   Spectral Permutation.
@@ -16,8 +16,10 @@
 #   Permutation axes:
 #   - time        Global time-block permutation. This is the v1 behaviour.
 #                 A contiguous run of STFT columns overlap-adds back to its
-#                 original time segment, so this axis is mathematically a
-#                 time-domain splice with Hann crossfades. Kept because it
+#                 original time segment, so with Phase_mode off this axis
+#                 is mathematically a time-domain splice with Hann
+#                 crossfades (lock rotates block phases, so then it is not
+#                 exactly one). Kept because it
 #                 is musically useful, and as a reference point.
 #   - band_time   The bin axis is split into Num_bands bands and EACH BAND
 #                 GETS ITS OWN PERMUTATION of the time blocks. The time
@@ -31,12 +33,15 @@
 #                 preserves temporal coherence.
 #   - time_freq   Both axes at once.
 #   - mag_phase   Magnitude blocks are permuted while phase runs
-#                 continuously in its original order. No seams at all.
+#                 continuously in its original order. No phase seams;
+#                 magnitude can still change abruptly between blocks.
 #
 #   Decorrelation (0-1) is the probability that a band receives its own
 #   order rather than the shared one. At 0, band_time collapses to time
 #   (verified bit-identical with Phase_mode off); at 1 every band is
-#   independent.
+#   assigned a band-specific variant order, but orders may repeat (reverse,
+#   rotate and custom kinds produce cyclic rotations; the report shows how
+#   many orders are unique and how many differ from the master).
 #
 #   Num_variants renders that many differently-seeded results in a single
 #   Python process, so a permutation idea can be auditioned as a set.
@@ -116,6 +121,45 @@
 #     substituting. Each order is required only on the axes that use it.
 #   - Panel C now labels its cells per axis: source BLOCK on the time-bearing
 #     axes, source BAND on freq, where there are no time blocks to show.
+#
+# Changelog v2.3.1:
+#   - Engine 2.3.1: band_energy by conservative power rebinning. v2.3
+#     interpolated magnitudes first and normalised after, so a narrow peak
+#     falling between interpolation points vanished and could not be
+#     rescaled ([0,1,0] onto 2 bins gave silence; 5114 of 7175 single-bin
+#     transfers between 8 log bands lost energy). Now 0 of 7175, per-frame
+#     energy ratio exactly 1. magnitude mode (presets) unchanged.
+#   - Wording: decorrelation 1 assigns every band a variant order, which may
+#     repeat; the time axis is a time-domain splice only with Phase off.
+#
+# Changelog v2.3:
+#   - FIXED: a Sound not starting at 0 s got the wrong region. Start/End
+#     are relative to the Sound's start, but they were shifted by xmin again
+#     before going to Python (a [5,15] s Sound asked for 0-10 s processed
+#     0-5 s), and the "before" spectrogram extracted absolute times.
+#     Python now receives the relative times; Extract part uses xmin + them.
+#   - FIXED (engine 2.3): time_freq used destination phase only for bands
+#     the band permutation moved, and the whole source block (source-time
+#     phase) for bands it left in place. One policy now: magnitude from the
+#     source band/block, phase from the destination band/time. Verified:
+#     with an identity band order, time_freq now equals mag_phase exactly.
+#   - NEW: Energy_mode for freq / time_freq. magnitude = v2.2 behaviour
+#     (resampled magnitudes; band energy changes with band width, measured
+#     0.003x to 292x with 8 log bands reversed); band_energy = each frame of
+#     the destination band carries the source band's energy. Every preset
+#     sets magnitude, so preset results are unchanged.
+#   - Figure: block boundaries drawn where the engine really put them (from
+#     stats), plus the permuted interior; no block lines on freq.
+#   - Report: assigned / unique / differing-from-master band orders instead
+#     of an "independent bands" count that included repeats and master
+#     orders; seam metric measured only around block boundaries (the old
+#     whole-clip maximum step is still printed); effective phase handling;
+#     warning when all variants are identical (deterministic kinds).
+#   - Completion requires stats.txt (written last, atomically) and every
+#     variant file, not just the first output.
+#   - Phase lock described as identity-phase-locking-INSPIRED seam
+#     alignment; it now leaves DC and Nyquist unrotated (real).
+#   - Version unified at 2.3 with spectral_permute.py.
 #
 # Changelog v2.2:
 #   - The v2.1 form rendered about 31 rows and did not fit on a laptop
@@ -208,7 +252,7 @@ sr        = Get sampling frequency
 nChannels = Get number of channels
 
 # ---- FORM ----
-form Spectral Permutation v2.2
+form Spectral Permutation v2.3.1
     comment ── Region (seconds; End = 0 means "to end") ──
     real Start_time 0.0
     real End_time 0.0
@@ -413,10 +457,14 @@ endif
 # beginPause, and the dialog then overwrites it only when a GUI is present.
 # The preset block above covers the numeric and string fields; these four
 # carry the menu indices under the names the dialog will use.
+# Energy handling is not part of any preset's sound: every preset uses
+# magnitude (the v2.2 behaviour), and Custom starts there too.
+energyIdx = 1
 axis = axisIdx
 band_spacing = spacingIdx
 ordering = kindIdx
 phase_mode = phaseIdx
+energy_mode = energyIdx
 if show_advanced and praatVersion < 6300
     exitScript: "The advanced dialog needs Praat 6.3 or newer (this is "
         ... + praatVersion$ + ")." + newline$
@@ -456,12 +504,20 @@ if show_advanced
         optionmenu: "Phase_mode", phaseIdx
             option: "off"
             option: "lock"
+        optionmenu: "Energy_mode", energyIdx
+            option: "magnitude (freq/time_freq: as v2.2)"
+            option: "band_energy (freq/time_freq: keep band energy)"
         real: "Edge_fade_ms", fixed$ (edge_fade_ms, 1)
     endPause: "Continue", 1
     axisIdx = axis
     spacingIdx = band_spacing
     kindIdx = ordering
     phaseIdx = phase_mode
+    energyIdx = energy_mode
+endif
+energy$ = "magnitude"
+if energyIdx = 2
+    energy$ = "band_energy"
 endif
 
 # ---- MENU INDICES -> STRINGS ----
@@ -651,6 +707,9 @@ procedure cleanUpTempFiles
     if fileReadable (probeMarker$)
         deleteFile: probeMarker$
     endif
+    if fileReadable (tempStats$ + ".part")
+        deleteFile: tempStats$ + ".part"
+    endif
     for .v to 16
         .f$ = tempBase$ + "_v" + string$ (.v) + ".wav"
         if fileReadable (.f$)
@@ -736,12 +795,12 @@ Save as 32-bit WAV file: tempInput$
 # ===========================================================================
 appendInfoLine: "[3/5] Running Python spectral-permutation engine..."
 
-# Python indexes from the file start, so shift the region by the Sound's xmin.
-pyStart = start_time - tmin
-pyEnd   = end_time - tmin
-if pyStart < 0
-    pyStart = 0
-endif
+# Start/End are already relative to the Sound's own start, and the temp
+# WAV begins at that start, so Python receives them unchanged. (v2.2
+# subtracted xmin a second time: a Sound on [5,15] s asked for 0-10 s got
+# 0-5 s.)
+pyStart = start_time
+pyEnd   = end_time
 
 pythonCall$ = pythonCmd$ + " """ + pythonScript$ + """"
     ... + " """ + tempInput$ + """"
@@ -761,6 +820,7 @@ pythonCall$ = pythonCmd$ + " """ + pythonScript$ + """"
     ... + " --hop_size "      + string$ (hop_size)
     ... + " --edge_fade_ms "  + fixed$ (edge_fade_ms, 3)
     ... + " --num_variants "  + string$ (num_variants)
+    ... + " --energy_mode "   + energy$
     ... + " --cleanup"
 
 if needTimeOrder
@@ -794,9 +854,26 @@ else
     firstOut$ = tempBase$ + "_v1.wav"
 endif
 
-if not fileReadable (firstOut$)
+# stats.txt is written last (atomically, by rename), so it is the
+# completion marker; every variant file must exist too.
+missing = 0
+if num_variants > 1
+    for v to num_variants
+        if not fileReadable (tempBase$ + "_v" + string$ (v) + ".wav")
+            missing = missing + 1
+        endif
+    endfor
+elsif not fileReadable (firstOut$)
+    missing = 1
+endif
+if not fileReadable (tempStats$) or missing > 0
     @cleanUpTempFiles
-    exitScript: "Python spectral-permutation engine failed." + newline$
+    noStats$ = ""
+    if not fileReadable (tempStats$)
+        noStats$ = ", no stats"
+    endif
+    exitScript: "Python spectral-permutation engine did not complete ("
+        ... + string$ (missing) + " output file(s) missing" + noStats$ + ")." + newline$
         ... + "Check terminal for error details."
 endif
 
@@ -833,8 +910,37 @@ interiorFrames = statNum.out
 blockFrames = statNum.out
 @statNum: "tail_frames"
 tailFrames = statNum.out
-@statNum: "independent_bands"
-indepBands = statNum.out
+@statNum: "variant_assigned_bands"
+assignedBands = statNum.out
+@statNum: "unique_orders"
+uniqueOrders = statNum.out
+@statNum: "bands_differing_from_master"
+differBands = statNum.out
+@statStr: "seam_ratio"
+seamRatio$ = statStr.out$
+@statNum: "seam_worst_out"
+seamOut = statNum.out
+@statNum: "seam_worst_src"
+seamSrc = statNum.out
+@statStr: "phase_effective"
+phaseEff$ = statStr.out$
+@statStr: "energy_mode"
+energyEff$ = statStr.out$
+@statStr: "block_bounds_s"
+boundsStr$ = statStr.out$
+nBounds = 0
+if boundsStr$ <> "" and boundsStr$ <> "none" and boundsStr$ <> "?"
+    rest$ = boundsStr$ + ","
+    while index (rest$, ",") > 0
+        nBounds = nBounds + 1
+        spBound_'nBounds' = number (left$ (rest$, index (rest$, ",") - 1))
+        rest$ = mid$ (rest$, index (rest$, ",") + 1, length (rest$))
+    endwhile
+endif
+@statNum: "interior_start_s"
+intStart = statNum.out
+@statNum: "interior_end_s"
+intEnd = statNum.out
 @statNum: "map_bands"
 mapBands = statNum.out
 @statNum: "map_blocks"
@@ -913,7 +1019,7 @@ if draw_visualization
     # Region of the ORIGINAL, mono, for the "before" spectrogram.
     # To Spectrogram needs mono; stereo input is a known crash in this family.
     selectObject: sound
-    origRegion = Extract part: start_time, end_time, "rectangular", 1, "no"
+    origRegion = Extract part: tmin + start_time, tmin + end_time, "rectangular", 1, "no"
     if nChannels > 1
         selectObject: origRegion
         origMono = Convert to mono
@@ -972,7 +1078,7 @@ if draw_visualization
     Select inner viewport: 0.60, 7.70, 0.90, 2.60
     Axes: 0, regionDur, 0, drawMaxHz
     @drawBandGrid: mapBands, drawMaxHz, regionDur
-    @drawBlockGrid: num_blocks, regionDur, drawMaxHz
+    @drawRealBounds: regionDur, drawMaxHz
 
     Select inner viewport: 0.60, 7.70, 0.90, 2.60
     Axes: 0, regionDur, 0, drawMaxHz
@@ -995,7 +1101,7 @@ if draw_visualization
     Select inner viewport: 0.60, 7.70, 3.10, 4.80
     Axes: 0, regionDur, 0, drawMaxHz
     @drawBandGrid: mapBands, drawMaxHz, regionDur
-    @drawBlockGrid: num_blocks, regionDur, drawMaxHz
+    @drawRealBounds: regionDur, drawMaxHz
 
     Select inner viewport: 0.60, 7.70, 3.10, 4.80
     Axes: 0, regionDur, 0, drawMaxHz
@@ -1112,12 +1218,17 @@ if draw_visualization
         ... + "     Tail: " + string$ (tailFrames)
         ... + "     Blocks used: " + blocksUsed$
     yy = yy - 0.10
-    Text: 0.02, "left", yy, "half", "Independent bands: " + string$ (indepBands)
-        ... + " of " + string$ (mapBands)
+    Text: 0.02, "left", yy, "half", "Band orders: " + string$ (uniqueOrders) + " unique, "
+        ... + string$ (differBands) + " of " + string$ (mapBands) + " differ from master"
         ... + "     Master order: " + masterOrder$
     yy = yy - 0.10
-    Text: 0.02, "left", yy, "half", "Max sample step - source " + fixed$ (stepIn, 5)
-        ... + " , result " + fixed$ (stepOut, 5)
+    if seamRatio$ <> "n/a" and seamRatio$ <> "" and seamRatio$ <> "?"
+        seamTxt$ = "Seam step at block boundaries: result/source " + seamRatio$
+    else
+        seamTxt$ = "No time blocks on this axis (no seams to measure)"
+    endif
+    @clean: phaseEff$
+    Text: 0.02, "left", yy, "half", seamTxt$ + "     Phase: " + clean.out$
         ... + "     Output peak: " + fixed$ (peakOut, 4)
     yy = yy - 0.10
     Text: 0.02, "left", yy, "half", "Region: " + fixed$ (start_time, 3) + " - "
@@ -1131,7 +1242,7 @@ if draw_visualization
     else
         if axis$ = "time"
             Text: 0.02, "left", yy, "half",
-                ... "Note: the time axis is equivalent to a time-domain splice. Use band"
+                ... "Note: with Phase off the time axis equals a time-domain splice. Use band"
                 ... + "\_ time or freq for a genuinely spectral result."
         else
             Text: 0.02, "left", yy, "half",
@@ -1175,14 +1286,23 @@ if axis$ = "freq" or axis$ = "time_freq"
     appendInfoLine: "Band order:          ", bandOrder$
 endif
 if mapBands > 1 and axis$ <> "freq"
-    appendInfoLine: "Independent bands:   ", indepBands, " of ", mapBands
+    appendInfoLine: "Band orders:         ", assignedBands, " of ", mapBands, " bands assigned a variant order; ",
+        ... uniqueOrders, " unique order(s); ", differBands, " differ from the master"
     appendInfoLine: "Per-band orders:"
     for b to mapBands
         appendInfoLine: "  band ", b, "  ", fixed$ (spBandLo_'b', 0), "-",
             ... fixed$ (spBandHi_'b', 0), " Hz   ", spRow_'b'$
     endfor
 endif
-appendInfoLine: "Max sample step:     source ", fixed$ (stepIn, 5), " -> result ", fixed$ (stepOut, 5)
+appendInfoLine: "Phase:               ", phaseEff$
+if axis$ = "freq" or axis$ = "time_freq"
+    appendInfoLine: "Energy:              ", energyEff$
+endif
+if seamRatio$ <> "n/a" and seamRatio$ <> "" and seamRatio$ <> "?"
+    appendInfoLine: "Seam step at block boundaries (+-5 ms): median ratio result/source ", seamRatio$,
+        ... "; worst ", fixed$ (seamOut, 5), " vs source ", fixed$ (seamSrc, 5), " there"
+endif
+appendInfoLine: "Max sample step (whole clip, not a seam measure): source ", fixed$ (stepIn, 5), " -> result ", fixed$ (stepOut, 5)
 appendInfoLine: "Output peak:         ", fixed$ (peakOut, 4)
 
 if warning$ <> "?" and warning$ <> "none" and warning$ <> ""
@@ -1292,18 +1412,32 @@ procedure drawBandGrid: .nb, .maxHz, .t1
     endif
 endproc
 
-# Vertical block boundaries over a spectrogram panel.
-procedure drawBlockGrid: .nbk, .t1, .maxHz
-    Line width: 2
-    Colour: {0.85, 0.30, 0.10}
-    Dotted line
-    for .i from 1 to .nbk - 1
-        .x = .t1 * .i / .nbk
-        Draw line: .x, 0, .x, .maxHz
-    endfor
+# Real block boundaries (from the engine's stats) over a spectrogram panel:
+# grey dashed = edges of the permuted interior (frames outside stay put),
+# red dotted = internal block boundaries. None on freq (no time blocks).
+procedure drawRealBounds: .t1, .maxHz
+    if intStart <> undefined and intEnd <> undefined
+        Line width: 1
+        Colour: {0.45, 0.45, 0.45}
+        Dashed line
+        Draw line: intStart, 0, intStart, .maxHz
+        Draw line: intEnd, 0, intEnd, .maxHz
+    endif
+    if nBounds > 2 and axis$ <> "freq"
+        Line width: 2
+        Colour: {0.85, 0.30, 0.10}
+        Dotted line
+        # plain global index: 'x' interpolation cannot see dotted locals
+        for spBi from 2 to nBounds - 1
+            .x = spBound_'spBi'
+            Draw line: .x, 0, .x, .maxHz
+        endfor
+    endif
     Solid line
+    Line width: 1
     Black
 endproc
+
 
 # Picture-window text markup sanitizer. In Picture text `_` is subscript,
 # `%` italic, `#` bold, `^` superscript, and each is SWALLOWED rather than
