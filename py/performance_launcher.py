@@ -3,18 +3,71 @@
 # Praat AudioTools Plugin
 # Script:      performance_launcher.py
 # Author:      Shai Cohen
-# Version:     1.5 (2026) — live-safety, routing guards, persistent config
+# Version:     1.7.3 (2026) — MIDI keyboard input + note-to-cue mapping
 # License:     MIT License
 #
 # Description:
 #   Real-time multichannel audio cue launcher for live performance.
 #   Accepts a manifest JSON from PerformanceLauncher.praat, loads
-#   each cue into memory, and provides a keyboard-triggered GUI
-#   for firing cues to any output channel configuration with
+#   each cue into memory, and provides a keyboard- and MIDI-triggered
+#   GUI for firing cues to any output channel configuration with
 #   per-cue gain, fade-in/out, output-channel offset, and progress display.
 #
 # Usage (called by PerformanceLauncher.praat):
 #   python performance_launcher.py <manifest.json>
+#
+# MIDI (optional — needs: python -m pip install python-rtmidi):
+#   - Pick a port in "MIDI In". Without python-rtmidi the launcher runs
+#     exactly as before; the MIDI row just says how to enable it.
+#   - Default map: cue 1 = C3 (note 48), then chromatic upward.
+#   - Per cue: click the note button, then press a key  -> learn.
+#              right-click the note button               -> clear.
+#   - Layout: Chromatic (every key) or Diatonic (white keys only).
+#     Switching re-lays all cues from cue 1's current key.
+#   - "Map from key…": the next key pressed becomes cue 1, the rest
+#     follow in the selected layout (re-lays the keyboard in one press).
+#   - Stop key (red "■" button): the next layout key after the last cue
+#     fades out everything playing. Follows every re-lay; click = learn,
+#     right-click = clear.
+#   - Note-off stops: gate mode (key release fades the cue out).
+#   - Velocity: velocity scales cue gain ((v/127)^2 amplitude law).
+#   - CC 120 / CC 123 (All Sound Off / All Notes Off) = Stop All.
+#   Note names use middle C = C4 = 60 (some keyboards label it C3).
+#
+# Changelog v1.7.3:
+#   - NEW: MIDI Stop key, placed on the next key after the last cue in the
+#     current layout (chromatic: next semitone, diatonic: next white key);
+#     moves with layout changes and "Map from key…", learnable/clearable,
+#     persisted. Fades out all playing cues (same as Esc / Stop All).
+#
+# Changelog v1.7.2:
+#   - NEW: Chromatic / Diatonic layout selector (diatonic = white keys,
+#     black-key start snaps up). Drives the startup default, the layout
+#     switch itself, and "Map from key…". Persisted in config.
+#
+# Changelog v1.7.1:
+#   - FIX: keys (computer and, apparently, MIDI) seemed dead after picking
+#     a MIDI port / audio device: the combobox kept keyboard focus and the
+#     typing guard swallowed every key, with nothing returning focus. The
+#     guard now covers only text fields; dropdown picks, clicks on buttons/
+#     checkboxes/slider/background, Return and Esc hand focus back.
+#   - Window raises and takes focus at launch (it often opened behind
+#     Praat on Windows, so keys went to Praat).
+#   - MIDI indicator shows notes dropped by the channel filter, and
+#     'waiting for notes…' once a port is open, for diagnosis.
+#
+# Changelog v1.7:
+#   - NEW: MIDI keyboard input via python-rtmidi (optional dependency).
+#     Port selector + refresh, channel filter (Omni/1-16), per-cue note
+#     learn/clear, "Map from key…" chromatic re-map, gate (note-off stops),
+#     velocity-to-gain, CC 120/123 panic, last-note indicator.
+#   - Cues fire directly on the MIDI thread (engine is lock-protected) for
+#     lowest latency; Tk is touched only from the main thread via a queue.
+#   - Live per-cue gain edits now preserve each instance's velocity scaling.
+#   - MIDI port is restored by name (trailing OS port numbers ignored, since
+#     WinMM/ALSA renumber them); an absent port is remembered, not forgotten.
+#   - Esc also cancels a pending MIDI learn.
+#   - Version jumps 1.5 -> 1.7 to sync with PerformanceLauncher.praat.
 #
 # Changelog v1.5:
 #   - Fixed config persistence: config is no longer deleted at shutdown.
@@ -150,6 +203,17 @@ except ImportError as e:
         f"python -m pip install sounddevice soundfile numpy"
     )
 
+# MIDI is optional: the launcher must keep working without it.
+try:
+    import rtmidi
+    _RTMIDI_ERR = ''
+except Exception as e:          # ImportError, or a broken backend DLL/.so
+    rtmidi = None
+    _RTMIDI_ERR = str(e)
+
+import re
+import queue
+
 # ── Style Palette Constants ──────────────────────────────────────────
 BG = "#12121e"
 PANEL_BG = "#0e0e18"
@@ -174,6 +238,51 @@ MASTER_MAX_DB         =  12.0
 MASTER_STEP_COARSE_DB =   1.0
 MASTER_STEP_FINE_DB   =   0.1
 
+# MIDI
+MIDI_DEFAULT_BASE_NOTE = 48          # C3: cue 1 lands mid-keyboard on 25/49/61-key boards
+MIDI_NONE_LABEL        = "(none)"
+MIDI_CHANNEL_VALUES    = ("Omni",) + tuple(str(c) for c in range(1, 17))
+MIDI_LEARN_COLOR       = "#c04060"
+# Widgets where typed keys are text, not cue triggers.
+TEXT_ENTRY_CLASSES = {'Entry', 'TEntry', 'Spinbox', 'TSpinbox', 'Text'}
+_NOTE_NAMES = ('C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B')
+
+def midi_note_name(n):
+    """60 -> 'C4' (middle C = C4)."""
+    if n is None or n < 0 or n > 127:
+        return '—'
+    return f"{_NOTE_NAMES[n % 12]}{n // 12 - 1}"
+
+MIDI_LAYOUTS = ('Chromatic', 'Diatonic')
+_WHITE_KEYS = {0, 2, 4, 5, 7, 9, 11}
+
+def layout_notes(base, count, layout):
+    """Notes for `count` cues from `base`. Chromatic: every key. Diatonic:
+    white keys only (a black-key base snaps up to the next white key).
+    Cues that run past note 127 get -1 (unmapped)."""
+    notes = []
+    n = int(base)
+    if layout == 'Diatonic':
+        while n % 12 not in _WHITE_KEYS:
+            n += 1
+    for _ in range(count):
+        notes.append(n if 0 <= n <= 127 else -1)
+        n += 1
+        if layout == 'Diatonic':
+            while n % 12 not in _WHITE_KEYS:
+                n += 1
+    return notes
+
+def next_layout_note(after, layout):
+    """First key above `after` in the layout (-1 if past 127)."""
+    n = layout_notes(int(after) + 1, 1, layout)[0]
+    return n
+
+def _norm_port_name(name):
+    # WinMM appends " 0", " 1"…; ALSA appends " 20:0". Both renumber across
+    # reboots/replugs, so compare without them.
+    return re.sub(r'\s+\d+(:\d+)?$', '', name or '').strip()
+
 # ── Data Model Classes ────────────────────────────────────────────────
 class Cue:
     def __init__(self, data):
@@ -192,15 +301,20 @@ class Cue:
         self.mode = data.get('playback_mode', 'restart') 
         self.output_offset = int(data.get('output_offset', 0))
         self.mono_to_stereo = True if self.channels == 1 else False
-        
-        self.audio_data = None 
+        # MIDI note 0-127; -1 = deliberately unmapped; None = not yet set
+        # (gets the chromatic default after config restore).
+        self.midi_note = None
+
+        self.audio_data = None
         self.status = "READY"
 
 class CueInstance:
-    def __init__(self, cue, sample_rate):
+    def __init__(self, cue, sample_rate, vel_scale=1.0):
         self.cue = cue
         self.current_frame = 0
-        self.gain_linear = 10.0 ** (cue.gain_db / 20.0)
+        # vel_scale is fixed per trigger; live gain edits multiply it back in.
+        self.vel_scale = float(vel_scale)
+        self.gain_linear = 10.0 ** (cue.gain_db / 20.0) * self.vel_scale
         self.is_stopping = False
         # Guard against zero-frame divisions and clamp fades to cue length.
         # A fade longer than the cue should span the whole cue, not make the
@@ -435,7 +549,7 @@ class AudioEngine:
                     self.active_cues.remove(inst)
                     inst.cue.status = "READY"
 
-    def play_cue(self, cue):
+    def play_cue(self, cue, vel_scale=1.0):
         if self.stream is None:
             msg = "Audio stream is not open; cue was not fired."
             self.log_event(f"CUE BLOCKED: [{cue.id}] {cue.name} — {msg}")
@@ -465,7 +579,7 @@ class AudioEngine:
                         inst.is_stopping = True
                         inst.stop_frame_elapsed = 0
 
-            new_inst = CueInstance(cue, self.sample_rate)
+            new_inst = CueInstance(cue, self.sample_rate, vel_scale)
             self.active_cues.append(new_inst)
             cue.status = "PLAYING"
         self.log_event(f"CUE PLAY: [{cue.id}] {cue.name}")
@@ -510,6 +624,85 @@ class AudioEngine:
                 'frame': 0,
                 'total_frames': int(duration * self.sample_rate)
             })
+
+
+# ── MIDI Input ────────────────────────────────────────────────────────
+class MidiInput:
+    """Thin wrapper over python-rtmidi. on_message(list[int]) is called on
+    rtmidi's own thread: it may touch the (locked) engine, never Tk."""
+
+    def __init__(self, on_message):
+        self.available = rtmidi is not None
+        self.port_name = ''
+        self._in = None
+        self._on_message = on_message
+
+    def list_ports(self):
+        if not self.available:
+            return []
+        try:
+            probe = rtmidi.MidiIn()
+            ports = list(probe.get_ports())
+            del probe
+            return ports
+        except Exception:
+            return []
+
+    def find_port(self, wanted, ports=None):
+        """Index of `wanted` in ports: exact name first, then OS-number-free."""
+        ports = self.list_ports() if ports is None else ports
+        if not wanted:
+            return -1
+        if wanted in ports:
+            return ports.index(wanted)
+        w = _norm_port_name(wanted)
+        for i, p in enumerate(ports):
+            if _norm_port_name(p) == w:
+                return i
+        return -1
+
+    def open(self, wanted):
+        """Open a port by name. Returns (ok, message)."""
+        self.close()
+        if not self.available:
+            return False, "python-rtmidi is not installed"
+        ports = self.list_ports()
+        idx = self.find_port(wanted, ports)
+        if idx < 0:
+            return False, f"MIDI port not found: {wanted}"
+        try:
+            mi = rtmidi.MidiIn()
+            mi.ignore_types(sysex=True, timing=True, active_sense=True)
+            mi.open_port(idx)
+            mi.set_callback(self._callback)
+            self._in = mi
+            self.port_name = ports[idx]
+            return True, f"MIDI in: {self.port_name}"
+        except Exception as e:
+            self._in = None
+            # On Windows (WinMM) a MIDI input can be held by only one app.
+            return False, (f"Could not open MIDI port {ports[idx]}: {e}  "
+                           f"(is it already open in Live/Max/another app?)")
+
+    def _callback(self, event, _data=None):
+        try:
+            msg, _delta = event
+            self._on_message(msg)
+        except Exception:
+            pass   # never let an exception kill rtmidi's thread
+
+    def close(self):
+        if self._in is not None:
+            try:
+                self._in.cancel_callback()
+            except Exception:
+                pass
+            try:
+                self._in.close_port()
+            except Exception:
+                pass
+            self._in = None
+        self.port_name = ''
 
 
 # ── Settings / Config Persistence ─────────────────────────────────────
@@ -586,6 +779,34 @@ class PerformanceLauncherApp:
                 cue.fade_in        = max(0.0, float(sc.get('fade_in', cue.fade_in)))
                 cue.fade_out       = max(0.0, float(sc.get('fade_out', cue.fade_out)))
                 cue.mode           = sc.get('mode', cue.mode)
+                if 'midi_note' in sc:
+                    try:
+                        n = int(sc['midi_note'])
+                        cue.midi_note = n if 0 <= n <= 127 else -1
+                    except (TypeError, ValueError):
+                        pass
+
+        # Cues without a saved note get the default layout (chromatic or
+        # diatonic from C3), skipping any note a restored cue already owns.
+        layout = cfg.get('midi_layout', 'Chromatic')
+        layout = layout if layout in MIDI_LAYOUTS else 'Chromatic'
+        defaults = layout_notes(MIDI_DEFAULT_BASE_NOTE, len(self.cues), layout)
+        taken = {c.midi_note for c in self.cues if c.midi_note is not None and c.midi_note >= 0}
+        for i, cue in enumerate(self.cues):
+            if cue.midi_note is None:
+                n = defaults[i]
+                cue.midi_note = n if (n >= 0 and n not in taken) else -1
+                if cue.midi_note >= 0:
+                    taken.add(n)
+
+        # Stop key: saved, else the next layout key after the highest cue.
+        try:
+            self._stop_note = int(cfg['midi_stop_note'])
+        except (KeyError, TypeError, ValueError):
+            top = max(taken) if taken else MIDI_DEFAULT_BASE_NOTE - 1
+            self._stop_note = next_layout_note(top, layout)
+        if not (0 <= self._stop_note <= 127) or self._stop_note in taken:
+            self._stop_note = -1
 
         self.selected_device    = tk.IntVar(value=cfg.get('device_index', -1))
         self.saved_device_name  = cfg.get('device_name', '')
@@ -604,6 +825,24 @@ class PerformanceLauncherApp:
         self.key_map         = {}   # key char -> cue
         self._status_msg   = tk.StringVar(value="Ready.")
         self._seen_callback_status_count = 0
+
+        # ── MIDI state ──
+        # Plain Python attributes mirror the Tk vars so the rtmidi thread
+        # never reads Tk objects. note_map is replaced wholesale (atomic).
+        self.note_map          = {}     # midi note -> cue
+        self.cue_midi_btns     = {}     # cue.id -> note Button
+        self._midi_learn       = None   # None | cue | 'BASE'
+        self._midi_queue       = queue.Queue()
+        self._midi_port_wanted = cfg.get('midi_port', '')
+        self.midi_channel_var  = tk.StringVar(value=str(cfg.get('midi_channel', 'Omni')))
+        self.midi_gate_var     = tk.BooleanVar(value=cfg.get('midi_note_off_stops', False))
+        self.midi_vel_var      = tk.BooleanVar(value=cfg.get('midi_velocity', False))
+        self.midi_layout_var   = tk.StringVar(value=layout)
+        self.midi_indicator    = tk.StringVar(value="")
+        self._midi_channel     = 0      # 0 = omni
+        self._midi_gate        = False
+        self._midi_velocity    = False
+        self.midi = MidiInput(self._on_midi_message)
 
         # Pre-load audio
         load_errors = []
@@ -630,11 +869,16 @@ class PerformanceLauncherApp:
 
         self._build_ui()
         self._rebuild_key_map()
+        self._rebuild_note_map()
+        self._refresh_midi_buttons()
         self._apply_master_gain()
         self._apply_exclusive()
+        self._apply_midi_options()
         self._try_open_stream()
+        self._open_saved_midi_port()
 
         self.root.bind('<KeyPress>', self._on_keypress)
+        self._install_focus_handling()
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self._poll_status()
 
@@ -697,6 +941,70 @@ class PerformanceLauncherApp:
         self.output_ch_spin.bind('<Return>', self._on_device_changed)
         self.output_ch_spin.bind('<FocusOut>', self._on_device_changed)
 
+        # ── MIDI input ──
+        midi_frame = tk.Frame(self.root, bg=BG)
+        midi_frame.pack(fill='x', padx=8, pady=(4, 0))
+
+        tk.Label(midi_frame, text="MIDI In:", bg=BG, fg=LABEL_FG,
+                 font=("Helvetica", 9)).pack(side='left', padx=4)
+
+        if not self.midi.available:
+            tk.Label(midi_frame,
+                     text="unavailable — python -m pip install python-rtmidi",
+                     bg=BG, fg=STATUS_FG, font=("Helvetica", 9)
+                     ).pack(side='left', padx=4)
+            self.midi_combo = None
+        else:
+            self.midi_combo = ttk.Combobox(midi_frame, width=28, state='readonly')
+            self.midi_combo.pack(side='left', padx=4)
+            self.midi_combo.bind('<<ComboboxSelected>>', self._on_midi_port_changed)
+            self._populate_midi_ports()
+
+            tk.Button(midi_frame, text="⟳", bg=BUTTON_BG, fg=TEXT_FG, relief='flat',
+                      width=2, command=self._populate_midi_ports
+                      ).pack(side='left', padx=(0, 6))
+
+            tk.Label(midi_frame, text="Ch:", bg=BG, fg=LABEL_FG).pack(side='left')
+            tk.Spinbox(midi_frame, values=MIDI_CHANNEL_VALUES, width=5,
+                       textvariable=self.midi_channel_var, wrap=True,
+                       command=self._apply_midi_options,
+                       bg=BUTTON_BG, fg=TEXT_FG, insertbackground=TEXT_FG,
+                       buttonbackground=BUTTON_BG).pack(side='left', padx=(2, 8))
+            # Spinbox(values=…) resets its var to the first value on creation;
+            # re-apply the restored channel afterwards.
+            self.midi_channel_var.set(self._initial_midi_channel())
+            self.midi_channel_var.trace_add('write', lambda *_: self._apply_midi_options())
+
+            for text, var in (("Note-off stops", self.midi_gate_var),
+                              ("Velocity", self.midi_vel_var)):
+                tk.Checkbutton(midi_frame, text=text, variable=var,
+                               bg=BG, fg=LABEL_FG, selectcolor=BUTTON_BG,
+                               activebackground=BG,
+                               command=self._apply_midi_options).pack(side='left', padx=4)
+
+            self.midi_layout_combo = ttk.Combobox(
+                midi_frame, width=9, state='readonly', values=MIDI_LAYOUTS,
+                textvariable=self.midi_layout_var)
+            self.midi_layout_combo.pack(side='left', padx=(6, 0))
+            self.midi_layout_combo.bind('<<ComboboxSelected>>', self._on_layout_changed)
+
+            tk.Button(midi_frame, text="Map from key…", bg=BUTTON_BG, fg=TEXT_FG,
+                      relief='flat', padx=6,
+                      command=self._start_base_learn).pack(side='left', padx=6)
+
+            # Stop key: click = learn, right-click = clear
+            self.stop_midi_btn = tk.Button(
+                midi_frame, text="", width=8, bg=ERROR_COLOR, fg=TEXT_FG,
+                relief='flat', font=("Courier", 9, "bold"),
+                command=self._toggle_stop_learn)
+            self.stop_midi_btn.pack(side='left', padx=2)
+            self.stop_midi_btn.bind('<Button-3>', lambda _e: self._clear_stop_note())
+            self.stop_midi_btn.bind('<Button-2>', lambda _e: self._clear_stop_note())
+
+            tk.Label(midi_frame, textvariable=self.midi_indicator, bg=BG,
+                     fg=ARMED_COLOR, font=("Courier", 9), anchor='e'
+                     ).pack(side='right', padx=4)
+
         # ── Cue grid ──
         grid_outer = tk.Frame(self.root, bg=BG)
         grid_outer.pack(fill='both', expand=True, padx=8, pady=8)
@@ -745,6 +1053,17 @@ class PerformanceLauncherApp:
                            bg=ARMED_COLOR, fg="#000", width=4,
                            font=("Courier", 9, "bold"))
         key_lbl.pack(side='left', padx=(4, 2), pady=4)
+
+        # MIDI note: click = learn, right-click = clear
+        if self.midi.available:
+            mbtn = tk.Button(row, text=midi_note_name(cue.midi_note), width=4,
+                             bg=PANEL_BG, fg=ARMED_COLOR, relief='flat',
+                             font=("Courier", 9, "bold"),
+                             command=lambda c=cue: self._toggle_cue_learn(c))
+            mbtn.pack(side='left', padx=(0, 2), pady=4)
+            mbtn.bind('<Button-3>', lambda _e, c=cue: self._clear_cue_note(c))
+            mbtn.bind('<Button-2>', lambda _e, c=cue: self._clear_cue_note(c))  # macOS
+            self.cue_midi_btns[cue.id] = mbtn
 
         # Play button
         btn = tk.Button(row, text=f"▶  {cue.name}",
@@ -931,7 +1250,7 @@ class PerformanceLauncherApp:
             with self.engine.lock:
                 for inst in self.engine.active_cues:
                     if inst.cue is cue:
-                        inst.gain_linear = new_linear
+                        inst.gain_linear = new_linear * inst.vel_scale
         except (ValueError, tk.TclError):
             pass
 
@@ -980,7 +1299,9 @@ class PerformanceLauncherApp:
     def _on_keypress(self, event):
         k = event.keysym.lower()
         if k == 'escape':
+            self._cancel_learn()
             self.engine.stop_all()
+            self._reclaim_focus()
             return
 
         # Do not fire cues or global master shortcuts while the performer is
@@ -990,9 +1311,10 @@ class PerformanceLauncherApp:
             widget_class = event.widget.winfo_class()
         except Exception:
             widget_class = ''
-        if widget_class in {
-                'Entry', 'TEntry', 'Spinbox', 'TSpinbox', 'TCombobox',
-                'Text', 'Scale', 'TScale'}:
+        # v1.7.1: only true text-entry widgets block keys. Comboboxes and
+        # the slider used to be listed too, and since nothing ever gave focus
+        # back, choosing a MIDI port or audio device left every key dead.
+        if widget_class in TEXT_ENTRY_CLASSES:
             return
 
         # Arrow keys ride the master gain: Up/Down coarse (±1 dB),
@@ -1008,8 +1330,323 @@ class PerformanceLauncherApp:
         if k in self.key_map:
             self._trigger_cue(self.key_map[k])
 
+    # ── Keyboard focus ────────────────────────────────────────────────
+    def _reclaim_focus(self, *_):
+        try:
+            self.root.focus_set()
+        except Exception:
+            pass
+
+    def _install_focus_handling(self):
+        # Launched from Praat, the window often opens behind Praat (Windows
+        # especially) and keys keep going to Praat. Raise and grab focus once.
+        def _bring_front():
+            try:
+                self.root.lift()
+                self.root.attributes('-topmost', True)
+                self.root.after(300, lambda: self.root.attributes('-topmost', False))
+                self.root.focus_force()
+            except Exception:
+                pass
+        self.root.after(200, _bring_front)
+
+        # After any pick from a dropdown, hand keys back to the cue triggers.
+        self.root.bind_all('<<ComboboxSelected>>',
+                           lambda _e: self.root.after_idle(self._reclaim_focus), add='+')
+
+        # Clicking a button, checkbox, slider or empty space returns focus.
+        # Text fields keep focus until Return / Esc / clicking elsewhere.
+        def _on_release(event):
+            try:
+                cls = event.widget.winfo_class()
+            except Exception:
+                return
+            if cls not in TEXT_ENTRY_CLASSES and cls != 'TCombobox':
+                self.root.after_idle(self._reclaim_focus)
+        self.root.bind_all('<ButtonRelease-1>', _on_release, add='+')
+
+        def _on_return(event):
+            try:
+                if event.widget.winfo_class() in TEXT_ENTRY_CLASSES:
+                    self.root.after_idle(self._reclaim_focus)
+            except Exception:
+                pass
+        self.root.bind_all('<Return>', _on_return, add='+')
+
+    # ── MIDI: ports & options (main thread) ───────────────────────────
+    def _initial_midi_channel(self):
+        v = str(self.config.get('midi_channel', 'Omni'))
+        return v if v in MIDI_CHANNEL_VALUES else 'Omni'
+
+    def _populate_midi_ports(self):
+        if self.midi_combo is None:
+            return
+        ports = self.midi.list_ports()
+        self._midi_ports = ports
+        self.midi_combo['values'] = [MIDI_NONE_LABEL] + ports
+        # Keep showing the open port (it may have been renumbered).
+        current = self.midi.port_name or ''
+        idx = self.midi.find_port(current, ports) if current else -1
+        self.midi_combo.current(idx + 1 if idx >= 0 else 0)
+
+    def _open_saved_midi_port(self):
+        if not self.midi.available or not self._midi_port_wanted:
+            return
+        ok, msg = self.midi.open(self._midi_port_wanted)
+        self._populate_midi_ports()
+        if ok:
+            self.engine.log_event(msg)
+            self.midi_indicator.set("waiting for notes…")
+        else:
+            # Keep _midi_port_wanted so the port is reopened next time it
+            # is plugged in; do not overwrite the audio status line unless
+            # it is merely "Ready".
+            self.engine.log_event(msg)
+            self.midi_indicator.set("MIDI port missing")
+
+    def _on_midi_port_changed(self, *_):
+        sel = self.midi_combo.get()
+        if sel == MIDI_NONE_LABEL or not sel:
+            self.midi.close()
+            self._midi_port_wanted = ''
+            self.midi_indicator.set("")
+            self._status_msg.set("MIDI input off.")
+            return
+        ok, msg = self.midi.open(sel)
+        self._midi_port_wanted = sel if ok else self._midi_port_wanted
+        self.engine.log_event(msg)
+        self._status_msg.set(msg)
+        self.midi_indicator.set("waiting for notes…" if ok else "MIDI open failed")
+        if not ok:
+            self._populate_midi_ports()
+
+    def _apply_midi_options(self):
+        ch = self.midi_channel_var.get()
+        self._midi_channel = int(ch) if ch.isdigit() else 0
+        self._midi_gate = bool(self.midi_gate_var.get())
+        self._midi_velocity = bool(self.midi_vel_var.get())
+
+    def _rebuild_note_map(self):
+        nm = {}
+        for cue in self.cues:
+            if cue.midi_note is not None and 0 <= cue.midi_note <= 127:
+                nm.setdefault(cue.midi_note, cue)
+        self.note_map = nm   # atomic swap; read by the MIDI thread
+
+    def _refresh_midi_buttons(self):
+        for cue in self.cues:
+            b = self.cue_midi_btns.get(cue.id)
+            if b is None:
+                continue
+            if self._midi_learn is cue or self._midi_learn == 'BASE':
+                b.configure(text="learn", bg=MIDI_LEARN_COLOR, fg=TEXT_FG)
+            else:
+                b.configure(text=midi_note_name(cue.midi_note),
+                            bg=PANEL_BG, fg=ARMED_COLOR)
+        sb = getattr(self, 'stop_midi_btn', None)
+        if sb is not None:
+            if self._midi_learn == 'STOP':
+                sb.configure(text="learn", bg=MIDI_LEARN_COLOR)
+            else:
+                sb.configure(text=f"■ {midi_note_name(self._stop_note)}", bg=ERROR_COLOR)
+
+    # ── MIDI: learn / clear (main thread) ─────────────────────────────
+    def _toggle_cue_learn(self, cue):
+        if not self.midi.port_name:
+            self._status_msg.set("Select a MIDI input port first.")
+            return
+        self._midi_learn = None if self._midi_learn is cue else cue
+        self._refresh_midi_buttons()
+        if self._midi_learn is cue:
+            self._status_msg.set(f"Press a key to assign to: {cue.name}  (Esc cancels)")
+        else:
+            self._status_msg.set("MIDI learn cancelled.")
+
+    def _start_base_learn(self):
+        if not self.midi.port_name:
+            self._status_msg.set("Select a MIDI input port first.")
+            return
+        self._midi_learn = None if self._midi_learn == 'BASE' else 'BASE'
+        self._refresh_midi_buttons()
+        if self._midi_learn == 'BASE':
+            self._status_msg.set("Press the key for cue 1 — the rest follow the layout, Stop goes after the last (Esc cancels).")
+        else:
+            self._status_msg.set("MIDI learn cancelled.")
+
+    def _toggle_stop_learn(self):
+        if not self.midi.port_name:
+            self._status_msg.set("Select a MIDI input port first.")
+            return
+        self._midi_learn = None if self._midi_learn == 'STOP' else 'STOP'
+        self._refresh_midi_buttons()
+        if self._midi_learn == 'STOP':
+            self._status_msg.set("Press the key that should stop playback (Esc cancels).")
+        else:
+            self._status_msg.set("MIDI learn cancelled.")
+
+    def _clear_stop_note(self):
+        self._stop_note = -1
+        if self._midi_learn == 'STOP':
+            self._midi_learn = None
+        self._refresh_midi_buttons()
+        self._status_msg.set("MIDI stop key cleared.")
+
+    def _cancel_learn(self):
+        if self._midi_learn is not None:
+            self._midi_learn = None
+            self._refresh_midi_buttons()
+            self._status_msg.set("MIDI learn cancelled.")
+
+    def _clear_cue_note(self, cue):
+        cue.midi_note = -1
+        if self._midi_learn is cue:
+            self._midi_learn = None
+        self._rebuild_note_map()
+        self._refresh_midi_buttons()
+        self._status_msg.set(f"MIDI note cleared: {cue.name}")
+
+    def _apply_layout(self, base):
+        """Re-lay every cue from `base` using the selected layout."""
+        layout = self.midi_layout_var.get()
+        notes = layout_notes(base, len(self.cues), layout)
+        for cue, n in zip(self.cues, notes):
+            cue.midi_note = n
+        mapped = [n for n in notes if n >= 0]
+        skipped = len(notes) - len(mapped)
+        # Stop key follows the last cue in the same layout.
+        self._stop_note = next_layout_note(mapped[-1], layout) if mapped else -1
+        msg = f"{layout}: {len(mapped)} cue(s)"
+        if mapped:
+            msg += f" {midi_note_name(mapped[0])}–{midi_note_name(mapped[-1])}"
+        msg += f", Stop {midi_note_name(self._stop_note)}"
+        if skipped:
+            msg += f"; {skipped} ran past note 127 and are unmapped"
+        return msg
+
+    def _on_layout_changed(self, *_):
+        # Keep the current starting key: cue 1's note, else the lowest
+        # mapped note, else C3. Diatonic snaps a black-key start up.
+        if self.cues and self.cues[0].midi_note is not None and self.cues[0].midi_note >= 0:
+            base = self.cues[0].midi_note
+        else:
+            used = [c.midi_note for c in self.cues if c.midi_note is not None and c.midi_note >= 0]
+            base = min(used) if used else MIDI_DEFAULT_BASE_NOTE
+        msg = self._apply_layout(base)
+        self._rebuild_note_map()
+        self._refresh_midi_buttons()
+        self._status_msg.set(msg + "  (custom learned notes replaced)")
+        self.engine.log_event("MIDI MAP: " + msg)
+
+    def _finish_learn(self, note):
+        target = self._midi_learn
+        self._midi_learn = None
+        if target == 'BASE':
+            msg = self._apply_layout(note)
+        elif target == 'STOP':
+            stolen = [c for c in self.cues if c.midi_note == note]
+            for c in stolen:
+                c.midi_note = -1
+            self._stop_note = note
+            msg = f"{midi_note_name(note)} → Stop"
+            if stolen:
+                msg += f"  (taken from {', '.join(c.name for c in stolen)})"
+        elif target is not None:
+            stolen = [c for c in self.cues if c is not target and c.midi_note == note]
+            for c in stolen:
+                c.midi_note = -1
+            target.midi_note = note
+            msg = f"{midi_note_name(note)} → {target.name}"
+            if stolen:
+                msg += f"  (taken from {', '.join(c.name for c in stolen)})"
+            if note == self._stop_note:
+                self._stop_note = -1
+                msg += "  (was the Stop key — Stop now unassigned)"
+        else:
+            return
+        self._rebuild_note_map()
+        self._refresh_midi_buttons()
+        self._status_msg.set(msg)
+        self.engine.log_event("MIDI MAP: " + msg)
+
+    # ── MIDI: message handler (rtmidi thread — no Tk calls here) ──────
+    def _on_midi_message(self, msg):
+        if not msg:
+            return
+        status = msg[0]
+        kind = status & 0xF0
+        if kind not in (0x80, 0x90, 0xB0):
+            return
+        q = self._midi_queue
+        ch = (status & 0x0F) + 1
+        if self._midi_channel and ch != self._midi_channel:
+            # Report it, so a wrong channel setting is visible, not silent.
+            if kind == 0x90 and len(msg) >= 3 and msg[2] > 0:
+                q.put(('filtered', msg[1], ch))
+            return
+
+        if kind == 0x90 and len(msg) >= 3 and msg[2] > 0:
+            note, vel = msg[1], msg[2]
+            if self._midi_learn is not None:
+                q.put(('learn', note))
+                return
+            if note == self._stop_note:
+                self.engine.stop_all()
+                q.put(('stopkey', note))
+                return
+            cue = self.note_map.get(note)
+            if cue is None:
+                q.put(('unmapped', note, vel))
+                return
+            if cue.status == "ERROR":
+                q.put(('blocked', note, vel, cue, "cue could not be loaded"))
+                return
+            vs = (vel / 127.0) ** 2 if self._midi_velocity else 1.0
+            ok, m = self.engine.play_cue(cue, vs)
+            q.put(('fired', note, vel, cue) if ok else ('blocked', note, vel, cue, m))
+
+        elif kind == 0x80 or (kind == 0x90 and len(msg) >= 3 and msg[2] == 0):
+            if self._midi_gate and self._midi_learn is None and len(msg) >= 2:
+                cue = self.note_map.get(msg[1])
+                if cue is not None:
+                    self.engine.stop_cue(cue)
+
+        elif kind == 0xB0 and len(msg) >= 3 and msg[1] in (120, 123):
+            self.engine.stop_all()
+            q.put(('panic',))
+
+    def _drain_midi_queue(self):
+        while True:
+            try:
+                ev = self._midi_queue.get_nowait()
+            except queue.Empty:
+                break
+            kind = ev[0]
+            if kind == 'learn':
+                self._finish_learn(ev[1])
+            elif kind == 'fired':
+                _, note, vel, cue = ev
+                self.midi_indicator.set(f"{midi_note_name(note)} v{vel} ▸ {cue.name[:24]}")
+                self._status_msg.set(f"Playing: {cue.name}")
+            elif kind == 'blocked':
+                _, note, vel, cue, m = ev
+                self.midi_indicator.set(f"{midi_note_name(note)} v{vel} ✗")
+                self._status_msg.set(f"Cue blocked: {m}")
+            elif kind == 'unmapped':
+                _, note, vel = ev
+                self.midi_indicator.set(f"{midi_note_name(note)} v{vel} (unmapped)")
+            elif kind == 'filtered':
+                _, note, ch = ev
+                self.midi_indicator.set(f"{midi_note_name(note)} on ch{ch} — ignored (Ch filter)")
+            elif kind == 'stopkey':
+                self.midi_indicator.set(f"{midi_note_name(ev[1])} ■ stop")
+                self._status_msg.set("Stop (MIDI stop key)")
+            elif kind == 'panic':
+                self.midi_indicator.set("MIDI: all notes off")
+                self._status_msg.set("Stop All (MIDI CC 120/123)")
+
     # ── Status Polling ────────────────────────────────────────────────
     def _poll_status(self):
+        self._drain_midi_queue()
         progress = self.engine.get_cue_progress()
 
         for cue in self.cues:
@@ -1055,6 +1692,7 @@ class PerformanceLauncherApp:
 
     # ── Shutdown ──────────────────────────────────────────────────────
     def _on_close(self):
+        self.midi.close()          # stop MIDI triggers before tearing down audio
         self.engine.stop_all()
         time.sleep(0.15)
         self.engine.close_stream()
@@ -1093,6 +1731,7 @@ class PerformanceLauncherApp:
                 'fade_in':        cue.fade_in,
                 'fade_out':       cue.fade_out,
                 'mode':           cue.mode,
+                'midi_note':      cue.midi_note if cue.midi_note is not None else -1,
             }
         device_name = ''
         hostapi_name = ''
@@ -1108,6 +1747,12 @@ class PerformanceLauncherApp:
             'output_channels': self.output_ch_count.get(),
             'master_gain_db':  self.master_gain_var.get(),
             'exclusive_mode':  self.exclusive_var.get(),
+            'midi_port':           self._midi_port_wanted,
+            'midi_channel':        self.midi_channel_var.get(),
+            'midi_note_off_stops': bool(self.midi_gate_var.get()),
+            'midi_velocity':       bool(self.midi_vel_var.get()),
+            'midi_layout':         self.midi_layout_var.get(),
+            'midi_stop_note':      self._stop_note,
             'cues':            cue_data,
         }
         save_config(self.config_file, cfg)

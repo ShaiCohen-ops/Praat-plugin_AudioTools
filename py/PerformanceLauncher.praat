@@ -2,7 +2,7 @@
 # Praat AudioTools Plugin
 # Script:      PerformanceLauncher.praat
 # Author:      Shai Cohen
-# Version:     1.5 (2026) — live-safety and persistent performance config
+# Version:     1.7 (2026) — MIDI keyboard cue triggering (optional)
 # License:     MIT License
 #
 # Description:
@@ -12,6 +12,24 @@
 #
 # Usage:
 #   Select one or more Sound objects, then run this script.
+#   Optional: python -m pip install python-rtmidi  to trigger cues
+#   from a MIDI keyboard (selection order = cue order = keys C3 upward
+#   by default; remap in the launcher window).
+#
+# Changelog v1.7:
+#   - Version sync with performance_launcher.py MIDI input. The probe
+#     now also checks for python-rtmidi (optional - never blocks launch)
+#     and the info window reports whether MIDI is available.
+#
+# Changelog v1.6:
+#   - FIX: Python discovery was a single OS-based guess ("python" on
+#     Windows), never verified until an inline "-c" probe run through a
+#     real shell (runSystem_nocheck) with hand-escaped quotes - the same
+#     class of fragility fixed elsewhere in the library. Replaced with the
+#     verified cascade (configured venv tried first, "python3" included
+#     since it resolves to a fuller install on this machine - see
+#     Spectral_Eraser.praat), file-based per-package probe, and no-shell
+#     runSubprocess for the engine launch itself.
 #
 # Changelog v1.5:
 #   - Performance configuration moved out of the temporary directory into
@@ -69,21 +87,41 @@ for i from 1 to nSounds
     soundName'i'$ = selected$ ("Sound", i)
 endfor
 
-# ---- OS-SPECIFIC PYTHON DISCOVERY ----
+# ---- PYTHON INTERPRETER CANDIDATES (verified cascade) ----
+# v1.6: previously this picked ONE name per OS (bare "python" on Windows)
+# and never verified it had tkinter/numpy/sounddevice/soundfile until a
+# shell-based inline probe further down - fragile (same class of quoting
+# bug fixed across the library). Now matches the rest of the library: #1
+# is your known-good venv (edit THAT ONE LINE if yours lives elsewhere),
+# then an OS-appropriate fallback list. On Windows this includes
+# "python3" - on this machine that resolves to the Microsoft Store
+# Python, the one candidate confirmed to actually have tkinter (see
+# Spectral_Eraser.praat). EACH candidate is actually probed below via a
+# no-shell, file-based check before acceptance.
+nPyCand = 1
+pyCandidate1$ = "C:/Users/user/praat_ddsp_env/Scripts/python.exe"
+
 if macintosh
-    if fileReadable("/opt/homebrew/bin/python3")
-        pythonCmd$ = "/opt/homebrew/bin/python3"
-    elsif fileReadable("/Library/Frameworks/Python.framework/Versions/3.14/bin/python3")
-        pythonCmd$ = "/Library/Frameworks/Python.framework/Versions/3.14/bin/python3"
-    elsif fileReadable("/usr/local/bin/python3")
-        pythonCmd$ = "/usr/local/bin/python3"
-    else
-        pythonCmd$ = "python3"
-    endif
+    nPyCand = nPyCand + 1
+    pyCandidate'nPyCand'$ = "/opt/homebrew/bin/python3"
+    nPyCand = nPyCand + 1
+    pyCandidate'nPyCand'$ = "/Library/Frameworks/Python.framework/Versions/3.14/bin/python3"
+    nPyCand = nPyCand + 1
+    pyCandidate'nPyCand'$ = "/usr/local/bin/python3"
+    nPyCand = nPyCand + 1
+    pyCandidate'nPyCand'$ = "python3"
 elsif windows
-    pythonCmd$ = "python"
+    nPyCand = nPyCand + 1
+    pyCandidate'nPyCand'$ = "python"
+    nPyCand = nPyCand + 1
+    pyCandidate'nPyCand'$ = "py"
+    nPyCand = nPyCand + 1
+    pyCandidate'nPyCand'$ = "python3"
 else
-    pythonCmd$ = "python3"
+    nPyCand = nPyCand + 1
+    pyCandidate'nPyCand'$ = "python3"
+    nPyCand = nPyCand + 1
+    pyCandidate'nPyCand'$ = "python"
 endif
 
 # ---- PATHS ----
@@ -110,21 +148,95 @@ errorFileJ$    = replace_regex$ (errorFile$,    "\\", "/", 0)
 logFileJ$      = replace_regex$ (logFile$,      "\\", "/", 0)
 configFileJ$   = replace_regex$ (configFile$,   "\\", "/", 0)
 
-# ---- PYTHON DEPENDENCY VALIDATION ----
+# ---- PYTHON DEPENDENCY VALIDATION (verified cascade, no-shell probe) ----
 probeOkFile$  = temporaryDirectory$ + "/temp_launcher_probe.ok"
 probeOkFileJ$ = replace_regex$ (probeOkFile$, "\\", "/", 0)
+probeScript$  = temporaryDirectory$ + "/temp_launcher_probe.py"
+probeError$   = temporaryDirectory$ + "/temp_launcher_probe_error.txt"
+probeMidiFile$ = temporaryDirectory$ + "/temp_launcher_probe.midi"
 
 if fileReadable(probeOkFile$)
     deleteFile: probeOkFile$
 endif
-
-probeCmd$ = pythonCmd$ + " -c ""import tkinter, numpy, sounddevice, soundfile; open('""" + probeOkFileJ$ + """', 'w').write('OK')"""
-runSystem_nocheck: probeCmd$
-
-if not fileReadable(probeOkFile$)
-    exitScript: "Missing Python dependencies. The performance engine requires: tkinter, numpy, sounddevice, soundfile." + newline$ + "Install with:  python -m pip install sounddevice soundfile numpy"
+if fileReadable(probeScript$)
+    deleteFile: probeScript$
 endif
-deleteFile: probeOkFile$
+
+writeFileLine: probeScript$, "import sys"
+appendFileLine: probeScript$, "pkgs = ['tkinter', 'numpy', 'sounddevice', 'soundfile']"
+appendFileLine: probeScript$, "missing = []"
+appendFileLine: probeScript$, "for pkg in pkgs:"
+appendFileLine: probeScript$, "    try:"
+appendFileLine: probeScript$, "        __import__(pkg)"
+appendFileLine: probeScript$, "    except Exception as e:"
+appendFileLine: probeScript$, "        missing.append(pkg)"
+appendFileLine: probeScript$, "try:"
+appendFileLine: probeScript$, "    import rtmidi"
+appendFileLine: probeScript$, "    open(r'" + replace_regex$(probeMidiFile$, "\\", "/", 0) + "', 'w').write('OK')"
+appendFileLine: probeScript$, "except Exception:"
+appendFileLine: probeScript$, "    pass"
+appendFileLine: probeScript$, "if not missing:"
+appendFileLine: probeScript$, "    open(r'" + probeOkFileJ$ + "', 'w').write('OK')"
+appendFileLine: probeScript$, "else:"
+appendFileLine: probeScript$, "    open(r'" + replace_regex$(probeError$, "\\", "/", 0) + "', 'w').write('Missing: ' + ', '.join(missing))"
+
+pythonCmd$ = ""
+pySource$  = ""
+pyTried$   = ""
+
+for iPyCand to nPyCand
+    thisPyCand$ = pyCandidate'iPyCand'$
+    pyTried$ = pyTried$ + "  - " + thisPyCand$ + newline$
+    if pythonCmd$ = ""
+        isBarePyCmd = (thisPyCand$ = "python3") or (thisPyCand$ = "python") or (thisPyCand$ = "py")
+        if isBarePyCmd or fileReadable(thisPyCand$)
+            if fileReadable(probeOkFile$)
+                deleteFile: probeOkFile$
+            endif
+            if fileReadable(probeError$)
+                deleteFile: probeError$
+            endif
+            if fileReadable(probeMidiFile$)
+                deleteFile: probeMidiFile$
+            endif
+            nocheck runSubprocess: thisPyCand$, probeScript$
+            if fileReadable(probeOkFile$)
+                pythonCmd$ = thisPyCand$
+                if iPyCand = 1
+                    pySource$ = "configured venv"
+                else
+                    pySource$ = "auto-detected"
+                endif
+            endif
+        endif
+    endif
+endfor
+
+# The last candidate probed is the accepted one (the loop stops probing
+# once pythonCmd$ is set), so the MIDI flag describes that interpreter.
+midiAvailable = fileReadable(probeMidiFile$)
+if midiAvailable
+    deleteFile: probeMidiFile$
+endif
+
+if fileReadable(probeOkFile$)
+    deleteFile: probeOkFile$
+endif
+if fileReadable(probeScript$)
+    deleteFile: probeScript$
+endif
+
+if pythonCmd$ = ""
+    diagMsg$ = "Tried:" + newline$ + pyTried$ + newline$
+        ... + "Fix: point pyCandidate1$ (near the top of the PYTHON" + newline$
+        ... + "interpreter candidates section) at a venv that has them, or" + newline$
+        ... + "install into one of the paths above, e.g.:" + newline$
+        ... + "  python -m pip install sounddevice soundfile numpy"
+    if fileReadable(probeError$)
+        diagMsg$ = readFile$(probeError$) + newline$ + newline$ + diagMsg$
+    endif
+    exitScript: "Missing Python dependencies." + newline$ + newline$ + diagMsg$
+endif
 
 # ---- CLEANUP PROCEDURE ----
 procedure cleanUpTempFiles
@@ -133,6 +245,15 @@ procedure cleanUpTempFiles
     endif
     if fileReadable (errorFile$)
         deleteFile: errorFile$
+    endif
+    if fileReadable (probeScript$)
+        deleteFile: probeScript$
+    endif
+    if fileReadable (probeError$)
+        deleteFile: probeError$
+    endif
+    if fileReadable (probeMidiFile$)
+        deleteFile: probeMidiFile$
     endif
     for c_i from 1 to nSounds
         tmpWav$ = temporaryDirectory$ + "/temp_launcher_clip_" + string$ (c_i) + ".wav"
@@ -197,7 +318,7 @@ endfor
 nl$ = newline$
 manifest$ = "{" + nl$
 manifest$ = manifest$ + "  ""plugin_name"": ""Performance Launcher""," + nl$
-manifest$ = manifest$ + "  ""plugin_version"": ""1.5""," + nl$
+manifest$ = manifest$ + "  ""plugin_version"": ""1.7""," + nl$
 manifest$ = manifest$ + "  ""project_sample_rate"": " + string$ (targetSR) + "," + nl$
 manifest$ = manifest$ + "  ""project_max_channels"": " + string$ (maxChannels) + "," + nl$
 manifest$ = manifest$ + "  ""temp_dir"": """ + replace_regex$(temporaryDirectory$, "\\", "/", 0) + """," + nl$
@@ -236,7 +357,7 @@ writeFile: manifestFile$, manifest$
 
 # ---- Execution Log Window Feed ----
 clearinfo
-appendInfoLine: "=== Performance Launcher 1.5 ==="
+appendInfoLine: "=== Performance Launcher 1.7 ==="
 appendInfoLine: "Loaded Cues: ", nSounds
 appendInfoLine: "Target System Rate: ", targetSR, " Hz"
 appendInfoLine: "Max File Channels:  ", maxChannels
@@ -245,10 +366,18 @@ if nResampled > 0
 else
     appendInfoLine: "Resample Status:    Native matching."
 endif
+appendInfoLine: "Python:             ", pythonCmd$, " (", pySource$, ")"
+if midiAvailable
+    appendInfoLine: "MIDI:               available (choose a port in the launcher)"
+else
+    appendInfoLine: "MIDI:               off - ", pythonCmd$, " -m pip install python-rtmidi"
+endif
 appendInfoLine: "Spawning Thread Engine..."
 
 # ---- Launch Performance Space ----
-runSystem_nocheck: pythonCmd$ + " """ + pythonScript$ + """ """ + manifestFile$ + """"
+# v1.6: switched from runSystem_nocheck string concatenation (shell,
+# quote-fragile) to no-shell runSubprocess with separate arguments.
+nocheck runSubprocess: pythonCmd$, pythonScript$, manifestFile$
 
 # ---- Catch Engine Fatal Disconnections ----
 if fileReadable (errorFile$)
