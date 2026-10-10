@@ -201,13 +201,15 @@ procedure applyPreset: .p
     instDepth = 0
     instRate = 0.7
     if .p = 1
-        # Fragile Continuity: gentle drifting band balance on sustained material
-        presetMode = 3
-        instDepth = 5
-        instRate = 0.4
-        threshold = 0.35
-        contrast = 1.0
-        smoothMs = 300
+    # Fragile Continuity: audible, gently evolving
+    # spectral colour on stable material
+    presetMode = 3
+    instDepth = 9
+    instRate = 0.65
+    threshold = 0.20
+    sensitivity = 1.4
+    contrast = 1.0
+    smoothMs = 180
     elsif .p = 2
         # Stasis Fracture: stable regions break into short loops
         presetMode = 2
