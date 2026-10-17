@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.1 (2026) - 8-channel_speed_deviations v0.5 compatibility
+# Version: 1.2 (2026) - relocatable plugin paths; 8-channel v0.5-v0.7 compatibility
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -24,7 +24,10 @@ initial_sound = selected("Sound")
 initial_name$ = selected$("Sound")
 
 # === GET PLUGIN PATH ===
-pluginPath$ = "C:/Users/User/Praat/plugin_AudioTools/"
+# Composition_2.praat must reside in plugin_AudioTools/Vector Chain/.
+# Praat resolves runScript and fileReadable paths relative to THIS script,
+# even when invoked from the plug-in menu.  No Windows user name is assumed.
+pluginPath$ = "../"
 
 # === CONFIGURATION ===
 overlap_sec = 0.15
@@ -34,6 +37,17 @@ final_fade_sec = 4.0
 path_intro$ = pluginPath$ + "Pitch/Spiral_Pitch_Dance.praat"
 path_body$ = pluginPath$ + "AI & Adaptive/Neural_Ambient_Drone_Designer.praat"
 path_outro$ = pluginPath$ + "Spatial & Surround/8-channel_speed_deviations.praat"
+
+# Fail early with a useful location hint instead of a downstream runScript error.
+if fileReadable(path_intro$) = 0
+    exitScript: "Cannot find Spiral Pitch Dance: " + path_intro$ + newline$ + "Keep Composition_2.praat in plugin_AudioTools/Vector Chain/."
+endif
+if fileReadable(path_body$) = 0
+    exitScript: "Cannot find Neural Ambient Drone Designer: " + path_body$ + newline$ + "Verify the AudioTools installation."
+endif
+if fileReadable(path_outro$) = 0
+    exitScript: "Cannot find 8-channel Speed Deviations: " + path_outro$ + newline$ + "Verify the AudioTools installation."
+endif
 
 # === INFO HEADER ===
 clearinfo
@@ -52,8 +66,9 @@ selectObject: initial_sound
 appendInfoLine: "=== Part 1: Intro (Spiral Pitch Dance) ==="
 appendInfoLine: "  Generating..."
 
-# Spiral Pitch Dance parameters:
-# Preset, Num_bands, Start_freq, Ratio, Jitter, Speed_Hz, Range_cents, Feedback, Play
+# Spiral Pitch Dance parameters (current 9-argument form):
+# Preset, Spirals, Semitone_range, Acceleration, Time_step,
+# Floor_pitch, Ceiling_pitch, Draw_visualization, Play_result
 runScript: path_intro$, "Manual (configure below)", 2, 24, 1.5, 0.005, 50, 1200, 0, 0
 
 # Get the output
@@ -125,22 +140,19 @@ appendInfoLine: ""
 appendInfoLine: "=== Part 3: Outro (8-Channel Deviations) ==="
 appendInfoLine: "  Generating..."
 
-# FIX: Updated to the current 8-channel_speed_deviations form. The old
-# 22-arg call predates a compact-form rewrite that collapsed two groups of
-# individual fields into single space-separated sentence fields:
-#   - the 8 "Channel_N_speed" reals -> one "Manual speeds" sentence
-#     ("Ch1..Ch8" values separated by spaces)
-#   - the 2 "Min_pitch"/"Max_pitch" reals -> one "Pitch range" sentence
-#     ("Min Max" separated by a space)
-# The Manual speeds field is still parsed and validated even in Automatic
-# mode, so it's passed through unchanged as one string.
-#
-# Current main-form signature (14 args):
-#   Preset, Mode, Speed_deviation_factor, Manual_speeds, Random_min_speed,
-#   Random_max_speed, Random_seed, Pitch_range, Override_sampling_frequency,
-#   Target_sampling_frequency, Output_format, Scale_peak,
-#   Draw_visualization, Play_result
-runScript: path_outro$, "Custom (use mode below)", "Automatic (using factor)", 0.15, "0.85 0.88 0.91 0.94 1.06 1.09 1.12 1.15", 0.80, 1.20, 42, "75 600", 1, 44100, "8 channels - octophonic (Ch1-Ch8)", 0.95, 0, 0
+# The 8-channel v0.5 compact form takes 14 arguments.  Starting with v0.6
+# there is an additional third option-menu field: "Processing engine".
+# Read the installed script and dispatch the correct argument count so this
+# composition works with both compact-form variants.  The chosen behavior
+# remains the established pitch-preserving PSOLA engine in both cases.
+outroSource$ = readFile$(path_outro$)
+if index(outroSource$, "optionmenu: ""Processing engine""") > 0
+    # v0.6/v0.7: 15 arguments, with Processing engine as argument #3.
+    runScript: path_outro$, "Custom (use mode below)", "Automatic (using factor)", "Pitch-preserving PSOLA (existing)", 0.15, "0.85 0.88 0.91 0.94 1.06 1.09 1.12 1.15", 0.80, 1.20, 42, "75 600", 1, 44100, "8 channels - octophonic (Ch1-Ch8)", 0.95, 0, 0
+else
+    # v0.5 compact form: 14 arguments; no Processing engine selector.
+    runScript: path_outro$, "Custom (use mode below)", "Automatic (using factor)", 0.15, "0.85 0.88 0.91 0.94 1.06 1.09 1.12 1.15", 0.80, 1.20, 42, "75 600", 1, 44100, "8 channels - octophonic (Ch1-Ch8)", 0.95, 0, 0
+endif
 
 # Get the output
 sound_outro_raw = selected("Sound")

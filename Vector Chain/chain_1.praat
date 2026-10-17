@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.0 (2025)
+# Version: 1.1 (2026) - MDS v0.4.1 compatibility and final output selection
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -41,8 +41,8 @@ path4$ = "../Spatial & Surround/4-Channel_Canon.praat"
 # STEP 1: MDS Space Navigator
 # ==============================================================================
 selectObject: initial_sound
-# Note: Using "Nearest neighbor..." text string for safety. 10 arguments matching form.
-runScript: path1$, 25, 0.1, 0.1, "Formants (Vowel Quality)", 5500, 5, 12, "Nearest neighbor chain (most similar next)", 0.05, 0
+# MDS v0.4.1: 11 args; final two = Play_result (0), Draw_visualization (0).
+runScript: path1$, 25, 0.1, 0.1, "Formants (Vowel Quality)", 5500, 5, 12, "Nearest neighbor chain (most similar next)", 0.05, 0, 0
 
 # FIX: Force selection by name (MDS always appends "_reordered")
 expected_name_1$ = initial_name$ + "_reordered"
@@ -89,6 +89,7 @@ appendInfoLine: "Step 3: Crystalline Cascade complete."
 selectObject: sound4
 # Visualization (Arg 13) is set to 0
 runScript: path4$, "Classic Canon (unison, staggered)", 0, 0, 0, 0, 0.0, 0.5, 1.0, 1.5, 44100, 0.01, "4 channels (quadraphonic)", 0, 1
+final_sound = selected("Sound")
 
 appendInfoLine: "Step 4: 4-Channel Canon complete. Chain finished."
 
@@ -101,4 +102,4 @@ Axes: 0, 10, 0, 10
 Font size: 16
 Text: 5, "centre", 5, "half", "MDS Space Navigator -> Spectral Freeze -> Crystalline Cascade -> 4-Channel Canon"
 
-selectObject: sound4
+selectObject: final_sound

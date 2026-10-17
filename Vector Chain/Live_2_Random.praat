@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.0 (2025)
+# Version: 1.1 (2026) - AudioTools v0.7 interface compatibility
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -252,7 +252,7 @@ if drone_shimmer_choice = 1
 elsif drone_shimmer_choice = 2
     drone_shimmer_intervals$ = "Octaves and fifths"
 else
-    drone_shimmer_intervals$ = "Full harmonic series"
+    drone_shimmer_intervals$ = "Extended interval set"
 endif
 
 # Grain size: 60-180 ms
@@ -394,15 +394,21 @@ appendInfoLine: "  Random seed: ", spatial_seed
 appendInfoLine: "  Pitch floor: ", spatial_floor, " Hz"
 appendInfoLine: "  Pitch ceiling: ", spatial_ceiling, " Hz"
 
-# 8-Channel Speed Deviations parameters (matches current 22-arg form):
-# Preset, Mode, Speed_deviation_factor, Channel_1-8_speed, Random_min_speed,
-# Random_max_speed, Random_seed, Min_pitch, Max_pitch,
+# v0.7 compact form (15 arguments, in exact form order):
+# Preset, Mode, Processing_engine, Speed_deviation_factor, Manual_speeds,
+# Random_min_speed, Random_max_speed, Random_seed, Pitch_range,
 # Override_sampling_frequency, Target_sampling_frequency, Output_format,
-# Scale_peak, Draw_visualization, Play_result
-runScript: path_outro$, spatial_preset$, spatial_mode$, spatial_factor, 
-    ... spatial_ch1, spatial_ch2, spatial_ch3, spatial_ch4, spatial_ch5, 
-    ... spatial_ch6, spatial_ch7, spatial_ch8, spatial_min, spatial_max, spatial_seed, 
-    ... spatial_floor, spatial_ceiling, spatial_use_sr, spatial_target_sr, 
+# Scale_peak, Draw_visualization, Play_result.
+# Preserve the existing PSOLA sound; only repair the argument interface.
+spatial_manual_speeds$ = fixed$(spatial_ch1, 6) + " " + fixed$(spatial_ch2, 6) + " "
+    ... + fixed$(spatial_ch3, 6) + " " + fixed$(spatial_ch4, 6) + " "
+    ... + fixed$(spatial_ch5, 6) + " " + fixed$(spatial_ch6, 6) + " "
+    ... + fixed$(spatial_ch7, 6) + " " + fixed$(spatial_ch8, 6)
+spatial_pitch_range$ = string$(spatial_floor) + " " + string$(spatial_ceiling)
+runScript: path_outro$, spatial_preset$, spatial_mode$,
+    ... "Pitch-preserving PSOLA (existing)", spatial_factor,
+    ... spatial_manual_speeds$, spatial_min, spatial_max, spatial_seed,
+    ... spatial_pitch_range$, spatial_use_sr, spatial_target_sr,
     ... "8 channels - octophonic (Ch1-Ch8)", 0.95, 0, 0
 
 # Get the output

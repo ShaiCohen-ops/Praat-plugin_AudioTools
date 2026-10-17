@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.1 (2026) - Praat 7 path compatibility
+# Version: 1.2 (2026) - Updated child-script form compatibility
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -13,8 +13,10 @@
 #
 # v1.1:
 #   - Added Praat 7 / script-relative fallbacks for all child scripts.
-#   - Current child-script signatures retained for Full-Wave Rectifier v0.4b,
-#     Brownian Motion Texture v0.3, and 8-Channel Movements v0.5.
+#   - Updated Full-Wave Rectifier v0.5.1 preset name (Target 0.95).
+#   - Updated Brownian Motion Texture v0.4.3 form (18 arguments), including
+#     Temporal_boundary_handling and Source_position_mode.
+#   - Verified 8-Channel Movements v0.6 form (16 arguments; unchanged).
 # ============================================================
 
 # ============================================================
@@ -118,10 +120,10 @@ selectObject: initial_sound
 appendInfoLine: "=== Part 1: Intro (Full-Wave Rectifier) ==="
 appendInfoLine: "  Generating..."
 
-# Full-Wave Rectifier v0.4b parameters (8 args)
-# Preset, Dc_handling, Output_level, Scale_peak, Show_spectrum,
+# Full-Wave Rectifier v0.5.1 parameters (8 args)
+# Preset, Dc_handling, Output_level, Target_peak, Show_spectrum,
 # Spectrum_reference, Draw_visualization, Play_result
-runScript: path_intro$, "Standard level (0.95 peak)", "Raw rectification (v0.2/v0.3)", "Normalize to target", 0.95, 0, "Match levels (isolates harmonic change)", 0, 0
+runScript: path_intro$, "Target 0.95", "Raw rectification (v0.2/v0.3)", "Normalize to target", 0.95, 0, "Match levels (isolates harmonic change)", 0, 0
 
 # Get the output
 sound_intro = selected("Sound")
@@ -153,11 +155,14 @@ appendInfoLine: ""
 appendInfoLine: "=== Part 2: Body (Brownian Motion Texture) ==="
 appendInfoLine: "  Generating..."
 
-# Brownian Motion Texture v0.3 parameters (17 args)
-# Preset, GrainDur, OutDur, Density, TimeStep, TimeDrift, SpatialEnable,
-# SpatialStep, SpatialDrift, BoundaryHandling, AmpScale, RandomPositions,
-# FadeDur, FadeOut, AllowOverlap, Draw, Play
-runScript: path_body$, "Dense Cloud", 0.05, 10.0, 20, 0.1, 0.0, 1, 0.15, 0.0, "Clamp (matches v0.2 — pins at edges)", 0.7, 1, 0.005, 2.0, 1, 0, 0
+# Brownian Motion Texture v0.4.3 parameters (18 args)
+# Preset, Grain_duration_s, Output_duration_s, Density_grains_per_sec,
+# Time_step_size_s, Time_drift, Temporal_boundary_handling,
+# Enable_spatial_brownian, Spatial_step_size, Spatial_drift,
+# Boundary_handling, Amplitude_scaling, Source_position_mode,
+# Fade_duration_s, Fade_out_s, Allow_overlap, Draw_visualization, Play_result
+# Reflect is the v0.4.3 default temporal mode; original spatial clamp retained.
+runScript: path_body$, "Dense Cloud", 0.05, 10.0, 20, 0.1, 0.0, "Reflect (bounces off time boundaries)", 1, 0.15, 0.0, "Clamp (matches v0.2 — pins at edges)", 0.7, "Random", 0.005, 2.0, 1, 0, 0
 
 # Get the output
 sound_body = selected("Sound")
@@ -192,7 +197,7 @@ appendInfoLine: ""
 appendInfoLine: "=== Part 3: Outro (8-Channel Movements) ==="
 appendInfoLine: "  Generating..."
 
-# 8-Channel Spatial Movements v0.5 parameters (16 args)
+# 8-Channel Spatial Movements v0.6 parameters (16 args)
 # Pattern, Motion_speed, Frequency_hz, Fadein_time, Exponent, Path_radius,
 # Source_focus, Custom_x, Custom_y, Floor_db, Scale_peak, Number_of_points,
 # Random_seed, Output_format, Draw_visualization, Play_result

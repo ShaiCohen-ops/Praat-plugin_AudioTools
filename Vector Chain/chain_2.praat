@@ -1,6 +1,6 @@
 # ============================================================
 # Praat AudioTools - Signal Chain 2 (Corrected)
-# Version: 1.1 - 8-channel_speed_deviations v0.5 compatibility
+# Version: 1.2 - 8-channel_speed_deviations v0.7 compatibility
 # Flow: Spiral Pitch -> Neural Drone -> 8-channel Deviations
 # ============================================================
 
@@ -84,12 +84,13 @@ selectObject: sound3
 # The Manual speeds field is still parsed and validated even in Automatic
 # mode, so it's passed through unchanged as one string.
 #
-# Current main-form signature (14 args):
-#   Preset, Mode, Speed_deviation_factor, Manual_speeds, Random_min_speed,
-#   Random_max_speed, Random_seed, Pitch_range, Override_sampling_frequency,
-#   Target_sampling_frequency, Output_format, Scale_peak,
-#   Draw_visualization, Play_result
-runScript: path3$, "Custom (use mode below)", "Automatic (using factor)", 0.15, "0.85 0.88 0.91 0.94 1.06 1.09 1.12 1.15", 0.80, 1.20, 42, "75 600", 1, 44100, "8 channels - octophonic (Ch1-Ch8)", 0.95, 0, 1
+# Current main-form signature (15 args, v0.7):
+#   Preset, Mode, Processing_engine, Speed_deviation_factor, Manual_speeds,
+#   Random_min_speed, Random_max_speed, Random_seed, Pitch_range,
+#   Override_sampling_frequency, Target_sampling_frequency, Output_format,
+#   Scale_peak, Draw_visualization, Play_result
+# The third argument selects the original pitch-preserving PSOLA engine.
+runScript: path3$, "Custom (use mode below)", "Automatic (using factor)", "Pitch-preserving PSOLA (existing)", 0.15, "0.85 0.88 0.91 0.94 1.06 1.09 1.12 1.15", 0.80, 1.20, 42, "75 600", 1, 44100, "8 channels - octophonic (Ch1-Ch8)", 0.95, 0, 1
 
 # Capture final output (Praat leaves the last created object selected)
 sound4 = selected("Sound")

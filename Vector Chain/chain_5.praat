@@ -47,10 +47,10 @@ endif
 # ==============================================================================
 selectObject: initial_sound
 
-# Full-Wave Rectifier v0.4b parameters (8 args):
-# Preset, Dc_handling, Output_level, Scale_peak, Show_spectrum,
+# Full-Wave Rectifier v0.5.1 (8 args):
+# Preset, Dc_handling, Output_level, Target_peak, Show_spectrum,
 # Spectrum_reference, Draw_visualization, Play_result
-runScript: path1$, "Standard level (0.95 peak)", "Raw rectification (v0.2/v0.3)", "Normalize to target", 0.95, 0, "Match levels (isolates harmonic change)", 0, 0
+runScript: path1$, "Target 0.95", "Raw rectification (v0.2/v0.3)", "Normalize to target", 0.95, 0, "Match levels (isolates harmonic change)", 0, 0
 
 # Select Output
 sound2 = selected("Sound")
@@ -61,8 +61,9 @@ appendInfoLine: "Step 1: Full-Wave Rectifier complete."
 # ==============================================================================
 selectObject: sound2
 
-# Brownian Motion Texture v0.3 parameters (17 args)
-runScript: path2$, "Dense Cloud", 0.05, 10.0, 20, 0.1, 0.0, 1, 0.15, 0.0, "Clamp (matches v0.2 — pins at edges)", 0.7, 1, 0.005, 2.0, 1, 0, 0
+# Brownian Motion Texture v0.4.3 (18 args):
+# Added Temporal_boundary_handling after Time_drift; remaining arguments retain their meaning.
+runScript: path2$, "Dense Cloud", 0.05, 10.0, 20, 0.1, 0.0, "Clamp (pins at time boundaries)", 1, 0.15, 0.0, "Clamp (matches v0.2 — pins at edges)", 0.7, "Random", 0.005, 2.0, 1, 0, 0
 
 # Select Output
 sound3 = selected("Sound")
