@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4 (2026)
+# Version: 0.4.1 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -20,6 +20,12 @@
 # ============================================================
 #
 #
+# Changelog v0.4.1 (2026):
+#   - Added Draw_visualization (default ON) after Play_result in the form.
+#   - When OFF, all Picture-window drawing and visualization-only calculations
+#     are skipped; audio segmentation, MDS ordering and rendering are unchanged.
+#   - The new form has 11 positional arguments; callers using runScript must
+#     supply the new trailing argument to explicitly disable visualization.
 # Changelog v0.4 (2026) - visualization only; no change to segmentation,
 #                         feature distances, MDS, ordering or audio render:
 #   - Restyled title/subtitle, panels, fonts and greys to the AudioTools
@@ -87,6 +93,7 @@ form Audio Word Sorting
         option Original order
     positive Silence_between_words_s 0.1
     boolean Play_result 1
+    boolean Draw_visualization 1
 endform
 
 # ===== CHECK SELECTION AND CREATE ANALYSIS COPY =====
@@ -414,6 +421,8 @@ selectObject: final_sound
 Rename: original_sound_name$ + "_reordered"
 
 # ===== VISUALIZATION =====
+# In automated use, skip all Picture commands without altering the audio.
+if draw_visualization
 Erase all
 Select outer viewport: 0, 8, 0, 6.15
 
@@ -450,7 +459,7 @@ Select inner viewport: 0.60, 7.70, 0.02, 0.50
 Axes: 0, 1, 0, 1
 Font size: 12
 Colour: "Black"
-Text: 0.5, "centre", 0.68, "half", "##MDS Space Navigator v0.4##"
+Text: 0.5, "centre", 0.68, "half", "##MDS Space Navigator v0.4.1##"
 Font size: 7
 Colour: "{0.35, 0.35, 0.50}"
 Text: 0.5, "centre", 0.22, "half",
@@ -724,6 +733,7 @@ Draw rectangle: 0, 1, 0, 1
 # includes the whole visualization rather than only the summary strip.
 Select outer viewport: 0, 8, 0, 6.15
 Select inner viewport: 0, 8, 0, 6.15
+endif
 
 # ===== CLEANUP =====
 appendInfoLine: newline$, "Cleaning up..."
