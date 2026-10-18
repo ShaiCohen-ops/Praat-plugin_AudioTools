@@ -3,7 +3,7 @@
 # Script:      AudioTools_CallResponse.praat
 # Author:      Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
-# Version:     0.2.0 (2026) - Continuous Listening Upgrade from v0.1.3
+# Version:     0.3.1 (2026) - Cleanup & Session Safety (Sonic Memory Upgrade from v0.2.0)
 # License:     MIT License
 # Repository:  https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -39,6 +39,50 @@
 #   Selected Sound(s) / Test all six / List audio devices
 #     As in v0.1.3 (List now shows output devices too).
 #
+# Changelog v0.3.1 - Cleanup & Session Safety (from v0.3.0):
+#   Only session lifecycle / deletion changed; musical behaviour, retrieval
+#   and the six transformations are identical to v0.3.0.
+#   FIX: cleanup no longer deletes a session whose engine is still running.
+#     It waits for the engine (PID + process start time), and if the
+#     engine is still alive it deletes NOTHING and reports CLEANUP
+#     INCOMPLETE; the engine then removes its own session when it exits.
+#   FIX: crash recovery never removes a session whose engine is alive,
+#     however long it has been quiet; a reused PID (same number, different
+#     start time) counts as dead.
+#   FIX: this script no longer force-deletes files of a session folder
+#     that Python's cleanup left in place; it shows CLEANUP INCOMPLETE.
+#   Python cleanup commands return a non-zero exit code when something was
+#     not removed (except with --report, used by this script).
+#
+# Changelog v0.3.0 - Sonic Memory Upgrade from v0.2.0:
+#   NEW Sonic Memory (continuous mode): the engine keeps three corpora in
+#     RAM - A live phrases, B processed responses (the Praat results, with
+#     provenance and a generation limit), C a preloaded folder (read-only,
+#     re-indexed at every start) - and answers each phrase with Transform
+#     (v0.2), Recall (play a similar stored sound), Recall + Transform (a
+#     similar stored sound rendered by one of the six transformations) or a
+#     weighted Hybrid of the three.  Similarity: timbre, pitch gesture,
+#     rhythm, envelope, hybrid or contrast; minimum similarity, cooldown and
+#     self-exclusion; without a qualified match the answer is a Transform.
+#   NEW form fields: Sonic_memory, Response_mode, Corpus_C_folder,
+#     Memory_settings (dialog: corpora, similarity, corpus and action
+#     weights, evolving memory, layered response; "Limits..." page:
+#     generation, corpus sizes, audio memory, item length, candidates,
+#     cooldown).  Display: MEMORY / RECALL / MATCH / ACTION lines.
+#   NEW zero temporary files: the probe file lives outside the session and
+#     is always deleted; the session folder is created only after Python is
+#     found; the debug log lives INSIDE the session and is deleted with it
+#     (its key events are shown in the Info window at the end); after the
+#     engine stops, Python "cleanup" waits for the engine process, deletes
+#     the session with retries, and this script verifies the folder is gone
+#     before reporting "STOPPED - cleanup complete" (or lists what is left).
+#     Abandoned sessions of crashed runs are removed at the next start;
+#     active sessions of another Praat window are never touched.
+#   PRESERVED: everything in v0.2.0 - continuous listening, the six
+#     transformations and their exact arguments, render mode, MDS
+#     visualisation flag, MAX MC preset, turn-taking, Selected Sound(s).
+#     Sonic memory applies to continuous mode only.
+#
 # Changelog v0.2.0 - Continuous Listening Upgrade from v0.1.3:
 #   PRESERVED: the six transformations and their exact positional
 #     arguments (incl. 8-Channel Speed Deviations v0.7 preset
@@ -50,7 +94,7 @@
 #   NEW: continuous mode (persistent engine, async launch, Demo-window
 #     display with STOP, Praat heartbeat so the engine stops if Praat goes
 #     away), headless render mode of this script, Output_device field,
-#     optional Debug_log (kept in the Praat preferences folder), Advanced
+#     optional Debug_log (v0.3.0: inside the session, deleted at the end), Advanced
 #     dialog: sample rate, channels, queue limits, overflow policy, maximum
 #     response length, session length, idle stop, leakage guard, playback.
 #   ARCHITECTURE: the runner-up fallback moved into procedure
@@ -67,6 +111,13 @@
 #   pip install numpy scipy soundfile sounddevice
 #   Continuous mode also launches Praat headless: set praatExe$ below if
 #   your Praat executable is not found automatically.
+#   Sonic memory (v0.3.0): on by default in continuous mode.  For a
+#   preloaded corpus, put the folder of your sound files in Corpus_C_folder
+#   (any format libsndfile reads: wav, aiff, flac, ogg, mp3 ...); the files
+#   are only READ, never changed, and re-indexed at every start.  Tick
+#   Memory_settings for similarity mode, weights and limits.  The
+#   Memory_settings and Advanced_settings dialogs are GUI-only: keep them
+#   unticked when this script is run from another script.
 #
 # Testing without a microphone:
 #   Select Sounds, Source = "Selected Sound(s)" (one answer per Sound, or
@@ -83,7 +134,7 @@
 #     session / idle limits).
 # ============================================================
 
-form: "AudioTools Call & Response 0.2.0"
+form: "AudioTools Call & Response 0.3.1"
     optionmenu: "Source", 1
         option: "Live - continuous (v0.2)"
         option: "Live - turn-taking (v0.1.3)"
@@ -105,6 +156,16 @@ form: "AudioTools Call & Response 0.2.0"
     positive: "Min_phrase_s", "0.5"
     positive: "End_silence_s", "0.6"
     positive: "Max_phrase_s", "12"
+    comment: "Sonic memory (continuous mode)"
+    boolean: "Sonic_memory", 1
+    optionmenu: "Response_mode", 1
+        option: "Hybrid (transform / recall / recall + transform)"
+        option: "Transform only (v0.2)"
+        option: "Recall"
+        option: "Recall + Transform"
+    comment: "Preloaded corpus C: a folder of sound files (empty = none; read only)"
+    sentence: "Corpus_C_folder", ""
+    boolean: "Memory_settings", 0
     boolean: "Debug_log", 0
     boolean: "Advanced_settings", 0
 endform
@@ -119,7 +180,7 @@ praatExe$ = ""
 # ------------------------------------------------------------------------
 waitTimeout = 30
 preroll = 0.25
-version$ = "0.2.0"
+version$ = "0.3.1"
 diagnostics = 0
 
 # ---- Advanced settings: defaults (also used when the dialog is skipped) ----
@@ -134,6 +195,30 @@ idle_stop_s = 300
 leakage_guard = 1
 play_response = 1
 maxResponse = max_response_s
+
+# ---- Sonic memory settings: defaults (also used when the dialog is skipped) ----
+use_live_corpus_A = 1
+use_processed_corpus_B = 1
+use_preloaded_corpus_C = 1
+similarity_mode = 1
+minimum_similarity = 0.45
+weight_A_live = 40
+weight_B_processed = 30
+weight_C_preloaded = 30
+weight_transform = 40
+weight_recall = 30
+weight_recall_transform = 30
+evolving_memory = 0
+layered_response = 0
+max_generation = 2
+max_live_phrases = 100
+max_processed_responses = 100
+max_audio_memory_min = 30
+max_item_s = 15
+candidates = 5
+cooldown_recalls = 4
+exclude_recent_phrases = 2
+same_family_exclusion = 0
 renderJob$ = environment$ ("AUDIOTOOLS_CR_JOB")
 renderMode = renderJob$ <> ""
 headless = environment$ ("AUDIOTOOLS_CR_HEADLESS") = "1"
@@ -249,7 +334,7 @@ endif
 
 # ---- Advanced dialog (GUI only; keep the box unticked for batch runs) ----
 if advanced_settings
-    beginPause: "Call & Response 0.2.0 - advanced"
+    beginPause: "Call & Response 0.3.1 - advanced"
         comment: "Audio"
         positive: "Sample_rate", string$ (sample_rate)
         natural: "Channels", string$ (channels)
@@ -269,6 +354,59 @@ if advanced_settings
         exitScript: "Cancelled."
     endif
     maxResponse = max_response_s
+endif
+
+# ---- Sonic memory dialog (continuous mode) ----
+if memory_settings and sonic_memory and source = 1
+    memPage = 1
+    while memPage > 0
+        if memPage = 1
+            beginPause: "Call & Response 0.3.1 - sonic memory"
+                comment: "Corpora (C also needs Corpus_C_folder in the main form)"
+                boolean: "Use_live_corpus_A", use_live_corpus_A
+                boolean: "Use_processed_corpus_B", use_processed_corpus_B
+                boolean: "Use_preloaded_corpus_C", use_preloaded_corpus_C
+                optionmenu: "Similarity_mode", similarity_mode
+                    option: "Hybrid"
+                    option: "Timbre"
+                    option: "Pitch gesture"
+                    option: "Rhythm"
+                    option: "Envelope"
+                    option: "Contrast (most different)"
+                real: "Minimum_similarity", string$ (minimum_similarity)
+                comment: "Corpus weights (relative; an empty corpus passes its share on)"
+                real: "Weight_A_live", string$ (weight_A_live)
+                real: "Weight_B_processed", string$ (weight_B_processed)
+                real: "Weight_C_preloaded", string$ (weight_C_preloaded)
+                comment: "Hybrid response mode: action weights"
+                real: "Weight_transform", string$ (weight_transform)
+                real: "Weight_recall", string$ (weight_recall)
+                real: "Weight_recall_transform", string$ (weight_recall_transform)
+                boolean: "Evolving_memory", evolving_memory
+                boolean: "Layered_response", layered_response
+            memClicked = endPause: "Cancel", "Limits...", "Start", 3, 1
+            if memClicked = 1
+                exitScript: "Cancelled."
+            endif
+            memPage = if memClicked = 2 then 2 else 0 fi
+        else
+            beginPause: "Call & Response 0.3.1 - memory limits"
+                natural: "Max_generation", string$ (max_generation)
+                natural: "Max_live_phrases", string$ (max_live_phrases)
+                natural: "Max_processed_responses", string$ (max_processed_responses)
+                positive: "Max_audio_memory_min", string$ (max_audio_memory_min)
+                positive: "Max_item_s", string$ (max_item_s)
+                natural: "Candidates", string$ (candidates)
+                natural: "Cooldown_recalls", string$ (cooldown_recalls)
+                integer: "Exclude_recent_phrases", string$ (exclude_recent_phrases)
+                boolean: "Same_family_exclusion", same_family_exclusion
+            memClicked = endPause: "Cancel", "Back", "Start", 3, 1
+            if memClicked = 1
+                exitScript: "Cancelled."
+            endif
+            memPage = if memClicked = 2 then 1 else 0 fi
+        endif
+    endwhile
 endif
 
 # ---- Source flags (v0.2.0 numbering) ----
@@ -347,11 +485,10 @@ if base$ = "" or not folderExists (base$)
 endif
 base$ = replace_regex$ (base$, "[/\\]+$", "", 0)
 sessionId$ = replace_regex$ (date$ (), "[^0-9]", "", 0) + "_" + string$ (randomInteger (1000, 9999))
+# v0.3.0: the folder itself is created only after Python has been found
 session$ = base$ + "/AudioTools_CR_" + sessionId$
-createFolder: session$
-if not folderExists (session$)
-    exitScript: "Cannot create the session folder " + session$
-endif
+cleanupReport$ = ""
+cleanupDone = 0
 
 @detectSupport
 
@@ -407,7 +544,8 @@ else
     pyC$[nPy] = "python"
 endif
 
-probe$ = session$ + "/probe.txt"
+# v0.3.0: the probe file lives OUTSIDE the session and is always deleted
+probe$ = base$ + "/AudioTools_CR_probe_" + sessionId$ + ".txt"
 python$ = ""
 probeReport$ = ""
 engineVersion$ = ""
@@ -427,6 +565,7 @@ for i to nPy
             endif
             if fileReadable (probe$)
                 pr$ = newline$ + readFile$ (probe$)
+                deleteFile: probe$
                 st$ = extractLine$ (pr$, newline$ + "status=")
                 engineVersion$ = extractLine$ (pr$, newline$ + "engine_version=")
                 if st$ = "ok"
@@ -454,6 +593,14 @@ if engineVersion$ <> version$
         ... + "Replace the Python file at:" + newline$ + pyScript$
 endif
 
+# ---- Crash recovery: remove ABANDONED sessions of earlier runs (never an
+#      active session of another Praat window), then create this session ----
+nocheck runSubprocess: python$, pyScript$, "cleanup-stale", "--base", base$
+createFolder: session$
+if not folderExists (session$)
+    exitScript: "Cannot create the session folder " + session$
+endif
+
 # ---- Device list mode ----
 if isDev
     devFile$ = session$ + "/devices.txt"
@@ -466,8 +613,6 @@ if isDev
     @cleanup
     exitScript: ""
 endif
-
-nocheck runSubprocess: python$, pyScript$, "cleanup-stale", "--base", base$
 
 # ============================================================
 # PERFORMER DISPLAY: two lines maximum, always the current state.
@@ -495,13 +640,44 @@ procedure restoreInfo
 endproc
 
 procedure cleanup
-    if folderExists (session$)
-        if python$ <> ""
+    # v0.3.0: delete EVERYTHING this run created and verify it.  Python
+    # "cleanup" waits for this session's engine process, removes the folder
+    # with bounded retries (Windows file locks) and prints one line.
+    if fileReadable (probe$)
+        deleteFile: probe$
+    endif
+    cleanupReport$ = ""
+    .n$ = ""
+    .out$ = ""
+    if folderExists (session$) and python$ <> ""
+        if praatVersion >= 6427
+            .out$ = runSubprocess$ (python$, pyScript$, "cleanup", "--session", session$, "--report")
+            .n$ = extractWord$ (.out$, "files=")
+        else
             nocheck runSubprocess: python$, pyScript$, "cleanup", "--session", session$
-        elsif fileReadable (probe$)
-            deleteFile: probe$
         endif
     endif
+    if folderExists (session$)
+        # v0.3.1: never force-delete here - the folder may belong to an
+        # engine that is still running.  Report what Python reported.
+        if index (.out$, "CLEANUP INCOMPLETE") > 0
+            cleanupReport$ = mid$ (.out$, index (.out$, "CLEANUP INCOMPLETE"), 400)
+            cleanupReport$ = replace$ (cleanupReport$, newline$, " ", 0)
+        else
+            .left$# = fileNames$# (session$ + "/*")
+            .list$ = ""
+            for .i to min (size (.left$#), 5)
+                .list$ = .list$ + " " + .left$# [.i]
+            endfor
+            cleanupReport$ = "CLEANUP INCOMPLETE - remaining: " + session$ + " (" + string$ (size (.left$#))
+                ... + " file(s):" + .list$ + ")"
+        endif
+    elsif .n$ <> ""
+        cleanupReport$ = "cleanup complete (" + .n$ + " temporary files removed)"
+    else
+        cleanupReport$ = "cleanup complete"
+    endif
+    cleanupDone = 1
 endproc
 
 procedure now
@@ -1051,11 +1227,38 @@ procedure continuousSession
         exitScript: "Cannot locate AudioTools_CallResponse.praat for headless rendering." + newline$
             ... + "Keep this script in plugin_AudioTools/Vector Chain/ under its original name."
     endif
-    debugPath$ = "none"
-    if debug_log
-        .logDir$ = preferencesDirectory$ + "/AudioTools_CallResponse_logs"
-        createFolder: .logDir$
-        debugPath$ = .logDir$ + "/cr_" + sessionId$ + ".log"
+    # v0.3.0: the debug log lives INSIDE the session and is deleted with it
+    debugPath$ = if debug_log then session$ + "/engine_debug.log" else "none" fi
+    # ---- sonic memory arguments ----
+    .rm$ = "hybrid"
+    if not sonic_memory or response_mode = 2
+        .rm$ = "transform"
+    elsif response_mode = 3
+        .rm$ = "recall"
+    elsif response_mode = 4
+        .rm$ = "recall_transform"
+    endif
+    .sim$ = "hybrid"
+    if similarity_mode = 2
+        .sim$ = "timbre"
+    elsif similarity_mode = 3
+        .sim$ = "pitch"
+    elsif similarity_mode = 4
+        .sim$ = "rhythm"
+    elsif similarity_mode = 5
+        .sim$ = "envelope"
+    elsif similarity_mode = 6
+        .sim$ = "contrast"
+    endif
+    .cdir$ = replace_regex$ (corpus_C_folder$, "^\s+|\s+$", "", 0)
+    .cdir$ = replace_regex$ (.cdir$, "^""|""$", "", 0)
+    .useC = use_preloaded_corpus_C and .cdir$ <> ""
+    if .useC and sonic_memory and not folderExists (.cdir$)
+        @cleanup
+        exitScript: "Corpus_C_folder does not exist:" + newline$ + .cdir$
+    endif
+    if not .useC
+        .cdir$ = "none"
     endif
     .praat$ = if praatExe$ = "" then "none" else praatExe$ fi
     .in$ = if input_device$ = "" then "default" else input_device$ fi
@@ -1076,7 +1279,20 @@ procedure continuousSession
         ... "--max-responses", string$ (max_pending_responses), "--overflow", .overflow$,
         ... "--max-response", fixed$ (max_response_s, 3), "--session-minutes", fixed$ (session_minutes, 3),
         ... "--idle-stop", fixed$ (idle_stop_s, 3), "--leak-guard", string$ (leakage_guard),
-        ... "--play", string$ (play_response), "--debug-log", debugPath$
+        ... "--play", string$ (play_response), "--debug-log", debugPath$,
+        ... "--memory", string$ (sonic_memory), "--response-mode", .rm$,
+        ... "--use-a", string$ (use_live_corpus_A), "--use-b", string$ (use_processed_corpus_B),
+        ... "--use-c", string$ (.useC), "--corpus-c", .cdir$, "--sim-mode", .sim$,
+        ... "--min-sim", fixed$ (minimum_similarity, 3), "--w-live", fixed$ (weight_A_live, 3),
+        ... "--w-processed", fixed$ (weight_B_processed, 3), "--w-preloaded", fixed$ (weight_C_preloaded, 3),
+        ... "--p-transform", fixed$ (weight_transform, 3), "--p-recall", fixed$ (weight_recall, 3),
+        ... "--p-recall-transform", fixed$ (weight_recall_transform, 3),
+        ... "--max-generation", string$ (max_generation), "--max-live", string$ (max_live_phrases),
+        ... "--max-processed", string$ (max_processed_responses),
+        ... "--max-ram-min", fixed$ (max_audio_memory_min, 3), "--max-item-s", fixed$ (max_item_s, 3),
+        ... "--candidates", string$ (candidates), "--evolving", string$ (evolving_memory),
+        ... "--layered", string$ (layered_response), "--recent-exclude", string$ (exclude_recent_phrases),
+        ... "--cooldown", string$ (cooldown_recalls), "--same-family", string$ (same_family_exclusion)
 
     .statusFile$ = session$ + "/status.txt"
     .stopFile$ = session$ + "/stop.request"
@@ -1087,6 +1303,8 @@ procedure continuousSession
     .running = 1
     .stopSent = 0
     .tStop = 0
+    .lastMsg$ = ""
+    .tChange = .t0
     lastShown$ = ""
     engineState$ = "starting"
     st$ = newline$ + "state=starting" + newline$
@@ -1108,13 +1326,20 @@ procedure continuousSession
         endif
         if .got
             engineState$ = extractLine$ (st$, newline$ + "state=")
+            .msgNow$ = extractLine$ (st$, newline$ + "message=")
+            if .msgNow$ <> .lastMsg$
+                .lastMsg$ = .msgNow$
+                .tChange = .now
+            endif
             if engineState$ = "stopped" or engineState$ = "error"
                 .running = 0
-            elsif engineState$ = "starting" and .now - .t0 > 90
-                # Python runs but is still loading after 90 s
+            elsif engineState$ = "starting" and .now - .tChange > 60
+                # v0.3.0: a start-up stage (e.g. indexing a large Corpus C,
+                # which reports its progress) is an error only when the
+                # engine's status has not changed for 60 s
                 engineState$ = "error"
-                stopNote$ = "the engine was still starting after 90 s ("
-                    ... + extractLine$ (st$, newline$ + "message=") + ")"
+                stopNote$ = "the engine start-up stalled for 60 s ("
+                    ... + .msgNow$ + ")"
                 st$ = newline$ + "state=error" + newline$ + "message=" + stopNote$ + newline$
                 writeFileLine: .stopFile$, "stop"
                 .running = 0
@@ -1233,9 +1458,14 @@ procedure buildDisplay: .stopping
             display$ = display$ + "READY" + newline$
         endif
         display$ = display$ + "PENDING: " + .pend$ + newline$
+        @memoryLines
+        display$ = display$ + memoryLines.txt$
         if .leak$ = "1"
             display$ = display$ + "WARNING: the microphone hears the answers - use headphones" + newline$
         endif
+    elsif not cleanupDone
+        # v0.3.0: never report STOPPED before the temporary files are gone
+        display$ = display$ + "STOPPING - removing temporary files" + newline$
     else
         .why$ = if stopNote$ <> "" then stopNote$ else .msg$ fi
         if engineState$ = "error"
@@ -1243,6 +1473,38 @@ procedure buildDisplay: .stopping
         else
             display$ = display$ + "STOPPED - " + .why$ + newline$
         endif
+        display$ = display$ + cleanupReport$ + newline$
+    endif
+endproc
+
+procedure memoryLines
+    @stField: "memory"
+    .on$ = stField.v$
+    .txt$ = ""
+    .line2$ = ""
+    if .on$ = "on"
+        @stField: "mem_live"
+        .a$ = stField.v$
+        @stField: "mem_processed"
+        .b$ = stField.v$
+        @stField: "mem_preloaded"
+        .c$ = stField.v$
+        .txt$ = "MEMORY: A " + .a$ + " | B " + .b$ + " | C " + .c$ + newline$
+        @stField: "recall"
+        .r$ = stField.v$
+        @stField: "match"
+        .m$ = stField.v$
+        if .r$ <> ""
+            .line2$ = "RECALL: " + .r$ + "   MATCH: " + .m$
+            .txt$ = .txt$ + .line2$ + newline$
+        endif
+    elsif .on$ = "off"
+        .txt$ = "MEMORY: OFF (Transform only)" + newline$
+    endif
+    @stField: "action"
+    .act$ = stField.v$
+    if .act$ <> ""
+        .txt$ = .txt$ + "ACTION: " + .act$ + newline$
     endif
 endproc
 
@@ -1308,17 +1570,30 @@ procedure drawDemo: .stopping
         if .proc$ = "" and .play$ = "" and .pend$ = "0"
             @dtext: 50, 45, 26, "{0.35, 0.35, 0.50}", "READY"
         endif
-        @dtext: 50, 30, 20, "{0.25, 0.25, 0.35}", "PENDING: " + .pend$ + "      ANSWERS: " + .done$
-        if .leak$ = "1"
-            @dtext: 50, 21, 16, "{0.85, 0.38, 0.18}", "The microphone hears the answers - use headphones"
+        @dtext: 50, 32, 18, "{0.25, 0.25, 0.35}", "PENDING: " + .pend$ + "      ANSWERS: " + .done$
+        @memoryLines
+        if memoryLines.on$ = "on"
+            .memTxt$ = "MEMORY:  A " + memoryLines.a$ + "  |  B " + memoryLines.b$ + "  |  C " + memoryLines.c$
+            if memoryLines.line2$ <> ""
+                .memTxt$ = .memTxt$ + "      " + memoryLines.line2$
+            endif
+            @dtext: 50, 26, 14, "{0.30, 0.30, 0.42}", .memTxt$
         endif
-    elsif .stopping
+        if memoryLines.act$ <> ""
+            @dtext: 50, 21.5, 14, "{0.30, 0.30, 0.42}", "ACTION: " + memoryLines.act$
+        endif
+        if .leak$ = "1"
+            @dtext: 50, 77, 14, "{0.85, 0.38, 0.18}", "The microphone hears the answers - use headphones"
+        endif
+    elsif .stopping or not cleanupDone
         @dtext: 50, 60, 30, "{0.85, 0.38, 0.18}", "STOPPING..."
+        @dtext: 50, 50, 14, "{0.35, 0.35, 0.50}", "removing temporary files"
     else
         .why$ = if stopNote$ <> "" then stopNote$ else .msg$ fi
         @dtext: 50, 66, 30, "{0.80, 0.25, 0.25}", "##STOPPED##"
         @dtext: 50, 52, 16, "{0.25, 0.25, 0.35}", .why$
         @dtext: 50, 42, 16, "{0.25, 0.25, 0.35}", "Answers: " + .done$
+        @dtext: 50, 34, 14, "{0.25, 0.25, 0.35}", cleanupReport$
     endif
     if engineState$ = "running" or engineState$ = "starting"
         demo Font size: 10
@@ -1371,12 +1646,29 @@ endif
 
 if continuous
     @continuousSession
-    # ---- final minimal report ----
+    # ---- read the hand-over files, THEN delete everything, THEN report ----
     sumFile$ = session$ + "/summary.txt"
-    final$ = display$
+    sm$ = ""
     if fileReadable (sumFile$)
         sm$ = newline$ + readFile$ (sumFile$)
+    endif
+    errFile$ = session$ + "/engine_stderr.txt"
+    err$ = ""
+    if engineState$ = "error" and fileReadable (errFile$)
+        err$ = readFile$ (errFile$)
+    endif
+    @cleanup
+    @buildDisplay: 0
+    if not headless
+        @drawDemo: 0
+    endif
+    final$ = display$
+    if sm$ <> ""
         final$ = final$ + "phrases=" + extractLine$ (sm$, newline$ + "phrases=") + newline$
+        mm$ = extractLine$ (sm$, newline$ + "memory ")
+        if mm$ <> ""
+            final$ = final$ + "memory " + mm$ + newline$
+        endif
         dl$ = extractLine$ (sm$, newline$ + "delay ")
         if dl$ <> ""
             final$ = final$ + "delay " + dl$ + newline$
@@ -1386,12 +1678,31 @@ if continuous
             final$ = final$ + "leakage estimate " + lk$ + newline$
         endif
     endif
-    if debugPath$ <> "none"
-        final$ = final$ + "Debug log: " + debugPath$ + newline$
+    if sm$ <> "" and (debug_log or engineState$ = "error")
+        # the debug log was deleted with the session: show its key events
+        evTxt$ = ""
+        evRest$ = sm$
+        evPos = index (evRest$, newline$ + "event ")
+        while evPos > 0
+            evRest$ = mid$ (evRest$, evPos + 1, length (evRest$))
+            evTxt$ = evTxt$ + "  " + extractLine$ (newline$ + evRest$, newline$ + "event ") + newline$
+            evPos = index (evRest$, newline$ + "event ")
+        endwhile
+        evRest$ = sm$
+        evPos = index (evRest$, newline$ + "stderr ")
+        while evPos > 0
+            evRest$ = mid$ (evRest$, evPos + 1, length (evRest$))
+            err$ = err$ + extractLine$ (newline$ + evRest$, newline$ + "stderr ") + newline$
+            evPos = index (evRest$, newline$ + "stderr ")
+        endwhile
+        if length (evTxt$) > 4000
+            evTxt$ = "..." + right$ (evTxt$, 4000)
+        endif
+        if evTxt$ <> ""
+            final$ = final$ + newline$ + "Session events:" + newline$ + evTxt$
+        endif
     endif
-    errFile$ = session$ + "/engine_stderr.txt"
-    if engineState$ = "error" and fileReadable (errFile$)
-        err$ = readFile$ (errFile$)
+    if err$ <> ""
         if length (err$) > 1500
             err$ = "..." + right$ (err$, 1500)
         endif
@@ -1400,7 +1711,6 @@ if continuous
         endif
     endif
     writeInfoLine: final$
-    @cleanup
     exitScript: ""
 endif
 
