@@ -4,45 +4,83 @@
 # Script:      audiotools_call_response.py
 # Author:      Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
-# Version:     0.1 (2026) - proof of concept
+# Version:     0.2.0 (2026) - Continuous Listening Upgrade from v0.1.3
 # License:     MIT License
 # Repository:  https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
 #   Capture + decision engine for AudioTools Intelligent Musical Call &
-#   Response.  Launched by AudioTools_CallResponse.praat through a
-#   BLOCKING runSubprocess, once per musical turn.  It
-#     1. opens the microphone, calibrates the noise floor, waits for a
-#        phrase, records it in RAM and detects its end   (listen)
-#        - or reads a WAV exported by Praat               (analyze)
-#     2. extracts harmonic / spectral / temporal / morphological
-#        features with NumPy + SciPy only
-#     3. scores the six AudioTools transformations with transparent
-#        eligibility gates and normalised 0..1 suitability scores
-#     4. maps the gesture onto bounded parameters for every candidate
-#     5. writes the phrase (32-bit float WAV) and a line-oriented
-#        key=value decision file (atomic rename), then EXITS.
-#   It never transforms audio itself: every response is rendered by the
-#   existing Praat AudioTools scripts, called from the Praat side.
+#   Response.  Two ways of running:
 #
-# Commands (each one is a separate short-lived process):
+#   v0.2.0 CONTINUOUS ENGINE  (command: serve)
+#     Started ONCE per performance (Praat -> blocking "launch" -> detached
+#     "serve" process) and alive for the whole session:
+#       input callback -> in_q -> DETECT+ANALYSE thread -> render_q
+#         -> RENDER thread (headless "praat --run AudioTools_CallResponse.praat"
+#            in render mode = the six AudioTools scripts, unmodified)
+#         -> play_q -> PLAY thread -> output callback
+#     The microphone stream stays open during analysis, rendering and
+#     playback.  Python plays ONLY the WAV rendered by Praat (or, exactly as
+#     in v0.1.3, the untransformed phrase when nothing qualifies or every
+#     render fails - always logged).
+#
+#   v0.1.3 TURN-TAKING  (commands: listen / analyze, one process per turn)
+#     Unchanged: opens the mic, records one phrase, analyses it, writes the
+#     phrase WAV + decision file, exits; Praat renders and plays.
+#
+#   Both paths share the same feature extraction, scoring, eligibility
+#   gates, parameter mapping and phrase detector.
+#
+# Changelog v0.2.0:
+#   PRESERVED from v0.1.3 (byte-identical code): feature extraction, the six
+#     score functions, eligibility gates, safeguards, tie-break, confidence
+#     thresholds, parameter mapping (incl. 8-Channel Speed Deviations MAX MC
+#     deviation cap), PhraseDetector thresholds/hysteresis, listen / analyze /
+#     probe / cleanup commands, decision-file protocol, self-test cases.
+#   NEW continuous capture: "serve" command - persistent engine with
+#     callback capture, bounded queues (pending phrases / pending responses,
+#     overflow policy drop_oldest | drop_newest, every drop logged), one
+#     render at a time, one playback at a time, separate input/output devices,
+#     status file for the Praat display, stop request + Praat heartbeat,
+#     per-job timestamps (onset, end, analysed, render start/end, play
+#     start/end) in the optional debug log.
+#   NEW leakage handling: speaker->mic leakage ESTIMATE (least-squares fit of
+#     the played signal to the captured input, best lag in 0-500 ms), warning
+#     above -20 dB, optional guard that (a) lifts the onset/offset thresholds
+#     by the expected leakage level only while an answer is playing and
+#     (b) discards a finished phrase only when >= 75 % of its energy is
+#     explained by the playback.  This is NOT echo cancellation: the recorded
+#     audio is never modified, and a performer playing over the answer still
+#     triggers phrases.
+#   ARCHITECTURE: PhraseDetector gains rearm() (continue listening after a
+#     phrase) and an optional leakage hook (default None = v0.1.3 behaviour).
+#     MAX_RESPONSE_S is now configurable (--max-response, default 20 s).
+#   COMPATIBILITY: "devices" now lists output devices too.  The v0.1.3
+#     commands accept the new optional --max-response argument.
+#
+# Commands:
+#   launch        <serve arguments>        start "serve" detached, return at once
+#   serve         --session DIR --script PRAAT_SCRIPT ...   continuous engine
 #   probe         --out FILE [--live]      dependency check, writes FILE
-#   devices       --out FILE               list audio input devices
-#   listen        --session DIR --cycle N  [capture options]
-#   analyze       --session DIR --cycle N --input WAV
+#   devices       --out FILE               list audio input + output devices
+#   listen        --session DIR --cycle N  [capture options]   (v0.1.3)
+#   analyze       --session DIR --cycle N --input WAV         (v0.1.3)
 #   cleanup       --session DIR            remove one session folder
 #   cleanup-stale --base DIR               remove sessions older than 12 h
-#   self-test     [--write-dir DIR]        synthetic six-category test
+#   self-test     [--write-dir DIR]        six-category + v0.2.0 engine tests
 #
 # Requirements:
 #   Python >= 3.9, numpy, scipy, soundfile        (all commands)
-#   sounddevice (PortAudio)                       (listen, devices only)
+#   sounddevice (PortAudio)                       (serve, listen, devices)
+#   a Praat executable for headless rendering     (serve; found from the
+#     Praat script's praatExe$ setting, PRAAT_EXE, PATH or standard folders)
 #   pip install numpy scipy soundfile sounddevice
 #   librosa is deliberately NOT used: its import time (1-3 s) would be
-#   paid on every turn, inside the musician's waiting time.
+#   paid inside the musician's waiting time.
 #
-# Protocol (decision_NNN.txt, UTF-8, "\n" line endings, one key=value
-# per line, values never contain newlines):
+# Protocol (decision / job / status files: UTF-8, "\n" line endings, one
+# key=value per line, values never contain newlines, written to *.tmp and
+# renamed; the last line is end=1):
 #   status=ok|timeout|silent_input|error   message=...
 #   wav=<phrase wav>  sr=  channels=  duration=
 #   mode=auto|manual  selected=<id>|passthrough  selected_score=
@@ -52,41 +90,46 @@
 #                          the Praat dispatcher owns argument order)
 #   seed=  t_phrase_end_epoch=  t_written_epoch=  t_detect_delay=
 #   t_features=  t_select=  t_py_runtime=
+#   render jobs add: out= result= plugin_root= max_response= job_id=
 #
 # Notes:
 #   - Thresholds and score centres are POC heuristics tuned on synthetic
-#     signals, not universal acoustic constants.  They are collected in
-#     the score functions below so they can be inspected and changed.
+#     signals, not universal acoustic constants.
 # ============================================================
 
 import argparse
+import collections
 import math
 import os
+import queue
 import shutil
+import subprocess
 import sys
+import threading
 import time
 import zlib
 
 T_PROCESS_START = time.perf_counter()
-VERSION = "0.1"
+VERSION = "0.2.0"
 
-TRANSFORM_IDS = ["paulstretch", "markov", "mds", "spiral", "metamod", "groove"]
+TRANSFORM_IDS = ["paulstretch", "markov", "mds", "spiral", "speeddev", "groove"]
 TRANSFORM_NAMES = {
     "paulstretch": "Paulstretch (stable harmonic)",
     "markov": "Markov Soundscape Weaver (noisy / aperiodic)",
     "mds": "MDS Space Navigator (discrete attacks)",
     "spiral": "Spiral Pitch Dance (continuous glissando)",
-    "metamod": "Metamodulator (complex dynamic envelope)",
+    "speeddev": "8-Channel Speed Deviations (MAX MC; envelope-driven speed spread)",
     "groove": "Percussive Audio Groove Creator (variable density)",
 }
 # Deterministic tie-break: more specific categories first.
-TIE_PRIORITY = ["spiral", "groove", "mds", "paulstretch", "markov", "metamod"]
+TIE_PRIORITY = ["spiral", "groove", "mds", "paulstretch", "markov", "speeddev"]
 CONFIDENCE_THRESHOLD = {
     "paulstretch": 0.50, "markov": 0.50, "mds": 0.50,
-    "spiral": 0.50, "metamod": 0.45, "groove": 0.50,
+    "spiral": 0.50, "speeddev": 0.45, "groove": 0.50,
 }
 AMBIGUITY_MARGIN = 0.08
 MAX_RESPONSE_S = 20.0          # hard cap for stretched / generated answers
+                               # (v0.2.0: overridden by --max-response)
 SESSION_PREFIX = "AudioTools_CR_"
 
 
@@ -701,7 +744,7 @@ def raw_scores(F):
     w = {"pitch_range": 1.2, "monotonic": 1.0, "continuous": 1.0, "voiced": 0.8,
          "trend": 1.0, "unfragmented": 0.8}
     S["spiral"], C["spiral"] = wmean(c, w), c
-    # 5 Metamodulator - complex dynamic envelope
+    # 5 MC varispeed - complex dynamic envelope determines spread across 8 constant speeds
     c = {
         "dynamic_range": sig(F["env_dyn_range_db"], 10, 3),
         "env_peaks": sig(F["env_peaks"], 3, 1),
@@ -709,7 +752,7 @@ def raw_scores(F):
         "env_complexity": sig(F["env_complexity"], 0.3, 0.12),
     }
     w = {"dynamic_range": 1.0, "env_peaks": 1.0, "fluctuation_rate": 0.8, "env_complexity": 1.0}
-    S["metamod"], C["metamod"] = wmean(c, w), c
+    S["speeddev"], C["speeddev"] = wmean(c, w), c
     # 6 Groove - percussive events with changing density
     c = {
         "percussive": sig(F["perc_char"], 0.45, 0.1),
@@ -757,7 +800,7 @@ def eligibility(F):
         (F["pitch_range_st"] >= 2.0, "pitch range %.1f st < 2" % F["pitch_range_st"]),
         (F["pitch_continuity"] >= 0.4, "pitch contour fragmented (continuity %.2f)" % F["pitch_continuity"]),
     ])
-    E["metamod"] = gate([
+    E["speeddev"] = gate([
         (F["env_peaks"] >= 2, "fewer than 2 dynamic peaks"),
         (F["env_dyn_range_db"] >= 6, "dynamic range %.1f dB < 6" % F["env_dyn_range_db"]),
     ])
@@ -787,15 +830,15 @@ def score_all(F):
     S["mds"] *= (1 - 0.5 * pc)
     if pc > 0.05:
         notes.append("mds x%.2f (percussive events prefer Groove)" % (1 - 0.5 * pc))
-    # the envelope category yields to a strongly supported, ELIGIBLE
-    # specific category
+    # The envelope-driven MC speed spread yields to strongly supported,
+    # more input-specific and ELIGIBLE categories.
     E = eligibility(F)
-    others = [v for k, v in S.items() if k != "metamod" and E[k][0]]
+    others = [v for k, v in S.items() if k != "speeddev" and E[k][0]]
     other = max(others) if others else 0.0
     dom = 1 - 0.45 * sig(other, 0.6, 0.08)
-    S["metamod"] *= dom
+    S["speeddev"] *= dom
     if dom < 0.98:
-        notes.append("metamod x%.2f (an eligible specific category scores %.2f)" % (dom, other))
+        notes.append("speeddev x%.2f (an eligible specific category scores %.2f)" % (dom, other))
     return S, C, E, notes
 
 
@@ -890,20 +933,32 @@ def params_all(F, audio, sr, nch, seed):
         "floor": round(floor_p, 1),
         "ceiling": round(ceil_p, 1),
     }
-    # 5 Metamodulator: Manual Sinusoidal FM; envelope chooses its settings
-    if F["voiced_ratio"] >= 0.4 and not math.isnan(nz(F["f0_median"], float("nan"))):
-        carrier = clamp(F["f0_median"], 80.0, 600.0)
-    else:
-        carrier = clamp(F["centroid_mean"] / 8.0, 100.0, 500.0)
-    cx = sig(F["env_complexity"], 0.5, 0.2)
-    P["metamod"] = {
-        "carrier": round(carrier, 2),
-        "start_freq": 100,
-        "end_freq": 800,
-        "depth_hz": round(carrier * (0.2 + 0.8 * cx), 2),
-        "rate_hz": round(clamp(F["env_peak_rate"], 0.5, 8.0), 3),
-        "dry_wet": round(15 + 45 * sig(F["env_dyn_range_db"], 12, 4), 1),
-        "safety": 0.99,
+    # 5 MAX MC Deviate (v0.7): envelope controls speed deviation *between* channels.
+    # Each channel runs at one constant playback speed. Pitch and D/s duration
+    # change together; there is NO intra-channel time-varying acceleration.
+    # Envelope variation is used as a musical gesture -> spatial/rate spread:
+    # subtle fluctuations = subtle varispeed dispersion; intricate swells
+    # = larger differences across eight static playback rates.
+    dyn = sig(F["env_dyn_range_db"], 12.0, 4.0)
+    complexity = sig(F["env_complexity"], 0.45, 0.20)
+    peaks = sig(F["env_peaks"], 4.0, 1.25)
+    spread = clamp(0.06 + 0.12 * dyn + 0.12 * complexity + 0.10 * peaks,
+                   0.06, 0.40)
+    # For d in [0,0.95], speed factors are uniform in [1-d,1+d].
+    # All output durations obey D/(1+d) <= duration <= D/(1-d).
+    # Use the slowest possible channel for an actual hard output cap.
+    deviation_cap = max(0.0, 1.0 - dur / MAX_RESPONSE_S)
+    spread = min(spread, deviation_cap, 0.40)
+    P["speeddev"] = {
+        "preset": "MAX MC Deviate (fresh random every run)",
+        "deviation": round(spread, 4),
+        "min_speed": round(1.0 - spread, 4),
+        "max_speed": round(1.0 + spread, 4),
+        "min_channel_duration_s": round(dur / (1.0 + spread), 3),
+        "max_channel_duration_s": round(dur / max(1.0 - spread, 1e-6), 3),
+        "engine": "MC-style varispeed (pitch follows speed)",
+        "output": "MC stereo mix (odd L / even R)",
+        "random_seed": 0,  # Preset overrides seed and draws fresh factors every time
     }
     # 6 Groove: IOIs -> tempo (with documented fallback), density -> groove
     tempo, reliable = estimate_tempo(F)
@@ -1010,10 +1065,32 @@ class PhraseDetector:
         self.digital_silence = True
         self.ended_by = ""
         self.peak_db = -200.0
+        # v0.2.0: optional callable returning the expected speaker->mic
+        # leakage level in dBFS (or None).  None = exact v0.1.3 behaviour.
+        self.leak_level = None
 
     def thresholds(self):
         on = max(self.floor + self.sens, self.abs_min)
-        return on, on - self.hyst
+        off = on - self.hyst
+        if self.leak_level is not None:
+            lv = self.leak_level()
+            if lv is not None:
+                on = max(on, lv + 6.0)
+                off = max(off, lv + 3.0)
+        return on, off
+
+    def rearm(self):
+        """v0.2.0: continue listening after an 'end' without recalibrating.
+        The noise floor is kept and the quiet tail after the phrase becomes
+        the pre-roll of the next one."""
+        tail = self.buf[self.last_active + 1:]
+        self.pre = list(tail[-(self.pre_n + self.on_frames):])
+        self.buf = []
+        self.above = 0
+        self.silent_run = 0
+        self.ended_by = ""
+        self.peak_db = -200.0
+        self.state = "LISTENING"
 
     def feed(self, block):
         np = self.np
@@ -1240,6 +1317,7 @@ def cmd_probe(args):
             missing.append("%s (%s)" % (m, str(ex).split("\n")[0][:80]))
     pairs = [("status", "ok" if not missing else "missing"),
              ("python", sys.executable), ("version", sys.version.split()[0]),
+             ("engine_version", VERSION),
              ("found", " ".join(found)), ("missing", "; ".join(missing))]
     write_kv_atomic(args.out, pairs)
     return 0
@@ -1248,16 +1326,24 @@ def cmd_probe(args):
 def cmd_devices(args):
     try:
         import sounddevice as sd
-        lines = []
-        default_in = sd.default.device[0] if sd.default.device else None
+        lines, olines = [], []
+        dflt = sd.default.device if sd.default.device else (None, None)
+        default_in, default_out = dflt[0], dflt[1]
         for i, d in enumerate(sd.query_devices()):
             if d["max_input_channels"] > 0:
                 lines.append("%s%3d  %-40s in:%d  %d Hz" % (
                     "*" if i == default_in else " ", i, d["name"][:40],
                     d["max_input_channels"], int(d["default_samplerate"])))
+            if d.get("max_output_channels", 0) > 0:
+                olines.append("%s%3d  %-40s out:%d  %d Hz" % (
+                    "*" if i == default_out else " ", i, d["name"][:40],
+                    d["max_output_channels"], int(d["default_samplerate"])))
         text = "Audio input devices (* = default):\n" + "\n".join(lines) + "\n"
-        text += ("\nEnter the index or part of the name in the Input_device field, "
-                 "or 'default'.\n")
+        text += "\nAudio output devices (* = default):\n" + "\n".join(olines) + "\n"
+        text += ("\nEnter the index or part of the name in the Input_device / "
+                 "Output_device fields, or 'default'.\n"
+                 "Use headphones or a separate output so the answers do not reach "
+                 "the microphone.\n")
         status = "ok"
     except Exception as ex:                              # noqa: BLE001
         text = "Could not query audio devices: %s\n" % ex
@@ -1266,20 +1352,23 @@ def cmd_devices(args):
     return 0 if status == "ok" else 1
 
 
-def resolve_device(sd, spec):
+def resolve_device(sd, spec, kind="input"):
     spec = (spec or "").strip()
-    if spec == "" or spec.lower() == "default":
+    if spec == "" or spec.lower() in ("default", "none"):
         return None
     if spec.lstrip("-").isdigit():
         return int(spec)
+    key = "max_input_channels" if kind == "input" else "max_output_channels"
     hits = [i for i, d in enumerate(sd.query_devices())
-            if d["max_input_channels"] > 0 and spec.lower() in d["name"].lower()]
+            if d.get(key, 0) > 0 and spec.lower() in d["name"].lower()]
     if not hits:
-        raise RuntimeError("no input device matches '%s' (run 'List audio input devices')" % spec)
+        raise RuntimeError("no %s device matches '%s' (run 'List audio devices')" % (kind, spec))
     return hits[0]
 
 
 def cmd_listen(args):
+    global MAX_RESPONSE_S
+    MAX_RESPONSE_S = float(getattr(args, "max_response", MAX_RESPONSE_S))
     try:
         np = import_dsp()
         import soundfile as sf
@@ -1378,6 +1467,8 @@ def cmd_listen(args):
 
 
 def cmd_analyze(args):
+    global MAX_RESPONSE_S
+    MAX_RESPONSE_S = float(getattr(args, "max_response", MAX_RESPONSE_S))
     try:
         np = import_dsp()
         import soundfile as sf
@@ -1477,7 +1568,8 @@ def synth_cases(sr=44100):
     f = 200 * (650 / 200) ** (t / d)
     ph = np.cumsum(f) / sr
     cases["spiral"] = 0.3 * np.minimum(1, t / 0.1) * np.minimum(1, (d - t) / 0.2) * harm(ph, 6, 0.6) / 2.2
-    # 5 inharmonic sustained cluster with irregular swells (complex envelope)
+    # 5 inharmonic sustained cluster with irregular swells: the envelope
+    # controls the BETWEEN-channel speed spread, not time-varying speed.
     d = 4.0
     t = np.arange(int(d * sr)) / sr
     parts = [173 * r for r in (1.0, 1.618, 2.414, 3.303, 4.732, 6.171)]
@@ -1486,7 +1578,7 @@ def synth_cases(sr=44100):
     for c, w, a in [(0.3, 0.15, 1.0), (0.9, 0.1, 0.5), (1.4, 0.25, 0.9), (2.1, 0.08, 0.6),
                     (2.6, 0.2, 1.0), (3.2, 0.12, 0.4), (3.6, 0.15, 0.8)]:
         sw += a * np.exp(-0.5 * ((t - c) / w) ** 2)
-    cases["metamod"] = 0.3 * tone / np.max(np.abs(tone)) * (0.03 + sw / sw.max())
+    cases["speeddev"] = 0.3 * tone / np.max(np.abs(tone)) * (0.03 + sw / sw.max())
     # 6 drum-like sequence, accelerating
     d = 4.0
     x = np.zeros(int(d * sr))
@@ -1582,8 +1674,1175 @@ def cmd_self_test(args):
           ("OK " if ok else "FAIL", events, plen, det.floor))
     if not ok:
         failures += 1
+    print("\n" + "-" * 72 + "\nv0.2.0 continuous-engine unit tests (no audio hardware)")
+    for name, fn in V020_TESTS:
+        try:
+            ok, detail = fn(sr)
+        except Exception as ex:                              # noqa: BLE001
+            ok, detail = False, "exception: %s" % ex
+        print("[%s] %s: %s" % ("OK " if ok else "FAIL", name, detail))
+        if not ok:
+            failures += 1
     print("\n%d failure(s)" % failures)
     return 1 if failures else 0
+
+
+# ---------------- v0.2.0 unit tests ----------------
+def _t_queue(sr):
+    dropped = []
+    class J:
+        def __init__(self, i):
+            self.tag, self.selected = "%04d" % i, "x"
+    q = BoundedJobQueue("t", 3, "drop_oldest", lambda j, why: dropped.append(j.tag))
+    for i in range(1, 6):
+        q.put(J(i))
+    order = [q.get(0).tag for _ in range(3)]
+    ok1 = order == ["0003", "0004", "0005"] and dropped == ["0001", "0002"]
+    dropped2 = []
+    q2 = BoundedJobQueue("t", 2, "drop_newest", lambda j, why: dropped2.append(j.tag))
+    for i in range(1, 5):
+        q2.put(J(i))
+    order2 = [q2.get(0).tag for _ in range(2)]
+    ok2 = order2 == ["0001", "0002"] and dropped2 == ["0003", "0004"] and q2.get(0) is None
+    return ok1 and ok2, ("drop_oldest kept %s dropped %s | drop_newest kept %s dropped %s"
+                         % (order, dropped, order2, dropped2))
+
+
+def _t_leak(sr):
+    import numpy as np
+    rng = np.random.default_rng(5)
+    n = int(1.5 * sr)
+    t = np.arange(n) / sr
+    out = 0.3 * np.sin(2 * np.pi * 220 * t * (1 + 0.3 * t)) * (1 + 0.5 * rng.standard_normal(n))
+    lag = int(0.035 * sr)
+    L = int(1.0 * sr)
+    mx = int(LEAK_MAX_LAG_S * sr)
+    x = out[-(L + mx):]
+    y_leak = 0.2 * out[-L - lag:-lag] + 0.002 * rng.standard_normal(L)       # -14 dB, 35 ms
+    a, rho, lg = leak_fit(x, y_leak, mx)
+    ok1 = abs(20 * math.log10(abs(a)) + 13.98) < 0.5 and abs(lg - lag) <= 1 and rho > 0.95
+    player = 0.2 * np.sin(2 * np.pi * 330 * t[:L]) * np.exp(-t[:L])
+    a2, rho2, _ = leak_fit(x, player + 0.002 * rng.standard_normal(L), mx)
+    ok2 = rho2 * rho2 < 0.1
+    mix = 0.05 * out[-L - lag:-lag] + player                          # performer over leak
+    a3, rho3, lg3 = leak_fit(x, mix, mx)
+    ok3 = rho3 * rho3 < LEAK_DISCARD_RHO2                             # performer kept
+    return ok1 and ok2 and ok3, (
+        "pure leak %.2f dB @ %.1f ms rho %.3f | independent player rho^2 %.3f | "
+        "player over leak rho^2 %.2f (kept, < %.2f)" % (
+            20 * math.log10(abs(a)), 1000 * lg / sr, rho, rho2 * rho2, rho3 * rho3,
+            LEAK_DISCARD_RHO2))
+
+
+def _t_ring(sr):
+    import numpy as np
+    r = Ring(sr, 2.0)
+    blk = int(0.01 * sr)
+    t0 = 1000.0
+    for i in range(300):                    # 3 s of a ramp, ring keeps 2 s
+        v = (np.arange(blk) + i * blk).astype(np.float32)
+        r.append(v, t0 + (i + 1) * 0.01)
+    seg = r.segment(t0 + 2.0, 0.5)          # samples [1.5 s, 2.0 s)
+    exp = np.arange(int(1.5 * sr), int(2.0 * sr)).astype(np.float32)
+    old = r.segment(t0 + 0.5, 0.2)          # older than history -> zeros
+    return bool(np.array_equal(seg, exp) and not old.any()), "aligned segment, expired history = zeros"
+
+
+def _t_rearm(sr):
+    """Three phrases back to back in ONE stream: v0.2.0 continuous detection
+    must find all three without recalibrating."""
+    import numpy as np
+    rng = np.random.default_rng(9)
+    hop = int(0.01 * sr)
+    nz_ = lambda s: 0.002 * rng.standard_normal(int(s * sr))
+    def tone(f, s):
+        tt = np.arange(int(s * sr)) / sr
+        return 0.2 * np.sin(2 * np.pi * f * tt)
+    stream = np.concatenate([nz_(1.0), tone(220, 1.0) + nz_(1.0), nz_(0.8),
+                             tone(330, 0.7) + nz_(0.7), nz_(0.9), tone(440, 1.2) + nz_(1.2), nz_(1.0)])
+    det = PhraseDetector(sr, 1, 9.0, 0.5, 0.6, 12.0, 0.25)
+    lens = []
+    for i in range(0, len(stream) - hop, hop):
+        if det.feed(stream[i:i + hop]) == "end":
+            lens.append(round(len(det.phrase_audio()) / sr, 2))
+            det.rearm()
+    ok = len(lens) == 3 and abs(lens[0] - 1.4) < 0.1 and abs(lens[1] - 1.1) < 0.1 and abs(lens[2] - 1.6) < 0.1
+    return ok, "phrase lengths %s s (tone + 0.25 pre-roll + 0.15 tail)" % lens
+
+
+def _t_guard(sr):
+    """Leakage hook: lifts thresholds only while the hook reports a level;
+    None restores the exact v0.1.3 thresholds."""
+    det = PhraseDetector(sr, 1)
+    det.floor = -60.0
+    base = det.thresholds()
+    det.leak_level = lambda: -30.0
+    lifted = det.thresholds()
+    det.leak_level = lambda: None
+    back = det.thresholds()
+    ok = base == (-51.0, -55.0) and lifted == (-24.0, -27.0) and back == base
+    return ok, "v0.1.3 %s | playing with leak at -30 dBFS %s | idle %s" % (base, lifted, back)
+
+
+def _t_path(sr):
+    """PHAT path validation: real leakage under a performer is found at the
+    right delay; a same-pitch performer against a phase-randomised
+    (Paulstretch-like) answer with NO leakage is not a path."""
+    import numpy as np
+    rng = np.random.default_rng(3)
+    L, mx = int(1.0 * sr), int(LEAK_MAX_LAG_S * sr)
+    n = L + mx
+    t = np.arange(n) / sr
+    def harm(f, ph):
+        return sum((0.7 ** i) * np.sin(2 * np.pi * (i + 1) * f * t + ph[i]) for i in range(8)) / 2.5
+    perf = 0.3 * harm(220, np.zeros(8))
+    base = harm(220, np.zeros(8)) + 0.01 * rng.standard_normal(n)
+    X = np.fft.rfft(base)
+    ans = 0.3 * np.fft.irfft(np.abs(X) * np.exp(1j * rng.uniform(0, 2 * np.pi, len(X))), n)
+    lag = int(0.04 * sr)
+    nz_ = 0.002 * rng.standard_normal(n)
+    r0 = leak_path(ans, (perf + nz_)[-L:], mx, sr)
+    res1 = []
+    for trial in range(6):              # same pitch, random answer phases, both noisy
+        same = 0.3 * harm(220, rng.uniform(0, 2 * np.pi, 8)) + 0.002 * rng.standard_normal(n)
+        res1.append(leak_path(same, (perf + nz_)[-L:], mx, sr))
+    y = 0.1 * np.concatenate([np.zeros(lag), ans])[:n] + perf + nz_
+    r2 = leak_path(ans, y[-L:], mx, sr)
+    y3 = 0.1 * np.concatenate([np.zeros(lag), ans])[:n] + nz_
+    r3 = leak_path(ans, y3[-L:], mx, sr)
+    g3 = 20 * math.log10(abs(r3["a"]) + 1e-12)
+    ok = (not r0["plausible"] and not any(r["plausible"] for r in res1) and r2["plausible"]
+          and abs(r2["lag"] - lag) <= 1 and r3["plausible"] and abs(g3 + 20) < 0.5
+          and abs(r3["rho"]) >= LEAK_GAIN_RHO and abs(r2["rho"]) < LEAK_GAIN_RHO)
+    return ok, ("no leak: paul answer %s (z %.1f) | same pitch x6: %d path(s), max dominance %.2f"
+                " | -20 dB leak under performer: path at %.1f ms, gain frozen (rho %.2f)"
+                " | -20 dB leak alone: %.2f dB (rho %.2f)" % (
+                    "path" if r0["plausible"] else "no path", r0["z"],
+                    sum(r["plausible"] for r in res1), max(r["dom"] for r in res1),
+                    1000 * r2["lag"] / sr, r2["rho"], g3, r3["rho"]))
+
+
+V020_TESTS = [("bounded queues + overflow policies", _t_queue),
+              ("leakage least-squares estimate", _t_leak),
+              ("leakage path validation (PHAT)", _t_path),
+              ("wall-clock ring alignment", _t_ring),
+              ("continuous re-arming detector", _t_rearm),
+              ("leakage guard thresholds", _t_guard)]
+
+
+# ============================================================
+# v0.2.0 CONTINUOUS ENGINE  (command: serve)
+# ============================================================
+# Ownership (one owner per resource; no shared lock is held during
+# analysis or rendering):
+#   PortAudio input callback  copies each block into in_q (bounded; never
+#                             blocks; a full queue is counted as an overrun)
+#   DETECT thread   owns the PhraseDetector, the input ring and the leakage
+#                   estimator; finalises phrases, analyses them with the
+#                   unchanged v0.1.3 scoring, writes job files -> render_q
+#   RENDER thread   owns the ONE headless Praat child process -> play_q
+#   PLAY thread     owns what the output stream plays (one answer at a time)
+#   PortAudio output callback  copies the current answer to the device and
+#                   records what was played (for the leakage estimate)
+#   MAIN thread     status file, stop request, Praat heartbeat, limits,
+#                   ordered shutdown
+STALE_RESPONSE_S = 90.0        # an answer older than this is dropped (logged)
+RENDER_TIMEOUT_S = 180.0       # a Praat render taking longer is killed
+HEARTBEAT_TIMEOUT_S = 20.0     # Praat GUI gone for this long -> engine stops
+LEAK_MAX_LAG_S = 0.5           # speaker->mic search window
+LEAK_DISCARD_RHO2 = 0.75       # >= 75 % of a phrase explained by playback
+LEAK_Z_MIN = 12.0              # PHAT peak prominence for a plausible acoustic path
+LEAK_LAG_MIN_S = 0.002         # path delays outside [2 ms, max - 5 ms] are not
+LEAK_LAG_EDGE_S = 0.005        #   trusted (edge peaks = periodic ambiguity)
+LEAK_DOMINANCE = 1.5           # main PHAT peak / next peak (periodic -> ~1)
+LEAK_GAIN_RHO = 0.7            # gain updated only when the input is mostly leakage
+# AudioTools_CallResponse.praat form, one value per field in form order.
+# Render mode (env AUDIOTOOLS_CR_JOB) ignores the values, but "praat --run"
+# requires one argument per field.  KEEP IN SYNC WITH THE PRAAT FORM.
+RENDER_FORM_ARGS = ["Selected Sound(s)", "Automatic (gesture classifier)", "4",
+                    "default", "default", "9", "0.5", "0.6", "12", "0", "0"]
+DISPLAY_NAMES = {
+    "paulstretch": "Paulstretch", "markov": "Markov Soundscape Weaver",
+    "mds": "MDS Space Navigator", "spiral": "Spiral Pitch Dance",
+    "speeddev": "8-Channel Speed Deviations", "groove": "Percussive Groove Creator",
+    "passthrough": "Original phrase",
+}
+
+
+def db_of(x):
+    import numpy as np
+    e = float(np.sqrt(np.mean(np.square(x, dtype=np.float64)) + 1e-20)) if len(x) else 0.0
+    return 20 * math.log10(e + 1e-12)
+
+
+class BoundedJobQueue:
+    """FIFO with a hard limit and an explicit overflow policy.
+    drop_oldest: the oldest UNSTARTED job is removed to make room.
+    drop_newest: the incoming job is rejected.
+    Dropped jobs are handed to on_drop (outside the lock) - never silent."""
+
+    def __init__(self, name, maxlen, policy, on_drop):
+        self.name, self.maxlen = name, max(1, int(maxlen))
+        self.policy = policy if policy in ("drop_oldest", "drop_newest") else "drop_oldest"
+        self.on_drop = on_drop
+        self._d = collections.deque()
+        self._cv = threading.Condition()
+        self.closed = False
+
+    def put(self, job):
+        dropped = None
+        with self._cv:
+            if len(self._d) >= self.maxlen:
+                if self.policy == "drop_newest":
+                    dropped = job
+                else:
+                    dropped = self._d.popleft()
+                    self._d.append(job)
+            else:
+                self._d.append(job)
+            self._cv.notify()
+        if dropped is not None:
+            self.on_drop(dropped, "%s full (%d, %s)" % (self.name, self.maxlen, self.policy))
+        return dropped is not job
+
+    def get(self, timeout=0.2):
+        with self._cv:
+            if not self._d and not self.closed:
+                self._cv.wait(timeout)
+            if self._d:
+                return self._d.popleft()
+            return None
+
+    def drain(self):
+        with self._cv:
+            out = list(self._d)
+            self._d.clear()
+            return out
+
+    def close(self):
+        with self._cv:
+            self.closed = True
+            self._cv.notify_all()
+
+    def __len__(self):
+        return len(self._d)
+
+
+class Ring:
+    """Mono float32 history with the wall-clock time of its newest sample.
+    segment(t_end, dur) returns the samples that ended at wall time t_end;
+    samples outside the history come back as zeros (= silence)."""
+
+    def __init__(self, sr, seconds):
+        import numpy as np
+        self.np = np
+        self.sr = sr
+        self.n = int(sr * seconds)
+        self.buf = np.zeros(self.n, np.float32)
+        self.w = 0
+        self.t_last = None
+        self.lock = threading.Lock()
+
+    def append(self, mono, t_end):
+        m = len(mono)
+        with self.lock:
+            if m >= self.n:
+                mono, m = mono[-self.n:], self.n
+            i = self.w % self.n
+            k = min(m, self.n - i)
+            self.buf[i:i + k] = mono[:k]
+            if m > k:
+                self.buf[:m - k] = mono[k:]
+            self.w += m
+            self.t_last = t_end
+
+    def segment(self, t_end, dur):
+        np = self.np
+        L = int(round(dur * self.sr))
+        out = np.zeros(max(L, 0), np.float32)
+        with self.lock:
+            if self.t_last is None or L <= 0:
+                return out
+            end = self.w - int(round((self.t_last - t_end) * self.sr))
+            start = end - L
+            lo, hi = max(start, self.w - self.n, 0), min(end, self.w)
+            if hi > lo:
+                idx = np.arange(lo, hi) % self.n
+                out[lo - start:hi - start] = self.buf[idx]
+        return out
+
+
+def leak_fit(x, y, max_lag_n):
+    """Least-squares fit y[n] ~ a * x[n + max_lag_n - lag], lag in 0..max_lag_n
+    (x must hold len(y) + max_lag_n samples ending with y).  Returns
+    (gain a, correlation rho at the best lag, lag in samples).  rho^2 is the
+    fraction of y's energy explained by the delayed, scaled playback."""
+    import numpy as np
+    x = np.asarray(x, np.float64)
+    y = np.asarray(y, np.float64)
+    Ly = len(y)
+    if Ly == 0 or len(x) < Ly + max_lag_n:
+        return 0.0, 0.0, 0
+    ey = float(np.dot(y, y))
+    if ey <= 1e-12:
+        return 0.0, 0.0, 0
+    N = 1 << int(math.ceil(math.log2(len(x) + Ly)))
+    r = np.fft.irfft(np.fft.rfft(x, N) * np.conj(np.fft.rfft(y, N)), N)[:max_lag_n + 1]
+    cs = np.concatenate([[0.0], np.cumsum(x * x)])
+    ks = np.arange(max_lag_n + 1)
+    ex = cs[ks + Ly] - cs[ks]
+    rho = r / np.sqrt(np.maximum(ex, 1e-20) * ey)
+    rho[ex <= 1e-12] = 0.0
+    b = int(np.argmax(np.abs(rho)))
+    a = float(r[b] / ex[b]) if ex[b] > 1e-12 else 0.0
+    return a, float(rho[b]), max_lag_n - b
+
+
+def leak_path(x, y, max_lag_n, sr):
+    """Robust speaker->mic path test.  The DELAY is found with a PHAT-weighted
+    (phase-only) cross-correlation: a real acoustic path gives one sharp peak,
+    while a performer who merely plays the same pitch as the answer does not
+    (plain correlation of two periodic signals peaks at many lags).  The gain
+    and rho are then the least-squares values at that delay.
+    Returns dict(lag samples, z = peak prominence, a = gain, rho, plausible)."""
+    import numpy as np
+    x = np.asarray(x, np.float64)
+    y = np.asarray(y, np.float64)
+    Ly = len(y)
+    res = {"lag": 0, "z": 0.0, "dom": 0.0, "a": 0.0, "rho": 0.0, "plausible": False}
+    if Ly == 0 or len(x) < Ly + max_lag_n or float(np.dot(y, y)) <= 1e-12:
+        return res
+    N = 1 << int(math.ceil(math.log2(len(x) + Ly)))
+    X = np.fft.rfft(x, N)
+    Y = np.fft.rfft(y, N)
+    G = X * np.conj(Y)
+    r = np.fft.irfft(G / (np.abs(G) + 1e-12), N)[:max_lag_n + 1]
+    b = int(np.argmax(r))
+    guard = max(1, int(0.001 * sr))
+    mask = np.ones(len(r), bool)
+    mask[max(0, b - guard):b + guard + 1] = False
+    z = float((r[b] - r[mask].mean()) / (r[mask].std() + 1e-12))
+    mask2 = np.ones(len(r), bool)
+    mask2[max(0, b - 2 * guard):b + 2 * guard + 1] = False
+    second = float(r[mask2].max()) if mask2.any() else 0.0
+    dom = float(r[b] / second) if second > 1e-12 else 99.0
+    lag = max_lag_n - b
+    seg = x[b:b + Ly]
+    ex = float(np.dot(seg, seg))
+    ey = float(np.dot(y, y))
+    rt = float(np.dot(seg, y))
+    res.update(lag=lag, z=z, dom=dom, a=(rt / ex if ex > 1e-12 else 0.0),
+               rho=(rt / math.sqrt(ex * ey) if ex > 1e-12 else 0.0))
+    res["plausible"] = (z >= LEAK_Z_MIN and dom >= LEAK_DOMINANCE and
+                        int(LEAK_LAG_MIN_S * sr) <= lag <= max_lag_n - int(LEAK_LAG_EDGE_S * sr))
+    return res
+
+
+def praat_candidates(hint):
+    c = []
+    if hint and hint.lower() not in ("", "none", "auto"):
+        c.append(hint)
+    if os.environ.get("PRAAT_EXE"):
+        c.append(os.environ["PRAAT_EXE"])
+    for n in ("praat", "Praat", "praat_nogui", "praat_barren"):
+        w = shutil.which(n)
+        if w:
+            c.append(w)
+    home = os.path.expanduser("~")
+    if sys.platform.startswith("win"):
+        for base in (os.environ.get("ProgramFiles", ""), os.environ.get("ProgramFiles(x86)", ""),
+                     os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs")):
+            if base:
+                c.append(os.path.join(base, "Praat", "Praat.exe"))
+                c.append(os.path.join(base, "Praat.exe"))
+        for d in ("Desktop", "Downloads", "Documents"):
+            root = os.path.join(home, d)
+            c.append(os.path.join(root, "Praat.exe"))
+            try:
+                for sub in os.listdir(root):
+                    p = os.path.join(root, sub)
+                    if os.path.isdir(p):
+                        c.append(os.path.join(p, "Praat.exe"))
+                        c.append(os.path.join(p, "audio", "Praat.exe"))
+            except OSError:
+                pass
+    elif sys.platform == "darwin":
+        c += ["/Applications/Praat.app/Contents/MacOS/Praat",
+              os.path.join(home, "Applications/Praat.app/Contents/MacOS/Praat")]
+    else:
+        c += ["/usr/bin/praat", "/usr/local/bin/praat", os.path.join(home, "bin/praat")]
+    seen, out = set(), []
+    for x in c:
+        if x and x not in seen:
+            seen.add(x)
+            out.append(x)
+    return out
+
+
+class PraatRenderer:
+    """Runs AudioTools_CallResponse.praat headless in render mode, one job at
+    a time.  The child is a tracked Popen: killed on timeout and on stop."""
+
+    def __init__(self, hint, script, session, log):
+        self.script, self.session, self.log = script, session, log
+        self.exe, self.flags, self.version, self.error = "", [], 0, ""
+        self.proc = None
+        self.lock = threading.Lock()
+        self.hint = hint
+
+    @staticmethod
+    def _resolve(path):
+        path = os.path.expanduser(path or "")
+        if os.path.isdir(path):
+            for exe in ("Praat.exe", "praat.exe", "Praat", "praat", "praat_nogui",
+                        "praat_barren", "Praat.app/Contents/MacOS/Praat"):
+                cand = os.path.join(path, exe)
+                if os.path.isfile(cand):
+                    return cand
+            return ""
+        return path if os.path.isfile(path) else (shutil.which(path) or "")
+
+    def _popen_kwargs(self):
+        kw = {}
+        if sys.platform.startswith("win"):
+            kw["creationflags"] = 0x08000000          # CREATE_NO_WINDOW
+        return kw
+
+    def probe(self, path):
+        """Prove an executable by RUNNING a script that writes praatVersion
+        to a marker file (Windows Praat's stdout is empty or UTF-16)."""
+        path = self._resolve(path)
+        if not path:
+            return False
+        marker = os.path.join(self.session, "praat_probe.txt")
+        script = os.path.join(self.session, "praat_probe.praat")
+        with open(script, "w", encoding="utf-8") as fh:
+            fh.write('form: "probe"\n    sentence: "Out", ""\nendform\n'
+                     'writeFileLine: out$, praatVersion\n')
+        for flags in (["--FULL-TRUST", "--no-pref-files"], ["--no-pref-files"]):
+            try:
+                if os.path.exists(marker):
+                    os.remove(marker)
+                subprocess.run([path] + flags + ["--run", script, marker],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                               timeout=60, **self._popen_kwargs())
+            except Exception as ex:                          # noqa: BLE001
+                self.error = "%s: %s" % (path, ex)
+                continue
+            if os.path.exists(marker):
+                try:
+                    with open(marker, encoding="utf-8", errors="replace") as fh:
+                        v = int(float(fh.read().split()[0]))
+                except Exception:                            # noqa: BLE001
+                    v = 0
+                self.exe, self.flags, self.version = path, flags, v
+                for f in (marker, script):
+                    try:
+                        os.remove(f)
+                    except OSError:
+                        pass
+                return True
+        return False
+
+    def find(self):
+        for c in praat_candidates(self.hint):
+            if self.probe(c):
+                return True
+        self.error = ("no runnable Praat executable found - set praatExe$ at the top "
+                      "of AudioTools_CallResponse.praat (the executable or its folder)")
+        return False
+
+    def kill(self):
+        with self.lock:
+            p = self.proc
+        if p is not None and p.poll() is None:
+            try:
+                p.terminate()
+                p.wait(2)
+            except Exception:                                # noqa: BLE001
+                try:
+                    p.kill()
+                    p.wait(2)
+                except Exception:                            # noqa: BLE001
+                    pass
+
+    def render(self, job, stop_ev, max_response, plugin_root):
+        """Returns (ok, message).  On success job.answer/answer_sr/used are set."""
+        import soundfile as sf
+        jobf = os.path.join(self.session, "job_%s.txt" % job.tag)
+        out = os.path.join(self.session, "out_%s.wav" % job.tag)
+        res = os.path.join(self.session, "res_%s.txt" % job.tag)
+        plog = os.path.join(self.session, "praat_%s.log" % job.tag)
+        job.files += [jobf, out, res, plog]
+        write_kv_atomic(jobf, list(job.pairs) + [
+            ("wav", job.wav), ("out", out), ("result", res), ("plugin_root", plugin_root),
+            ("max_response", fnum(max_response, 3)), ("job_id", job.tag)])
+        env = dict(os.environ)
+        env["AUDIOTOOLS_CR_JOB"] = jobf
+        argv = [self.exe] + self.flags + ["--run", self.script] + RENDER_FORM_ARGS
+        with open(plog, "wb") as lf:
+            try:
+                p = subprocess.Popen(argv, stdout=lf, stderr=subprocess.STDOUT, env=env,
+                                     **self._popen_kwargs())
+            except Exception as ex:                          # noqa: BLE001
+                return False, "cannot start Praat: %s" % ex
+            with self.lock:
+                self.proc = p
+            t0 = time.time()
+            reason = ""
+            while p.poll() is None:
+                if stop_ev.is_set():
+                    reason = "session stopped"
+                elif time.time() - t0 > RENDER_TIMEOUT_S:
+                    reason = "render timeout (%.0f s)" % RENDER_TIMEOUT_S
+                if reason:
+                    self.kill()
+                    break
+                time.sleep(0.02)
+            with self.lock:
+                self.proc = None
+        if reason:
+            return False, reason
+        meta = {}
+        try:
+            with open(res, encoding="utf-8", errors="replace") as fh:
+                for line in fh:
+                    if "=" in line:
+                        k, v = line.rstrip("\r\n").split("=", 1)
+                        meta[k] = v
+        except OSError:
+            tail = ""
+            try:
+                with open(plog, "rb") as fh:
+                    raw = fh.read()[-600:]
+                tail = raw.replace(b"\x00", b"").decode("utf-8", "replace").strip()
+            except OSError:
+                pass
+            return False, "Praat wrote no result (exit %s) %s" % (p.returncode, tail[-300:])
+        job.praat_log = meta.get("log", "")
+        if meta.get("end") != "1" or meta.get("status") != "ok":
+            return False, meta.get("msg", "render failed")
+        try:
+            a, sr = sf.read(out, dtype="float32", always_2d=True)
+        except Exception as ex:                              # noqa: BLE001
+            return False, "cannot read rendered WAV: %s" % ex
+        used = meta.get("used", "")
+        if used not in TRANSFORM_IDS:
+            return False, "render reported an unknown transformation '%s'" % used
+        job.answer, job.answer_sr, job.used = a, int(sr), used
+        job.praat_sec = meta.get("sec", "")
+        return True, meta.get("msg", "ok")
+
+
+class Job:
+    def __init__(self, jid, audio, sr, t):
+        self.id = jid
+        self.tag = "%04d" % jid
+        self.audio = audio            # frames x channels float32 (musician)
+        self.sr = sr
+        self.t = dict(t)              # wall-clock timestamps
+        self.selected = ""
+        self.used = ""
+        self.pairs = []
+        self.wav = ""
+        self.files = []
+        self.answer = None
+        self.answer_sr = sr
+        self.msg = ""
+        self.praat_log = ""
+        self.praat_sec = ""
+
+
+class Engine:
+    def __init__(self, args, sd):
+        import numpy as np
+        self.np, self.sd, self.a = np, sd, args
+        self.sr, self.ch = int(args.sr), int(args.channels)
+        self.session = args.session
+        self.stop_ev = threading.Event()
+        self.in_q = queue.Queue(maxsize=3000)          # 30 s of 10 ms blocks
+        self.render_q = BoundedJobQueue("pending phrases", args.max_pending,
+                                        args.overflow, self._dropped)
+        self.play_q = BoundedJobQueue("pending responses", args.max_responses,
+                                      args.overflow, self._dropped)
+        self.det = PhraseDetector(self.sr, self.ch, args.sensitivity, args.min_phrase,
+                                  args.end_silence, args.max_phrase, args.preroll)
+        if args.leak_guard:
+            self.det.leak_level = self._expected_leak_db
+        self.hop_s = self.det.hop_s
+        self.in_ring = Ring(self.sr, 3.0)
+        self.out_ring = Ring(self.sr, args.max_phrase + LEAK_MAX_LAG_S + 2.0)
+        self.c = collections.Counter()
+        self.state, self.message, self.processing, self.playing = "starting", "", "", ""
+        self.input_db = -120.0
+        self.leak_db, self.leak_rho = None, 0.0
+        self.leak_lag, self.leak_cand, self.leak_conf = None, None, 0
+        self.out_hold_db, self.out_hold_t = -120.0, 0.0
+        self.cur, self.cur_pos = None, 0
+        self.play_done = threading.Event()
+        self.out_ch = 1
+        self.next_id = 1
+        self.fatal = ""
+        self.summary = []
+        self.events = []
+        self.delays = []
+        self.t_start = time.time()
+        self.t_activity = time.time()
+        self.log_fh = None
+        if args.debug_log and args.debug_log.lower() != "none":
+            try:
+                self.log_fh = open(args.debug_log, "a", encoding="utf-8")
+            except OSError:
+                self.log_fh = None
+        self.renderer = PraatRenderer(args.praat, args.script, self.session, self.log)
+
+    # ---------------- logging ----------------
+    def log(self, msg, event=False):
+        line = "%8.3f  %s" % (time.time() - self.t_start, msg)
+        if event:
+            self.events.append(line)
+        if self.log_fh:
+            try:
+                self.log_fh.write(line + "\n")
+                self.log_fh.flush()
+            except OSError:
+                pass
+
+    def _dropped(self, job, why):
+        self.c["dropped"] += 1
+        self.log("DROPPED job %s (%s): %s" % (job.tag, job.selected or "unanalysed", why), True)
+        self._cleanup_job(job)
+
+    def _cleanup_job(self, job):
+        for f in job.files:
+            try:
+                os.remove(f)
+            except OSError:
+                pass
+        job.files = []
+
+    # ---------------- audio callbacks (no DSP, no I/O, no locks held long) --------
+    def _in_cb(self, indata, frames, tinfo, status):
+        if status:
+            self.c["input_status"] += 1
+        try:
+            self.in_q.put_nowait((indata.copy(), time.time()))
+        except queue.Full:
+            self.c["overruns"] += 1
+
+    def _out_cb(self, outdata, frames, tinfo, status):
+        if status:
+            self.c["output_status"] += 1
+        buf = self.cur
+        if buf is None:
+            outdata.fill(0)
+        else:
+            p = self.cur_pos
+            n = min(frames, len(buf) - p)
+            outdata[:n] = buf[p:p + n]
+            if n < frames:
+                outdata[n:] = 0
+            self.cur_pos = p + n
+            if self.cur_pos >= len(buf):
+                self.cur = None
+                self.play_done.set()
+        mono = outdata[:, 0] if outdata.shape[1] == 1 else outdata.mean(axis=1)
+        t = time.time()
+        self.out_ring.append(mono, t)
+        lv = db_of(mono)
+        held = self.out_hold_db - 20.0 * (t - self.out_hold_t)
+        if lv >= held:
+            self.out_hold_db, self.out_hold_t = lv, t
+
+    def _out_level_now(self):
+        return self.out_hold_db - 20.0 * (time.time() - self.out_hold_t)
+
+    def _expected_leak_db(self):
+        if self.leak_db is None:
+            return None
+        lv = self._out_level_now()
+        if lv < -70:
+            return None
+        return lv + self.leak_db
+
+    # ---------------- DETECT + ANALYSE thread ----------------
+    def _detect_loop(self):
+        np = self.np
+        hop = self.det.hop
+        pending = np.zeros((0, self.ch), np.float32)
+        t_leak = 0.0
+        try:
+            while not self.stop_ev.is_set():
+                try:
+                    block, tb = self.in_q.get(timeout=0.2)
+                except queue.Empty:
+                    continue
+                mono = block[:, 0] if block.shape[1] == 1 else block.mean(axis=1)
+                self.in_ring.append(mono, tb)
+                pending = np.concatenate([pending, block], axis=0) if len(pending) else block
+                while len(pending) >= hop:
+                    ev = self.det.feed(pending[:hop])
+                    lv = db_of(pending[:hop, 0] if self.ch == 1 else pending[:hop].mean(axis=1))
+                    self.input_db = max(lv, self.input_db - 1.5)
+                    pending = pending[hop:]
+                    if ev == "onset":
+                        self.log("onset (floor %.1f dBFS, thr %.1f)" %
+                                 (self.det.floor, self.det.thresholds()[0]))
+                    elif ev == "discarded":
+                        self.log("short trigger discarded (< %.2f s)" % self.a.min_phrase)
+                    elif ev == "end":
+                        self._finalize(tb)
+                        self.det.rearm()
+                if tb - t_leak >= 1.0:
+                    t_leak = tb
+                    self._update_leak(tb)
+        except Exception as ex:                              # noqa: BLE001
+            import traceback
+            self.fatal = "detector failed: %s" % ex
+            self.log(self.fatal + " | " + traceback.format_exc().replace("\n", " | "), True)
+            self.stop_ev.set()
+
+    def _update_leak(self, t_end):
+        """A leakage level is trusted only for a VALIDATED path: a sharp PHAT
+        peak at a plausible delay, confirmed by two consecutive estimates
+        within 1 ms.  Otherwise any previous estimate decays."""
+        if self._out_level_now() < -50:
+            return
+        y = self.in_ring.segment(t_end, 1.0)
+        x = self.out_ring.segment(t_end, 1.0 + LEAK_MAX_LAG_S)
+        if db_of(x) < -55 or db_of(y) < -70:
+            return
+        r = leak_path(x, y, int(LEAK_MAX_LAG_S * self.sr), self.sr)
+        self.leak_rho = r["rho"]
+        if r["plausible"] and r["a"] != 0:
+            if self.leak_cand is not None and abs(r["lag"] - self.leak_cand) <= int(0.001 * self.sr):
+                self.leak_conf += 1
+            else:
+                self.leak_conf = 1
+            self.leak_cand = r["lag"]
+        else:
+            self.leak_conf, self.leak_cand = 0, None
+        if self.leak_conf >= 2:
+            self.leak_lag = r["lag"]
+            if abs(r["rho"]) >= LEAK_GAIN_RHO:
+                # input is mostly the answer: the least-squares gain is reliable
+                g = 20 * math.log10(abs(r["a"]))
+                self.leak_db = g if self.leak_db is None else max(g, self.leak_db - 0.5)
+                self.log("leakage path %.1f dB at %.1f ms (z %.0f, dominance %.1f, rho %.2f)" %
+                         (g, 1000.0 * r["lag"] / self.sr, r["z"], r["dom"], r["rho"]))
+            else:
+                self.log("leakage path confirmed at %.1f ms; gain kept (performer playing, "
+                         "rho %.2f)" % (1000.0 * r["lag"] / self.sr, r["rho"]))
+        elif self.leak_db is not None and self.leak_conf == 0:
+            self.leak_db -= 3.0
+            if self.leak_db < -80:
+                self.leak_db, self.leak_lag = None, None
+        if self.leak_db is not None and self.leak_db > -20 and not self.c["leak_warned"]:
+            self.c["leak_warned"] = 1
+            self.log("WARNING: speaker->microphone leakage %.1f dB - use headphones or "
+                     "separate the output from the microphone" % self.leak_db, True)
+
+    def _finalize(self, tb):
+        np = self.np
+        d = self.det
+        tail = int(round(0.15 / d.hop_s))
+        end_idx = min(len(d.buf), d.last_active + 1 + tail)
+        audio = d.phrase_audio()
+        t_audio_end = tb - (len(d.buf) - end_idx) * d.hop_s
+        t_end = tb - d.silence_frames_after_last_active() * d.hop_s
+        dur = len(audio) / self.sr
+        t_audio_start = t_audio_end - dur
+        t_onset = t_audio_start + d.start_active * d.hop_s
+        jid = self.next_id
+        self.next_id += 1
+        job = Job(jid, audio.astype(np.float32), self.sr,
+                  {"onset": t_onset, "end": t_end, "detected": time.time()})
+        self.c["phrases"] += 1
+        self.t_activity = time.time()
+        self.log("phrase %s: %.2f s, ended by %s, detection delay %.3f s" %
+                 (job.tag, dur, d.ended_by, time.time() - t_end))
+        mono = audio[:, 0] if audio.shape[1] == 1 else audio.mean(axis=1)
+        if self.a.leak_guard and self.leak_lag is not None and self._out_level_now() > -70:
+            # only along the VALIDATED path delay (+-1 ms): a performer who
+            # plays something similar to the answer is never discarded
+            x = self.out_ring.segment(t_audio_end, dur + LEAK_MAX_LAG_S)
+            if db_of(x) > -55:
+                mx = int(LEAK_MAX_LAG_S * self.sr)
+                a, rho, lag = leak_fit(x, mono, mx)
+                tol = int(0.001 * self.sr)
+                if abs(lag - self.leak_lag) > tol:
+                    a, rho, lag = 0.0, 0.0, lag
+                if rho * rho >= LEAK_DISCARD_RHO2:
+                    self.c["leak_discarded"] += 1
+                    self.log("phrase %s DISCARDED as playback leakage: %.0f %% of its energy "
+                             "is the delayed answer (gain %.1f dB, lag %.0f ms)" %
+                             (job.tag, 100 * rho * rho, 20 * math.log10(abs(a) + 1e-12),
+                              1000.0 * lag / self.sr), True)
+                    return
+        if dur < 0.25:
+            self.c["too_short"] += 1
+            self.log("phrase %s too short for analysis (%.3f s)" % (job.tag, dur), True)
+            return
+        try:
+            t0 = time.perf_counter()
+            audio64 = audio.astype(np.float64)
+            a_in = audio64[:, 0] if audio64.shape[1] == 1 else audio64
+            F = extract_features(a_in, self.sr)
+            t1 = time.perf_counter()
+            forced = None if self.a.force in ("", "auto") else self.a.force
+            info = decide(F, forced)
+            nch = 1 if a_in.ndim == 1 else a_in.shape[1]
+            seed = audio_seed(a_in)
+            P = params_all(F, a_in, self.sr, nch, seed)
+            t2 = time.perf_counter()
+        except Exception as ex:                              # noqa: BLE001
+            self.c["failed"] += 1
+            self.log("phrase %s analysis failed: %s" % (job.tag, ex), True)
+            return
+        job.selected = info["selected"]
+        job.t["analysed"] = time.time()
+        job.wav = os.path.join(self.session, "p_%s.wav" % job.tag)
+        import soundfile as sf
+        sf.write(job.wav, a_in.astype(np.float32), self.sr, subtype="FLOAT")
+        job.files.append(job.wav)
+        job.pairs = decision_pairs(F, info, P, [
+            ("status", "ok"), ("message", "ok"), ("source", "live continuous"),
+            ("duration", fnum(F["duration"], 4)), ("sr", self.sr), ("channels", nch),
+            ("seed", seed), ("t_features", fnum(t1 - t0, 4)), ("t_select", fnum(t2 - t1, 4)),
+            ("t_phrase_end_epoch", "%.4f" % t_end)])
+        if self.log_fh:
+            rep = build_report(F, info, P, "Phrase %s - live continuous, %.2f s" %
+                               (job.tag, F["duration"]))
+            self.log("analysis %s (features %.3f s, selection %.3f s)\n%s" %
+                     (job.tag, t1 - t0, t2 - t1, rep.rstrip()))
+        self.render_q.put(job)
+
+    # ---------------- RENDER thread ----------------
+    def _render_loop(self):
+        try:
+            while not self.stop_ev.is_set():
+                job = self.render_q.get(0.2)
+                if job is None:
+                    continue
+                if job.selected == "passthrough":
+                    job.answer, job.answer_sr, job.used = job.audio, job.sr, "passthrough"
+                    job.msg = "no transformation reached its confidence threshold"
+                    self.c["passthrough"] += 1
+                    self.log("job %s: %s - answering with the phrase itself" % (job.tag, job.msg), True)
+                else:
+                    self.processing = DISPLAY_NAMES.get(job.selected, job.selected)
+                    job.t["render_start"] = time.time()
+                    ok, msg = self.renderer.render(job, self.stop_ev, self.a.max_response,
+                                                   self.a.plugin_root)
+                    job.t["render_end"] = time.time()
+                    self.processing = ""
+                    if self.stop_ev.is_set():
+                        self.c["dropped"] += 1
+                        self.log("job %s (%s): render interrupted by stop (%s) - not played" %
+                                 (job.tag, job.selected, msg), True)
+                        self._cleanup_job(job)
+                        break
+                    if self.log_fh and job.praat_log:
+                        self.log("praat %s: %s" % (job.tag, job.praat_log))
+                    if ok:
+                        job.msg = msg
+                        if job.used != job.selected:
+                            self.log("job %s: %s failed in Praat, runner-up %s used" %
+                                     (job.tag, job.selected, job.used), True)
+                    else:
+                        self.c["failed"] += 1
+                        job.answer, job.answer_sr, job.used = job.audio, job.sr, "passthrough"
+                        job.msg = "render failed: %s" % msg
+                        self.log("job %s (%s): %s - answering with the untransformed phrase" %
+                                 (job.tag, job.selected, job.msg), True)
+                    self.log("job %s rendered in %.2f s" %
+                             (job.tag, job.t["render_end"] - job.t["render_start"]))
+                self.play_q.put(job)
+        except Exception as ex:                              # noqa: BLE001
+            import traceback
+            self.fatal = "render worker failed: %s" % ex
+            self.log(self.fatal + " | " + traceback.format_exc().replace("\n", " | "), True)
+            self.stop_ev.set()
+
+    # ---------------- PLAY thread ----------------
+    def _prepare(self, a, sr):
+        """Format conversion only (sample rate, channel count, length cap):
+        the audio itself is the Praat-rendered answer."""
+        np = self.np
+        import scipy.signal
+        if sr != self.sr:
+            g = math.gcd(int(sr), self.sr)
+            a = scipy.signal.resample_poly(a, self.sr // g, int(sr) // g, axis=0).astype(np.float32)
+        if a.shape[1] == self.out_ch:
+            b = a
+        elif self.out_ch == 1:
+            b = a.mean(axis=1, keepdims=True)
+        elif a.shape[1] == 1:
+            b = np.repeat(a, self.out_ch, axis=1)
+        else:
+            b = np.zeros((len(a), self.out_ch), np.float32)
+            b[:, :min(a.shape[1], self.out_ch)] = a[:, :self.out_ch]
+        cap = int(self.a.max_response * self.sr)
+        truncated = False
+        if len(b) > cap:
+            b = b[:cap].copy()
+            f = min(len(b), int(0.05 * self.sr))
+            b[-f:] *= np.linspace(1, 0, f, dtype=np.float32)[:, None]
+            truncated = True
+        return np.ascontiguousarray(b, np.float32), truncated
+
+    def _play_loop(self):
+        try:
+            while not self.stop_ev.is_set():
+                job = self.play_q.get(0.2)
+                if job is None:
+                    continue
+                age = time.time() - job.t["end"]
+                if age > STALE_RESPONSE_S:
+                    self._dropped(job, "stale: %.0f s after the phrase ended" % age)
+                    continue
+                name = DISPLAY_NAMES.get(job.used, job.used)
+                buf, trunc = self._prepare(job.answer, job.answer_sr)
+                if trunc:
+                    self.log("job %s answer truncated to %.1f s (Max_response_s)" %
+                             (job.tag, self.a.max_response), True)
+                job.t["play_start"] = time.time()
+                if self.a.play:
+                    self.playing = name
+                    self.play_done.clear()
+                    self.cur_pos = 0
+                    self.cur = buf
+                    while not self.play_done.wait(0.05):
+                        if self.stop_ev.is_set():
+                            self.cur = None
+                            break
+                    self.playing = ""
+                job.t["play_end"] = time.time()
+                self.t_activity = time.time()
+                if self.stop_ev.is_set() and self.cur is None and not self.play_done.is_set():
+                    self.log("job %s interrupted by stop" % job.tag, True)
+                delay = job.t["play_start"] - job.t["end"]
+                self.delays.append(delay)
+                self.c["done"] += 1
+                self.summary.append("%s  %-26s in %5.2f s -> out %5.2f s   delay %5.2f s" % (
+                    job.tag, name, len(job.audio) / job.sr, len(buf) / self.sr, delay))
+                tt = job.t
+                def rel(k):
+                    return ("%.3f" % (tt[k] - tt["end"])) if k in tt else "-"
+                self.log("job %s TIMING rel. to phrase end: onset %s | analysed %s | render %s..%s"
+                         " | play %s..%s  (phrase end -> answer %.3f s)" %
+                         (job.tag, rel("onset"), rel("analysed"), rel("render_start"),
+                          rel("render_end"), rel("play_start"), rel("play_end"), delay))
+                self._cleanup_job(job)
+        except Exception as ex:                              # noqa: BLE001
+            import traceback
+            self.fatal = "playback worker failed: %s" % ex
+            self.log(self.fatal + " | " + traceback.format_exc().replace("\n", " | "), True)
+            self.stop_ev.set()
+
+    # ---------------- status ----------------
+    def status_pairs(self, final=False):
+        lk = "none" if self.leak_db is None else fnum(self.leak_db, 1)
+        return [
+            ("state", self.state), ("mode", "continuous"),
+            ("listening", "on" if (self.state == "running" and not final) else "off"),
+            ("phrase", 1 if self.det.state == "PHRASE" else 0),
+            ("processing", self.processing), ("playing", self.playing),
+            ("pending", len(self.render_q) + len(self.play_q)),
+            ("pending_render", len(self.render_q)), ("pending_play", len(self.play_q)),
+            ("phrases", self.c["phrases"]), ("done", self.c["done"]),
+            ("dropped", self.c["dropped"]), ("failed", self.c["failed"]),
+            ("leak_discarded", self.c["leak_discarded"]), ("overruns", self.c["overruns"]),
+            ("input_status", self.c["input_status"]), ("output_status", self.c["output_status"]),
+            ("input_db", fnum(self.input_db, 1)), ("leak_db", lk),
+            ("leak_warning", 1 if (self.leak_db is not None and self.leak_db > -20) else 0),
+            ("message", self.message), ("uptime", fnum(time.time() - self.t_start, 1)),
+            ("heartbeat", "%.3f" % time.time()),
+        ]
+
+    def write_status(self, final=False):
+        path = os.path.join(self.session, "status.txt")
+        for _ in range(5):
+            try:
+                write_kv_atomic(path, self.status_pairs(final))
+                return
+            except PermissionError:                         # Windows: file being read
+                time.sleep(0.02)
+            except OSError:
+                return
+
+    # ---------------- main ----------------
+    def run(self):
+        sd = self.sd
+        a = self.a
+        self.write_status()
+        if not self.renderer.find():
+            return self.finish("error", self.renderer.error)
+        self.log("Praat renderer: %s (version %d, flags %s)" %
+                 (self.renderer.exe, self.renderer.version, " ".join(self.renderer.flags)), True)
+        try:
+            in_dev = resolve_device(sd, a.device, "input")
+            out_dev = resolve_device(sd, a.output_device, "output")
+            info = (sd.query_devices(out_dev) if out_dev is not None
+                    else sd.query_devices(kind="output"))
+            self.out_ch = 2 if int(info.get("max_output_channels", 2)) >= 2 else 1
+            self.in_stream = sd.InputStream(samplerate=self.sr, channels=self.ch, dtype="float32",
+                                            blocksize=self.det.hop, device=in_dev,
+                                            callback=self._in_cb)
+            self.out_stream = sd.OutputStream(samplerate=self.sr, channels=self.out_ch,
+                                              dtype="float32", blocksize=self.det.hop,
+                                              device=out_dev, callback=self._out_cb)
+        except Exception as ex:                              # noqa: BLE001
+            return self.finish("error", "cannot open audio devices: %s" % ex)
+        threads = [threading.Thread(target=f, name=n, daemon=True) for f, n in (
+            (self._detect_loop, "detect"), (self._render_loop, "render"),
+            (self._play_loop, "play"))]
+        reason, state = "", "stopped"
+        try:
+            self.in_stream.start()
+            self.out_stream.start()
+        except Exception as ex:                              # noqa: BLE001
+            return self.finish("error", "cannot start audio streams: %s" % ex)
+        for t in threads:
+            t.start()
+        self.state = "running"
+        self.log("engine running: in %s / out %s (%d ch), %d Hz, pending<=%d, responses<=%d, "
+                 "overflow %s, max response %.1f s, leakage guard %s" %
+                 (a.device, a.output_device, self.out_ch, self.sr, a.max_pending,
+                  a.max_responses, a.overflow, a.max_response, "on" if a.leak_guard else "off"),
+                 True)
+        stop_file = os.path.join(self.session, "stop.request")
+        alive_file = os.path.join(self.session, "praat_alive.txt")
+        t_last_status = 0.0
+        try:
+            while True:
+                time.sleep(0.05)
+                now = time.time()
+                if self.fatal:
+                    reason, state = self.fatal, "error"
+                elif os.path.exists(stop_file):
+                    reason = "stopped by the user"
+                elif a.heartbeat:
+                    try:
+                        beat = os.path.getmtime(alive_file)
+                    except OSError:
+                        beat = self.t_start
+                    if now - beat > HEARTBEAT_TIMEOUT_S:
+                        reason = "Praat stopped responding (no heartbeat for %.0f s)" % (now - beat)
+                if not reason and a.session_minutes > 0 and now - self.t_start > 60 * a.session_minutes:
+                    reason = "session length reached (%.0f min)" % a.session_minutes
+                if (not reason and a.idle_stop > 0 and now - self.t_activity > a.idle_stop
+                        and self.det.state != "PHRASE" and not self.processing
+                        and not self.playing and len(self.render_q) + len(self.play_q) == 0):
+                    reason = "no phrase for %.0f s" % a.idle_stop
+                if not reason:
+                    try:
+                        if not self.in_stream.active:
+                            reason, state = "audio input stream stopped", "error"
+                        elif not self.out_stream.active:
+                            reason, state = "audio output stream stopped", "error"
+                    except Exception:                        # noqa: BLE001
+                        pass
+                if reason:
+                    break
+                if now - t_last_status >= 0.1:
+                    self.write_status()
+                    t_last_status = now
+        except KeyboardInterrupt:
+            reason = "interrupted"
+        self.state = "stopping"
+        self.message = reason
+        self.write_status()
+        self.stop_ev.set()
+        self.render_q.close()
+        self.play_q.close()
+        self.cur = None
+        self.renderer.kill()
+        for t in threads:
+            t.join(5)
+        for s in (getattr(self, "in_stream", None), getattr(self, "out_stream", None)):
+            try:
+                s.stop()
+                s.close()
+            except Exception:                                # noqa: BLE001
+                pass
+        if self.det.state == "PHRASE":
+            self.log("phrase in progress at stop was not processed", True)
+        for q_, what in ((self.render_q, "unrendered"), (self.play_q, "unplayed")):
+            for job in q_.drain():
+                self.c["dropped"] += 1
+                self.log("job %s %s at stop - not played" % (job.tag, what), True)
+                self._cleanup_job(job)
+        alive = [t.name for t in threads if t.is_alive()]
+        if alive:
+            self.log("WARNING: worker(s) still alive after 5 s: %s" % ", ".join(alive), True)
+        return self.finish(state, reason)
+
+    def finish(self, state, reason):
+        self.state, self.message = state, reason
+        self.log("%s: %s" % (state.upper(), reason), True)
+        np = self.np
+        lines = ["state=" + state, "reason=" + reason]
+        lines.append("phrases=%d answers=%d dropped=%d failed=%d passthrough=%d "
+                     "leak_discarded=%d overruns=%d input_status=%d output_status=%d" % (
+                         self.c["phrases"], self.c["done"], self.c["dropped"], self.c["failed"],
+                         self.c["passthrough"], self.c["leak_discarded"], self.c["overruns"],
+                         self.c["input_status"], self.c["output_status"]))
+        if self.delays:
+            d = np.array(self.delays)
+            lines.append("delay phrase end -> answer: mean %.2f s, min %.2f s, max %.2f s" %
+                         (d.mean(), d.min(), d.max()))
+        if self.leak_db is not None:
+            lines.append("leakage estimate %.1f dB" % self.leak_db)
+        lines += ["answer " + s for s in self.summary]
+        lines += ["event " + e.strip() for e in self.events]
+        try:
+            write_text_atomic(os.path.join(self.session, "summary.txt"), "\n".join(lines) + "\n")
+        except OSError:
+            pass
+        self.write_status(final=True)
+        if self.log_fh:
+            for l in lines[:4]:
+                self.log("SUMMARY " + l)
+            self.log_fh.close()
+            self.log_fh = None
+        return 0 if state != "error" else 1
+
+
+def cmd_serve(args):
+    global MAX_RESPONSE_S
+    MAX_RESPONSE_S = float(args.max_response)
+    os.makedirs(args.session, exist_ok=True)
+    try:
+        _boot_status(args.session, "starting", "loading numpy / scipy")
+        import_dsp()
+        _boot_status(args.session, "starting", "loading soundfile / sounddevice")
+        import soundfile                                     # noqa: F401
+        import sounddevice as sd
+        _boot_status(args.session, "starting", "finding a Praat executable for rendering")
+        if (not os.path.isdir(args.session) or
+                os.path.exists(os.path.join(args.session, "stop.request"))):
+            return 1                  # Praat gave up (or stopped) while we were loading
+    except Exception as ex:                                  # noqa: BLE001
+        write_kv_atomic(os.path.join(args.session, "status.txt"),
+                        [("state", "error"), ("message", "missing Python package: %s" % ex)])
+        return 1
+    try:
+        eng = Engine(args, sd)
+        rc = eng.run()
+        if eng.message.startswith("Praat stopped responding"):
+            # nobody is left to read the status or clean up: do it here
+            time.sleep(0.5)
+            if safe_session_dir(args.session):
+                shutil.rmtree(args.session, ignore_errors=True)
+        return rc
+    except Exception as ex:                                  # noqa: BLE001
+        import traceback
+        write_kv_atomic(os.path.join(args.session, "status.txt"),
+                        [("state", "error"),
+                         ("message", "engine crashed: %s | %s" %
+                          (ex, traceback.format_exc().replace("\n", " | ")[-500:]))])
+        return 1
 
 
 # ============================================================
@@ -1600,6 +2859,7 @@ def main(argv=None):
         p.add_argument("--session", required=True)
         p.add_argument("--cycle", required=True)
         p.add_argument("--force", default="auto")
+        p.add_argument("--max-response", dest="max_response", type=float, default=20.0)
         if name == "analyze":
             p.add_argument("--input", required=True)
         else:
@@ -1612,6 +2872,32 @@ def main(argv=None):
             p.add_argument("--max-phrase", dest="max_phrase", type=float, default=12.0)
             p.add_argument("--preroll", type=float, default=0.25)
             p.add_argument("--timeout", type=float, default=30.0)
+    p = sub.add_parser("serve")
+    p.add_argument("--session", required=True)
+    p.add_argument("--script", required=True, help="AudioTools_CallResponse.praat (render mode)")
+    p.add_argument("--praat", default="none", help="Praat executable or its folder")
+    p.add_argument("--plugin-root", dest="plugin_root", required=True)
+    p.add_argument("--force", default="auto")
+    p.add_argument("--device", default="default")
+    p.add_argument("--output-device", dest="output_device", default="default")
+    p.add_argument("--sr", type=float, default=44100)
+    p.add_argument("--channels", type=int, default=1)
+    p.add_argument("--sensitivity", type=float, default=9.0)
+    p.add_argument("--min-phrase", dest="min_phrase", type=float, default=0.5)
+    p.add_argument("--end-silence", dest="end_silence", type=float, default=0.6)
+    p.add_argument("--max-phrase", dest="max_phrase", type=float, default=12.0)
+    p.add_argument("--preroll", type=float, default=0.25)
+    p.add_argument("--max-pending", dest="max_pending", type=int, default=3)
+    p.add_argument("--max-responses", dest="max_responses", type=int, default=3)
+    p.add_argument("--overflow", default="drop_oldest", choices=["drop_oldest", "drop_newest"])
+    p.add_argument("--max-response", dest="max_response", type=float, default=20.0)
+    p.add_argument("--session-minutes", dest="session_minutes", type=float, default=60.0)
+    p.add_argument("--idle-stop", dest="idle_stop", type=float, default=300.0)
+    p.add_argument("--leak-guard", dest="leak_guard", type=int, default=1)
+    p.add_argument("--play", type=int, default=1)
+    p.add_argument("--heartbeat", type=int, default=1,
+                   help="stop when the Praat GUI stops writing praat_alive.txt")
+    p.add_argument("--debug-log", dest="debug_log", default="none")
     p = sub.add_parser("cleanup")
     p.add_argument("--session", required=True)
     p = sub.add_parser("cleanup-stale")
@@ -1621,14 +2907,98 @@ def main(argv=None):
     args = ap.parse_args(argv)
     if getattr(args, "force", "auto") not in ["auto", ""] + TRANSFORM_IDS:
         args.force = "auto"
-    fn = {"probe": cmd_probe, "devices": cmd_devices, "listen": cmd_listen,
+    fn = {"probe": cmd_probe, "devices": cmd_devices, "listen": cmd_listen, "serve": cmd_serve,
           "analyze": cmd_analyze, "cleanup": cmd_cleanup,
           "cleanup-stale": cmd_cleanup_stale, "self-test": cmd_self_test}[args.cmd]
     return fn(args)
+
+
+def cmd_launch(rest):
+    """v0.2.0: start the continuous engine as a DETACHED process and return
+    at once.  Praat calls this with an ordinary (blocking) runSubprocess - the
+    same mechanism as v0.1.3 - instead of "asynchronous runSubprocess", whose
+    child never ran on a Windows test machine.  The engine gets this Python's
+    absolute path, no inherited handles (stdin/stdout/stderr -> DEVNULL, so
+    Praat's blocking call can finish) and its own process group."""
+    if "--session" not in rest:
+        sys.stderr.write("launch: --session is required\n")
+        return 2
+    sess = rest[rest.index("--session") + 1]
+    os.makedirs(sess, exist_ok=True)
+    argv = [sys.executable, os.path.abspath(__file__), "serve"] + list(rest)
+    kw = dict(stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+              stderr=subprocess.DEVNULL, close_fds=True, cwd=sess)
+    if sys.platform.startswith("win"):
+        # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW
+        kw["creationflags"] = 0x00000008 | 0x00000200 | 0x08000000
+    else:
+        kw["start_new_session"] = True
+    try:
+        p = subprocess.Popen(argv, **kw)
+    except Exception as ex:                                  # noqa: BLE001
+        _boot_status(sess, "error", "cannot start the engine process: %s" % ex)
+        sys.stderr.write("launch failed: %s\n" % ex)
+        return 1
+    try:
+        write_kv_atomic(os.path.join(sess, "launch.txt"),
+                        [("pid", p.pid), ("python", sys.executable)])
+    except OSError:
+        pass
+    return 0
+
+
+def _serve_boot(argv):
+    """v0.2.0: the engine runs detached with NO stdout/stderr, so a start-up
+    failure would be invisible.  Before
+    any import or argument parsing: write status 'starting' and send stderr to
+    <session>/engine_stderr.txt.  Returns the session folder or None."""
+    if len(argv) < 2 or argv[1] != "serve" or "--session" not in argv:
+        return None
+    try:
+        sess = argv[argv.index("--session") + 1]
+        os.makedirs(sess, exist_ok=True)
+        sys.stderr = open(os.path.join(sess, "engine_stderr.txt"), "a",
+                          encoding="utf-8", buffering=1)
+        if sys.stdout is None:
+            sys.stdout = sys.stderr
+        _boot_status(sess, "starting", "Python %s started (%s); loading packages" %
+                     (sys.version.split()[0], sys.executable))
+        return sess
+    except Exception:                                        # noqa: BLE001
+        return None
+
+
+def _boot_status(sess, state, message):
+    try:
+        write_kv_atomic(os.path.join(sess, "status.txt"),
+                        [("state", state), ("message", message),
+                         ("uptime", fnum(time.perf_counter() - T_PROCESS_START, 1))])
+    except Exception:                                        # noqa: BLE001
+        pass
 
 
 if __name__ == "__main__":
     # --self-test is accepted as an alias of the self-test command
     if len(sys.argv) > 1 and sys.argv[1] == "--self-test":
         sys.argv[1] = "self-test"
-    sys.exit(main())
+    if len(sys.argv) > 1 and sys.argv[1] == "launch":
+        sys.exit(cmd_launch(sys.argv[2:]))
+    _sess = _serve_boot(sys.argv)
+    if _sess is None:
+        sys.exit(main())
+    try:
+        _rc = main()
+    except SystemExit as _ex:                                # e.g. an argument error
+        if _ex.code not in (0, None):
+            _boot_status(_sess, "error", "engine exited during start-up (code %s) - see "
+                         "engine_stderr.txt: %s" % (_ex.code, " | ".join(
+                             open(os.path.join(_sess, "engine_stderr.txt"),
+                                  encoding="utf-8", errors="replace").read()
+                             .strip().splitlines()[-3:])))
+        raise
+    except BaseException as _ex:                             # noqa: BLE001
+        import traceback
+        _boot_status(_sess, "error", "engine crashed: %s | %s" % (
+            _ex, traceback.format_exc().replace("\n", " | ")[-600:]))
+        raise
+    sys.exit(_rc)

@@ -3,94 +3,140 @@
 # Script:      AudioTools_CallResponse.praat
 # Author:      Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
-# Version:     0.1.2 (2026) - Native MDS visualization toggle
+# Version:     0.2.0 (2026) - Continuous Listening Upgrade from v0.1.3
 # License:     MIT License
 # Repository:  https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Intelligent Musical Call & Response.  A performer plays a phrase;
-#   audiotools_call_response.py records it, analyses its acoustic and
-#   morphological features and chooses ONE of six existing AudioTools
-#   transformations plus gesture-derived parameters; this script runs
-#   that AudioTools script on the recorded phrase and plays the answer.
+#   Intelligent Musical Call & Response.  A performer plays phrases;
+#   audiotools_call_response.py analyses each phrase and chooses ONE of six
+#   existing AudioTools transformations plus gesture-derived parameters;
+#   the transformation is rendered by that AudioTools script in Praat.
 #
 #     Paulstretch ............. stable harmonic material
 #     Markov Soundscape Weaver  noisy / aperiodic material
 #     MDS Space Navigator ..... discrete separable attacks
 #     Spiral Pitch Dance ...... continuous glissando
-#     Metamodulator ........... complex dynamic envelope
+#     8-Channel Speed Deviations complex envelope -> eight constant channel speeds
 #     Percussive Groove Creator percussive events, changing density
 #
-# Execution model (strict turn-taking, fully synchronous):
-#   per cycle:  runSubprocess python listen   (BLOCKS while listening)
-#               -> phrase WAV + decision file
-#               -> runScript <selected AudioTools script>
-#               -> Play (blocks until the answer has finished)
-#   The microphone is open ONLY inside the Python call, so the answer
-#   can never be recorded as the next question.  Praat's GUI does not
-#   respond while Python is listening or a transformation is rendering.
-#   A session ends after Cycles turns, or when nobody plays for the
-#   waiting timeout (30 s) - that is the safe way to stop it.
+# Source modes:
+#   Live - continuous (v0.2.0, default)
+#     This script starts ONE persistent Python engine (a blocking call to
+#     "launch", which starts the engine detached and returns at once) and
+#     then only polls its status file.  The engine keeps the microphone open the whole time:
+#       capture -> detect + analyse -> render queue -> RENDER -> play queue -> PLAY
+#     RENDER runs THIS SAME SCRIPT headless ("praat --run", render mode,
+#     selected by the environment variable AUDIOTOOLS_CR_JOB), using the
+#     same runT procedure as the other modes.  Python plays the WAV that
+#     Praat rendered.  New phrases are recorded while answers are being
+#     rendered and played; answers queue and play one after another.
+#     Display + Stop: the Demo window (status, input level, STOP button;
+#     Esc also stops).  The Info window gets the same short text whenever
+#     it changes.  Praat itself is busy running this loop until you stop.
+#   Live - turn-taking (v0.1.3)
+#     Unchanged v0.1.3 behaviour: one blocking listen, render, Play.
+#   Selected Sound(s) / Test all six / List audio devices
+#     As in v0.1.3 (List now shows output devices too).
+#
+# Changelog v0.2.0 - Continuous Listening Upgrade from v0.1.3:
+#   PRESERVED: the six transformations and their exact positional
+#     arguments (incl. 8-Channel Speed Deviations v0.7 preset
+#     "MAX MC Deviate (fresh random every run)", MC varispeed, odd/even
+#     MC stereo), runT validation/clamping, output identification by
+#     watermark + name stem, runner-up fallback in automatic mode,
+#     untransformed-phrase fallback, MDS v0.4.1 / MAX MC version guards,
+#     minimal Info display, no Picture-window drawing, temp cleanup.
+#   NEW: continuous mode (persistent engine, async launch, Demo-window
+#     display with STOP, Praat heartbeat so the engine stops if Praat goes
+#     away), headless render mode of this script, Output_device field,
+#     optional Debug_log (kept in the Praat preferences folder), Advanced
+#     dialog: sample rate, channels, queue limits, overflow policy, maximum
+#     response length, session length, idle stop, leakage guard, playback.
+#   ARCHITECTURE: the runner-up fallback moved into procedure
+#     renderWithFallback, shared by turn-taking and render mode.
+#     Max_response_s replaces the fixed 20 s cap (speeddev, Markov).
+#   COMPATIBILITY: Source options are renumbered (continuous first);
+#     Sample_rate, Channels and Play_response moved from the form to the
+#     Advanced dialog (defaults unchanged: 44100, 1, on).  Continuous mode
+#     requires Praat 6.4.34 or newer; turn-taking still runs on 6.3+.
 #
 # Installation:
 #   plugin_AudioTools/Vector Chain/AudioTools_CallResponse.praat
 #   plugin_AudioTools/py/audiotools_call_response.py
 #   pip install numpy scipy soundfile sounddevice
-#   The six processing scripts are used unmodified from their usual
-#   AudioTools folders; the plugin root is found from the preferences
-#   folder, or as the parent of this script's folder.
+#   Continuous mode also launches Praat headless: set praatExe$ below if
+#   your Praat executable is not found automatically.
 #
 # Testing without a microphone:
-#   Select one or more Sounds, Source = "Selected Sound(s)".  Use
-#   "Test all six" to push every selected Sound through all six scripts.
-#   python audiotools_call_response.py --self-test   tests the classifier.
+#   Select Sounds, Source = "Selected Sound(s)" (one answer per Sound, or
+#   "Test all six").  python audiotools_call_response.py --self-test
 #
 # Notes:
-#   - Requires Praat 6.3+ (colon form syntax).  Praat 7: askForTrust()
-#     is requested once, because the session writes and deletes temporary
-#     files and launches Python.
-#   - Only minimal performance state and chosen transformation are shown
-#     in the Praat Info window.  Detailed child output is reset on return.
-#   - MDS Space Navigator v0.4.1+ provides a native Draw_visualization flag.
-#     All six transformations run with their visualization disabled.
-#     Older MDS versions without this flag are rejected rather than drawing
-#     in the Picture window.
-#   - The live listener is synchronous; Praat does not update its display
-#     during the blocking Python capture + analysis call.
+#   - Praat 7: askForTrust() is requested once (temporary files, Python,
+#     headless Praat).  Render children run with --FULL-TRUST.
+#   - Use headphones or route the answers away from the microphone: the
+#     engine estimates speaker->mic leakage and warns, but it does NOT
+#     cancel echo.
+#   - Unattended runs: set AUDIOTOOLS_CR_HEADLESS=1 to skip the Demo window
+#     (stop by creating stop.request in the session folder, or via the
+#     session / idle limits).
 # ============================================================
 
-form: "AudioTools Call & Response 0.1"
+form: "AudioTools Call & Response 0.2.0"
     optionmenu: "Source", 1
-        option: "Live microphone"
+        option: "Live - continuous (v0.2)"
+        option: "Live - turn-taking (v0.1.3)"
         option: "Selected Sound(s)"
-        option: "List audio input devices"
+        option: "List audio devices"
     optionmenu: "Transformation", 1
         option: "Automatic (gesture classifier)"
         option: "Paulstretch"
         option: "Markov Soundscape Weaver"
         option: "MDS Space Navigator"
         option: "Spiral Pitch Dance"
-        option: "Metamodulator"
+        option: "8-Channel Speed Deviations (MAX MC)"
         option: "Percussive Groove Creator"
         option: "Test all six (selected Sounds)"
     natural: "Cycles", "4"
     sentence: "Input_device", "default"
-    positive: "Sample_rate", "44100"
-    natural: "Channels", "1"
+    sentence: "Output_device", "default"
     positive: "Sensitivity_dB", "9"
     positive: "Min_phrase_s", "0.5"
     positive: "End_silence_s", "0.6"
     positive: "Max_phrase_s", "12"
-    boolean: "Play_response", 1
+    boolean: "Debug_log", 0
+    boolean: "Advanced_settings", 0
 endform
+# The headless renderer passes one value per field above: keep
+# RENDER_FORM_ARGS in audiotools_call_response.py in the same order.
 
 # ---- EDIT IF YOUR PYTHON IS NON-STANDARD (empty = auto-detect only) ----
 pyCandidate1$ = "C:/Users/user/praat_ddsp_env/Scripts/python.exe"
+# ---- Praat executable for headless rendering in continuous mode --------
+# Empty = auto-detect.  The executable itself or the folder containing it.
+praatExe$ = ""
 # ------------------------------------------------------------------------
 waitTimeout = 30
 preroll = 0.25
-version$ = "0.1.2-info-only"
+version$ = "0.2.0"
 diagnostics = 0
+
+# ---- Advanced settings: defaults (also used when the dialog is skipped) ----
+sample_rate = 44100
+channels = 1
+max_pending_phrases = 3
+max_pending_responses = 3
+overflow_policy = 1
+max_response_s = 20
+session_minutes = 60
+idle_stop_s = 300
+leakage_guard = 1
+play_response = 1
+maxResponse = max_response_s
+renderJob$ = environment$ ("AUDIOTOOLS_CR_JOB")
+renderMode = renderJob$ <> ""
+headless = environment$ ("AUDIOTOOLS_CR_HEADLESS") = "1"
 
 # ---- Praat 7 trust (file writing, deletion, subprocess) ----
 if praatVersion >= 7000
@@ -107,34 +153,140 @@ tId$[1] = "paulstretch"
 tId$[2] = "markov"
 tId$[3] = "mds"
 tId$[4] = "spiral"
-tId$[5] = "metamod"
+tId$[5] = "speeddev"
 tId$[6] = "groove"
 tDisplay$[1] = "Paulstretch"
 tDisplay$[2] = "Markov Soundscape Weaver"
 tDisplay$[3] = "MDS Space Navigator"
 tDisplay$[4] = "Spiral Pitch Dance"
-tDisplay$[5] = "Metamodulator"
+tDisplay$[5] = "8-Channel Speed Deviations (MAX MC)"
 tDisplay$[6] = "Percussive Groove Creator"
 tRel$[1] = "Time & Granular/Paulstretch.praat"
 tRel$[2] = "AI & Adaptive/Markov_Soundscape_Weaver.praat"
 tRel$[3] = "Time & Granular/MDS_Space_Navigator.praat"
 tRel$[4] = "Pitch/Spiral_Pitch_Dance.praat"
-tRel$[5] = "Modulation/Metamodulator.praat"
+tRel$[5] = "Spatial & Surround/8-channel_speed_deviations.praat"
 tRel$[6] = "Time & Granular/Percussive Audio Groove Creator.praat"
 # name stem each script appends to its input name (verified in source)
 tStem$[1] = "_PS_"
 tStem$[2] = "_MarkovWeave_"
 tStem$[3] = "_reordered"
 tStem$[4] = "_spiral_"
-tStem$[5] = "_Metamod_"
+tStem$[5] = "_speed_MCstereo_MAX_MC_Deviate"
 tStem$[6] = "_groove_"
+
+log$ = ""
+currentStatus$ = "AudioTools Call & Response"
+
+# ============================================================
+# RENDER MODE (headless child launched by the continuous engine)
+#   Reads one job file, renders it with the SAME runT / fallback code as
+#   the other modes, saves a 32-bit WAV and a result file, and exits.
+# ============================================================
+if renderMode
+    meta$ = newline$ + readFile$ (renderJob$)
+    @getStr: "result"
+    resFile$ = getStr.v$
+    @getStr: "out"
+    outFile$ = getStr.v$
+    @getStr: "wav"
+    inFile$ = getStr.v$
+    @getStr: "job_id"
+    tag$ = getStr.v$
+    @getStr: "plugin_root"
+    pluginRoot$ = getStr.v$
+    @getStr: "max_response"
+    maxResponse = number (getStr.v$)
+    if maxResponse = undefined
+        maxResponse = 20
+    endif
+    @getStr: "selected"
+    sel$ = getStr.v$
+    @getStr: "ranking"
+    ranking$ = getStr.v$
+    @getStr: "mode"
+    isAuto = getStr.v$ = "auto"
+    for i to nT
+        tPath$[i] = pluginRoot$ + "/" + tRel$[i]
+    endfor
+    @detectSupport
+    selK = 0
+    for k to nT
+        if sel$ = tId$[k]
+            selK = k
+        endif
+    endfor
+    rStatus$ = "fail"
+    rUsed$ = ""
+    rMsg$ = ""
+    rSec = 0
+    if selK = 0
+        rMsg$ = "selected transformation '" + sel$ + "' is not in the whitelist"
+    elsif not fileReadable (inFile$)
+        rMsg$ = "phrase WAV missing: " + inFile$
+    else
+        phrase = Read from file: inFile$
+        Rename: "crq_" + tag$
+        @renderWithFallback: selK, phrase, tag$, isAuto, ranking$
+        rSec = renderWithFallback.sec
+        rMsg$ = renderWithFallback.msg$
+        if renderWithFallback.answer
+            selectObject: renderWithFallback.answer
+            Save as 32-bit WAV file: outFile$
+            rStatus$ = "ok"
+            rUsed$ = renderWithFallback.usedId$
+        endif
+    endif
+    rLog$ = replace$ (replace$ (log$, newline$, " | ", 0), "=", ":", 0)
+    writeFileLine: resFile$, "status=" + rStatus$
+    appendFileLine: resFile$, "used=" + rUsed$
+    appendFileLine: resFile$, "msg=" + replace$ (rMsg$, newline$, " ", 0)
+    appendFileLine: resFile$, "sec=" + fixed$ (rSec, 3)
+    appendFileLine: resFile$, "log=" + rLog$
+    appendFileLine: resFile$, "end=1"
+    exitScript: ""
+endif
+
+# ---- Advanced dialog (GUI only; keep the box unticked for batch runs) ----
+if advanced_settings
+    beginPause: "Call & Response 0.2.0 - advanced"
+        comment: "Audio"
+        positive: "Sample_rate", string$ (sample_rate)
+        natural: "Channels", string$ (channels)
+        boolean: "Play_response", play_response
+        comment: "Continuous mode"
+        natural: "Max_pending_phrases", string$ (max_pending_phrases)
+        natural: "Max_pending_responses", string$ (max_pending_responses)
+        optionmenu: "Overflow_policy", overflow_policy
+            option: "Drop oldest pending job"
+            option: "Reject the newest job"
+        positive: "Max_response_s", string$ (max_response_s)
+        positive: "Session_minutes", string$ (session_minutes)
+        real: "Idle_stop_s", string$ (idle_stop_s)
+        boolean: "Leakage_guard", leakage_guard
+    clicked = endPause: "Cancel", "Start", 2, 1
+    if clicked = 1
+        exitScript: "Cancelled."
+    endif
+    maxResponse = max_response_s
+endif
+
+# ---- Source flags (v0.2.0 numbering) ----
+continuous = source = 1
+isLive = source <= 2
+isSel = source = 3
+isDev = source = 4
 
 # ---- Validate source / mode combinations ----
 sweep = transformation = 8
-if source = 1 and sweep
+if isLive and sweep
     exitScript: "'Test all six' works on selected Sounds only - set Source to Selected Sound(s)."
 endif
-if source = 2
+if continuous and praatVersion < 6434
+    exitScript: "Continuous mode needs Praat 6.4.34 or newer (clock and sleep functions)." + newline$
+        ... + "This is Praat " + praatVersion$ + ". Update Praat, or use 'Live - turn-taking (v0.1.3)'."
+endif
+if isSel
     nSel = numberOfSelected ("Sound")
     if nSel < 1
         exitScript: "Source is Selected Sound(s): select at least one Sound object."
@@ -201,16 +353,30 @@ if not folderExists (session$)
     exitScript: "Cannot create the session folder " + session$
 endif
 
+@detectSupport
+
 # ---- Native MDS visualization control: fail closed on older installations ----
 # MDS Space Navigator v0.4.1 has a trailing Draw_visualization boolean.
 # Do not invoke older MDS scripts: they always draw in the Picture window.
-mdsSupportsHeadless = 0
-if fileReadable (tPath$[3])
-    mdsText$ = readFile$ (tPath$[3])
-    if index (mdsText$, "boolean Draw_visualization 1") > 0
-        mdsSupportsHeadless = 1
+# ---- MAX MC preset exists only in Speed Deviations v0.7+ ----
+# A plain version string is not sufficient: check the actual option label
+# to prevent running a different mode on an older installed script.
+procedure detectSupport
+    mdsSupportsHeadless = 0
+    if fileReadable (tPath$[3])
+        .t$ = readFile$ (tPath$[3])
+        if index (.t$, "boolean Draw_visualization 1") > 0
+            mdsSupportsHeadless = 1
+        endif
     endif
-endif
+    speedSupportsMAXMC = 0
+    if fileReadable (tPath$[5])
+        .t$ = readFile$ (tPath$[5])
+        if index (.t$, "MAX MC Deviate (fresh random every run)") > 0
+            speedSupportsMAXMC = 1
+        endif
+    endif
+endproc
 
 # ---- Python discovery (no shell; file-based probe) ----
 nPy = 0
@@ -244,7 +410,8 @@ endif
 probe$ = session$ + "/probe.txt"
 python$ = ""
 probeReport$ = ""
-liveFlag$ = if source <> 2 then "--live" else "" fi
+engineVersion$ = ""
+liveFlag$ = if isSel then "" else "--live" fi
 for i to nPy
     if python$ = ""
         p$ = pyC$[i]
@@ -261,6 +428,7 @@ for i to nPy
             if fileReadable (probe$)
                 pr$ = newline$ + readFile$ (probe$)
                 st$ = extractLine$ (pr$, newline$ + "status=")
+                engineVersion$ = extractLine$ (pr$, newline$ + "engine_version=")
                 if st$ = "ok"
                     python$ = p$
                 else
@@ -278,8 +446,16 @@ if python$ = ""
         ... + "or set pyCandidate1$ at the top of this script."
 endif
 
+# ---- The Python file must be the same version as this script ----
+if engineVersion$ <> version$
+    foundV$ = if engineVersion$ = "" then "an older version (0.1.x)" else "version " + engineVersion$ fi
+    @cleanup
+    exitScript: "audiotools_call_response.py is " + foundV$ + ", but this script is " + version$ + "." + newline$
+        ... + "Replace the Python file at:" + newline$ + pyScript$
+endif
+
 # ---- Device list mode ----
-if source = 3
+if isDev
     devFile$ = session$ + "/devices.txt"
     nocheck runSubprocess: python$, pyScript$, "devices", "--out", devFile$
     if fileReadable (devFile$)
@@ -298,21 +474,24 @@ nocheck runSubprocess: python$, pyScript$, "cleanup-stale", "--base", base$
 # Child scripts may write verbose Info messages; restore this text after
 # their runScript returns.  Detailed reports are never printed by default.
 # ============================================================
-log$ = ""
-currentStatus$ = "AudioTools Call & Response"
 procedure log: .line$
     log$ = log$ + .line$ + newline$
 endproc
 procedure status: .stage$, .detail$
-    currentStatus$ = "AudioTools  |  " + string$ (cyc) + "/" + string$ (nTurns)
-        ... + "  |  " + .stage$
-    if .detail$ <> ""
-        currentStatus$ = currentStatus$ + newline$ + .detail$
+    # render mode (headless child) has no performer display
+    if not renderMode
+        currentStatus$ = "AudioTools  |  " + string$ (cyc) + "/" + string$ (nTurns)
+            ... + "  |  " + .stage$
+        if .detail$ <> ""
+            currentStatus$ = currentStatus$ + newline$ + .detail$
+        endif
+        writeInfoLine: currentStatus$
     endif
-    writeInfoLine: currentStatus$
 endproc
 procedure restoreInfo
-    writeInfoLine: currentStatus$
+    if not renderMode
+        writeInfoLine: currentStatus$
+    endif
 endproc
 
 procedure cleanup
@@ -382,6 +561,9 @@ procedure runT: .k, .src, .tag$
     elsif .id$ = "mds" and not mdsSupportsHeadless
         .msg$ = "MDS v0.4.1+ required (Draw_visualization toggle is missing)"
         .bail = 1
+    elsif .id$ = "speeddev" and not speedSupportsMAXMC
+        .msg$ = "8-Channel Speed Deviations v0.7+ required (MAX MC Deviate preset missing)"
+        .bail = 1
     endif
 
     # ---- work copy with a unique name (child output names derive from it) ----
@@ -447,7 +629,7 @@ procedure runT: .k, .src, .tag$
         @num: "p_markov_randomness", 0.2, 0, 1
         @s: num.v
         .rnd$ = s.s$
-        @num: "p_markov_out_dur", 8, 1, 20
+        @num: "p_markov_out_dur", 8, 1, maxResponse
         @s: num.v
         .od$ = s.s$
         @num: "p_markov_density_var", 0, 0, 1
@@ -498,21 +680,32 @@ procedure runT: .k, .src, .tag$
         .ce$ = s.s$
         .args$ = "Manual (configure below) | " + .sp$ + " | " + .st$ + " | " + .ac$
             ... + " | 0.005 | " + .fl$ + " | " + .ce$ + " | 0 | 0"
-    elsif .bail = 0 and .id$ = "metamod"
-        @num: "p_metamod_carrier", 200, 20, 0.45 * .srcSR
-        @s: num.v
-        .ca$ = s.s$
-        @num: "p_metamod_depth_hz", 100, 0, 2000
-        @s: num.v
-        .de$ = s.s$
-        @num: "p_metamod_rate_hz", 2, 0.5, 8
-        @s: num.v
-        .ra$ = s.s$
-        @num: "p_metamod_dry_wet", 40, 15, 60
-        @s: num.v
-        .dw$ = s.s$
-        .args$ = "Custom (Use Manual Settings) | 5. Sinusoidal FM | " + .ca$ + " | 100 | 800 | "
-            ... + .de$ + " | " + .ra$ + " | " + .dw$ + " | 0.99 | 0 | 0 | 0"
+    elsif .bail = 0 and .id$ = "speeddev"
+        # Child v0.7 preset MAX MC Deviate overrides Mode, Processing engine,
+        # Output format, Random seed and speed bounds.  Only deviation d
+        # remains under our control. Eight constant channel speed factors
+        # are freshly drawn in [1-d,1+d] on every run; duration = D/s.
+        @num: "p_speeddev_deviation", 0.15, 0.0, 0.45
+        .deviation = num.v
+        # Hard cap: the slowest possible channel plays at 1-d. Ensure
+        # worst-case answer duration cannot exceed Max_response_s.
+        if .srcDur >= maxResponse
+            .bail = 1
+            .msg$ = "MAX MC source must be shorter than " + fixed$ (maxResponse, 1) + " s (duration cap)"
+        endif
+        .safeMax = max (0, min (0.45, 1 - .srcDur / maxResponse))
+        if .deviation > .safeMax
+            clampNotes$ = clampNotes$ + "speed deviation reduced for the duration cap  "
+            .deviation = .safeMax
+        endif
+        @s: .deviation
+        .dv$ = s.s$
+        @s: .srcSR
+        .sr$ = s.s$
+        .args$ = "MAX MC Deviate (fresh random every run) | Random deviation | "
+            ... + "MC-style varispeed (pitch follows speed) | " + .dv$ + " | 0.85 0.88 0.91 0.94 1.06 1.09 1.12 1.15"
+            ... + " | 0.80 | 1.20 | 0 | 75 600 | 0 | " + .sr$
+            ... + " | MC stereo mix (L: odd Ch1/3/5/7, R: even Ch2/4/6/8) | 0.95 | 0 | 0"
     elsif .bail = 0 and .id$ = "groove"
         @num: "p_groove_bars", 2, 1, 4
         .b = round (num.v)
@@ -567,9 +760,16 @@ procedure runT: .k, .src, .tag$
         elsif .id$ = "spiral"
             nocheck runScript: tPath$[.k], "Manual (configure below)", .sp$, .st$, .ac$,
                 ... "0.005", .fl$, .ce$, "0", "0"
-        elsif .id$ = "metamod"
-            nocheck runScript: tPath$[.k], "Custom (Use Manual Settings)", "5. Sinusoidal FM",
-                ... .ca$, "100", "800", .de$, .ra$, .dw$, "0.99", "0", "0", "0"
+        elsif .id$ = "speeddev"
+            # v0.7 preset 8 forces random constant-per-channel MC varispeed,
+            # odd/even MC stereo, and a fresh random seed each time.
+            # 15 positional args; pitch range is checked but ignored by MC engine.
+            nocheck runScript: tPath$[.k], "MAX MC Deviate (fresh random every run)",
+                ... "Random deviation", "MC-style varispeed (pitch follows speed)",
+                ... .dv$, "0.85 0.88 0.91 0.94 1.06 1.09 1.12 1.15",
+                ... "0.80", "1.20", "0", "75 600", "0", .sr$,
+                ... "MC stereo mix (L: odd Ch1/3/5/7, R: even Ch2/4/6/8)",
+                ... "0.95", "0", "0"
         elsif .id$ = "groove"
             nocheck runScript: tPath$[.k], .bars$, .pat$, .te$, .ot$, .si$, "0.15", .dn$,
                 ... "0.12", "0.002", "0.05", "1.2", "1", "0", "0"
@@ -635,12 +835,63 @@ procedure runT: .k, .src, .tag$
 endproc
 
 # ============================================================
+# RENDER WITH FALLBACK (turn-taking, selected Sounds and render mode)
+#   runs whitelisted transformation .k; in automatic mode, if it fails,
+#   tries the first other eligible candidate from the ranking (logged).
+#   sets .answer (0 = failed), .usedId$, .sec, .msg$
+# ============================================================
+procedure renderWithFallback: .k, .phrase, .tag$, .automatic, .ranking$
+    .answer = 0
+    .usedId$ = "passthrough"
+    .sec = 0
+    @getStr: "score_" + tId$[.k]
+    @log: "TRANSFORMING with " + tId$[.k] + " (score " + getStr.v$ + ")"
+    @status: "PROCESSING", tDisplay$[.k]
+    @runT: .k, .phrase, .tag$
+    .sec = runT.sec
+    .msg$ = tId$[.k] + ": " + runT.msg$
+    @log: "  " + .msg$
+    if runT.result
+        .answer = runT.result
+        .usedId$ = tId$[.k]
+    elsif .automatic
+        # automatic mode: next eligible candidate above threshold, logged
+        .rest$ = .ranking$ + ","
+        .tried = 0
+        while .answer = 0 and .rest$ <> ""
+            .c = index (.rest$, ",")
+            .cand$ = left$ (.rest$, .c - 1)
+            .rest$ = mid$ (.rest$, .c + 1, length (.rest$) - .c)
+            .kk = 0
+            for .k2 to nT
+                if .cand$ = tId$[.k2] and .cand$ <> tId$[.k]
+                    .kk = .k2
+                endif
+            endfor
+            if .kk > 0 and .tried = 0
+                .tried = 1
+                @log: "FALLBACK: " + tId$[.k] + " failed, trying runner-up " + tId$[.kk]
+                @status: "PROCESSING", tDisplay$[.kk]
+                @runT: .kk, .phrase, .tag$ + "b"
+                .sec = .sec + runT.sec
+                .msg$ = .msg$ + " | fallback " + tId$[.kk] + ": " + runT.msg$
+                @log: "  " + tId$[.kk] + ": " + runT.msg$
+                if runT.result
+                    .answer = runT.result
+                    .usedId$ = tId$[.kk]
+                endif
+            endif
+        endwhile
+    endif
+endproc
+
+# ============================================================
 # ONE TURN: load phrase, run the chosen transformation(s), play
 # (uses the session globals; called once per question)
 # ============================================================
 procedure turn
     # ---- load phrase (the musician's audio is kept, never modified) ----
-    if source = 1
+    if isLive
         phrase = Read from file: qwav$
         Rename: "crq_" + tag$
     else
@@ -650,7 +901,7 @@ procedure turn
     selectObject: phrase
     qDur = Get total duration
     @log: "Phrase " + fixed$ (qDur, 2) + " s   " + extractLine$ (meta$, newline$ + "morphology=")
-    if source = 1
+    if isLive
         @log: "  ended by " + extractLine$ (meta$, newline$ + "ended_by=") + ", noise floor "
             ... + extractLine$ (meta$, newline$ + "noise_floor_dbfs=") + " dBFS, false triggers "
             ... + extractLine$ (meta$, newline$ + "false_triggers=")
@@ -696,42 +947,23 @@ procedure turn
             @log: "No transformation reached its confidence threshold - answering with the phrase itself."
         else
             k = runK[r]
-            @getStr: "score_" + tId$[k]
-            @log: "TRANSFORMING with " + tId$[k] + " (score " + getStr.v$ + ")"
-            @status: "PROCESSING", tDisplay$[k]
-            @runT: k, phrase, tag$
-            praatSec = runT.sec
-            @log: "  " + tId$[k] + ": " + runT.msg$
-            if runT.result
-                answer = runT.result
-                usedId$ = tId$[k]
-            elsif transformation = 1
-                # automatic mode: next eligible candidate above threshold, logged
-                rest$ = ranking$ + ","
-                tried = 0
-                while answer = 0 and rest$ <> ""
-                    c = index (rest$, ",")
-                    cand$ = left$ (rest$, c - 1)
-                    rest$ = mid$ (rest$, c + 1, length (rest$) - c)
-                    kk = 0
-                    for k2 to nT
-                        if cand$ = tId$[k2] and cand$ <> tId$[k]
-                            kk = k2
-                        endif
-                    endfor
-                    if kk > 0 and tried = 0
-                        tried = 1
-                        @log: "FALLBACK: " + tId$[k] + " failed, trying runner-up " + tId$[kk]
-                        @status: "PROCESSING", tDisplay$[kk]
-                        @runT: kk, phrase, tag$ + "b"
-                        praatSec = praatSec + runT.sec
-                        @log: "  " + tId$[kk] + ": " + runT.msg$
-                        if runT.result
-                            answer = runT.result
-                            usedId$ = tId$[kk]
-                        endif
-                    endif
-                endwhile
+            if sweep
+                @getStr: "score_" + tId$[k]
+                @log: "TRANSFORMING with " + tId$[k] + " (score " + getStr.v$ + ")"
+                @status: "PROCESSING", tDisplay$[k]
+                @runT: k, phrase, tag$
+                praatSec = runT.sec
+                @log: "  " + tId$[k] + ": " + runT.msg$
+                if runT.result
+                    answer = runT.result
+                    usedId$ = tId$[k]
+                endif
+            else
+                isAuto = transformation = 1
+                @renderWithFallback: k, phrase, tag$, isAuto, ranking$
+                answer = renderWithFallback.answer
+                usedId$ = renderWithFallback.usedId$
+                praatSec = renderWithFallback.sec
             endif
             if answer = 0 and not sweep
                 @log: "No valid output - answering with the untransformed phrase (logged fallback)."
@@ -805,6 +1037,301 @@ procedure turn
 endproc
 
 # ============================================================
+# CONTINUOUS MODE (v0.2.0): launch the persistent engine (detached),
+# then poll its status file.  Display: Demo window (refreshed every
+# 0.2 s, STOP button, Esc or S) + Info window on every change.
+# ============================================================
+procedure continuousSession
+    .self$ = defaultDirectory$ + "/AudioTools_CallResponse.praat"
+    if not fileReadable (.self$)
+        .self$ = pluginRoot$ + "/Vector Chain/AudioTools_CallResponse.praat"
+    endif
+    if not fileReadable (.self$)
+        @cleanup
+        exitScript: "Cannot locate AudioTools_CallResponse.praat for headless rendering." + newline$
+            ... + "Keep this script in plugin_AudioTools/Vector Chain/ under its original name."
+    endif
+    debugPath$ = "none"
+    if debug_log
+        .logDir$ = preferencesDirectory$ + "/AudioTools_CallResponse_logs"
+        createFolder: .logDir$
+        debugPath$ = .logDir$ + "/cr_" + sessionId$ + ".log"
+    endif
+    .praat$ = if praatExe$ = "" then "none" else praatExe$ fi
+    .in$ = if input_device$ = "" then "default" else input_device$ fi
+    .out$ = if output_device$ = "" then "default" else output_device$ fi
+    .overflow$ = if overflow_policy = 1 then "drop_oldest" else "drop_newest" fi
+    @log: "Engine: continuous, in '" + .in$ + "', out '" + .out$ + "', " + fixed$ (sample_rate, 0)
+        ... + " Hz, pending <= " + string$ (max_pending_phrases) + ", responses <= "
+        ... + string$ (max_pending_responses) + ", " + .overflow$
+    # Ordinary blocking call: "launch" starts the engine DETACHED and returns
+    # at once.  ("asynchronous runSubprocess" never ran the engine on Windows.)
+    runSubprocess: python$, pyScript$, "launch", "--session", session$,
+        ... "--script", .self$, "--praat", .praat$, "--plugin-root", pluginRoot$,
+        ... "--force", force$, "--device", .in$, "--output-device", .out$,
+        ... "--sr", fixed$ (sample_rate, 0), "--channels", string$ (channels),
+        ... "--sensitivity", fixed$ (sensitivity_dB, 3), "--min-phrase", fixed$ (min_phrase_s, 3),
+        ... "--end-silence", fixed$ (end_silence_s, 3), "--max-phrase", fixed$ (max_phrase_s, 3),
+        ... "--preroll", fixed$ (preroll, 3), "--max-pending", string$ (max_pending_phrases),
+        ... "--max-responses", string$ (max_pending_responses), "--overflow", .overflow$,
+        ... "--max-response", fixed$ (max_response_s, 3), "--session-minutes", fixed$ (session_minutes, 3),
+        ... "--idle-stop", fixed$ (idle_stop_s, 3), "--leak-guard", string$ (leakage_guard),
+        ... "--play", string$ (play_response), "--debug-log", debugPath$
+
+    .statusFile$ = session$ + "/status.txt"
+    .stopFile$ = session$ + "/stop.request"
+    .aliveFile$ = session$ + "/praat_alive.txt"
+    .t0 = clock ()
+    .lastFrame$ = ""
+    .lastBeat = -10
+    .running = 1
+    .stopSent = 0
+    .tStop = 0
+    lastShown$ = ""
+    engineState$ = "starting"
+    st$ = newline$ + "state=starting" + newline$
+    stopNote$ = ""
+    while .running
+        sleep (0.2)
+        .now = clock ()
+        if .now - .lastBeat >= 1
+            writeFileLine: .aliveFile$, fixed$ (.now - .t0, 2)
+            .lastBeat = .now
+        endif
+        .got = 0
+        if fileReadable (.statusFile$)
+            .raw$ = newline$ + readFile$ (.statusFile$)
+            if index (.raw$, newline$ + "state=") > 0
+                st$ = .raw$
+                .got = 1
+            endif
+        endif
+        if .got
+            engineState$ = extractLine$ (st$, newline$ + "state=")
+            if engineState$ = "stopped" or engineState$ = "error"
+                .running = 0
+            elsif engineState$ = "starting" and .now - .t0 > 90
+                # Python runs but is still loading after 90 s
+                engineState$ = "error"
+                stopNote$ = "the engine was still starting after 90 s ("
+                    ... + extractLine$ (st$, newline$ + "message=") + ")"
+                st$ = newline$ + "state=error" + newline$ + "message=" + stopNote$ + newline$
+                writeFileLine: .stopFile$, "stop"
+                .running = 0
+            endif
+        elsif .now - .t0 > 20
+            # the engine writes its first status before any import, so this
+            # means the engine process never ran at all
+            engineState$ = "error"
+            .how$ = "no launch record"
+            if fileReadable (session$ + "/launch.txt")
+                .how$ = "launched as " + replace$ (readFile$ (session$ + "/launch.txt"), newline$, " ", 0)
+            endif
+            stopNote$ = "the engine process never ran (no status file after 20 s; " + .how$ + ")"
+            st$ = newline$ + "state=error" + newline$ + "message=" + stopNote$ + newline$
+            writeFileLine: .stopFile$, "stop"
+            .running = 0
+        endif
+        if .stopSent and .running and .now - .tStop > 15
+            stopNote$ = "the engine did not confirm the stop within 15 s"
+            .running = 0
+        endif
+        @buildDisplay: .stopSent and .running
+        if display$ <> lastShown$
+            writeInfoLine: display$
+            lastShown$ = display$
+        endif
+        if not headless
+            # redraw only when the picture changes (level bar in 2 dB steps)
+            @stField: "input_db"
+            .lv = number (stField.v$)
+            .lvq = if .lv = undefined then -99 else round (.lv / 2) fi
+            .frame$ = display$ + string$ (.lvq) + string$ (.stopSent)
+            if .frame$ <> .lastFrame$
+                @drawDemo: .stopSent and .running
+                .lastFrame$ = .frame$
+            else
+                demoShow ()
+            endif
+            if .running and not .stopSent
+                # (1) Linux: demoShow has already handled a click -> flag only
+                @demoStopHit
+                .hit = demoStopHit.hit
+                # (2) all platforms: demoPeekInput delivers clicks/keys and keeps
+                #     Windows from flagging Praat as "Not responding".  Praat 7.0
+                #     then shows "Mouse click not completely handled"; after OK
+                #     the click is still reported (verified in Praat 7.0 source
+                #     and GUI test) and the session stops.
+                if not .hit
+                    demo Font size: 10
+                    demo Select inner viewport: 0, 100, 0, 100
+                    demo Axes: 0, 100, 0, 100
+                    if demoPeekInput ()
+                        @demoStopHit
+                        .hit = demoStopHit.hit
+                    endif
+                endif
+                if .hit
+                    writeFileLine: .stopFile$, "stop"
+                    .stopSent = 1
+                    .tStop = .now
+                endif
+            endif
+        endif
+    endwhile
+endproc
+
+procedure demoStopHit
+    .hit = 0
+    demo Font size: 10
+    demo Select inner viewport: 0, 100, 0, 100
+    demo Axes: 0, 100, 0, 100
+    if demoClicked ()
+        .hit = demoClickedIn (36, 64, 3, 13)
+    elsif demoKeyPressed ()
+        .key$ = demoKey$ ()
+        .hit = .key$ = unicode$ (27) or .key$ = "s" or .key$ = "S"
+    endif
+endproc
+
+procedure stField: .key$
+    .v$ = extractLine$ (st$, newline$ + .key$ + "=")
+endproc
+
+procedure buildDisplay: .stopping
+    @stField: "playing"
+    .play$ = stField.v$
+    @stField: "processing"
+    .proc$ = stField.v$
+    @stField: "pending"
+    .pend$ = stField.v$
+    @stField: "phrase"
+    .phrase$ = stField.v$
+    @stField: "leak_warning"
+    .leak$ = stField.v$
+    @stField: "message"
+    .msg$ = stField.v$
+    display$ = "AudioTools Call & Response v" + version$ + newline$ + newline$
+        ... + "MODE: CONTINUOUS" + newline$
+    if engineState$ = "starting"
+        display$ = display$ + "STARTING: " + .msg$ + newline$
+    elsif engineState$ = "running" and .stopping
+        display$ = display$ + "STOPPING" + newline$
+    elsif engineState$ = "running" or engineState$ = "stopping"
+        if .phrase$ = "1"
+            display$ = display$ + "LISTENING: ON - PHRASE DETECTED" + newline$
+        else
+            display$ = display$ + "LISTENING: ON" + newline$
+        endif
+        if .proc$ <> ""
+            display$ = display$ + "PROCESSING: " + .proc$ + newline$
+        endif
+        if .play$ <> ""
+            display$ = display$ + "PLAYING: " + .play$ + newline$
+        endif
+        if .proc$ = "" and .play$ = "" and .pend$ = "0"
+            display$ = display$ + "READY" + newline$
+        endif
+        display$ = display$ + "PENDING: " + .pend$ + newline$
+        if .leak$ = "1"
+            display$ = display$ + "WARNING: the microphone hears the answers - use headphones" + newline$
+        endif
+    else
+        .why$ = if stopNote$ <> "" then stopNote$ else .msg$ fi
+        if engineState$ = "error"
+            display$ = display$ + "STOPPED - ERROR: " + .why$ + newline$
+        else
+            display$ = display$ + "STOPPED - " + .why$ + newline$
+        endif
+    endif
+endproc
+
+procedure dtext: .x, .y, .size, .colour$, .txt$
+    demo Font size: .size
+    demo Select inner viewport: 0, 100, 0, 100
+    demo Axes: 0, 100, 0, 100
+    demo Colour: .colour$
+    demo Text: .x, "centre", .y, "half", .txt$
+endproc
+
+procedure drawDemo: .stopping
+    @stField: "playing"
+    .play$ = stField.v$
+    @stField: "processing"
+    .proc$ = stField.v$
+    @stField: "pending"
+    .pend$ = stField.v$
+    @stField: "phrase"
+    .phrase$ = stField.v$
+    @stField: "input_db"
+    .lv = number (stField.v$)
+    @stField: "leak_warning"
+    .leak$ = stField.v$
+    @stField: "message"
+    .msg$ = stField.v$
+    @stField: "done"
+    .done$ = stField.v$
+    demo Erase all
+    demo Font size: 10
+    demo Select inner viewport: 0, 100, 0, 100
+    demo Axes: 0, 100, 0, 100
+    demo Paint rectangle: "{0.97, 0.97, 0.97}", 0, 100, 0, 100
+    @dtext: 50, 92, 26, "{0.20, 0.20, 0.30}", "##AudioTools Call & Response " + version$ + "##"
+    @dtext: 50, 83, 18, "{0.35, 0.35, 0.50}", "MODE: CONTINUOUS"
+    if engineState$ = "starting"
+        @dtext: 50, 66, 30, "{0.35, 0.35, 0.50}", "STARTING..."
+        @dtext: 50, 54, 14, "{0.35, 0.35, 0.50}", .msg$
+    elsif engineState$ = "running" and not .stopping
+        if .phrase$ = "1"
+            @dtext: 50, 70, 34, "{0.85, 0.38, 0.18}", "##PHRASE DETECTED##"
+        else
+            @dtext: 50, 70, 34, "{0.15, 0.55, 0.25}", "##LISTENING: ON##"
+        endif
+        # input level bar, -60..0 dBFS
+        if .lv = undefined
+            .lv = -120
+        endif
+        .fill = max (0, min (1, (.lv + 60) / 60))
+        demo Font size: 10
+        demo Select inner viewport: 0, 100, 0, 100
+        demo Axes: 0, 100, 0, 100
+        demo Paint rectangle: "{0.86, 0.86, 0.86}", 25, 75, 60, 62.5
+        if .fill > 0
+            demo Paint rectangle: "{0.15, 0.55, 0.25}", 25, 25 + 50 * .fill, 60, 62.5
+        endif
+        if .proc$ <> ""
+            @dtext: 50, 50, 26, "{0.20, 0.48, 0.75}", "PROCESSING: " + .proc$
+        endif
+        if .play$ <> ""
+            @dtext: 50, 40, 26, "{0.48, 0.36, 0.72}", "PLAYING: " + .play$
+        endif
+        if .proc$ = "" and .play$ = "" and .pend$ = "0"
+            @dtext: 50, 45, 26, "{0.35, 0.35, 0.50}", "READY"
+        endif
+        @dtext: 50, 30, 20, "{0.25, 0.25, 0.35}", "PENDING: " + .pend$ + "      ANSWERS: " + .done$
+        if .leak$ = "1"
+            @dtext: 50, 21, 16, "{0.85, 0.38, 0.18}", "The microphone hears the answers - use headphones"
+        endif
+    elsif .stopping
+        @dtext: 50, 60, 30, "{0.85, 0.38, 0.18}", "STOPPING..."
+    else
+        .why$ = if stopNote$ <> "" then stopNote$ else .msg$ fi
+        @dtext: 50, 66, 30, "{0.80, 0.25, 0.25}", "##STOPPED##"
+        @dtext: 50, 52, 16, "{0.25, 0.25, 0.35}", .why$
+        @dtext: 50, 42, 16, "{0.25, 0.25, 0.35}", "Answers: " + .done$
+    endif
+    if engineState$ = "running" or engineState$ = "starting"
+        demo Font size: 10
+        demo Select inner viewport: 0, 100, 0, 100
+        demo Axes: 0, 100, 0, 100
+        demo Paint rectangle: "{0.80, 0.25, 0.25}", 36, 64, 3, 13
+        @dtext: 50, 8, 20, "{1.00, 1.00, 1.00}", "##STOP##  (Esc / S)"
+        @dtext: 50, 16, 11, "{0.35, 0.35, 0.50}", "If Praat then reports ""Mouse click not completely handled"", press OK - the session stops."
+    endif
+    demoShow ()
+endproc
+
+# ============================================================
 # SESSION
 # ============================================================
 clearinfo
@@ -816,14 +1343,14 @@ elsif sweep
 else
     modeName$ = "manual: " + tId$[transformation - 1]
 endif
-srcName$ = if source = 1 then "live microphone" else "selected Sound(s)" fi
+srcName$ = if continuous then "live continuous" else if isLive then "live turn-taking" else "selected Sound(s)" fi fi
 @log: "Source: " + srcName$ + "   Mode: " + modeName$ + "   Python: " + python$
 @log: "Plugin: " + pluginRoot$
 @log: "Session: " + session$
 if missing$ <> ""
     @log: "WARNING - missing processing scripts:" + newline$ + missing$
 endif
-if source = 1
+if isLive
     @log: "Listening: " + fixed$ (sample_rate, 0) + " Hz, " + string$ (channels) + " ch, device '"
         ... + input_device$ + "', sensitivity " + fixed$ (sensitivity_dB, 1) + " dB, end silence "
         ... + fixed$ (end_silence_s, 2) + " s, phrase " + fixed$ (min_phrase_s, 2) + "-"
@@ -837,6 +1364,45 @@ if not hasClock
 endif
 summary$ = ""
 nDone = 0
+force$ = "auto"
+if transformation >= 2 and transformation <= 7
+    force$ = tId$[transformation - 1]
+endif
+
+if continuous
+    @continuousSession
+    # ---- final minimal report ----
+    sumFile$ = session$ + "/summary.txt"
+    final$ = display$
+    if fileReadable (sumFile$)
+        sm$ = newline$ + readFile$ (sumFile$)
+        final$ = final$ + "phrases=" + extractLine$ (sm$, newline$ + "phrases=") + newline$
+        dl$ = extractLine$ (sm$, newline$ + "delay ")
+        if dl$ <> ""
+            final$ = final$ + "delay " + dl$ + newline$
+        endif
+        lk$ = extractLine$ (sm$, newline$ + "leakage estimate ")
+        if lk$ <> ""
+            final$ = final$ + "leakage estimate " + lk$ + newline$
+        endif
+    endif
+    if debugPath$ <> "none"
+        final$ = final$ + "Debug log: " + debugPath$ + newline$
+    endif
+    errFile$ = session$ + "/engine_stderr.txt"
+    if engineState$ = "error" and fileReadable (errFile$)
+        err$ = readFile$ (errFile$)
+        if length (err$) > 1500
+            err$ = "..." + right$ (err$, 1500)
+        endif
+        if err$ <> ""
+            final$ = final$ + newline$ + "Python engine error output:" + newline$ + err$ + newline$
+        endif
+    endif
+    writeInfoLine: final$
+    @cleanup
+    exitScript: ""
+endif
 
 cyc = 0
 stopSession = 0
@@ -846,15 +1412,11 @@ while cyc < nTurns and not stopSession
     decision$ = session$ + "/decision_" + tag$ + ".txt"
     report$ = session$ + "/report_" + tag$ + ".txt"
     qwav$ = session$ + "/q_" + tag$ + ".wav"
-    force$ = "auto"
-    if transformation >= 2 and transformation <= 7
-        force$ = tId$[transformation - 1]
-    endif
     @log: ""
     @log: "--- Turn " + string$ (cyc) + " / " + string$ (nTurns) + " ---"
 
     # ---- question ----
-    if source = 1
+    if isLive
         @status: "LISTENING", "Play a phrase"
         @log: "LISTENING... play a phrase (the Praat window is frozen until it ends)"
         nocheck runSubprocess: python$, pyScript$, "listen", "--session", session$,
@@ -862,7 +1424,8 @@ while cyc < nTurns and not stopSession
             ... "--sr", fixed$ (sample_rate, 0), "--channels", string$ (channels),
             ... "--sensitivity", fixed$ (sensitivity_dB, 3), "--min-phrase", fixed$ (min_phrase_s, 3),
             ... "--end-silence", fixed$ (end_silence_s, 3), "--max-phrase", fixed$ (max_phrase_s, 3),
-            ... "--preroll", fixed$ (preroll, 3), "--timeout", string$ (waitTimeout)
+            ... "--preroll", fixed$ (preroll, 3), "--timeout", string$ (waitTimeout),
+            ... "--max-response", fixed$ (maxResponse, 3)
     else
         selectObject: selSound[cyc]
         qName$ = selected$ ("Sound")
@@ -870,7 +1433,8 @@ while cyc < nTurns and not stopSession
         @status: "ANALYZING", qName$
         @log: "Analysing selected Sound '" + qName$ + "'"
         nocheck runSubprocess: python$, pyScript$, "analyze", "--session", session$,
-            ... "--cycle", string$ (cyc), "--force", force$, "--input", qwav$
+            ... "--cycle", string$ (cyc), "--force", force$, "--input", qwav$,
+            ... "--max-response", fixed$ (maxResponse, 3)
     endif
     @now
     tBack = now.t
@@ -897,7 +1461,7 @@ while cyc < nTurns and not stopSession
         turnOk = 0
         # live: timeout / silent input / device error end the session safely;
         # selected Sounds: skip this one and continue with the next
-        if source = 1
+        if isLive
             stopSession = 1
         endif
     endif
