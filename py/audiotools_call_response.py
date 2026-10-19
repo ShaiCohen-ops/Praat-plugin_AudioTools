@@ -4,7 +4,7 @@
 # Script:      audiotools_call_response.py
 # Author:      Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
-# Version:     0.3.1 (2026) - Cleanup & Session Safety (Sonic Memory Upgrade from v0.2.0)
+# Version:     0.4.0 (2026) - Polyphonic Spatial Playback (from v0.3.2)
 # License:     MIT License
 # Repository:  https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -30,6 +30,67 @@
 #
 #   Both paths share the same feature extraction, scoring, eligibility
 #   gates, parameter mapping and phrase detector.
+#
+# Changelog v0.4.0 - Polyphonic spatial playback (from v0.3.2):
+#   The analysis, classifier, six transformations and their parameters,
+#   Sonic Memory (corpora, retrieval, decisions) and the v0.3.1 / v0.3.2
+#   session-safety rules are unchanged.  New is the PLAYBACK architecture:
+#   POLYPHONY: answers no longer wait for each other.  Every answer is a
+#     voice in a mixer (default max 4 voices): new gestures are answered
+#     while earlier answers still sound.  Roles: response (foreground),
+#     layer (a related or independent sound from memory entering 0.6-3.5 s
+#     later, on the phrase's pulse if it is rhythmic, quieter, elsewhere in
+#     space; probability = Polyphonic_density) and background.  Priority:
+#     response > layer > background; a full mixer fades out (0.25 s) the
+#     oldest background, then the oldest layer.  Polyphony off = the v0.3
+#     one-answer-at-a-time order.
+#   BACKGROUND: once there is material, a quiet (-33 dBFS) evolving texture
+#     made from the performance's own sounds (memory + latest answers;
+#     aligned overlapping grains, slow movement, gentle low-pass) keeps the
+#     space from falling silent.  It recedes -9 dB while the performer
+#     plays or two answers sound (-4.5 dB under one), returns over ~1.5 s,
+#     crossfades into a new texture every 20-30 s.  Before the first sound
+#     exists it stays silent (no synthetic noise); with a Corpus C folder it
+#     starts at once.  It PAUSES while the microphone hears the speakers
+#     strongly (leakage above -20 dB).
+#   SPACE: equal-power panning of mono sources, preserved stereo sources
+#     (mid/side width + equal-power balance), positions chosen away from
+#     sounding voices, answers alternating sides, slow movement (two
+#     incommensurate sines).  No decorrelation, no phase tricks (mono-safe),
+#     |pan| <= 0.85.  Stereo_width, Spatial_movement, Pan_variation.
+#   ENVELOPES: raised-cosine fade-in (30 ms, <= 15 % of the sound; 1 ms
+#     anti-click ramp for transient starts - attacks are kept) and fade-out
+#     (400 ms, <= 30 %; >= 0.5 s for an answer cut by Max_response_s);
+#     smooth gain ramps for ducking and voice stealing; the whole mix fades
+#     out (150 ms) before the engine stops.
+#   LEVEL: optional level matching per role (-18 / -24 / -33 dBFS active
+#     RMS), a peak limiter (ceiling -0.5 dBFS) on the sum.
+#   LEAKAGE: the guard follows the LOUDER output channel; the phrase check
+#     also fits the two channels separately (a voice panned to the speaker
+#     the microphone hears best) and tolerates +-3 ms of clock drift; the
+#     leak estimate decays only with evidence that the path is gone; extra
+#     4 dB guard margin while only the background sounds.
+#   UI: one new form field, Playback_settings (dialog: polyphony, max
+#     voices, density, background + level, width, movement, pan variation,
+#     fade-in/out, transients, level matching).  Display: VOICES line.
+#
+# Changelog v0.3.2 - Status-file robustness (from v0.3.1):
+#   Musical behaviour, memory, retrieval, the six transformations and the
+#   v0.3.1 session-safety rules are unchanged.
+#   FIX (Windows error 13): Praat no longer stops when a read of status.txt
+#     collides with the engine replacing it.  Status reads are guarded; a
+#     failed or incomplete read (no end=1) is skipped and the last complete
+#     status is kept.  Heartbeat and stop-request writes are guarded too.
+#   FIX: "the engine process never ran" is reported only if NO complete
+#     status was ever read.  An engine that did run but whose status stays
+#     unreadable for 30 s is stopped with its own message.
+#   FIX: the engine retries a status update that hits a locked file, logs
+#     the first failure of a streak (with its cause) and the recovery,
+#     counts failures (summary: status_write_failures) and retries the
+#     FINAL status for up to 5 s.  No half-written .tmp file is left.
+#   Cleanup after an unexpected Praat stop: unchanged v0.3.1 path - the
+#     engine notices the missing heartbeat after 20 s and removes its own
+#     session (only its own: PID + start time).
 #
 # Changelog v0.3.1 - Cleanup & Session Safety (from v0.3.0):
 #   Only session lifecycle / deletion changed; musical behaviour, retrieval
@@ -152,7 +213,7 @@ import time
 import zlib
 
 T_PROCESS_START = time.perf_counter()
-VERSION = "0.3.1"
+VERSION = "0.4.0"
 
 TRANSFORM_IDS = ["paulstretch", "markov", "mds", "spiral", "speeddev", "groove"]
 TRANSFORM_NAMES = {
@@ -211,6 +272,22 @@ def write_kv_atomic(path, pairs):
             fh.write("%s=%s\n" % (k, clean_value(v)))
         fh.write("end=1\n")
     os.replace(tmp, path)
+
+
+def write_kv_retry(path, pairs, tries=50):
+    """v0.3.2: write_kv_atomic that survives a reader holding the file
+    (Windows sharing violation): bounded retries, never raises."""
+    for _ in range(tries):
+        try:
+            write_kv_atomic(path, pairs)
+            return True
+        except OSError:
+            time.sleep(0.02)
+    try:
+        os.remove(path + ".tmp")
+    except OSError:
+        pass
+    return False
 
 
 def write_text_atomic(path, text):
@@ -1844,6 +1921,16 @@ def cmd_self_test(args):
         print("[%s] %s: %s" % ("OK " if ok else "FAIL", name, detail))
         if not ok:
             failures += 1
+    print("\n" + "-" * 72 + "\nv0.4.0 polyphonic spatial playback tests (offline mixer, no device)")
+    for name, fn in V040_TESTS:
+        try:
+            ok, detail = fn(sr)
+        except Exception as ex:                              # noqa: BLE001
+            import traceback
+            ok, detail = False, "exception: %s %s" % (ex, traceback.format_exc()[-400:])
+        print("[%s] %s: %s" % ("OK " if ok else "FAIL", name, detail))
+        if not ok:
+            failures += 1
     print("\n%d failure(s)" % failures)
     return 1 if failures else 0
 
@@ -2265,6 +2352,200 @@ V030_TESTS = [("memory insertion", _t_mem_insert), ("similarity ranking", _t_mem
               ("weights never override 0", _t_mem_weights), ("eviction", _t_mem_evict),
               ("Corpus C read-only indexing", _t_mem_corpus_c),
               ("session cleanup safety", _t_mem_cleanup)]
+
+
+# ---------------- v0.4.0 playback unit tests (offline, no device) ----------------
+def _tone(sr, f, dur, amp=0.5):
+    import numpy as np
+    t = np.arange(int(dur * sr)) / sr
+    return (amp * np.sin(2 * np.pi * f * t)).astype(np.float32)
+
+
+def _t_pb_stereo(sr):
+    import numpy as np
+    import random
+    rng = random.Random(1)
+    m = _tone(sr, 440, 1.0)
+    out = spatialize(m[:, None], sr, -0.6, 0.0, 1.0, rng)
+    eL, eR, eM = float(np.sum(out[:, 0] ** 2)), float(np.sum(out[:, 1] ** 2)), float(np.sum(m ** 2))
+    th = (-0.6 + 1) * math.pi / 4
+    want = 20 * math.log10(math.cos(th) / math.sin(th))
+    got = 10 * math.log10(eL / eR)
+    c = float(np.corrcoef(out[:, 0], out[:, 1])[0, 1])
+    power = (eL + eR) / eM
+    fold = [10 * math.log10(float(np.sum((spatialize(m[:, None], sr, p, 0, 1.0, rng).sum(axis=1)
+                                            / math.sqrt(2)) ** 2)) / eM) for p in (-1, -0.5, 0, 0.5, 1)]
+    alloc = SpaceAllocator(random.Random(2), 1.0, 0.5)
+    vs = []
+    for role in ("fg", "fg", "sec", "bg"):
+        vs.append(Voice(np.zeros((10, 2), np.float32), role, role, alloc.place(role, vs)))
+    gaps = min(abs(a.center - b.center) for i, a in enumerate(vs) for b in vs[i + 1:])
+    ok = abs(got - want) < 0.1 and abs(power - 1) < 0.01 and c > 0.999 and \
+        max(fold) - min(fold) <= 3.05 and gaps >= 0.2
+    return ok, ("L/R %.2f dB (equal-power %.2f), power %.3f, L-R correlation %.3f (no "
+                "decorrelation), mono fold-down spread %.2f dB, 4 voices min spacing %.2f" %
+                (got, want, power, c, max(fold) - min(fold), gaps))
+
+
+def _t_pb_stereo_keep(sr):
+    import numpy as np
+    import random
+    a = np.stack([_tone(sr, 330, 1.0), _tone(sr, 550, 1.0, 0.3)], axis=1)
+    out = spatialize(a, sr, 0.0, 0.0, 1.0, random.Random(1))
+    err = float(np.max(np.abs(out - a)))
+    out2 = spatialize(a, sr, 0.0, 0.0, 0.0, random.Random(1))
+    narrow = float(np.max(np.abs(out2[:, 0] - out2[:, 1])))
+    return err < 1e-5 and narrow < 1e-5, ("stereo source at width 1 unchanged (max error %.1e); "
+                                         "width 0 folds it to the centre" % err)
+
+
+def _t_pb_envelope(sr):
+    import numpy as np
+    tone = np.full((int(1.0 * sr), 1), 0.5, np.float32)            # abrupt DC block
+    b, fi, fo = shape_envelope(tone, sr, 0.03, 0.4, False)         # musical fade-in
+    jump = float(np.max(np.abs(np.diff(b[:, 0]))))
+    ends = (abs(float(b[0, 0])), abs(float(b[-1, 0])))
+    bt, fit, _ = shape_envelope(tone, sr, 0.03, 0.4, True)         # treated as a transient
+    jt = float(np.max(np.abs(np.diff(bt[:, 0]))))
+    ramp_max = 0.5 * math.pi / (2 * int(fit * sr)) * 1.05            # smooth 1 ms ramp, no step
+    # percussive: decaying click must keep its attack
+    t = np.arange(int(0.5 * sr)) / sr
+    hit = (np.exp(-t * 40) * np.sin(2 * np.pi * 1200 * t)).astype(np.float32)[:, None]
+    hb, hfi, _ = shape_envelope(hit, sr, 0.03, 0.4, True)
+    keep = float(np.max(np.abs(hb[:int(0.01 * sr)]))) / float(np.max(np.abs(hit[:int(0.01 * sr)])))
+    short = shape_envelope(np.ones((int(0.2 * sr), 1), np.float32) * 0.3, sr, 0.03, 0.4, True)
+    tb, _, tfo = shape_envelope(np.ones((sr * 2, 1), np.float32) * 0.3, sr, 0.03, 0.4, True,
+                                truncated=True)
+    ok = ends[0] < 1e-3 and ends[1] < 1e-3 and jump < 0.01 and jt <= ramp_max and \
+        keep > 0.9 and hfi <= 0.0011 and short[2] <= 0.061 and tfo >= 0.5
+    return ok, ("ends %.1e/%.1e, largest step %.4f (30 ms fade) / %.4f (1 ms anti-click ramp); "
+                "percussive attack kept %.0f %% (fade-in %.0f ms); 0.2 s sound fade-out %.0f ms;"
+                " truncated fade-out %.2f s" % (ends[0], ends[1], jump, jt, 100 * keep,
+                                                1000 * hfi, 1000 * short[2], tfo))
+
+
+def _t_pb_overlap(sr):
+    import numpy as np
+    mx = Mixer(sr)
+    bufs = [np.full((sr, 2), 0.1, np.float32) for _ in range(3)]
+    for k, b in enumerate(bufs):
+        mx.add(Voice(b, "fg", "v%d" % k, 0.0, wait=int(0.3 * k * sr)))
+    blocks, act = [], []
+    for _ in range(int(2.0 * sr / 441)):
+        blocks.append(mx.render(441).copy())
+        act.append(sum(1 for v in mx.voices if not v.done and v.wait == 0 and v.pos > 0))
+    y = np.concatenate(blocks)
+    at = {t: float(y[int(t * sr), 0]) for t in (0.1, 0.45, 0.75, 1.15, 1.45)}
+    ok = abs(at[0.1] - 0.1) < 1e-6 and abs(at[0.45] - 0.2) < 1e-6 and \
+        abs(at[0.75] - 0.3) < 1e-6 and abs(at[1.15] - 0.2) < 1e-6 and max(act) == 3
+    return ok, "3 voices entering 0.3 s apart: mix level %s, max simultaneous %d" % (
+        " ".join("%.1f" % v for v in at.values()), mx.max_active)
+
+
+def _t_pb_steal(sr):
+    import numpy as np
+    import types
+
+    class FakeEngine:
+        pass
+    e = FakeEngine()
+    e.pcfg = {"polyphony": True, "max_voices": 3}
+    e.mixer = Mixer(sr)
+    e.stop_ev = threading.Event()
+    e.c = collections.Counter()
+    e.log = lambda *a, **k: None
+    alloc = types.MethodType(Engine._allocate, e)
+    mk = (lambda role: Voice(np.zeros((sr, 2), np.float32), role, role, 0.0))
+    bg, sec, fg1 = mk("bg"), mk("sec"), mk("fg")
+    for v in (bg, sec, fg1):
+        alloc(v, False)
+    r1 = alloc(mk("fg"), False)                # steals the background
+    r2 = alloc(mk("sec"), False)               # no background left: refused
+    r3 = alloc(mk("fg"), False)                # steals the secondary voice
+    ok = r1 and not r2 and r3 and bg.kill and sec.kill and not fg1.kill
+    return ok, "fg steals bg first, then sec; sec may not steal fg (stolen %d)" % e.c["voices_stolen"]
+
+
+def _t_pb_clip(sr):
+    import numpy as np
+    mx = Mixer(sr)
+    for k in range(6):
+        mx.add(Voice(np.stack([_tone(sr, 200 + 37 * k, 1.0, 0.99)] * 2, axis=1), "fg", "v", 0.0))
+    ys = [mx.render(441).copy() for _ in range(80)]
+    pk = max(float(np.max(np.abs(y))) for y in ys)
+    ok = pk <= LIMIT_CEILING + 1e-6 and all(np.isfinite(y).all() for y in ys)
+    return ok, "6 full-scale voices: output peak %.3f (ceiling %.2f), limiter %.1f dB" % (
+        pk, LIMIT_CEILING, mx.max_reduction_db)
+
+
+def _t_pb_shutdown(sr):
+    import numpy as np
+    mx = Mixer(sr)
+    mx.add(Voice(np.stack([_tone(sr, 300, 3.0, 0.8)] * 2, axis=1), "fg", "v", 0.0))
+    pre = [mx.render(441).copy() for _ in range(20)]
+    mx.fade_all(STOP_FADE_S)
+    post = [mx.render(441).copy() for _ in range(int(0.3 * sr / 441))]
+    y = np.concatenate(pre + post)[:, 0]
+    jump = float(np.max(np.abs(np.diff(y))))
+    tail = float(np.max(np.abs(post[-1])))
+    natural = 2 * math.pi * 300 / sr * 0.8
+    ok = tail < 1e-6 and jump <= natural * 1.05
+    return ok, "stop fade %.0f ms: last block %.1e, largest step %.4f (tone itself %.4f)" % (
+        1000 * STOP_FADE_S, tail, jump, natural)
+
+
+def _t_pb_background(sr):
+    import numpy as np
+    import random
+    src = (_tone(sr, 220, 2.5, 0.4) * (1 + 0.3 * np.sin(np.arange(int(2.5 * sr)) / sr * 3))).astype(
+        np.float32)
+    tex = build_texture([(src, sr)], sr, 24.0, 1.0, 0.3, random.Random(3))
+    k = int(0.1 * sr)
+    mid = tex[int(3.2 * sr):int(20.8 * sr)].mean(axis=1)
+    nf = len(mid) // k
+    r = 20 * np.log10(np.sqrt(np.mean(mid[:nf * k].reshape(nf, k) ** 2, axis=1)) + 1e-12)
+    dist = float(np.max(np.abs(tex[:, 0] - tex[:, 1])))
+    ends = float(np.max(np.abs(tex[:50]))), float(np.max(np.abs(tex[-50:])))
+    mx = Mixer(sr)
+    v = Voice(tex, "bg", "bg", 0.0, gain=1.0, rate=0.5)
+    mx.add(v)
+    mx.render(441)
+    v.target = 0.35                              # performer plays: recede
+    gs = []
+    for _ in range(int(1.5 * sr / 441)):
+        mx.render(441)
+        gs.append(v.gain)
+    steps = float(np.max(np.abs(np.diff(gs))))
+    ok = len(tex) == int(24.0 * sr) and float(r.max() - r.min()) < 12 and dist > 1e-3 and \
+        max(ends) < 1e-3 and abs(gs[-1] - 0.35) < 1e-6 and steps <= 0.5 * 441 / sr + 1e-9
+    return ok, ("24 s texture: no gaps (100 ms level range %.1f dB), stereo, faded ends; "
+                "recedes to -9 dB in %.1f s in steps <= %.4f" %
+                (float(r.max() - r.min()), (gs.index(0.35) + 1) * 441 / sr if 0.35 in gs else -1,
+                 steps))
+
+
+def _t_pb_leak_stereo(sr):
+    import numpy as np
+    rng = np.random.default_rng(4)
+    L = rng.standard_normal(sr).astype(np.float32)
+    R = rng.standard_normal(sr).astype(np.float32)
+    mx, lag = 2000, 800
+    xl, xr = L[:int(0.5 * sr) + mx], R[:int(0.5 * sr) + mx]
+    y = 0.3 * xl[mx - lag:mx - lag + int(0.5 * sr)] + 0.02 * xr[mx - lag:mx - lag + int(0.5 * sr)]
+    a, rho, lg = leak_fit((xl + xr) / 2, y, mx)
+    r2 = leak_fit_stereo(xl, xr, y, mx, lg)
+    ok = lg == lag and r2 > 0.99 and r2 > rho * rho + 0.2
+    return ok, ("voice panned left leaking: mono fit explains %.0f %%, two-channel fit %.0f %% "
+                "(lag %d)" % (100 * rho * rho, 100 * r2, lg))
+
+
+V040_TESTS = [("stereo placement / mono compatibility", _t_pb_stereo),
+              ("stereo source preserved", _t_pb_stereo_keep),
+              ("envelope continuity", _t_pb_envelope),
+              ("polyphonic overlap", _t_pb_overlap), ("voice stealing", _t_pb_steal),
+              ("clipping prevention", _t_pb_clip), ("safe shutdown fade", _t_pb_shutdown),
+              ("background texture + receding", _t_pb_background),
+              ("stereo leakage fit", _t_pb_leak_stereo)]
 
 
 # ============================================================
@@ -2790,6 +3071,399 @@ def index_preloaded(folder, memory, cfg, progress=None, log=None):
 
 
 # ============================================================
+# v0.4.0 POLYPHONIC SPATIAL PLAYBACK
+#   Every answer becomes a VOICE: a pre-rendered stereo buffer (envelope,
+#   equal-power placement and slow movement already applied off the audio
+#   thread) plus a gain that the mixer ramps smoothly.  The output callback
+#   only sums the active voices' slices, applies the per-voice gain ramps
+#   and a peak limiter - no allocation-heavy DSP, no locks, no I/O.
+#   Roles:  "fg"  foreground response to a phrase (transform / recall / R+T)
+#           "sec" secondary voice: a related sound from memory entering later,
+#                 elsewhere in space, quieter (polyphonic density)
+#           "bg"  ambient background texture built from memory material
+#   No decorrelation filters and no phase tricks: placement is equal-power
+#   amplitude panning (mono sources) or mid/side width + equal-power balance
+#   (stereo sources), so the mono fold-down never cancels.
+# ============================================================
+ROLE_NAMES = {"fg": "response", "sec": "layer", "bg": "background"}
+ROLE_TARGET_DB = {"fg": -18.0, "sec": -24.0, "bg": -33.0}   # RMS of the active part
+LIMIT_CEILING = 0.94           # output peak ceiling (linear)
+KILL_FADE_S = 0.25             # fade when a voice is stolen or stopped
+STOP_FADE_S = 0.15             # whole-mix fade at engine stop
+PAN_LIMIT = 0.85               # |pan| <= 0.85: at most ~19 dB between channels,
+                               #   never a voice in one speaker only
+
+
+def raised_cosine(n, rising=True):
+    import numpy as np
+    if n <= 0:
+        return np.zeros(0, np.float32)
+    w = 0.5 - 0.5 * np.cos(np.pi * (np.arange(n) + 0.5) / n)
+    return (w if rising else w[::-1]).astype(np.float32)
+
+
+def attack_is_sharp(m, sr):
+    """True when the sound starts with a transient: the level reaches 70 %
+    of its early maximum within 15 ms (1-ms RMS frames)."""
+    import numpy as np
+    k = max(1, int(0.001 * sr))
+    seg = m[:int(0.2 * sr)]
+    nf = len(seg) // k
+    if nf < 3:
+        return True
+    r = np.sqrt(np.mean(seg[:nf * k].reshape(nf, k) ** 2, axis=1))
+    mx = float(r.max())
+    if mx <= 1e-6:
+        return False
+    first = int(np.argmax(r >= 0.7 * mx))
+    return first * k <= int(0.015 * sr)
+
+
+def shape_envelope(a, sr, fade_in_s, fade_out_s, preserve_transients=True,
+                   truncated=False):
+    """Raised-cosine fade-in / fade-out on (n, ch) audio.
+    - Fades scale with the length: fade-in <= 15 % and fade-out <= 30 % of
+      the sound (never below 3 ms: always click-free).
+    - A transient start keeps its attack: the fade-in shrinks to 1 ms.
+    - A sound cut by Max_response_s gets a longer fade-out (>= 0.5 s)."""
+    import numpy as np
+    n = len(a)
+    if n == 0:
+        return a, 0.0, 0.0
+    dur = n / float(sr)
+    m = a.mean(axis=1) if a.ndim == 2 else a
+    fi = min(fade_in_s, 0.15 * dur)
+    if preserve_transients and attack_is_sharp(m, sr):
+        fi = 0.001                       # anti-click only: the attack is kept
+    else:
+        fi = max(fi, 0.003)
+    fo = max(fade_out_s, 0.5) if truncated else fade_out_s
+    fo = max(min(fo, 0.3 * dur), 0.003)
+    ni, no = min(n, int(fi * sr)), min(n, int(fo * sr))
+    b = a.astype(np.float32, copy=True)
+    if b.ndim == 1:
+        b = b[:, None]
+    b[:ni] *= raised_cosine(ni, True)[:, None]
+    b[n - no:] *= raised_cosine(no, False)[:, None]
+    return b, ni / float(sr), no / float(sr)
+
+
+def active_rms(a):
+    """RMS over the frames that actually sound (within 40 dB of the peak
+    frame) - a loudness estimate that is not diluted by silences."""
+    import numpy as np
+    m = a.mean(axis=1) if a.ndim == 2 else a
+    k = 1024
+    nf = len(m) // k
+    if nf < 1:
+        return float(np.sqrt(np.mean(m ** 2) + 1e-20))
+    r = np.sqrt(np.mean(m[:nf * k].reshape(nf, k) ** 2, axis=1) + 1e-20)
+    act = r[r >= r.max() * 0.01]
+    return float(np.sqrt(np.mean(act ** 2)))
+
+
+def level_match(a, target_db, max_boost_db=12.0, peak_ceiling=0.9):
+    """Gain towards a role's RMS target, at most +12 dB, never above the
+    peak ceiling.  Returns (audio, gain_db)."""
+    import numpy as np
+    rms = active_rms(a)
+    if rms < 1e-6:
+        return a, 0.0
+    g = 10 ** (target_db / 20.0) / rms
+    g = min(g, 10 ** (max_boost_db / 20.0))
+    pk = float(np.max(np.abs(a)))
+    if pk > 0:
+        g = min(g, peak_ceiling / pk)
+    return (a * g).astype(np.float32), 20 * math.log10(max(g, 1e-9))
+
+
+def is_real_stereo(a):
+    """Two channels that are not the same signal (correlation < 0.995 or a
+    level difference > 1 dB): their image is PRESERVED, not re-panned."""
+    import numpy as np
+    if a.ndim != 2 or a.shape[1] < 2:
+        return False
+    L, R = a[:, 0].astype(np.float64), a[:, 1].astype(np.float64)
+    eL, eR = float(np.sum(L * L)), float(np.sum(R * R))
+    if eL < 1e-12 or eR < 1e-12:
+        return eL + eR > 1e-12
+    c = float(np.sum(L * R) / math.sqrt(eL * eR))
+    return c < 0.995 or abs(10 * math.log10(eL / eR)) > 1.0
+
+
+def pan_curve(n, sr, center, movement, width, rng, slow=False):
+    """Pan position per sample in [-1, 1]: a centre plus a slow, smooth
+    drift (two incommensurate sines, 7-19 s and 23-41 s periods; 20-60 s for
+    background), scaled by the stereo width.  Movement 0 = fixed."""
+    import numpy as np
+    t = np.arange(n) / float(sr)
+    if movement <= 0:
+        p = np.full(n, center)
+    else:
+        T1 = rng.uniform(20.0, 41.0) if slow else rng.uniform(7.0, 19.0)
+        T2 = rng.uniform(43.0, 61.0) if slow else rng.uniform(23.0, 41.0)
+        ph1, ph2 = rng.uniform(0, 2 * math.pi), rng.uniform(0, 2 * math.pi)
+        depth = 0.45 * movement
+        p = center + depth * (0.7 * np.sin(2 * np.pi * t / T1 + ph1) +
+                              0.3 * np.sin(2 * np.pi * t / T2 + ph2))
+    return np.clip(p * width, -PAN_LIMIT, PAN_LIMIT)
+
+
+def spatialize(a, sr, center, movement, width, rng, slow=False):
+    """(n, ch) -> (n, 2) stereo.
+    Mono: equal-power amplitude pan along pan_curve (L = cos, R = sin of
+      (p + 1) pi / 4): constant power at every position, no decorrelation.
+    Stereo: the original image is kept; its side signal is scaled by the
+      width and the whole image is moved with an equal-power balance (half
+      the movement of a mono source).  Mono fold-down: the L/R sum of a
+      panned mono source varies by at most 3 dB with position and never
+      cancels (no polarity or delay differences are introduced)."""
+    import numpy as np
+    n = len(a)
+    if is_real_stereo(a):
+        L, R = a[:, 0], a[:, 1]
+        M, S = 0.5 * (L + R), 0.5 * (L - R) * width
+        p = pan_curve(n, sr, center * 0.5, movement * 0.5, width, rng, slow)
+        th = (p + 1.0) * np.pi / 4.0
+        gl, gr = np.cos(th) * math.sqrt(2.0), np.sin(th) * math.sqrt(2.0)
+        out = np.stack([(M + S) * gl, (M - S) * gr], axis=1)
+    else:
+        m = a[:, 0] if a.ndim == 2 else a
+        p = pan_curve(n, sr, center, movement, width, rng, slow)
+        th = (p + 1.0) * np.pi / 4.0
+        out = np.stack([m * np.cos(th), m * np.sin(th)], axis=1)
+    return np.ascontiguousarray(out, np.float32)
+
+
+class Voice:
+    """One sounding layer.  buf is final stereo audio; the mixer only reads
+    it.  gain/target are linear; the mixer moves gain towards target by at
+    most `rate` per second (smooth ducking, stealing and stop fades)."""
+    _next = [1]
+
+    def __init__(self, buf, role, name, center, wait=0, gain=1.0, rate=2.0):
+        self.id = Voice._next[0]
+        Voice._next[0] += 1
+        self.buf = buf
+        self.n = len(buf)
+        self.role = role
+        self.name = name
+        self.center = center
+        self.pos = 0
+        self.wait = int(wait)        # frames of silence before it enters
+        self.gain = gain
+        self.target = gain
+        self.rate = rate             # gain units per second
+        self.kill = False
+        self.done = False
+        self.t_created = time.time()
+
+    def remaining_s(self, sr):
+        return (self.n - self.pos + self.wait) / float(sr)
+
+    def fade_out(self, seconds):
+        self.rate = 1.0 / max(seconds, 0.01)
+        self.target = 0.0
+        self.kill = True
+
+
+class Mixer:
+    """Polyphonic stereo mixer.  render() runs inside the PortAudio output
+    callback: it sums voice slices with per-block linear gain ramps and a
+    peak limiter (instant attack, ~0.2 s release, soft safety clip above the
+    ceiling).  Voices are added / removed by replacing the list object
+    (atomic under the GIL) from ONE worker thread at a time (add_lock)."""
+
+    def __init__(self, sr, channels=2, max_frames=8192):
+        import numpy as np
+        self.np = np
+        self.sr = sr
+        self.ch = channels
+        self.voices = []
+        self.add_lock = threading.Lock()
+        self.mix = np.zeros((max_frames, 2), np.float32)
+        self.lim_gain = 1.0
+        self.max_reduction_db = 0.0
+        self.peak_out = 0.0
+        self.max_active = 0
+        self.master_target = 1.0
+        self.master = 1.0
+
+    # ---- worker side ----
+    def add(self, v):
+        with self.add_lock:
+            self.voices = [x for x in self.voices if not x.done] + [v]
+
+    def sweep(self):
+        with self.add_lock:
+            self.voices = [x for x in self.voices if not x.done]
+
+    def active(self, role=None):
+        return [v for v in self.voices if not v.done and not v.kill and
+                (role is None or v.role == role)]
+
+    def fade_all(self, seconds):
+        self.master_target = 0.0
+        self.master_rate = 1.0 / max(seconds, 0.01)
+
+    # ---- audio-thread side ----
+    def render(self, frames):
+        np = self.np
+        mix = self.mix[:frames]
+        mix.fill(0.0)
+        blk = frames / float(self.sr)
+        ramp = (np.arange(1, frames + 1, dtype=np.float32) / frames)
+        nact = 0
+        for v in self.voices:
+            if v.done:
+                continue
+            off = 0
+            if v.wait > 0:
+                if v.wait >= frames:
+                    v.wait -= frames
+                    continue
+                off, v.wait = v.wait, 0
+            n = min(frames - off, v.n - v.pos)
+            if n <= 0:
+                v.done = True
+                continue
+            g0 = v.gain
+            step = v.rate * blk
+            g1 = g0 + max(-step, min(step, v.target - g0))
+            seg = v.buf[v.pos:v.pos + n]
+            if g0 == g1:
+                if g0 != 1.0:
+                    mix[off:off + n] += seg * g0
+                else:
+                    mix[off:off + n] += seg
+            else:
+                gr = g0 + (g1 - g0) * ramp[:n]
+                mix[off:off + n] += seg * gr[:, None]
+            v.gain = g1
+            v.pos += n
+            if not v.kill:
+                nact += 1                     # voices fading out are not counted
+            if v.pos >= v.n or (v.kill and g1 <= 1e-4):
+                v.done = True
+        if nact > self.max_active:
+            self.max_active = nact
+        # master fade (engine stop): smooth, never a cut
+        if self.master != self.master_target or self.master != 1.0:
+            m0 = self.master
+            step = getattr(self, "master_rate", 4.0) * blk
+            m1 = m0 + max(-step, min(step, self.master_target - m0))
+            mix *= (m0 + (m1 - m0) * ramp)[:, None]
+            self.master = m1
+        # peak limiter
+        pk = float(np.max(np.abs(mix))) if frames else 0.0
+        want = 1.0 if pk <= LIMIT_CEILING else LIMIT_CEILING / pk
+        g0 = self.lim_gain
+        g1 = want if want < g0 else g0 + (want - g0) * 0.05
+        if g0 != 1.0 or g1 != 1.0:
+            if want < g0:                       # instant attack for this block
+                mix *= want
+            else:
+                mix *= (g0 + (g1 - g0) * ramp)[:, None]
+        self.lim_gain = g1
+        if g1 < 1.0:
+            self.max_reduction_db = max(self.max_reduction_db, -20 * math.log10(max(g1, 1e-6)))
+        np.clip(mix, -0.999, 0.999, out=mix)    # safety only (never reached in tests)
+        pk2 = float(np.max(np.abs(mix))) if frames else 0.0
+        if pk2 > self.peak_out:
+            self.peak_out = pk2
+        return mix
+
+
+class SpaceAllocator:
+    """Chooses where a new voice sits: away from the voices already sounding
+    (largest gap among candidate positions), foreground answers alternate
+    sides around the performer's centre, background voices spread wide.
+    pan_variation 0 = deterministic alternation, 1 = free random choice."""
+
+    def __init__(self, rng, width, variation):
+        self.rng = rng
+        self.width = width
+        self.var = variation
+        self.side = 1.0
+
+    def place(self, role, others):
+        rng = self.rng
+        if role == "fg":
+            self.side = -self.side
+            base = self.side * (0.35 + 0.3 * rng.random())
+        elif role == "sec":
+            base = rng.uniform(-0.9, 0.9)
+        else:
+            base = rng.uniform(-0.6, 0.6)
+        cands = [base] + [rng.uniform(-0.95, 0.95) for _ in range(8)]
+        occ = [v.center for v in others]
+
+        def gap(c):
+            return min([abs(c - o) for o in occ] or [2.0])
+        best = max(cands, key=gap)
+        mix = self.var if occ else self.var * 0.5
+        c = (1 - mix) * base + mix * best
+        if occ and gap(c) < 0.25:              # never on top of another voice
+            c = best
+        return max(-0.95, min(0.95, c))
+
+
+def build_texture(sources, sr, seconds, width, movement, rng, fade_s=3.0):
+    """Ambient background from memory material: overlapping raised-cosine
+    grains (1-6 s, 50 % overlap) taken from different places of 1-3 source
+    sounds, each grain with its own small gain change and its own place in
+    space, gently low-passed (one-pole, 4 kHz) so it sits behind the
+    performer.  sources: list of (mono float array, sr).  Returns (n, 2)."""
+    import numpy as np
+    import scipy.signal
+    n = int(seconds * sr)
+    out = np.zeros((n, 2), np.float32)
+    mats = []
+    for a, s in sources:
+        if s != sr:
+            g = math.gcd(int(s), int(sr))
+            a = scipy.signal.resample_poly(a, int(sr) // g, int(s) // g)
+        a = np.asarray(a, np.float32)
+        if len(a) >= int(0.6 * sr):
+            mats.append(a)
+    if not mats:
+        return None
+    pos = 0
+    k = 0
+    srch = int(0.025 * sr)                 # alignment search +-25 ms
+    probe = int(0.12 * sr)                 # compared over 120 ms of overlap
+    while pos < n:
+        src = mats[k % len(mats)]
+        glen = int(min(max(0.6 * len(src), 1.0 * sr), 6.0 * sr, len(src)))
+        st = rng.randint(0, max(0, len(src) - glen))
+        if pos > 0:
+            # WSOLA-style: shift the grain (+-25 ms) so that its start lines
+            # up with what is already sounding -> overlapping grains of tonal
+            # material reinforce instead of cancelling
+            ref = out[pos:pos + probe].sum(axis=1)
+            lo, hi = max(0, st - srch), min(len(src) - glen, st + srch)
+            if hi > lo and len(ref) == probe and float(np.dot(ref, ref)) > 1e-12 \
+                    and hi + probe <= len(src):
+                c = np.correlate(src[lo:hi + probe], ref, mode="valid")
+                st = lo + int(np.argmax(c[:hi - lo + 1]))
+        g = src[st:st + glen].copy()
+        w = np.hanning(glen + 2)[1:-1].astype(np.float32)
+        g *= w * (10 ** (rng.uniform(-2.0, 2.0) / 20.0))
+        c = rng.uniform(-0.8, 0.8)
+        st_g = spatialize(g[:, None], sr, c, movement, width, rng, slow=True)
+        end = min(n, pos + glen)
+        out[pos:end] += st_g[:end - pos]
+        pos += max(glen // 2, int(0.3 * sr))
+        k += 1
+    b, a_ = scipy.signal.butter(1, min(0.99, 4000.0 / (sr / 2.0)))
+    out = scipy.signal.lfilter(b, a_, out, axis=0).astype(np.float32)
+    fn = min(int(fade_s * sr), n // 3)
+    out[:fn] *= raised_cosine(fn, True)[:, None]
+    out[n - fn:] *= raised_cosine(fn, False)[:, None]
+    return out
+
+
+# ============================================================
 # v0.2.0 CONTINUOUS ENGINE  (command: serve)
 # ============================================================
 # Ownership (one owner per resource; no shared lock is held during
@@ -2815,13 +3489,15 @@ LEAK_LAG_MIN_S = 0.002         # path delays outside [2 ms, max - 5 ms] are not
 LEAK_LAG_EDGE_S = 0.005        #   trusted (edge peaks = periodic ambiguity)
 LEAK_DOMINANCE = 1.5           # main PHAT peak / next peak (periodic -> ~1)
 LEAK_GAIN_RHO = 0.7            # gain updated only when the input is mostly leakage
+LEAK_LAG_TOL_S = 0.003         # v0.4.0: phrase check accepts +-3 ms of clock drift
 # AudioTools_CallResponse.praat form, one value per field in form order.
 # Render mode (env AUDIOTOOLS_CR_JOB) ignores the values, but "praat --run"
 # requires one argument per field.  KEEP IN SYNC WITH THE PRAAT FORM.
 RENDER_FORM_ARGS = ["Selected Sound(s)", "Automatic (gesture classifier)", "4",
                     "default", "default", "9", "0.5", "0.6", "12",
                     "0", "Transform only (v0.2)", "-",          # v0.3.0 memory fields
-                    "0", "0", "0"]
+                    "0", "0",                                   # Memory / Playback settings
+                    "0", "0"]
 DISPLAY_NAMES = {
     "paulstretch": "Paulstretch", "markov": "Markov Soundscape Weaver",
     "mds": "MDS Space Navigator", "spiral": "Spiral Pitch Dance",
@@ -2957,6 +3633,27 @@ def leak_fit(x, y, max_lag_n):
     b = int(np.argmax(np.abs(rho)))
     a = float(r[b] / ex[b]) if ex[b] > 1e-12 else 0.0
     return a, float(rho[b]), max_lag_n - b
+
+
+def leak_fit_stereo(xl, xr, y, max_lag_n, lag):
+    """v0.4.0: fraction of y's energy explained by a * L + b * R at a given
+    delay (two-regressor least squares).  With independent voices panned
+    to different places the microphone hears L and R with different gains,
+    which the mono (L + R) / 2 fit underestimates."""
+    import numpy as np
+    y = np.asarray(y, np.float64)
+    Ly = len(y)
+    b0 = max_lag_n - lag
+    if Ly == 0 or b0 < 0 or len(xl) < b0 + Ly or len(xr) < b0 + Ly:
+        return 0.0
+    X = np.stack([np.asarray(xl[b0:b0 + Ly], np.float64),
+                  np.asarray(xr[b0:b0 + Ly], np.float64)], axis=1)
+    ey = float(np.dot(y, y))
+    if ey <= 1e-12 or float(np.sum(X * X)) <= 1e-12:
+        return 0.0
+    coef, _, _, _ = np.linalg.lstsq(X, y, rcond=None)
+    res = y - X @ coef
+    return max(0.0, 1.0 - float(np.dot(res, res)) / ey)
 
 
 def leak_path(x, y, max_lag_n, sr):
@@ -3220,8 +3917,7 @@ class Job:
         self.recall_item = None
         self.match = None
         self.gen_out = 1              # generation of a Praat result
-        self.layer = None             # optional quiet recalled layer
-        self.layer_sr = sr
+        self.secondary = None         # v0.4.0 secondary voice spec (dict) or None
         self.action_name = ""
 
 
@@ -3363,6 +4059,9 @@ class Engine:
         self.hop_s = self.det.hop_s
         self.in_ring = Ring(self.sr, 3.0)
         self.out_ring = Ring(self.sr, args.max_phrase + LEAK_MAX_LAG_S + 2.0)
+        # v0.4.0: the two output channels too (stereo leakage check)
+        self.out_ring_l = Ring(self.sr, args.max_phrase + LEAK_MAX_LAG_S + 2.0)
+        self.out_ring_r = Ring(self.sr, args.max_phrase + LEAK_MAX_LAG_S + 2.0)
         self.c = collections.Counter()
         self.state, self.message, self.processing, self.playing = "starting", "", "", ""
         self.stage = "start"
@@ -3370,8 +4069,6 @@ class Engine:
         self.leak_db, self.leak_rho = None, 0.0
         self.leak_lag, self.leak_cand, self.leak_conf = None, None, 0
         self.out_hold_db, self.out_hold_t = -120.0, 0.0
-        self.cur, self.cur_pos = None, 0
-        self.play_done = threading.Event()
         self.out_ch = 1
         self.next_id = 1
         self.fatal = ""
@@ -3409,6 +4106,31 @@ class Engine:
         self.memory = SonicMemory(self.mcfg, seed, self.log)
         self.last_recall, self.last_match, self.last_action = "", "", ""
         self.fault = os.environ.get("AUDIOTOOLS_CR_FAULT", "")   # test hook, inert by default
+        self.status_fail_streak = 0
+        # ---- v0.4.0 polyphonic spatial playback ----
+        import random
+        self.pcfg = {
+            "polyphony": bool(args.polyphony), "max_voices": max(1, int(args.max_voices)),
+            "density": clamp(args.density, 0.0, 1.0), "width": clamp(args.stereo_width, 0.0, 1.0),
+            "movement": clamp(args.movement, 0.0, 1.0),
+            "pan_variation": clamp(args.pan_variation, 0.0, 1.0),
+            "fade_in": max(0.003, args.fade_in_ms / 1000.0),
+            "fade_out": max(0.003, args.fade_out_ms / 1000.0),
+            "transients": bool(args.preserve_transients),
+            "level_match": bool(args.level_match),
+            "background": bool(args.background) and bool(args.polyphony),
+            "bg_db": float(args.background_db),
+        }
+        self.prng = random.Random(seed + 7919)       # playback choices only
+        self.mixer = Mixer(self.sr)
+        self.space = SpaceAllocator(self.prng, self.pcfg["width"], self.pcfg["pan_variation"])
+        self.bg_recent = collections.deque(maxlen=4)
+        self.bg_state = "off" if not self.pcfg["background"] else "waiting for material"
+        self.t_performer = 0.0
+        self.t_texture = -1e9                 # last background texture started
+        self.bg_paused = False
+        self.recent_answers = collections.deque(maxlen=3)
+        self.layer_history = collections.deque(maxlen=4)
 
     # ---------------- logging ----------------
     def log(self, msg, event=False):
@@ -3453,25 +4175,25 @@ class Engine:
             self.c["overruns"] += 1
 
     def _out_cb(self, outdata, frames, tinfo, status):
+        """v0.4.0: sums the active voices (Mixer.render: slices, gain ramps,
+        limiter).  No file access, no locks held, no DSP beyond additions."""
         if status:
             self.c["output_status"] += 1
-        buf = self.cur
-        if buf is None:
-            outdata.fill(0)
+        mix = self.mixer.render(frames)
+        if self.out_ch == 1:
+            outdata[:, 0] = mix.mean(axis=1)
         else:
-            p = self.cur_pos
-            n = min(frames, len(buf) - p)
-            outdata[:n] = buf[p:p + n]
-            if n < frames:
-                outdata[n:] = 0
-            self.cur_pos = p + n
-            if self.cur_pos >= len(buf):
-                self.cur = None
-                self.play_done.set()
-        mono = outdata[:, 0] if outdata.shape[1] == 1 else outdata.mean(axis=1)
+            outdata[:, :2] = mix
+            if outdata.shape[1] > 2:
+                outdata[:, 2:] = 0
+        mono = mix.mean(axis=1)
         t = time.time()
         self.out_ring.append(mono, t)
-        lv = db_of(mono)
+        self.out_ring_l.append(mix[:, 0], t)
+        self.out_ring_r.append(mix[:, 1], t)
+        # v0.4.0: the LOUDER channel - a voice panned towards the speaker the
+        # microphone hears best must not be underestimated by the L+R mean
+        lv = max(db_of(mix[:, 0]), db_of(mix[:, 1])) if self.out_ch == 2 else db_of(mono)
         held = self.out_hold_db - 20.0 * (t - self.out_hold_t)
         if lv >= held:
             self.out_hold_db, self.out_hold_t = lv, t
@@ -3485,6 +4207,12 @@ class Engine:
         lv = self._out_level_now()
         if lv < -70:
             return None
+        # v0.4.0: while ONLY the background texture sounds, its grain peaks
+        # stand above its block level: 4 dB more margin (still far below a
+        # played gesture, since the background sits around -33 dBFS)
+        act = self.mixer.active()
+        if act and all(v.role == "bg" for v in act):
+            return lv + self.leak_db + 4.0
         return lv + self.leak_db
 
     # ---------------- DETECT thread (detection only; never searches memory) ----
@@ -3507,6 +4235,8 @@ class Engine:
                     lv = db_of(pending[:hop, 0] if self.ch == 1 else pending[:hop].mean(axis=1))
                     self.input_db = max(lv, self.input_db - 1.5)
                     pending = pending[hop:]
+                    if self.det.state == "PHRASE":
+                        self.t_performer = tb
                     if ev == "onset":
                         self.log("onset (floor %.1f dBFS, thr %.1f)" %
                                  (self.det.floor, self.det.thresholds()[0]))
@@ -3554,7 +4284,12 @@ class Engine:
             else:
                 self.log("leakage path confirmed at %.1f ms; gain kept (performer playing, "
                          "rho %.2f)" % (1000.0 * r["lag"] / self.sr, r["rho"]))
-        elif self.leak_db is not None and self.leak_conf == 0:
+        elif (self.leak_db is not None and self.leak_conf == 0 and
+              db_of(x) + self.leak_db > self.det.floor + 10.0):
+            # v0.4.0: decay only with EVIDENCE that the path is gone: the
+            # predicted leakage would stand 10 dB above the input floor, yet
+            # no path is found.  A quiet (or smooth, tonal) background layer
+            # is not measurable and must not erase what was learned.
             self.leak_db -= 3.0
             if self.leak_db < -80:
                 self.leak_db, self.leak_lag = None, None
@@ -3590,9 +4325,22 @@ class Engine:
             if db_of(x) > -55:
                 mx = int(LEAK_MAX_LAG_S * self.sr)
                 a, rho, lag = leak_fit(x, mono, mx)
-                tol = int(0.001 * self.sr)
+                # +-3 ms: separate input / output clocks drift by a few ms
+                tol = int(LEAK_LAG_TOL_S * self.sr)
                 if abs(lag - self.leak_lag) > tol:
-                    a, rho, lag = 0.0, 0.0, lag
+                    a, rho, lag = 0.0, 0.0, self.leak_lag
+                # v0.4.0: several voices in different places - also test the
+                # two output channels separately at the validated delay
+                r2s = 0.0
+                if self.out_ch == 2:
+                    xl = self.out_ring_l.segment(t_audio_end, dur + LEAK_MAX_LAG_S)
+                    xr = self.out_ring_r.segment(t_audio_end, dur + LEAK_MAX_LAG_S)
+                    step = max(1, int(0.0005 * self.sr))
+                    for lg in sorted(set([lag] + list(range(self.leak_lag - tol,
+                                                            self.leak_lag + tol + 1, step)))):
+                        r2s = max(r2s, leak_fit_stereo(xl, xr, mono, mx, lg))
+                if r2s > rho * rho:
+                    rho = math.sqrt(r2s)
                 if rho * rho >= LEAK_DISCARD_RHO2:
                     self.c["leak_discarded"] += 1
                     self.log("phrase %s DISCARDED as playback leakage: %.0f %% of its energy "
@@ -3658,6 +4406,7 @@ class Engine:
         mem = self.memory
         job.phrase_id = mem.new_id("A")
         action, why, cand, rt = "transform", "sonic memory off", None, None
+        top = []
         t_mem = time.perf_counter()
         if self.mcfg["enabled"]:
             recentA = [it.id for it in mem.items["A"][-self.mcfg["recent_exclude"]:]] \
@@ -3708,13 +4457,11 @@ class Engine:
                 ("duration", fnum(F["duration"], 4)), ("sr", self.sr), ("channels", nch),
                 ("seed", seed), ("t_features", fnum(t1 - t0, 4)), ("t_select", fnum(t2 - t1, 4)),
                 ("t_phrase_end_epoch", "%.4f" % job.t["end"])])
-            if self.mcfg["layered"] and cand is not None:
-                it = cand["item"]
-                job.layer, job.layer_sr = it.get_audio(), it.sr
-                mem.mark_recalled(it)
             if not self.mcfg["enabled"]:
                 self.last_recall, self.last_match = "", ""
         self.last_action = job.action_name
+        if self.mcfg["enabled"]:
+            self._plan_secondary(job, F, cand, top if self.mcfg["enabled"] else [])
         self.log("phrase %s (%s) -> %s (%s)%s  [analysis %.0f ms, memory search %.0f ms over %d "
                  "sounds]" % (job.tag, job.phrase_id, job.action_name, why,
                               "" if job.match is None else "  match %.2f" % job.match,
@@ -3731,6 +4478,60 @@ class Engine:
                                {"root": job.phrase_id, "parent": None, "method": None,
                                 "generation": 0, "source": "live phrase %s" % job.tag}))
         self.render_q.put(job)
+
+    def _plan_secondary(self, job, F, cand, top):
+        """v0.4.0 polyphonic density: with probability ~ density, a second,
+        quieter voice from memory joins the answer - a related sound (from
+        the ranked candidates) or, if none, an independent stored sound -
+        entering 0.6-3.5 s after the answer (on the phrase's own pulse when
+        it is rhythmic), as an excerpt of 60-100 % of its length, at its own
+        place in space.  Runs in the brain thread (owner of the memory)."""
+        pc = self.pcfg
+        if not pc["polyphony"] or pc["max_voices"] < 2:
+            return
+        rng = self.prng
+        p = 1.0 if self.mcfg["layered"] else 0.75 * pc["density"]
+        busy = len(self.mixer.active())
+        if busy >= pc["max_voices"] - 1:
+            p *= 0.3                       # avoid constant maximum density
+        if rng.random() >= p:
+            return
+        mem = self.memory
+        skip = {job.phrase_id, job.source_id}
+        if cand is not None:
+            skip.add(cand["item"].id)
+        pool = [r["item"] for r in top if r["item"].id not in skip]
+        how = "related"
+        # layers never repeat a recent answer or a recent layer, and they do NOT
+        # enter the answers' cooldown history (v0.3 recall behaviour unchanged)
+        recent = set(mem.recall_history) | set(self.layer_history)
+        pool = [it for it in pool if it.id not in recent]
+        if not pool:
+            pool = [it for corp in ("A", "B", "C") if mem.corpus_weights(0.5)[corp] > 0
+                    for it in mem.items[corp] if it.id not in skip and it.id not in recent
+                    and it.duration >= 0.8]
+            how = "independent"
+        if not pool:
+            return
+        it = rng.choice(pool[:5])
+        a = it.get_audio()
+        if a is None or len(a) < int(0.5 * it.sr):
+            return
+        L = len(a)
+        seg = int(L * rng.uniform(0.6, 1.0))
+        seg = max(min(L, int(0.8 * it.sr)), seg)
+        st = rng.randint(0, max(0, L - seg))
+        delay = rng.uniform(0.6, 3.5)
+        ioi = F.get("ioi_median", 0.0) or 0.0
+        if F.get("onset_rate", 0.0) > 1.5 and 0.08 < ioi < 1.5:
+            delay = max(ioi, round(delay / ioi) * ioi)        # on the phrase's pulse
+        it.recalls += 1                       # novelty bookkeeping only
+        self.layer_history.append(it.id)
+        job.secondary = {"audio": a[st:st + seg], "sr": it.sr, "delay": delay,
+                         "gain_db": rng.uniform(-3.0, 1.0),
+                         "name": "%s %s" % ("echo of" if how == "related" else "memory", it.id)}
+        self.log("phrase %s: secondary voice planned: %s, %.1f s excerpt, enters %.2f s after "
+                 "the answer" % (job.tag, job.secondary["name"], seg / float(it.sr), delay), True)
 
     def _insert_processed(self, r):
         """A genuinely NEW Praat result becomes a Corpus B entry, analysed
@@ -3828,46 +4629,72 @@ class Engine:
             self.log(self.fatal + " | " + traceback.format_exc().replace("\n", " | "), True)
             self.stop_ev.set()
 
-    # ---------------- PLAY thread ----------------
-    def _prepare(self, a, sr):
-        """Format conversion only (sample rate, channel count, length cap):
-        the audio itself is the Praat-rendered (or recalled) sound."""
+    # ---------------- PLAY thread (v0.4.0: voices, not one buffer) -----------
+    def _make_voice(self, a, sr, role, name, wait_s=0.0, gain_db=0.0):
+        """Format conversion, length cap, envelope, level, placement, slow
+        movement -> a Voice (all off the audio thread).  Returns
+        (voice or None, truncated)."""
         np = self.np
         import scipy.signal
+        pc = self.pcfg
+        a = np.asarray(a, np.float32)
+        if a.ndim == 1:
+            a = a[:, None]
         if sr != self.sr:
             g = math.gcd(int(sr), self.sr)
             a = scipy.signal.resample_poly(a, self.sr // g, int(sr) // g, axis=0).astype(np.float32)
-        if a.shape[1] == self.out_ch:
-            b = a
-        elif self.out_ch == 1:
-            b = a.mean(axis=1, keepdims=True)
-        elif a.shape[1] == 1:
-            b = np.repeat(a, self.out_ch, axis=1)
-        else:
-            b = np.zeros((len(a), self.out_ch), np.float32)
-            b[:, :min(a.shape[1], self.out_ch)] = a[:, :self.out_ch]
         cap = int(self.a.max_response * self.sr)
-        truncated = False
-        if len(b) > cap:
-            b = b[:cap].copy()
-            f = min(len(b), int(0.05 * self.sr))
-            b[-f:] *= np.linspace(1, 0, f, dtype=np.float32)[:, None]
-            truncated = True
-        return np.ascontiguousarray(b, np.float32), truncated
+        trunc = len(a) > cap
+        if trunc:
+            a = a[:cap]
+        if len(a) < int(0.02 * self.sr):
+            return None, trunc
+        b, fi, fo = shape_envelope(a, self.sr, pc["fade_in"], pc["fade_out"],
+                                   pc["transients"], truncated=trunc)
+        if pc["level_match"]:
+            b, _ = level_match(b, ROLE_TARGET_DB[role] + gain_db)
+        elif gain_db:
+            b = (b * 10 ** (gain_db / 20.0)).astype(np.float32)
+        center = self.space.place(role, self.mixer.active())
+        st = spatialize(b, self.sr, center, pc["movement"], pc["width"], self.prng,
+                        slow=(role == "bg"))
+        return Voice(st, role, name, center, wait=int(wait_s * self.sr)), trunc
 
-    def _mix_layer(self, buf, job):
-        """Optional layered response: the recalled sound 9 dB under the
-        transformation, same single output stream, peak-limited to 0.95."""
-        np = self.np
-        lay, _ = self._prepare(job.layer, job.layer_sr)
-        n = max(len(buf), len(lay))
-        out = np.zeros((n, buf.shape[1]), np.float32)
-        out[:len(buf)] += buf
-        out[:len(lay)] += 0.355 * lay
-        pk = float(np.max(np.abs(out))) if len(out) else 0.0
-        if pk > 0.95:
-            out *= 0.95 / pk
-        return np.ascontiguousarray(out[:int(self.a.max_response * self.sr)])
+    def _allocate(self, v, may_wait):
+        """Voice allocation.  Priority fg > sec > bg: a new answer takes a
+        free voice, else steals (fades out over 0.25 s) the oldest background
+        texture, then the oldest secondary voice; a secondary voice may only
+        steal a background texture.  Without polyphony, answers wait for the
+        previous answer (the v0.2/v0.3 behaviour).  Returns True if added."""
+        pc = self.pcfg
+        while not self.stop_ev.is_set():
+            act = self.mixer.active()
+            if not pc["polyphony"]:
+                if not [x for x in act if x.role == "fg"]:
+                    break
+            elif len(act) < pc["max_voices"]:
+                break
+            else:
+                order = ("bg", "sec") if v.role == "fg" else (("bg",) if v.role == "sec" else ())
+                victim = None
+                for role in order:
+                    cands = [x for x in act if x.role == role]
+                    if cands:
+                        victim = min(cands, key=lambda x: x.t_created)
+                        break
+                if victim is not None:
+                    victim.fade_out(KILL_FADE_S)
+                    self.c["voices_stolen"] += 1
+                    self.log("voice %d (%s, %s) faded out to make room for %s" %
+                             (victim.id, ROLE_NAMES[victim.role], victim.name, v.name))
+                    break
+            if not may_wait:
+                return False
+            time.sleep(0.05)
+        if self.stop_ev.is_set():
+            return False
+        self.mixer.add(v)
+        return True
 
     def _play_loop(self):
         try:
@@ -3886,47 +4713,197 @@ class Engine:
                     name = "%s on %s" % (DISPLAY_NAMES.get(job.used, job.used), job.source_id)
                 else:
                     name = DISPLAY_NAMES.get(job.used, job.used)
-                buf, trunc = self._prepare(job.answer, job.answer_sr)
-                if job.layer is not None:
-                    buf = self._mix_layer(buf, job)
-                    name += " + layer"
+                v, trunc = self._make_voice(job.answer, job.answer_sr, "fg", name)
                 if trunc:
-                    self.log("job %s answer truncated to %.1f s (Max_response_s)" %
-                             (job.tag, self.a.max_response), True)
+                    self.log("job %s answer truncated to %.1f s (Max_response_s) with a "
+                             "fade-out" % (job.tag, self.a.max_response), True)
+                out_s = v.n / float(self.sr) if v is not None else 0.0
+                # keep the latest answers as material for the background layer
+                if job.answer is not None:
+                    m = job.answer.mean(axis=1) if job.answer.ndim == 2 else job.answer
+                    self.recent_answers.append((m[:int(15 * job.answer_sr)].astype(self.np.float32),
+                                                job.answer_sr, "answer %s" % job.tag))
+                played = False
+                if self.a.play and v is not None:
+                    played = self._allocate(v, may_wait=True)
                 job.t["play_start"] = time.time()
-                if self.a.play:
-                    self.playing = name
-                    self.play_done.clear()
-                    self.cur_pos = 0
-                    self.cur = buf
-                    while not self.play_done.wait(0.05):
-                        if self.stop_ev.is_set():
-                            self.cur = None
-                            break
-                    self.playing = ""
-                job.t["play_end"] = time.time()
-                self.t_activity = time.time()
-                if self.stop_ev.is_set() and self.cur is None and not self.play_done.is_set():
+                if played:
+                    self.log("job %s: voice %d '%s' at %+.2f (%.1f s)" %
+                             (job.tag, v.id, name, v.center, out_s))
+                    sec = job.secondary
+                    if sec is not None:
+                        sv, _ = self._make_voice(sec["audio"], sec["sr"], "sec", sec["name"],
+                                                 wait_s=sec["delay"], gain_db=sec["gain_db"])
+                        if sv is not None and self._allocate(sv, may_wait=False):
+                            self.c["voices_secondary"] += 1
+                            self.log("job %s: secondary voice %d '%s' at %+.2f enters after "
+                                     "%.2f s" % (job.tag, sv.id, sv.name, sv.center,
+                                                 sec["delay"]), True)
+                        elif sv is not None:
+                            self.log("job %s: no free voice for the secondary layer - skipped" %
+                                     job.tag)
+                elif self.stop_ev.is_set():
                     self.log("job %s interrupted by stop" % job.tag, True)
+                self.t_activity = time.time()
                 delay = job.t["play_start"] - job.t["end"]
                 self.delays.append(delay)
                 self.c["done"] += 1
                 self.c["kind_" + job.kind] += 1
-                self.summary.append("%s  %-34s in %5.2f s -> out %5.2f s   delay %5.2f s" % (
-                    job.tag, name, len(job.audio) / job.sr, len(buf) / self.sr, delay))
+                self.summary.append("%s  %-34s in %5.2f s -> out %5.2f s   delay %5.2f s%s" % (
+                    job.tag, name, len(job.audio) / job.sr, out_s, delay,
+                    "" if v is None else "   pan %+.2f" % v.center))
                 tt = job.t
 
                 def rel(k):
                     return ("%.3f" % (tt[k] - tt["end"])) if k in tt else "-"
                 self.log("job %s TIMING rel. to phrase end: onset %s | analysed %s | render %s..%s"
-                         " | play %s..%s  (phrase end -> answer %.3f s)" %
+                         " | play start %s  (phrase end -> answer %.3f s)" %
                          (job.tag, rel("onset"), rel("analysed"), rel("render_start"),
-                          rel("render_end"), rel("play_start"), rel("play_end"), delay))
+                          rel("render_end"), rel("play_start"), delay))
                 self._cleanup_job(job)
-                job.answer = job.layer = job.recall_item = None
+                job.answer = job.recall_item = job.secondary = None
         except Exception as ex:                              # noqa: BLE001
             import traceback
             self.fatal = "playback worker failed: %s" % ex
+            self.log(self.fatal + " | " + traceback.format_exc().replace("\n", " | "), True)
+            self.stop_ev.set()
+
+    # ---------------- AMBIENT thread (v0.4.0) ----------------
+    def _bg_material(self):
+        """Candidate material for the background: stored sounds of the
+        enabled corpora (sustained ones preferred) and the latest answers.
+        Reads a SNAPSHOT of the corpus lists (the brain thread owns them);
+        an item evicted meanwhile is simply skipped."""
+        np = self.np
+        out = []
+        mem = self.memory
+        if self.mcfg["enabled"]:
+            w = mem.corpus_weights(0.5)
+            for corp in ("B", "A", "C"):
+                if w[corp] <= 0:
+                    continue
+                for it in list(mem.items[corp]):
+                    if it.id in self.bg_recent or it.duration < 1.5 or it.F is None:
+                        continue
+                    sustained = it.F.get("perc_char", 0.5) < 0.45
+                    out.append((it.id, it, w[corp] * (1.6 if sustained else 0.6)))
+        for m, sr, label in list(self.recent_answers):
+            if label not in self.bg_recent and len(m) >= int(1.5 * sr):
+                out.append((label, (m, sr), 20.0))
+        return out
+
+    def _new_texture(self):
+        np = self.np
+        rng = self.prng
+        cands = self._bg_material()
+        if not cands:
+            return None
+        picks = []
+        for _ in range(min(2, len(cands))):
+            tot = sum(c[2] for c in cands)
+            x = rng.random() * tot
+            for c in cands:
+                x -= c[2]
+                if x <= 0:
+                    picks.append(c)
+                    cands = [d for d in cands if d is not c]
+                    break
+        sources = []
+        for label, obj, _ in picks:
+            if isinstance(obj, tuple):
+                sources.append(obj)
+            else:
+                a = obj.audio
+                if a is None:
+                    try:
+                        a = obj.get_audio() if obj.src else None
+                    except Exception:                        # noqa: BLE001
+                        a = None
+                if a is None:
+                    continue
+                sources.append((a.mean(axis=1) if a.ndim == 2 else a, obj.sr))
+            self.bg_recent.append(label)
+        if not sources:
+            return None
+        secs = rng.uniform(20.0, 32.0)
+        tex = build_texture(sources, self.sr, secs, self.pcfg["width"],
+                            max(0.3, self.pcfg["movement"]), rng)
+        if tex is None:
+            return None
+        if self.pcfg["level_match"]:
+            tex, _ = level_match(tex, self.pcfg["bg_db"], max_boost_db=18.0, peak_ceiling=0.5)
+        name = "texture from " + " + ".join(p[0] for p in picks)
+        v = Voice(tex, "bg", name, 0.0, gain=0.0, rate=1.0 / 3.0)
+        return v
+
+    def _ambient_loop(self):
+        """Keeps the space alive and balanced: a quiet background texture made
+        from the performance's own material whenever there is material; it
+        recedes (-9 dB) while the performer plays or when two answers sound,
+        -4.5 dB under one answer, and comes back over ~1.5 s.  Secondary
+        voices dip -4.5 dB while the performer plays.  A new texture starts
+        3.5 s before the current one ends (they crossfade)."""
+        pc = self.pcfg
+        try:
+            while not self.stop_ev.is_set():
+                time.sleep(0.1)
+                self._check_fault("ambient")
+                self.mixer.sweep()
+                act = self.mixer.active()
+                fg = [v for v in act if v.role == "fg"]
+                bg = [v for v in act if v.role == "bg"]
+                perf = time.time() - self.t_performer < 1.0
+                duck = 1.0
+                if perf or len(fg) >= 2:
+                    duck = 0.35
+                elif len(fg) == 1:
+                    duck = 0.6
+                # the microphone hears the speakers strongly (the leakage
+                # warning level): a continuous background would be heard as a
+                # performer - it pauses (2 s fade), resumes below -23 dB
+                if self.leak_db is not None and self.leak_db > -20:
+                    self.bg_paused = True
+                elif self.leak_db is None or self.leak_db < -23:
+                    self.bg_paused = False
+                if self.bg_paused:
+                    for v in bg:
+                        v.fade_out(2.0)
+                    if pc["background"]:
+                        self.bg_state = "paused (microphone hears the speakers)"
+                    continue
+                for v in bg:
+                    v.target = duck
+                    v.rate = 0.5
+                for v in act:
+                    if v.role == "sec":
+                        v.target = 0.6 if perf else 1.0
+                        v.rate = 1.0
+                if not (pc["background"] and self.a.play):
+                    continue
+                since = time.time() - self.t_texture
+                # a new texture: crossfade near the end of the current one, or
+                # after a taken-over one - but never more than one per 8 s (4 s
+                # when there is none at all): no thrashing under dense answers
+                need = (not bg and since > 4.0) or \
+                    (bg and min(v.remaining_s(self.sr) for v in bg) < 3.5 and since > 8.0)
+                if need and len(act) < pc["max_voices"]:
+                    v = self._new_texture()
+                    if v is None:
+                        if not bg:
+                            self.bg_state = "waiting for material"
+                        continue
+                    v.target = duck
+                    self.mixer.add(v)
+                    self.t_texture = time.time()
+                    self.c["textures"] += 1
+                    self.log("background: voice %d %s (%.0f s)" %
+                             (v.id, v.name, v.n / float(self.sr)), True)
+                    bg = bg + [v]
+                if bg:
+                    self.bg_state = "on" if duck >= 0.99 else "receding"
+        except Exception as ex:                              # noqa: BLE001
+            import traceback
+            self.fatal = "ambient worker failed: %s" % ex
             self.log(self.fatal + " | " + traceback.format_exc().replace("\n", " | "), True)
             self.stop_ev.set()
 
@@ -3934,12 +4911,22 @@ class Engine:
     def status_pairs(self, final=False):
         lk = "none" if self.leak_db is None else fnum(self.leak_db, 1)
         mc = self.memory.counts()
+        act = self.mixer.active()
+        nfg = [v for v in act if v.role == "fg"]
+        nsec = sum(1 for v in act if v.role == "sec")
+        nbg = sum(1 for v in act if v.role == "bg")
+        playing = " + ".join(v.name for v in nfg)
         return [
             ("state", self.state), ("stage", self.stage), ("mode", "continuous"),
             ("memory", "on" if self.mcfg["enabled"] else "off"),
             ("listening", "on" if (self.state == "running" and not final) else "off"),
             ("phrase", 1 if self.det.state == "PHRASE" else 0),
-            ("processing", self.processing), ("playing", self.playing),
+            ("processing", self.processing), ("playing", playing),
+            ("voices", len(act)), ("voices_fg", len(nfg)), ("voices_sec", nsec),
+            ("voices_bg", nbg), ("max_voices", self.pcfg["max_voices"]),
+            ("background", self.bg_state if self.pcfg["background"] else "off"),
+            ("bg_gain", fnum(max([v.gain for v in act if v.role == "bg"] or [0.0]), 3)),
+            ("polyphony", "on" if self.pcfg["polyphony"] else "off"),
             ("pending", len(self.phrase_q) + len(self.render_q) + len(self.play_q)),
             ("pending_render", len(self.render_q)), ("pending_play", len(self.play_q)),
             ("phrases", self.c["phrases"]), ("done", self.c["done"]),
@@ -3957,15 +4944,38 @@ class Engine:
         ]
 
     def write_status(self, final=False):
+        """v0.3.2: status.txt is replaced atomically.  On Windows the rename
+        fails while Praat has the file open (sharing violation); that is
+        retried briefly, and if it still fails the update is skipped - the
+        next one follows 0.1 s later.  A failure streak is logged once with
+        its cause and once when it ends; the count goes to the summary.
+        The FINAL status (Praat waits for it) is retried for up to 5 s."""
         path = os.path.join(self.session, "status.txt")
-        for _ in range(5):
+        tries = 250 if final else 5
+        err = None
+        for _ in range(tries):
             try:
                 write_kv_atomic(path, self.status_pairs(final))
-                return
-            except PermissionError:                         # Windows: file being read
+                if self.status_fail_streak:
+                    self.log("status file writable again after %d failed update(s)" %
+                             self.status_fail_streak, True)
+                    self.status_fail_streak = 0
+                return True
+            except OSError as ex:                          # PermissionError = locked
+                err = ex
+                if not os.path.isdir(self.session):
+                    break
                 time.sleep(0.02)
-            except OSError:
-                return
+        try:
+            os.remove(path + ".tmp")                       # never leave a half file
+        except OSError:
+            pass
+        self.c["status_write_failures"] += 1
+        if self.status_fail_streak == 0:
+            self.log("WARNING: status update failed (%s: %s) - retrying with the next update" %
+                     (type(err).__name__, err), True)
+        self.status_fail_streak += 1
+        return False
 
     # ---------------- main ----------------
     def run(self):
@@ -4007,7 +5017,8 @@ class Engine:
             return self.finish("error", "cannot open audio devices: %s" % ex)
         threads = [threading.Thread(target=f, name=n, daemon=True) for f, n in (
             (self._detect_loop, "detect"), (self._brain_loop, "brain"),
-            (self._render_loop, "render"), (self._play_loop, "play"))]
+            (self._render_loop, "render"), (self._play_loop, "play"),
+            (self._ambient_loop, "ambient"))]
         reason, state = "", "stopped"
         try:
             self.in_stream.start()
@@ -4025,6 +5036,15 @@ class Engine:
                               "on" if a.leak_guard else "off",
                               "on" if self.mcfg["enabled"] else "off", a.response_mode,
                               a.sim_mode, self.memory.seed), True)
+        pc = self.pcfg
+        self.log("playback: polyphony %s, max voices %d, density %.2f, width %.2f, movement %.2f, "
+                 "pan variation %.2f, fades %.0f/%.0f ms, transients %s, level matching %s, "
+                 "background %s (%.0f dB)" % (
+                     "on" if pc["polyphony"] else "off", pc["max_voices"], pc["density"],
+                     pc["width"], pc["movement"], pc["pan_variation"], 1000 * pc["fade_in"],
+                     1000 * pc["fade_out"], "kept" if pc["transients"] else "faded",
+                     "on" if pc["level_match"] else "off",
+                     "on" if pc["background"] else "off", pc["bg_db"]), True)
         stop_file = os.path.join(self.session, "stop.request")
         alive_file = os.path.join(self.session, "praat_alive.txt")
         t_last_status = 0.0
@@ -4047,7 +5067,7 @@ class Engine:
                     reason = "session length reached (%.0f min)" % a.session_minutes
                 if (not reason and a.idle_stop > 0 and now - self.t_activity > a.idle_stop
                         and self.det.state != "PHRASE" and not self.processing
-                        and not self.playing and len(self.phrase_q) + len(self.render_q)
+                        and not self.mixer.active("fg") and len(self.phrase_q) + len(self.render_q)
                         + len(self.play_q) == 0):
                     reason = "no phrase for %.0f s" % a.idle_stop
                 if not reason:
@@ -4070,10 +5090,20 @@ class Engine:
         # ---- STOP REQUESTED -> WORKERS STOPPED ----
         self.state, self.stage, self.message = "stopping", "stop_requested", reason
         self.write_status()
+        # v0.4.0: fade the whole mix out before anything stops - no click
+        self.mixer.fade_all(STOP_FADE_S)
+        t_f = time.time()
+        while self.mixer.master > 1e-4 and time.time() - t_f < STOP_FADE_S + 0.3:
+            try:
+                if self.out_stream is None or not self.out_stream.active:
+                    break
+            except Exception:                                # noqa: BLE001
+                break
+            time.sleep(0.02)
+        time.sleep(0.03)
         self.stop_ev.set()
         for q_ in (self.phrase_q, self.render_q, self.play_q):
             q_.close()
-        self.cur = None
         self.renderer.kill()                             # only our own Praat child
         for t in threads:
             t.join(5)
@@ -4126,11 +5156,17 @@ class Engine:
                          self.c["phrases"], self.c["done"], self.c["dropped"], self.c["failed"],
                          self.c["passthrough"], self.c["leak_discarded"], self.c["overruns"],
                          self.c["input_status"], self.c["output_status"]))
+        lines.append("status_write_failures=%d" % self.c["status_write_failures"])
         lines.append("memory live=%d processed=%d preloaded=%d answers transform=%d recall=%d "
                      "recall_transform=%d evicted=%d" % (
                          mc["A"], mc["B"], mc["C"], self.c["kind_transform"],
                          self.c["kind_recall"], self.c["kind_recall_transform"],
                          self.memory.evicted))
+        mx = self.mixer
+        lines.append("playback voices_max=%d secondary=%d textures=%d stolen=%d peak=%.3f "
+                     "limiter_max_reduction=%.1f dB" % (
+                         mx.max_active, self.c["voices_secondary"], self.c["textures"],
+                         self.c["voices_stolen"], mx.peak_out, mx.max_reduction_db))
         if self.delays:
             d = np.array(self.delays)
             lines.append("delay phrase end -> answer: mean %.2f s, min %.2f s, max %.2f s" %
@@ -4212,7 +5248,7 @@ def cmd_serve(args):
                 os.path.exists(os.path.join(args.session, "stop.request"))):
             return 1                  # Praat gave up (or stopped) while we were loading
     except Exception as ex:                                  # noqa: BLE001
-        write_kv_atomic(os.path.join(args.session, "status.txt"),
+        write_kv_retry(os.path.join(args.session, "status.txt"),
                         [("state", "error"), ("message", "missing Python package: %s" % ex)])
         return 1
     eng = None
@@ -4232,7 +5268,7 @@ def cmd_serve(args):
             except Exception:                                # noqa: BLE001
                 pass
         try:
-            write_kv_atomic(os.path.join(args.session, "status.txt"),
+            write_kv_retry(os.path.join(args.session, "status.txt"),
                             [("state", "error"), ("message", msg)])
         except OSError:
             pass
@@ -4341,6 +5377,19 @@ def main(argv=None):
     p.add_argument("--c-max-per-file", dest="c_max_per_file", type=int, default=20)
     p.add_argument("--c-min-item-s", dest="c_min_item_s", type=float, default=0.5)
     p.add_argument("--seed", type=int, default=0)
+    # ---- v0.4.0 polyphonic spatial playback ----
+    p.add_argument("--polyphony", type=int, default=1)
+    p.add_argument("--max-voices", dest="max_voices", type=int, default=4)
+    p.add_argument("--density", type=float, default=0.5)
+    p.add_argument("--stereo-width", dest="stereo_width", type=float, default=1.0)
+    p.add_argument("--movement", type=float, default=0.3)
+    p.add_argument("--pan-variation", dest="pan_variation", type=float, default=0.5)
+    p.add_argument("--fade-in-ms", dest="fade_in_ms", type=float, default=30.0)
+    p.add_argument("--fade-out-ms", dest="fade_out_ms", type=float, default=400.0)
+    p.add_argument("--preserve-transients", dest="preserve_transients", type=int, default=1)
+    p.add_argument("--level-match", dest="level_match", type=int, default=1)
+    p.add_argument("--background", type=int, default=1)
+    p.add_argument("--background-db", dest="background_db", type=float, default=-33.0)
     p = sub.add_parser("cleanup")
     p.add_argument("--session", required=True)
     p.add_argument("--wait", type=float, default=15.0)
@@ -4421,7 +5470,7 @@ def _serve_boot(argv):
 
 def _boot_status(sess, state, message):
     try:
-        write_kv_atomic(os.path.join(sess, "status.txt"),
+        write_kv_retry(os.path.join(sess, "status.txt"),
                         [("state", state), ("message", message),
                          ("uptime", fnum(time.perf_counter() - T_PROCESS_START, 1))])
     except Exception:                                        # noqa: BLE001

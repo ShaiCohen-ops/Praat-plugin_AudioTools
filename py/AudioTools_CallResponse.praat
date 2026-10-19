@@ -3,7 +3,7 @@
 # Script:      AudioTools_CallResponse.praat
 # Author:      Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
-# Version:     0.3.1 (2026) - Cleanup & Session Safety (Sonic Memory Upgrade from v0.2.0)
+# Version:     0.4.0 (2026) - Polyphonic Spatial Playback (from v0.3.2)
 # License:     MIT License
 # Repository:  https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -38,6 +38,67 @@
 #     Unchanged v0.1.3 behaviour: one blocking listen, render, Play.
 #   Selected Sound(s) / Test all six / List audio devices
 #     As in v0.1.3 (List now shows output devices too).
+#
+# Changelog v0.4.0 - Polyphonic spatial playback (from v0.3.2):
+#   The analysis, classifier, six transformations and their parameters,
+#   Sonic Memory (corpora, retrieval, decisions) and the v0.3.1 / v0.3.2
+#   session-safety rules are unchanged.  New is the PLAYBACK architecture:
+#   POLYPHONY: answers no longer wait for each other.  Every answer is a
+#     voice in a mixer (default max 4 voices): new gestures are answered
+#     while earlier answers still sound.  Roles: response (foreground),
+#     layer (a related or independent sound from memory entering 0.6-3.5 s
+#     later, on the phrase's pulse if it is rhythmic, quieter, elsewhere in
+#     space; probability = Polyphonic_density) and background.  Priority:
+#     response > layer > background; a full mixer fades out (0.25 s) the
+#     oldest background, then the oldest layer.  Polyphony off = the v0.3
+#     one-answer-at-a-time order.
+#   BACKGROUND: once there is material, a quiet (-33 dBFS) evolving texture
+#     made from the performance's own sounds (memory + latest answers;
+#     aligned overlapping grains, slow movement, gentle low-pass) keeps the
+#     space from falling silent.  It recedes -9 dB while the performer
+#     plays or two answers sound (-4.5 dB under one), returns over ~1.5 s,
+#     crossfades into a new texture every 20-30 s.  Before the first sound
+#     exists it stays silent (no synthetic noise); with a Corpus C folder it
+#     starts at once.  It PAUSES while the microphone hears the speakers
+#     strongly (leakage above -20 dB).
+#   SPACE: equal-power panning of mono sources, preserved stereo sources
+#     (mid/side width + equal-power balance), positions chosen away from
+#     sounding voices, answers alternating sides, slow movement (two
+#     incommensurate sines).  No decorrelation, no phase tricks (mono-safe),
+#     |pan| <= 0.85.  Stereo_width, Spatial_movement, Pan_variation.
+#   ENVELOPES: raised-cosine fade-in (30 ms, <= 15 % of the sound; 1 ms
+#     anti-click ramp for transient starts - attacks are kept) and fade-out
+#     (400 ms, <= 30 %; >= 0.5 s for an answer cut by Max_response_s);
+#     smooth gain ramps for ducking and voice stealing; the whole mix fades
+#     out (150 ms) before the engine stops.
+#   LEVEL: optional level matching per role (-18 / -24 / -33 dBFS active
+#     RMS), a peak limiter (ceiling -0.5 dBFS) on the sum.
+#   LEAKAGE: the guard follows the LOUDER output channel; the phrase check
+#     also fits the two channels separately (a voice panned to the speaker
+#     the microphone hears best) and tolerates +-3 ms of clock drift; the
+#     leak estimate decays only with evidence that the path is gone; extra
+#     4 dB guard margin while only the background sounds.
+#   UI: one new form field, Playback_settings (dialog: polyphony, max
+#     voices, density, background + level, width, movement, pan variation,
+#     fade-in/out, transients, level matching).  Display: VOICES line.
+#
+# Changelog v0.3.2 - Status-file robustness (from v0.3.1):
+#   Musical behaviour, memory, retrieval, the six transformations and the
+#   v0.3.1 session-safety rules are unchanged.
+#   FIX (Windows error 13): Praat no longer stops when a read of status.txt
+#     collides with the engine replacing it.  Status reads are guarded; a
+#     failed or incomplete read (no end=1) is skipped and the last complete
+#     status is kept.  Heartbeat and stop-request writes are guarded too.
+#   FIX: "the engine process never ran" is reported only if NO complete
+#     status was ever read.  An engine that did run but whose status stays
+#     unreadable for 30 s is stopped with its own message.
+#   FIX: the engine retries a status update that hits a locked file, logs
+#     the first failure of a streak (with its cause) and the recovery,
+#     counts failures (summary: status_write_failures) and retries the
+#     FINAL status for up to 5 s.  No half-written .tmp file is left.
+#   Cleanup after an unexpected Praat stop: unchanged v0.3.1 path - the
+#     engine notices the missing heartbeat after 20 s and removes its own
+#     session (only its own: PID + start time).
 #
 # Changelog v0.3.1 - Cleanup & Session Safety (from v0.3.0):
 #   Only session lifecycle / deletion changed; musical behaviour, retrieval
@@ -134,7 +195,7 @@
 #     session / idle limits).
 # ============================================================
 
-form: "AudioTools Call & Response 0.3.1"
+form: "AudioTools Call & Response 0.4.0"
     optionmenu: "Source", 1
         option: "Live - continuous (v0.2)"
         option: "Live - turn-taking (v0.1.3)"
@@ -163,9 +224,9 @@ form: "AudioTools Call & Response 0.3.1"
         option: "Transform only (v0.2)"
         option: "Recall"
         option: "Recall + Transform"
-    comment: "Preloaded corpus C: a folder of sound files (empty = none; read only)"
     sentence: "Corpus_C_folder", ""
     boolean: "Memory_settings", 0
+    boolean: "Playback_settings", 0
     boolean: "Debug_log", 0
     boolean: "Advanced_settings", 0
 endform
@@ -180,7 +241,7 @@ praatExe$ = ""
 # ------------------------------------------------------------------------
 waitTimeout = 30
 preroll = 0.25
-version$ = "0.3.1"
+version$ = "0.4.0"
 diagnostics = 0
 
 # ---- Advanced settings: defaults (also used when the dialog is skipped) ----
@@ -195,6 +256,20 @@ idle_stop_s = 300
 leakage_guard = 1
 play_response = 1
 maxResponse = max_response_s
+
+# ---- Playback settings (v0.4.0): defaults (also used when the dialog is skipped) ----
+polyphony = 1
+max_voices = 4
+polyphonic_density = 0.5
+background_layer = 1
+background_level_dB = -33
+stereo_width = 1.0
+spatial_movement = 0.3
+pan_variation = 0.5
+fade_in_ms = 30
+fade_out_ms = 400
+preserve_transients = 1
+level_matching = 1
 
 # ---- Sonic memory settings: defaults (also used when the dialog is skipped) ----
 use_live_corpus_A = 1
@@ -334,7 +409,7 @@ endif
 
 # ---- Advanced dialog (GUI only; keep the box unticked for batch runs) ----
 if advanced_settings
-    beginPause: "Call & Response 0.3.1 - advanced"
+    beginPause: "Call & Response 0.4.0 - advanced"
         comment: "Audio"
         positive: "Sample_rate", string$ (sample_rate)
         natural: "Channels", string$ (channels)
@@ -357,11 +432,35 @@ if advanced_settings
 endif
 
 # ---- Sonic memory dialog (continuous mode) ----
+# ---- Playback dialog (v0.4.0, continuous mode) ----
+if playback_settings and source = 1
+    beginPause: "Call & Response 0.4.0 - playback"
+        comment: "Polyphony"
+        boolean: "Polyphony", polyphony
+        natural: "Max_voices", string$ (max_voices)
+        real: "Polyphonic_density", string$ (polyphonic_density)
+        boolean: "Background_layer", background_layer
+        real: "Background_level_dB", string$ (background_level_dB)
+        comment: "Space (0..1)"
+        real: "Stereo_width", string$ (stereo_width)
+        real: "Spatial_movement", string$ (spatial_movement)
+        real: "Pan_variation", string$ (pan_variation)
+        comment: "Envelopes"
+        positive: "Fade_in_ms", string$ (fade_in_ms)
+        positive: "Fade_out_ms", string$ (fade_out_ms)
+        boolean: "Preserve_transients", preserve_transients
+        boolean: "Level_matching", level_matching
+    pbClicked = endPause: "Cancel", "Start", 2, 1
+    if pbClicked = 1
+        exitScript: "Cancelled."
+    endif
+endif
+
 if memory_settings and sonic_memory and source = 1
     memPage = 1
     while memPage > 0
         if memPage = 1
-            beginPause: "Call & Response 0.3.1 - sonic memory"
+            beginPause: "Call & Response 0.4.0 - sonic memory"
                 comment: "Corpora (C also needs Corpus_C_folder in the main form)"
                 boolean: "Use_live_corpus_A", use_live_corpus_A
                 boolean: "Use_processed_corpus_B", use_processed_corpus_B
@@ -390,7 +489,7 @@ if memory_settings and sonic_memory and source = 1
             endif
             memPage = if memClicked = 2 then 2 else 0 fi
         else
-            beginPause: "Call & Response 0.3.1 - memory limits"
+            beginPause: "Call & Response 0.4.0 - memory limits"
                 natural: "Max_generation", string$ (max_generation)
                 natural: "Max_live_phrases", string$ (max_live_phrases)
                 natural: "Max_processed_responses", string$ (max_processed_responses)
@@ -1292,7 +1391,14 @@ procedure continuousSession
         ... "--max-ram-min", fixed$ (max_audio_memory_min, 3), "--max-item-s", fixed$ (max_item_s, 3),
         ... "--candidates", string$ (candidates), "--evolving", string$ (evolving_memory),
         ... "--layered", string$ (layered_response), "--recent-exclude", string$ (exclude_recent_phrases),
-        ... "--cooldown", string$ (cooldown_recalls), "--same-family", string$ (same_family_exclusion)
+        ... "--cooldown", string$ (cooldown_recalls), "--same-family", string$ (same_family_exclusion),
+        ... "--polyphony", string$ (polyphony), "--max-voices", string$ (max_voices),
+        ... "--density", fixed$ (polyphonic_density, 3), "--background", string$ (background_layer),
+        ... "--background-db", fixed$ (background_level_dB, 2), "--stereo-width", fixed$ (stereo_width, 3),
+        ... "--movement", fixed$ (spatial_movement, 3), "--pan-variation", fixed$ (pan_variation, 3),
+        ... "--fade-in-ms", fixed$ (fade_in_ms, 2), "--fade-out-ms", fixed$ (fade_out_ms, 2),
+        ... "--preserve-transients", string$ (preserve_transients),
+        ... "--level-match", string$ (level_matching)
 
     .statusFile$ = session$ + "/status.txt"
     .stopFile$ = session$ + "/stop.request"
@@ -1305,6 +1411,9 @@ procedure continuousSession
     .tStop = 0
     .lastMsg$ = ""
     .tChange = .t0
+    .everGot = 0
+    .lastGood = .t0
+    statusReadFailures = 0
     lastShown$ = ""
     engineState$ = "starting"
     st$ = newline$ + "state=starting" + newline$
@@ -1313,16 +1422,28 @@ procedure continuousSession
         sleep (0.2)
         .now = clock ()
         if .now - .lastBeat >= 1
-            writeFileLine: .aliveFile$, fixed$ (.now - .t0, 2)
+            # v0.3.2: a failed heartbeat write (file briefly locked) is
+            # simply retried next second - it never stops the session
+            nocheck writeFileLine: .aliveFile$, fixed$ (.now - .t0, 2)
             .lastBeat = .now
         endif
+        # v0.3.2: the engine replaces status.txt up to 10x per second; on
+        # Windows a read can collide with that (error 13).  A failed or
+        # incomplete read is ignored and the last complete status is kept.
         .got = 0
-        if fileReadable (.statusFile$)
-            .raw$ = newline$ + readFile$ (.statusFile$)
-            if index (.raw$, newline$ + "state=") > 0
+        @safeRead: .statusFile$
+        if safeRead.ok
+            .raw$ = newline$ + safeRead.text$
+            if index (.raw$, newline$ + "state=") > 0 and index (.raw$, newline$ + "end=1") > 0
                 st$ = .raw$
                 .got = 1
             endif
+        endif
+        if .got
+            .everGot = 1
+            .lastGood = .now
+        elsif fileReadable (.statusFile$) or .everGot
+            statusReadFailures += 1
         endif
         if .got
             engineState$ = extractLine$ (st$, newline$ + "state=")
@@ -1341,20 +1462,30 @@ procedure continuousSession
                 stopNote$ = "the engine start-up stalled for 60 s ("
                     ... + .msgNow$ + ")"
                 st$ = newline$ + "state=error" + newline$ + "message=" + stopNote$ + newline$
-                writeFileLine: .stopFile$, "stop"
+                nocheck writeFileLine: .stopFile$, "stop"
                 .running = 0
             endif
-        elsif .now - .t0 > 20
+        elsif .everGot and .now - .lastGood > 30
+            # v0.3.2: the engine did run, but no complete status could be
+            # read for 30 s (not a start-up failure)
+            engineState$ = "error"
+            stopNote$ = "the engine status could not be read for 30 s (" + string$ (statusReadFailures)
+                ... + " failed reads)"
+            st$ = newline$ + "state=error" + newline$ + "message=" + stopNote$ + newline$
+            nocheck writeFileLine: .stopFile$, "stop"
+            .running = 0
+        elsif not .everGot and .now - .t0 > 20
             # the engine writes its first status before any import, so this
             # means the engine process never ran at all
             engineState$ = "error"
             .how$ = "no launch record"
-            if fileReadable (session$ + "/launch.txt")
-                .how$ = "launched as " + replace$ (readFile$ (session$ + "/launch.txt"), newline$, " ", 0)
+            @safeRead: session$ + "/launch.txt"
+            if safeRead.ok
+                .how$ = "launched as " + replace$ (safeRead.text$, newline$, " ", 0)
             endif
             stopNote$ = "the engine process never ran (no status file after 20 s; " + .how$ + ")"
             st$ = newline$ + "state=error" + newline$ + "message=" + stopNote$ + newline$
-            writeFileLine: .stopFile$, "stop"
+            nocheck writeFileLine: .stopFile$, "stop"
             .running = 0
         endif
         if .stopSent and .running and .now - .tStop > 15
@@ -1397,7 +1528,7 @@ procedure continuousSession
                     endif
                 endif
                 if .hit
-                    writeFileLine: .stopFile$, "stop"
+                    nocheck writeFileLine: .stopFile$, "stop"
                     .stopSent = 1
                     .tStop = .now
                 endif
@@ -1416,6 +1547,26 @@ procedure demoStopHit
     elsif demoKeyPressed ()
         .key$ = demoKey$ ()
         .hit = .key$ = unicode$ (27) or .key$ = "s" or .key$ = "S"
+    endif
+endproc
+
+procedure safeRead: .path$
+    # v0.3.2: read a text file WITHOUT stopping the script when the read
+    # fails (Windows sharing violation / error 13, file being replaced,
+    # missing file).  .ok = 0 on failure.  Uses a temporary Strings object
+    # (removed at once); the Objects-window selection is cleared.
+    .ok = 0
+    .text$ = ""
+    selectObject ( )
+    nocheck Read Strings from raw text file: .path$
+    if numberOfSelected ("Strings") = 1
+        .n = Get number of strings
+        for .i to .n
+            .line$ = Get string: .i
+            .text$ = .text$ + .line$ + newline$
+        endfor
+        Remove
+        .ok = 1
     endif
 endproc
 
@@ -1458,6 +1609,10 @@ procedure buildDisplay: .stopping
             display$ = display$ + "READY" + newline$
         endif
         display$ = display$ + "PENDING: " + .pend$ + newline$
+        @voiceLine
+        if voiceLine.txt$ <> ""
+            display$ = display$ + voiceLine.txt$ + newline$
+        endif
         @memoryLines
         display$ = display$ + memoryLines.txt$
         if .leak$ = "1"
@@ -1474,6 +1629,31 @@ procedure buildDisplay: .stopping
             display$ = display$ + "STOPPED - " + .why$ + newline$
         endif
         display$ = display$ + cleanupReport$ + newline$
+    endif
+endproc
+
+procedure voiceLine
+    # v0.4.0: "VOICES: 3/4 (2 responses, 1 layer, background)"
+    .txt$ = ""
+    @stField: "voices"
+    .n$ = stField.v$
+    if .n$ = ""
+        .n$ = "0"
+    endif
+    @stField: "max_voices"
+    .mx$ = stField.v$
+    @stField: "voices_fg"
+    .fg$ = stField.v$
+    @stField: "voices_sec"
+    .sec$ = stField.v$
+    @stField: "background"
+    .bg$ = stField.v$
+    @stField: "polyphony"
+    if stField.v$ = "on"
+        .s1$ = if .fg$ = "1" then "" else "s" fi
+        .s2$ = if .sec$ = "1" then "" else "s" fi
+        .txt$ = "VOICES: " + .n$ + "/" + .mx$ + " (" + .fg$ + " response" + .s1$ + ", "
+            ... + .sec$ + " layer" + .s2$ + ", background " + .bg$ + ")"
     endif
 endproc
 
@@ -1565,12 +1745,18 @@ procedure drawDemo: .stopping
             @dtext: 50, 50, 26, "{0.20, 0.48, 0.75}", "PROCESSING: " + .proc$
         endif
         if .play$ <> ""
-            @dtext: 50, 40, 26, "{0.48, 0.36, 0.72}", "PLAYING: " + .play$
+            # several answers can sound at once (v0.4.0): smaller type if long
+            .psz = if length (.play$) > 40 then 18 else 26 fi
+            @dtext: 50, 42, .psz, "{0.48, 0.36, 0.72}", "PLAYING: " + .play$
         endif
         if .proc$ = "" and .play$ = "" and .pend$ = "0"
             @dtext: 50, 45, 26, "{0.35, 0.35, 0.50}", "READY"
         endif
-        @dtext: 50, 32, 18, "{0.25, 0.25, 0.35}", "PENDING: " + .pend$ + "      ANSWERS: " + .done$
+        @voiceLine
+        if voiceLine.txt$ <> ""
+            @dtext: 50, 36, 14, "{0.48, 0.36, 0.72}", voiceLine.txt$
+        endif
+        @dtext: 50, 31, 16, "{0.25, 0.25, 0.35}", "PENDING: " + .pend$ + "      ANSWERS: " + .done$
         @memoryLines
         if memoryLines.on$ = "on"
             .memTxt$ = "MEMORY:  A " + memoryLines.a$ + "  |  B " + memoryLines.b$ + "  |  C " + memoryLines.c$
@@ -1649,13 +1835,15 @@ if continuous
     # ---- read the hand-over files, THEN delete everything, THEN report ----
     sumFile$ = session$ + "/summary.txt"
     sm$ = ""
-    if fileReadable (sumFile$)
-        sm$ = newline$ + readFile$ (sumFile$)
+    @safeRead: sumFile$
+    if safeRead.ok
+        sm$ = newline$ + safeRead.text$
     endif
     errFile$ = session$ + "/engine_stderr.txt"
     err$ = ""
     if engineState$ = "error" and fileReadable (errFile$)
-        err$ = readFile$ (errFile$)
+        @safeRead: errFile$
+        err$ = safeRead.text$
     endif
     @cleanup
     @buildDisplay: 0
@@ -1668,6 +1856,14 @@ if continuous
         mm$ = extractLine$ (sm$, newline$ + "memory ")
         if mm$ <> ""
             final$ = final$ + "memory " + mm$ + newline$
+        endif
+        pb$ = extractLine$ (sm$, newline$ + "playback ")
+        if pb$ <> ""
+            final$ = final$ + "playback " + pb$ + newline$
+        endif
+        sw$ = extractLine$ (sm$, newline$ + "status_write_failures=")
+        if sw$ <> "" and sw$ <> "0"
+            final$ = final$ + "status file: " + sw$ + " delayed write(s) by the engine (recovered)" + newline$
         endif
         dl$ = extractLine$ (sm$, newline$ + "delay ")
         if dl$ <> ""
@@ -1709,6 +1905,10 @@ if continuous
         if err$ <> ""
             final$ = final$ + newline$ + "Python engine error output:" + newline$ + err$ + newline$
         endif
+    endif
+    if statusReadFailures > 0
+        final$ = final$ + "status file: " + string$ (statusReadFailures)
+            ... + " incomplete or blocked read(s) skipped (last good status kept)" + newline$
     endif
     writeInfoLine: final$
     exitScript: ""
