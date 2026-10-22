@@ -3,240 +3,147 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.6.1 (2026) - Output/reporting precision fixes
+# Version: 0.7.1 (2026) - Split-band generator, linked stereo layer
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Virtual Subharmonic Generator — phantom bass enhancement
-#   (MaxxBass-style harmonic generation) plus optional Mid-Side
-#   stereo widening with an optional low-cut on the Side channel.
+#   Virtual Subharmonic Generator - phantom bass enhancement
+#   (MaxxBass-style "missing fundamental" harmonics).
 #
-#   The "phantom bass" trick: extract the bass band, run it
-#   through tanh waveshaping to generate upper harmonics, filter
-#   those harmonics, and add them on top of the high-passed
-#   original. Because tanh is an odd (symmetric) function, a
-#   balanced sinusoid mostly generates ODD harmonics (3f, 5f,
-#   7f...); even harmonics (2f, 4f...) only appear from input
-#   asymmetry, DC offset, or complex program material, and are
-#   not guaranteed. The added upper harmonics can reinforce the
-#   perceived bass on playback systems that reproduce the
-#   fundamental poorly — but note the fundamental itself is NOT
-#   removed from the signal: Highpass_freq is typically well
-#   below Bass_high_freq, so a wide band of low-frequency energy
-#   normally survives the high-pass stage and remains audible
-#   alongside the added harmonics.
+#   Architecture (v0.7+):
 #
-#   Pipeline:
-#     1. Split into L and R channels
-#     2. Extract bass band [Bass_low_freq, Bass_high_freq] per channel
-#        (optionally normalized to a reference peak first — see
-#        Bass_reference_mode — so Drive behaves consistently
-#        across sources of different loudness)
-#     3. tanh waveshape with Drive -> generates (mostly odd) harmonics
-#     4. Bandpass-filter harmonics to [Bass_high_freq, Harmonic_lowpass]
-#     5. High-pass the original L/R at Highpass_freq (clears low end)
-#     6. Add harmonics onto the high-passed signal, scaled by
-#        Harmonic_level (this is an addition gain, not a dry/wet
-#        crossfade — see v0.4 changelog)
-#     7. Optional M/S widening with an optional low-cut on the side
-#        signal (see Mono_bass_side_lowcut)
-#     8. Recombine to stereo and apply the selected Output_mode
+#       y = D{x} + g * H{x}
 #
-#   Stereo width parameter behavior: the Side signal is multiplied
-#   by `Stereo_width`. So 0 = mono collapse, 1 = identity (no
-#   change), >1 = widen, <1 = narrow.
+#     D  direct path. By default the identity: the original
+#        samples, untouched (no filter, no stereo change, no
+#        normalisation). Only the opt-in "Small-Speaker
+#        Replacement" preset / Original_low_cut setting turns it
+#        into a low-cut, which is the classic MaxxBass replacement.
+#     H  enhancement layer, computed in a separate branch:
+#          1. bass band  B = band-pass[Bass_low, Bass_high], split
+#             into three log-spaced sub-bands that are shaped
+#             separately (default; see v0.7.1 changelog)
+#          2. nonlinear residual  N = (tanh(k*B) - k*B) / s
+#             (the waveshaper MINUS its own linear part, so the
+#             layer contains distortion products only - the bass
+#             fundamental is not re-added through the layer;
+#             k = Drive * s, s = optional bass reference scale)
+#          3. harmonic band  H = band-pass[Bass_high + edge,
+#             Harmonic_lowpass]
+#     g  Harmonic_level (linear addition gain).
+#
+#   With Harmonic_level = 0 and Original_low_cut = 0 the output is
+#   sample-identical to the input (same channel count, same start
+#   time, same level) in the default Output_mode.
+#
+#   Because tanh is odd-symmetric, a balanced sinusoid mostly
+#   produces ODD harmonics (3f, 5f, ...). The script does not create
+#   true subharmonics (f/2, f/3); it reinforces the PERCEIVED bass via
+#   upper harmonics, which is what the "virtual" in the name means.
+#   Polyphonic bass material also produces intermodulation products.
+#
+#   Filter design: bass-band, sub-band crossover and harmonic-band
+#   lower-edge filters use smoothing of at most 20 Hz, so each cutoff
+#   is the -6 dB point of a clean transition. The harmonic band's
+#   UPPER edge is deliberately gentler (up to 100 Hz). v0.6.1 used a fixed 100 Hz,
+#   which on a 90 Hz-wide bass band overlapped both transitions:
+#   measured response 0.99 at 120 Hz, 0.50 at 130 Hz, 0.35 at 10 Hz.
+#
+#   Optional creative stereo processing (M/S width, Side low-cut) is
+#   OFF by default and applies to stereo input only.
 #
 # Citation:
 #   Cohen, S. (2025). Praat AudioTools: An Offline Analysis-Resynthesis
 #   Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
-# Changelog v0.6.1 (2026):
-#   - UI/REPORTING/VISUALIZATION precision fixes only; the audio DSP,
-#     valid-range parameter mapping and preset numeric values are unchanged.
-#   - Output mode 1 renamed to Preserve rendered level (safety attenuation
-#     only); mode 3 renamed to Attenuate to target only if peak > target.
-#   - Normalize_target is validated only in the two modes that use it, and
-#     must satisfy 0 < target <= 1.
-#   - Near-silence reporting is now mode-aware: Preserve no longer claims
-#     that normalization was skipped when no normalization was requested.
-#   - Advanced dialog now states which fields named presets overwrite.
-#   - Preset 5 renamed Bass-Centered Narrowing; its numeric values are
-#     unchanged. The Side low-cut centers low-frequency stereo difference;
-#     it is not a general mono-compatibility switch.
-#   - Side low-cut status now reports inactive when M/S processing is off.
-#   - Visualization now reports Bass_reference_mode and Output_mode, and
-#     only draws the Side low-cut badge when that processing is active.
+# Changelog v0.7.1 (2026) - DSP refinement; v0.7 output is reproduced
+# to 1e-16 by Harmonic_generator = Single band + Bass_reference
+# = file peak + Stereo_layer = Per channel. Measured on sines (Drive 3):
+#   - Three-sub-band generator (default): the bass band is split by
+#     successive subtraction (sums exactly), each sub-band shaped alone.
+#     60 + 80 Hz together: intermodulation/harmonic energy +13.5 dB ->
+#     -8.8 dB.
+#   - Sub-band equalisation, measured at run time on a sine at each
+#     sub-band centre (boost cap +12 dB), plus more drive for deeper
+#     sub-bands ((top centre / centre) ^ 0.5). Layer level across 30-110
+#     Hz fundamentals: spread 23 dB -> ~6 dB (30 Hz -35.6 -> -16.7 dB,
+#     40 Hz -29.6 -> -10.8 dB; 60-110 Hz ~ -11 to -14 dB). 30 Hz remains
+#     ~5 dB below the rest: only its 5th harmonic and up pass the band.
+#   - Stereo_layer = Linked (default): one layer from the mono bass,
+#     spread by each channel's bass RMS. 60 Hz at 5:1 L/R -> added
+#     harmonics 5.0:1 (per-channel shaping gives 42.7:1).
+#   - Bass reference (default): gated RMS level (frames within 30 dB of
+#     the loudest), boost capped at +24 dB. One 20 ms hit lowered the
+#     layer on the rest of a file by 16.9 dB with the file-peak
+#     reference; now 0.2 dB.
+#   - Default preset is Subtle Enhancement.
+#   - Info and figure report the layer relative to the input's own
+#     energy in the harmonic band. Spectrum panel is now a per-channel
+#     energy average instead of a mono sum.
+#   - Known, unchanged: Hann filters are zero-phase, so the layer can
+#     start slightly before a bass onset (measured -28 to -44 dB re the
+#     sustained layer in the last 100 ms before a hard 40-90 Hz onset).
+#   - Not done: level-dependent (windowed) dynamic control of the layer.
 #
-# Changelog v0.6 (2026):
-#   - FORM COMPACTION ONLY; audio/DSP, presets, parameter mapping,
-#     analysis, rendering and the v0.5 visualization are unchanged.
-#   - Main form now exposes only the musically central controls:
-#     preset, bass band, drive, harmonic addition level, M/S widening
-#     and stereo width, plus Draw/Play.
-#   - Technical controls moved to an optional Advanced settings pause:
-#     high-pass and harmonic-lowpass filters, bass-reference mode/peak,
-#     Side low-cut, output policy/target and near-silence threshold.
-#   - Advanced defaults are exactly the former v0.5 main-form defaults.
+# Changelog v0.7 (2026) - AUDIO/DSP CHANGE, not bit-compatible with 0.6.x:
+#   - Direct path is no longer high-passed. The layer is added to the
+#     untouched original (y = x + g*H{x}, was HP{x} + g*H{x}).
+#     Identity test: Harmonic_level = 0 returns the input exactly.
+#   - Waveshaper output now has its linear term removed
+#     (tanh(k*B) - k*B), so the "harmonic branch" no longer carries a
+#     filtered copy of the bass fundamental back into the mix. Its
+#     harmonics are the same as 0.6.1's tanh(k*B) at equal Drive, so
+#     Harmonic_level keeps its meaning (preset levels unchanged).
+#   - Bass and harmonic filters: smoothing 100 Hz -> <= 20 Hz, and the
+#     harmonic band now starts a full transition above Bass_high, so
+#     the fundamental region is rejected (v0.6.1: 0.345 at 100 Hz).
+#   - Bass_reference normalisation (now the default) uses ONE peak for
+#     all channels, so the layer keeps the source's inter-channel
+#     balance (v0.6.1 normalised L and R separately).
+#   - Any channel count is processed and preserved: mono stays mono,
+#     >2 channels are all kept (v0.6.1 forced stereo and discarded
+#     channels 3+).
+#   - M/S processing moved to Advanced, OFF by default, stereo only.
+#     Default width 1.0 (v0.6.1 default 0.5 narrowed the image).
+#   - Output_mode default: Preserve rendered level (was Normalize to
+#     0.95). The safety ceiling only acts when processing pushes the
+#     peak above both 0.999 and the input peak.
+#   - Presets reworked; Bass-Centered Narrowing and Wide Stereo removed
+#     (stereo is no longer part of bass enhancement). runScript callers
+#     using those option texts must be updated. New opt-in preset
+#     "Small-Speaker Replacement" keeps the classic low-cut behaviour,
+#     named for what it does.
+#   - Presets are applied BEFORE the Advanced dialog, which opens
+#     pre-filled with the preset's values; edits there now stick.
+#   - New optional output: difference object (output - input) for QA.
+#   - Info reports layer level, RMS change and difference peak.
+#   - Visualization: parallel signal-flow diagram, measured long-term
+#     spectrum (input / output / difference, log frequency), and the
+#     difference waveform on the input's amplitude scale.
 #
-# Changelog v0.5 (2026):
-#   - VISUALIZATION STANDARDIZATION ONLY; audio/DSP, analysis,
-#     parameter mapping and rendering logic are unchanged.
-#   - Adopted the Praat AudioTools 8-inch page convention with
-#     explicit inner viewports, standard title/subtitle, suite
-#     typography, neutral panel backgrounds, summary strip and
-#     full-page Picture export viewport.
-#   - Preserved the script-specific nonlinear/diagnostic panels;
-#     the visualization remains a direct explanation of the
-#     transformation rather than a generic replacement plot.
-#
-# Changelog v0.4 (QA fixes):
-#   - FIXED (blocker): visualization used hardcoded 0-based time
-#     ranges (Get absolute extremum / Axes / Draw all started at
-#     0). Any Sound with a non-zero start time (e.g. extracted
-#     from 2.5-3.5 s) made Panel C's zoom window fall outside the
-#     object's domain, crashing with "value undefined" on the
-#     Axes call. Panel C now reads the real start/end time of
-#     `original` and `result` and zooms relative to that; Panel D
-#     now draws using the result's actual start/end time instead
-#     of an assumed 0-finalDur range.
-#   - FIXED (blocker): `Scale peak: 0.95` ran unconditionally at
-#     the end, so silence, near-silence, and numerical residue
-#     (peaks as low as 1e-15) were amplified to a near-full-scale
-#     0.95. Replaced with an Output_mode choice (Preserve input
-#     level / Normalize to target / Normalize only if it exceeds
-#     target / Legacy always-normalize) plus a configurable
-#     near-silence threshold (Near_silence_dB) below which
-#     normalization is skipped and reported instead of applied.
-#   - FIXED (blocker): `Harmonic_mix` was documented as a dry/wet
-#     control ("0 = dry") but the signal is always high-passed
-#     before mixing, so 0 produced a high-passed original, not a
-#     dry signal (measured correlation with true dry: ~0.80).
-#     Renamed to `Harmonic_level` and re-documented as an addition
-#     gain (output = high-passed source + harmonics * level), which
-#     is what the code actually does.
-#   - FIXED (blocker): header/comments claimed the waveshaper
-#     generates "2f, 3f, 4f..." harmonics. tanh() is odd-symmetric,
-#     so a balanced input predominantly generates odd harmonics
-#     (3f, 5f, 7f...); measured even-harmonic levels were >100 dB
-#     below the 3rd harmonic on a clean sine. Description and
-#     Panel A text corrected.
-#   - FIXED (blocker): the "Wide Stereo" preset used
-#     Stereo_width=0.8, which narrows (per the documented
-#     width<1=narrow, width>1=widen semantics), not widens. Set to
-#     1.4. "Aggressive MaxxBass" also used a narrowing width (0.7)
-#     despite its name implying a bigger effect; set to 1.3.
-#   - FIXED (blocker): no validation of frequency relationships.
-#     Bass_low>=Bass_high, Bass_high>=Harmonic_lowpass,
-#     Highpass/Harmonic_lowpass/Bass_high at or above Nyquist all
-#     ran silently before. These combinations now exitScript with
-#     a clear message. Harmonic_level and Stereo_width are still
-#     allowed to go negative or beyond 0-1 (documented, musically
-#     meaningful: phase-inverted addition / side polarity reversal),
-#     but the script now reports when that's happening.
-#   - Bass band (Bass_low_freq/Bass_high_freq) is now part of each
-#     preset definition, so a preset's result no longer silently
-#     depends on whatever is left in the Custom fields.
-#   - Added Bass_reference_mode: optionally normalizes the
-#     extracted bass band to Bass_reference_peak before waveshaping
-#     (then rescales the resulting harmonics back down), so Drive
-#     has a more consistent effect independent of input loudness.
-#   - Multichannel input (>2 channels) is now explicitly handled:
-#     channels 1 and 2 are used and a warning is printed reporting
-#     how many channels were discarded (previously silent).
-#   - Renamed `Preserve_mono_compatibility` to
-#     `Mono_bass_side_lowcut`: the M/S math already guarantees
-#     L'+R' = 2M regardless of this setting, so it was never really
-#     protecting mono fold-down — it removes low-frequency stereo
-#     difference information from the Side channel, which is what
-#     the new name/label says.
-#   - Removed the two mid-pipeline `@peakSafety` calls: since every
-#     stage between them and the final output stage is linear, they
-#     were fully undone by the final peak-scaling step (verified:
-#     <3.3e-16 difference with them removed). The Output_mode logic
-#     now includes its own safety ceiling.
-#   - Info report now prints input peak, harmonic-branch peak,
-#     pre-output peak, and the final normalization factor actually
-#     applied (or "skipped, near-silent"); explicitly states the
-#     output is always stereo; and reports whether Harmonic_level
-#     or Stereo_width are set outside their normal [0,1] range.
-#   - "Mixing harmonics (X%)" wording replaced with "Harmonic
-#     addition gain: X" to stop implying a crossfade percentage.
-#   - Panel A's diagram draws 5 stages (Input, Bass->Harmonics,
-#     HP+Mix, M/S Width, Output); header/changelog text corrected
-#     from "4 stages" to match.
-#
-# Changelog v0.3:
-#   - REMOVED: Haas effect stage entirely. v0.2's Haas formula
-#     wrote `if col > delay then self[col - delay] * level else 0 fi`
-#     into the same Sound it was modifying — the read of self at
-#     col - delay always saw the cell that earlier in iteration
-#     had been overwritten with 0 (because at col=delay the else
-#     branch ran). Net effect: the "delayed" Sound was zero
-#     everywhere, the subsequent mix produced just an attenuated
-#     copy of the original, and the Haas effect was inaudible.
-#     The presets had been tuned to v0.2's silent-Haas sound, so
-#     repairing the bug would change every preset's character.
-#     v0.3 removes the stage. The four other processing stages
-#     (bass extract, harmonic generation, high-pass, M/S) remain
-#     unchanged. v0.2 audio output is preserved bit-identically
-#     for the Haas-disabled path; v0.2 with Haas-enabled produced
-#     the same as the new v0.3 output minus the small attenuation
-#     from the (1 - haas_mix) factor — so v0.3's audio with
-#     same parameters is approximately 0.5-3 dB louder than v0.2
-#     with Haas-enabled. Worth flagging for level-matched A/B.
-#   - Form: removed Apply_haas, Haas_delay_ms, Haas_mix,
-#     Level_difference_dB. Adjusted preset definitions
-#     accordingly.
-#   - Form syntax modernized: optionmenu uses colon.
-#   - Pre-computed status strings for the summary bar
-#     (replaces an inline if/then/else fi in v0.2's
-#     appendInfoLine, which is unreliable in Praat's
-#     script-level expression context).
-#   - Visualization rewritten to suite 8x8 standard:
-#       Title bar + metadata subtitle
-#       Panel A (left, headline): processing-chain diagram
-#         showing the 4 stages
-#       Panel B (right, headline): parameter report
-#       Panel C: zoom overlay (original gray + enhanced
-#         purple, first 30 ms) - shows the harmonic content
-#         added in the bass region
-#       Panel D: output waveform with L/R distinguished
-#       Panel E: summary stats bar
-#   - Header documents the stereo_width math semantic
-#     (which v0.2 didn't explain) so users understand
-#     why values < 1 narrow rather than widen.
-# Changelog v0.2:
-#   - Added input check
-#   - Fixed selection syntax (use object IDs)
-#   - Fixed formula syntax (string building)
-#   - Fixed name-based references
-#   - Added visualization
+# Earlier history (0.2-0.6.1) condensed:
+#   0.6.1 output/reporting wording; 0.6 Advanced pause dialog;
+#   0.5 visualization standardization; 0.4 QA fixes (domain-relative
+#   drawing, near-silence normalisation guard, Harmonic_mix renamed
+#   Harmonic_level, odd-harmonic documentation, frequency validation);
+#   0.3 removed the non-functional Haas stage; 0.2 syntax fixes.
 # ============================================================
 
-form Virtual Subharmonic Generator v0.6.1
+form Virtual Subharmonic Generator v0.7.1
     comment Select a Sound object first
-
-    comment === Preset ===
-    optionmenu Preset: 1
+    optionmenu Preset: 2
         option Custom (use settings below)
         option Subtle Enhancement
-        option Moderate Effect
-        option Aggressive MaxxBass
-        option Bass-Centered Narrowing
-        option Wide Stereo
-
-    comment === Phantom Bass ===
+        option Moderate Enhancement
+        option Strong Enhancement
+        option Small-Speaker Replacement (cuts original lows)
+    comment === Phantom bass layer (added to the untouched original) ===
     positive Bass_low_freq 30
     positive Bass_high_freq 120
     positive Drive 3.0
     real Harmonic_level 0.6
-
-    comment === Stereo ===
-    boolean Apply_MS_widening 1
-    real Stereo_width 0.5
-
     boolean Advanced_settings 0
     boolean Draw_visualization 1
     boolean Play_result 1
@@ -256,174 +163,181 @@ duration = Get total duration
 numChannels = Get number of channels
 xminOrig = Get start time
 xmaxOrig = Get end time
+inputPeak = Get absolute extremum: 0, 0, "None"
+inputRms = Get root-mean-square: 0, 0
 nyquist = sr / 2
 
-# === Advanced defaults (identical to the v0.5 main-form defaults) ===
-highpass_freq = 100
+# === Advanced defaults ===
 harmonic_lowpass = 800
-bass_reference_mode = 1
+original_low_cut = 0
+bass_reference_mode = 2
 bass_reference_peak = 0.5
-mono_bass_side_lowcut = 1
-output_mode = 2
+apply_MS_width = 0
+stereo_width = 1.0
+mono_bass_side_lowcut = 0
+output_mode = 1
 normalize_target = 0.95
 near_silence_dB = -80
+keep_difference = 0
+harmonic_generator = 1
+stereo_layer = 2
 
-# Praat permits only one form...endform block. Optional secondary controls
-# therefore use beginPause/endPause and appear only when requested.
-if advanced_settings
-    beginPause: "Virtual Subharmonic Generator v0.6.1 - Advanced settings"
-        comment: "Named presets overwrite Highpass, Harmonic LP and Side low-cut below."
-        comment: "Bass reference and Output settings remain active with presets."
-        comment: "=== Harmonic branch filtering ==="
-        positive: "Highpass_freq", "100"
-        positive: "Harmonic_lowpass", "800"
-
-        comment: "=== Bass reference ==="
-        optionmenu: "Bass_reference_mode", 1
-            option: "Preserve bass level (Drive scales with input loudness)"
-            option: "Normalize bass before waveshaping (Drive is level-independent)"
-        positive: "Bass_reference_peak", "0.5"
-
-        comment: "=== Side channel ==="
-        boolean: "Mono_bass_side_lowcut", 1
-        comment: "(removes low-frequency content from Side only)"
-
-        comment: "=== Output level ==="
-        optionmenu: "Output_mode", 2
-            option: "Preserve rendered level (safety attenuation only)"
-            option: "Normalize to target"
-            option: "Attenuate to target only if peak > target"
-            option: "Legacy (always normalize to 0.95)"
-        real: "Normalize_target", "0.95"
-        real: "Near_silence_dB", "-80"
-        comment: "(below this peak level, normalization is skipped)"
-    clicked = endPause: "Continue", 1
-endif
-
-# === Apply Presets ===
-# Bass band is now part of every preset definition, so a preset's
-# result no longer silently depends on whatever is left in the
-# Custom fields (v0.3 QA finding: same preset + different leftover
-# bass band produced RMS difference of 0.093).
+# === Apply Presets (before the Advanced dialog, so it shows them) ===
 if preset = 2
-    # Subtle Enhancement
     bass_low_freq = 30
     bass_high_freq = 100
     drive = 2.0
     harmonic_level = 0.4
-    highpass_freq = 90
     harmonic_lowpass = 600
-    apply_MS_widening = 1
-    stereo_width = 0.3
-    mono_bass_side_lowcut = 1
+    original_low_cut = 0
     presetName$ = "Subtle"
 elsif preset = 3
-    # Moderate Effect
     bass_low_freq = 30
     bass_high_freq = 120
     drive = 3.0
     harmonic_level = 0.6
-    highpass_freq = 100
     harmonic_lowpass = 800
-    apply_MS_widening = 1
-    stereo_width = 0.5
-    mono_bass_side_lowcut = 1
+    original_low_cut = 0
     presetName$ = "Moderate"
 elsif preset = 4
-    # Aggressive MaxxBass
-    # v0.3 used stereo_width=0.7, which narrows despite the preset
-    # name suggesting a bigger effect. Widened to 1.3.
     bass_low_freq = 25
     bass_high_freq = 150
     drive = 5.0
     harmonic_level = 0.8
-    highpass_freq = 120
     harmonic_lowpass = 1000
-    apply_MS_widening = 1
-    stereo_width = 1.3
-    mono_bass_side_lowcut = 0
-    presetName$ = "Aggressive"
+    original_low_cut = 0
+    presetName$ = "Strong"
 elsif preset = 5
-    # Bass-Centered Narrowing
+    # Classic MaxxBass replacement for small speakers: the original's
+    # lows are cut and replaced by their harmonics. This preset
+    # deliberately modifies the original.
     bass_low_freq = 30
-    bass_high_freq = 110
-    drive = 2.5
-    harmonic_level = 0.5
-    highpass_freq = 100
-    harmonic_lowpass = 700
-    apply_MS_widening = 1
-    stereo_width = 0.4
-    mono_bass_side_lowcut = 1
-    presetName$ = "BassCentered"
-elsif preset = 6
-    # Wide Stereo
-    # v0.3 used stereo_width=0.8, which narrows the image by 20%
-    # (measured Side/Mid RMS 0.4 vs identity's 0.5). Fixed to 1.4,
-    # which actually widens per the documented width>1=widen rule.
-    bass_low_freq = 30
-    bass_high_freq = 130
-    drive = 3.5
-    harmonic_level = 0.65
-    highpass_freq = 100
-    harmonic_lowpass = 900
-    apply_MS_widening = 1
-    stereo_width = 1.4
-    mono_bass_side_lowcut = 0
-    presetName$ = "WideStereo"
+    bass_high_freq = 120
+    drive = 4.0
+    harmonic_level = 0.8
+    harmonic_lowpass = 800
+    original_low_cut = 100
+    presetName$ = "Replacement"
 else
     presetName$ = "Custom"
 endif
 
-# === Validate frequency relationships against each other and Nyquist ===
-# (v0.3 QA finding: none of these were checked; all ran silently
-# and produced a peak-0.95 output regardless of how nonsensical.)
+# Praat permits only one form...endform block. Optional secondary
+# controls use beginPause/endPause and appear only when requested.
+if advanced_settings
+    beginPause: "Virtual Subharmonic Generator v0.7.1 - Advanced settings"
+        comment: "Pre-filled with the current preset; edits here are applied."
+        positive: "Harmonic_lowpass", string$(harmonic_lowpass)
+        real: "Original_low_cut", string$(original_low_cut)
+        optionmenu: "Harmonic_generator", harmonic_generator
+            option: "Three sub-bands, equalised (less intermodulation)"
+            option: "Single band (v0.7)"
+        optionmenu: "Stereo_layer", stereo_layer
+            option: "Per channel (harmonics follow each channel bass)"
+            option: "Linked (one layer, spread by channel bass level)"
+        optionmenu: "Bass_reference_mode", bass_reference_mode
+            option: "Off: Drive scales with input loudness"
+            option: "Normalize to gated RMS level (robust)"
+            option: "Normalize to file peak (v0.7)"
+        positive: "Bass_reference_peak", string$(bass_reference_peak)
+        comment: "Original_low_cut 0 = untouched.  M/S below: stereo input only."
+        boolean: "Apply_MS_width", apply_MS_width
+        real: "Stereo_width", string$(stereo_width)
+        boolean: "Mono_bass_side_lowcut", mono_bass_side_lowcut
+        optionmenu: "Output_mode", output_mode
+            option: "Preserve rendered level (safety attenuation only)"
+            option: "Normalize to target"
+            option: "Attenuate to target only if peak > target"
+            option: "Legacy (always normalize to 0.95)"
+        real: "Normalize_target", string$(normalize_target)
+        real: "Near_silence_dB", string$(near_silence_dB)
+        boolean: "Keep_difference", keep_difference
+    clicked = endPause: "Continue", 1
+endif
+
+# === Filter geometry ===
+# Every Hann transition spans [cutoff - w, cutoff + w], -6 dB at the
+# cutoff. Smoothing is kept at or below 20 Hz so transitions never
+# overlap inside the bass band.
+bassSmooth = min(20, (bass_high_freq - bass_low_freq) / 4)
+harmEdgeSmooth = min(20, bass_high_freq / 4)
+harmLowEdge = bass_high_freq + harmEdgeSmooth
+harmTopSmooth = min(100, (harmonic_lowpass - harmLowEdge) / 4)
+if original_low_cut > 0
+    lowCutSmooth = min(20, original_low_cut / 4)
+else
+    lowCutSmooth = 0
+endif
+
+# === Validation ===
 if bass_low_freq >= bass_high_freq
     exitScript: "Bass_low_freq (", bass_low_freq, " Hz) must be less than Bass_high_freq (", bass_high_freq, " Hz)."
-endif
-if bass_high_freq >= harmonic_lowpass
-    exitScript: "Bass_high_freq (", bass_high_freq, " Hz) must be less than Harmonic_lowpass (", harmonic_lowpass, " Hz)."
-endif
-if highpass_freq <= 0 or highpass_freq >= nyquist
-    exitScript: "Highpass_freq (", highpass_freq, " Hz) must be between 0 and the Nyquist frequency (", nyquist, " Hz)."
-endif
-if harmonic_lowpass >= nyquist
-    exitScript: "Harmonic_lowpass (", harmonic_lowpass, " Hz) must be below the Nyquist frequency (", nyquist, " Hz)."
 endif
 if bass_high_freq >= nyquist
     exitScript: "Bass_high_freq (", bass_high_freq, " Hz) must be below the Nyquist frequency (", nyquist, " Hz)."
 endif
-
-# Output target is meaningful only in modes 2 and 3. Preserve uses a fixed
-# 0.999 safety ceiling; Legacy uses its fixed 0.95 target.
+if harmonic_lowpass < bass_high_freq + 4 * harmEdgeSmooth
+    exitScript: "Harmonic_lowpass (", harmonic_lowpass, " Hz) must be at least ", bass_high_freq + 4 * harmEdgeSmooth, " Hz (Bass_high_freq plus room for the lower transition of the harmonic band)."
+endif
+if harmonic_lowpass >= nyquist
+    exitScript: "Harmonic_lowpass (", harmonic_lowpass, " Hz) must be below the Nyquist frequency (", nyquist, " Hz)."
+endif
+if original_low_cut < 0 or original_low_cut >= nyquist
+    exitScript: "Original_low_cut must be 0 (off) or between 0 and the Nyquist frequency."
+endif
 if output_mode = 2 or output_mode = 3
     if normalize_target <= 0 or normalize_target > 1
         exitScript: "Normalize_target must be greater than 0 and at most 1 in this Output_mode (got " + fixed$(normalize_target, 4) + ")."
     endif
 endif
 
-# Pre-compute status strings (replaces v0.2 inline ternary)
-if apply_MS_widening
+msActive = apply_MS_width and numChannels = 2
+linkedActive = stereo_layer = 2 and numChannels > 1
+
+# === Status strings ===
+if original_low_cut > 0
+    directStr$ = "LOW-CUT at " + fixed$(original_low_cut, 0) + " Hz (replacement)"
+    directShort$ = "low-cut " + fixed$(original_low_cut, 0) + " Hz"
+else
+    directStr$ = "untouched (identity)"
+    directShort$ = "untouched"
+endif
+if msActive
     msStr$ = "ON (width " + fixed$(stereo_width, 2) + ")"
+    if mono_bass_side_lowcut
+        monoStr$ = "ON (200 Hz)"
+    else
+        monoStr$ = "OFF"
+    endif
+elsif apply_MS_width
+    msStr$ = "requested, skipped (input is not stereo)"
+    monoStr$ = "inactive"
 else
-    msStr$ = "OFF"
+    msStr$ = "OFF (stereo untouched)"
+    monoStr$ = "inactive"
 endif
-
-if apply_MS_widening = 0
-    monoStr$ = "inactive (M/S off)"
-elsif mono_bass_side_lowcut
-    monoStr$ = "ON (200 Hz)"
-else
-    monoStr$ = "OFF"
-endif
-
 if bass_reference_mode = 2
-    bassRefStr$ = "ON (target peak " + fixed$(bass_reference_peak, 2) + ")"
-    bassRefShort$ = "normalize to " + fixed$(bass_reference_peak, 2)
+    bassRefStr$ = "gated RMS -> sine-equivalent peak " + fixed$(bass_reference_peak, 2) + " (boost cap +24 dB)"
+    bassRefShort$ = "gated RMS to " + fixed$(bass_reference_peak, 2)
+elsif bass_reference_mode = 3
+    bassRefStr$ = "file peak -> " + fixed$(bass_reference_peak, 2)
+    bassRefShort$ = "peak to " + fixed$(bass_reference_peak, 2)
 else
     bassRefStr$ = "OFF (level-dependent Drive)"
     bassRefShort$ = "level-dependent"
 endif
-
+if harmonic_generator = 1
+    genStr$ = "3 sub-bands, equalised"
+else
+    genStr$ = "single band"
+endif
+if linkedActive
+    stereoLayerStr$ = "linked"
+elsif numChannels > 1
+    stereoLayerStr$ = "per channel"
+else
+    stereoLayerStr$ = "mono"
+endif
 if output_mode = 1
     outputModeStr$ = "Preserve rendered level (safety attenuation only)"
     outputModeShort$ = "Preserve + safety"
@@ -441,265 +355,216 @@ endif
 nearSilenceLin = 10 ^ (near_silence_dB / 20)
 
 # === Info ===
-writeInfoLine: "=== Virtual Subharmonic Generator v0.6.1 ==="
+writeInfoLine: "=== Virtual Subharmonic Generator v0.7.1 ==="
 appendInfoLine: "Source: ", originalName$, " (", fixed$(duration, 2), " s, ", numChannels, " ch, starts at ", fixed$(xminOrig, 3), " s)"
 appendInfoLine: "Preset: ", presetName$
-appendInfoLine: "Output is always stereo, regardless of input channel count."
+appendInfoLine: "Channel count is preserved (", numChannels, " in, ", numChannels, " out)."
 appendInfoLine: ""
-appendInfoLine: "Phantom Bass:"
-appendInfoLine: "  Bass band: ", fixed$(bass_low_freq, 1), "-", fixed$(bass_high_freq, 1), " Hz"
-appendInfoLine: "  Drive: ", fixed$(drive, 2)
+appendInfoLine: "Direct path: ", directStr$
+appendInfoLine: "Enhancement layer:"
+appendInfoLine: "  Bass band: ", fixed$(bass_low_freq, 1), "-", fixed$(bass_high_freq, 1), " Hz (smoothing ", fixed$(bassSmooth, 1), " Hz)"
+appendInfoLine: "  Drive: ", fixed$(drive, 2), "   residual = tanh(kB) - kB"
+appendInfoLine: "  Harmonic band: ", fixed$(harmLowEdge, 1), "-", fixed$(harmonic_lowpass, 1), " Hz (edges ", fixed$(harmEdgeSmooth, 1), " / ", fixed$(harmTopSmooth, 1), " Hz)"
+appendInfoLine: "  Generator: ", genStr$, "   stereo layer: ", stereoLayerStr$
+appendInfoLine: "  Bass reference: ", bassRefStr$
 appendInfoLine: "  Harmonic addition gain: ", fixed$(harmonic_level, 2)
 if harmonic_level < 0
-    appendInfoLine: "    Note: negative -- harmonics are added phase-inverted."
-elsif harmonic_level > 1
-    appendInfoLine: "    Note: > 1 -- harmonics are boosted above their generated level."
+    appendInfoLine: "    Note: negative -- layer is added phase-inverted."
 endif
-appendInfoLine: "  Highpass: ", fixed$(highpass_freq, 1), " Hz"
-appendInfoLine: "  Harmonic LP: ", fixed$(harmonic_lowpass, 1), " Hz"
-appendInfoLine: "  Bass reference normalization: ", bassRefStr$
-appendInfoLine: "M/S widening: ", msStr$
-if apply_MS_widening and stereo_width < 0
-    appendInfoLine: "    Note: negative width -- Side polarity is inverted (L/R exchange character)."
+appendInfoLine: "M/S: ", msStr$
+if msActive and stereo_width < 0
+    appendInfoLine: "    Note: negative width -- Side polarity is inverted."
 endif
-appendInfoLine: "Bass-centered Side low-cut: ", monoStr$
+appendInfoLine: "Side low-cut: ", monoStr$
 appendInfoLine: "Output mode: ", outputModeStr$
 appendInfoLine: ""
 
 # ============================================================
-# PROCESSING
+# ENHANCEMENT LAYER  (all channels at once; filters act per channel)
 # ============================================================
 
-# Convert to stereo if mono; warn and use channels 1-2 for anything
-# wider than stereo (v0.3 QA finding: 4-channel input was silently
-# reduced to 2 channels with no warning or documented policy).
-if numChannels = 1
-    appendInfoLine: "Converting mono to stereo..."
-    selectObject: original
-    Convert to stereo
-    workingSound = selected("Sound")
+appendInfoLine: "Extracting bass band..."
+selectObject: original
+Filter (pass Hann band): bass_low_freq, bass_high_freq, bassSmooth
+bassBand = selected("Sound")
+bassPeak = Get absolute extremum: 0, 0, "None"
+bassRms = Get root-mean-square: 0, 0
+@gatedSinePeak: bassBand
+gatedPeak = gatedSinePeak.level
+appendInfoLine: "  Extracted bass peak: ", fixed$(bassPeak, 4), "   gated sine-equivalent level: ", fixed$(gatedPeak, 4)
+
+# One shared reference scale for all channels keeps the layer's
+# inter-channel balance at its input. Mode 2 uses the gated RMS level
+# (frames within 30 dB of the loudest), so one short bass hit no longer
+# sets the drive for the whole file; the boost is capped at +24 dB.
+refScale = 1
+if bass_reference_mode = 2 and gatedPeak > 0
+    refScale = min(16, bass_reference_peak / gatedPeak)
+elsif bass_reference_mode = 3 and bassPeak > 0
+    refScale = bass_reference_peak / bassPeak
+endif
+k = drive * refScale
+
+# --- sub-band split (log-spaced crossovers) ---
+deepDriveExp = 0.5
+if harmonic_generator = 1
+    nSub = 3
 else
-    if numChannels > 2
-        appendInfoLine: "WARNING: input has ", numChannels, " channels; using channels 1 and 2 only, discarding the other ", numChannels - 2, "."
+    nSub = 1
+endif
+for i to nSub
+    subLo[i] = bass_low_freq * (bass_high_freq / bass_low_freq) ^ ((i - 1) / nSub)
+    subHi[i] = bass_low_freq * (bass_high_freq / bass_low_freq) ^ (i / nSub)
+    subGain[i] = 1
+    subResp[i] = undefined
+endfor
+# Deeper sub-bands are shaped harder: only their high orders (5th and
+# up for a 30 Hz fundamental) reach the harmonic band, and more drive
+# moves tanh's energy toward those orders. Factor = (top-band centre /
+# this centre) ^ deepDriveExp (0.5: measured best compromise).
+for i to nSub
+    subDrive[i] = (sqrt(subLo[nSub] * subHi[nSub]) / sqrt(subLo[i] * subHi[i])) ^ deepDriveExp
+endfor
+for i to nSub - 1
+    xoW[i] = min(20, (subHi[i] - subLo[i]) / 3, (subHi[i + 1] - subLo[i + 1]) / 3)
+endfor
+
+# --- calibration: measure each sub-band's layer response on a sine at
+# its centre, at the level the real bass is shaped at, and equalise
+# the sub-bands to the strongest one (boost capped at +12 dB) ---
+if nSub > 1 and harmonic_level <> 0
+    if bass_reference_mode = 1
+        calAmp = gatedPeak
+        if calAmp <= 0
+            calAmp = 0.5
+        endif
+    else
+        calAmp = bass_reference_peak / refScale
     endif
-    selectObject: original
-    Copy: "working_temp"
-    workingSound = selected("Sound")
+    linkedSave = linkedActive
+    linkedActive = 0
+    respMax = 0
+    for i to nSub
+        calF = sqrt(subLo[i] * subHi[i])
+        Create Sound from formula: "vsg_cal", 1, 0, 1, sr, string$(calAmp) + " * sin(2 * pi * " + string$(calF) + " * x)"
+        calSrc = selected("Sound")
+        Filter (pass Hann band): bass_low_freq, bass_high_freq, bassSmooth
+        calBB = selected("Sound")
+        calIn = Get root-mean-square: 0.2, 0.8
+        @buildLayer: calBB
+        selectObject: buildLayer.layer
+        calOut = Get root-mean-square: 0.2, 0.8
+        subResp[i] = calOut / calIn
+        if subResp[i] > respMax
+            respMax = subResp[i]
+        endif
+        removeObject: calSrc, calBB, buildLayer.layer
+    endfor
+    for i to nSub
+        if subResp[i] > 0
+            subGain[i] = min(4, respMax / subResp[i])
+        else
+            subGain[i] = 4
+        endif
+    endfor
+    linkedActive = linkedSave
 endif
 
-# === STAGE 1: EXTRACT BASS CONTENT ===
-appendInfoLine: "Extracting bass (", bass_low_freq, "-", bass_high_freq, " Hz)..."
-
-selectObject: workingSound
-Extract one channel: 1
-leftChannel = selected("Sound")
-
-selectObject: workingSound
-Extract one channel: 2
-rightChannel = selected("Sound")
-
-# Filter bass from LEFT
-selectObject: leftChannel
-Copy: "bass_L_temp"
-bassLtemp = selected("Sound")
-Filter (pass Hann band): bass_low_freq, bass_high_freq, 100
-bassLfiltered = selected("Sound")
-removeObject: bassLtemp
-
-# Filter bass from RIGHT
-selectObject: rightChannel
-Copy: "bass_R_temp"
-bassRtemp = selected("Sound")
-Filter (pass Hann band): bass_low_freq, bass_high_freq, 100
-bassRfiltered = selected("Sound")
-removeObject: bassRtemp
-
-selectObject: bassLfiltered
-bassLpeak = Get absolute extremum: 0, 0, "None"
-selectObject: bassRfiltered
-bassRpeak = Get absolute extremum: 0, 0, "None"
-bassPeak = max(bassLpeak, bassRpeak)
-appendInfoLine: "  Extracted bass peak: ", fixed$(bassPeak, 4)
-
-# Optional: normalize the extracted bass to a reference peak before
-# waveshaping, so Drive has a consistent effect independent of how
-# loud the source is (v0.3 QA finding: at Drive=5 the 3rd-harmonic
-# level relative to the fundamental ranged from -143.7 dB at input
-# amplitude 0.0001 up to -0.94 dB at amplitude 1.0). The harmonic
-# branch is scaled back down by the same factor afterwards so it
-# stays proportionate to the original input level.
-refScaleL = 1
-refScaleR = 1
-if bass_reference_mode = 2
-    if bassLpeak > 0
-        refScaleL = bass_reference_peak / bassLpeak
-        selectObject: bassLfiltered
-        Formula: "self * " + string$(refScaleL)
+appendInfoLine: "Generating layer (k = ", fixed$(k, 3), ", ", nSub, " sub-band(s))..."
+for i to nSub
+    if subResp[i] = undefined
+        respStr$ = "not calibrated"
+    else
+        respStr$ = "response " + fixed$(20 * log10(subResp[i] + 1e-30), 1) + " dB"
     endif
-    if bassRpeak > 0
-        refScaleR = bass_reference_peak / bassRpeak
-        selectObject: bassRfiltered
-        Formula: "self * " + string$(refScaleR)
-    endif
+    appendInfoLine: "  ", fixed$(subLo[i], 1), "-", fixed$(subHi[i], 1), " Hz: ", respStr$, ", eq gain ", fixed$(20 * log10(subGain[i]), 1), " dB"
+endfor
+@buildLayer: bassBand
+layer = buildLayer.layer
+removeObject: bassBand
+
+selectObject: layer
+layerPeak = Get absolute extremum: 0, 0, "None"
+layerRms = Get root-mean-square: 0, 0
+appendInfoLine: "  Layer peak (before gain): ", fixed$(layerPeak, 4)
+
+# ============================================================
+# DIRECT PATH + SUM
+# ============================================================
+
+selectObject: original
+if original_low_cut > 0
+    appendInfoLine: "Direct path: low-cut at ", original_low_cut, " Hz (replacement mode)..."
+    Filter (stop Hann band): 0, original_low_cut, lowCutSmooth
+else
+    Copy: "vsg_direct"
 endif
+result = selected("Sound")
+Rename: originalName$ + "_vsg_" + presetName$
 
-# === STAGE 2: GENERATE HARMONICS VIA WAVESHAPING ===
-appendInfoLine: "Generating harmonics (drive=", drive, ")..."
+appendInfoLine: "Adding layer x ", fixed$(harmonic_level, 2), "..."
+Formula: "self + object[" + string$(layer) + ", row, col] * " + string$(harmonic_level)
+removeObject: layer
 
-drive_str$ = string$(drive)
+# ============================================================
+# OPTIONAL CREATIVE M/S (stereo only)
+# ============================================================
 
-# LEFT harmonics
-selectObject: bassLfiltered
-Copy: "harm_L_temp"
-harmLtemp = selected("Sound")
-Formula: "tanh(self * " + drive_str$ + ")"
-Filter (pass Hann band): bass_high_freq, harmonic_lowpass, 100
-harmLfiltered = selected("Sound")
-removeObject: harmLtemp
-if bass_reference_mode = 2 and refScaleL <> 0
-    selectObject: harmLfiltered
-    Formula: "self / " + string$(refScaleL)
-endif
+if msActive
+    appendInfoLine: "Applying M/S width ", stereo_width, "..."
+    selectObject: result
+    Extract one channel: 1
+    chL = selected("Sound")
+    selectObject: result
+    Extract one channel: 2
+    chR = selected("Sound")
+    lStr$ = string$(chL)
+    rStr$ = string$(chR)
 
-# RIGHT harmonics
-selectObject: bassRfiltered
-Copy: "harm_R_temp"
-harmRtemp = selected("Sound")
-Formula: "tanh(self * " + drive_str$ + ")"
-Filter (pass Hann band): bass_high_freq, harmonic_lowpass, 100
-harmRfiltered = selected("Sound")
-removeObject: harmRtemp
-if bass_reference_mode = 2 and refScaleR <> 0
-    selectObject: harmRfiltered
-    Formula: "self / " + string$(refScaleR)
-endif
-
-selectObject: harmLfiltered
-harmLpeak = Get absolute extremum: 0, 0, "None"
-selectObject: harmRfiltered
-harmRpeak = Get absolute extremum: 0, 0, "None"
-appendInfoLine: "  Harmonic-branch peak: ", fixed$(max(harmLpeak, harmRpeak), 4)
-
-# === STAGE 3: HIGH-PASS ORIGINAL CHANNELS ===
-appendInfoLine: "High-passing original at ", highpass_freq, " Hz..."
-
-selectObject: leftChannel
-Filter (stop Hann band): 0, highpass_freq, 100
-leftHP = selected("Sound")
-
-selectObject: rightChannel
-Filter (stop Hann band): 0, highpass_freq, 100
-rightHP = selected("Sound")
-
-removeObject: leftChannel, rightChannel
-
-# === STAGE 4: ADD HARMONICS ONTO THE HIGH-PASSED SIGNAL ===
-# This is an addition gain, not a dry/wet crossfade: the source is
-# already high-passed by this point, so Harmonic_level=0 yields a
-# high-passed original, not a dry signal (see v0.4 changelog).
-appendInfoLine: "Harmonic addition gain: ", fixed$(harmonic_level, 2)
-
-mix_str$ = string$(harmonic_level)
-harmL_str$ = string$(harmLfiltered)
-harmR_str$ = string$(harmRfiltered)
-
-selectObject: leftHP
-Formula: "self + object[" + harmL_str$ + "] * " + mix_str$
-
-selectObject: rightHP
-Formula: "self + object[" + harmR_str$ + "] * " + mix_str$
-
-# Cleanup intermediates
-removeObject: bassLfiltered, bassRfiltered, harmLfiltered, harmRfiltered
-
-# NOTE (v0.4): the mid-pipeline peak-safety call that used to run
-# here was removed. Every stage between here and the final output
-# stage is linear (addition, filtering, scaling), so it was fully
-# undone by the final peak-scaling step regardless of Output_mode
-# (verified: <3.3e-16 difference in the final output with/without
-# it). The final Output_mode logic includes its own safety ceiling.
-
-# === STAGE 5: MID-SIDE WIDENING (OPTIONAL) ===
-if apply_MS_widening
-    appendInfoLine: "Applying M/S widening (width=", stereo_width, ")..."
-    
-    left_str$ = string$(leftHP)
-    right_str$ = string$(rightHP)
-    width_str$ = string$(stereo_width)
-    
-    # Calculate Mid: M = (L + R) / 2
-    selectObject: leftHP
-    Copy: "mid_temp"
+    selectObject: chL
+    Copy: "vsg_mid"
     midSignal = selected("Sound")
-    Formula: "(object[" + left_str$ + "] + object[" + right_str$ + "]) / 2"
-    
-    # Calculate Side: S = ((L - R) / 2) * stereo_width
-    selectObject: leftHP
-    Copy: "side_temp"
+    Formula: "(object[" + lStr$ + ", col] + object[" + rStr$ + ", col]) / 2"
+
+    selectObject: chL
+    Copy: "vsg_side"
     sideSignal = selected("Sound")
-    Formula: "(object[" + left_str$ + "] - object[" + right_str$ + "]) / 2 * " + width_str$
-    
-    # Low-cut the Side channel below 200 Hz. Note this does NOT
-    # change the mono sum L'+R' = 2M, which holds regardless of
-    # this setting -- it simply removes low-frequency stereo
-    # difference information from the Side channel (keeps bass
-    # centered), which is what the option name says.
+    Formula: "(object[" + lStr$ + ", col] - object[" + rStr$ + ", col]) / 2 * " + string$(stereo_width)
+
     if mono_bass_side_lowcut
         selectObject: sideSignal
-        Filter (stop Hann band): 0, 200, 100
+        Filter (stop Hann band): 0, 200, 20
         sideFiltered = selected("Sound")
         removeObject: sideSignal
         sideSignal = sideFiltered
     endif
-    
-    mid_str$ = string$(midSignal)
-    side_str$ = string$(sideSignal)
-    
-    # Reconstruct L/R: L = M + S, R = M - S
-    selectObject: leftHP
-    Formula: "object[" + mid_str$ + "] + object[" + side_str$ + "]"
-    
-    selectObject: rightHP
-    Formula: "object[" + mid_str$ + "] - object[" + side_str$ + "]"
-    
-    removeObject: midSignal, sideSignal
+
+    selectObject: result
+    Formula: "if row = 1 then object[" + string$(midSignal) + ", col] + object[" + string$(sideSignal) + ", col] else object[" + string$(midSignal) + ", col] - object[" + string$(sideSignal) + ", col] fi"
+    removeObject: chL, chR, midSignal, sideSignal
 endif
 
-# === STAGE 6: COMBINE TO STEREO ===
-appendInfoLine: "Combining to stereo..."
+# ============================================================
+# OUTPUT LEVEL
+# ============================================================
 
-selectObject: leftHP, rightHP
-Combine to stereo
-result = selected("Sound")
-Rename: originalName$ + "_subharm_" + presetName$
-
-# Cleanup
-removeObject: leftHP, rightHP, workingSound
-
-# === OUTPUT LEVEL (Output_mode) ===
-# v0.3 always ran `Scale peak: 0.95` unconditionally, so silence
-# and near-silence (numerical residue as low as 1e-15) were
-# amplified to a near-full-scale 0.95. Below, normalization is
-# skipped and reported whenever the output peak is under the
-# Near_silence_dB threshold, in every mode that would otherwise
-# normalize.
 selectObject: result
 preOutputPeak = Get absolute extremum: 0, 0, "None"
 isNearSilent = preOutputPeak < nearSilenceLin
 normFactor = 1
 
 if output_mode = 1
-    # Preserve the rendered level. Only an over-full-scale result is
-    # attenuated to the fixed 0.999 safety ceiling.
-    if preOutputPeak > 0.999
-        normFactor = 0.999 / preOutputPeak
+    # Attenuate only if processing pushed the peak above the ceiling
+    # AND above the input's own peak, so an untouched full-scale input
+    # still passes the identity test.
+    if preOutputPeak > 0.999 and preOutputPeak > inputPeak
+        normFactor = max(0.999, inputPeak) / preOutputPeak
         Formula: "self * " + string$(normFactor)
-        outputActionDesc$ = "preserved rendered level; safety-attenuated to 0.999"
+        outputActionDesc$ = "preserved level; safety-attenuated to " + fixed$(max(0.999, inputPeak), 3)
     else
         outputActionDesc$ = "preserved rendered level; no output scaling"
     endif
 elsif output_mode = 2
-    # Normalize to target, except numerical/near silence.
     if isNearSilent
         outputActionDesc$ = "near-silent; normalization skipped"
     else
@@ -708,7 +573,6 @@ elsif output_mode = 2
         outputActionDesc$ = "normalized to " + fixed$(normalize_target, 3)
     endif
 elsif output_mode = 3
-    # Conditional attenuation: never raises a quieter signal.
     if isNearSilent
         outputActionDesc$ = "near-silent; attenuation not needed"
     elsif preOutputPeak > normalize_target
@@ -719,7 +583,6 @@ elsif output_mode = 3
         outputActionDesc$ = "below target; no attenuation"
     endif
 else
-    # Legacy: normalize to fixed 0.95, except numerical/near silence.
     if isNearSilent
         outputActionDesc$ = "near-silent; legacy normalization skipped"
     else
@@ -729,383 +592,407 @@ else
     endif
 endif
 
-# === Final stats ===
+# === Final stats + difference signal (output - input) ===
 selectObject: result
 finalDur = Get total duration
 finalPeak = Get absolute extremum: 0, 0, "None"
-nResultCh = Get number of channels
+outputRms = Get root-mean-square: 0, 0
+
+Copy: originalName$ + "_vsg_difference"
+diffSound = selected("Sound")
+Formula: "self - object[" + string$(original) + ", row, col]"
+diffPeak = Get absolute extremum: 0, 0, "None"
+diffRms = Get root-mean-square: 0, 0
+
+if inputRms > 0 and outputRms > 0
+    rmsChange$ = fixed$(20 * log10(outputRms / inputRms), 2) + " dB"
+else
+    rmsChange$ = "n/a"
+endif
+if inputRms > 0 and diffRms > 0
+    diffRel$ = fixed$(20 * log10(diffRms / inputRms), 1) + " dB re input RMS"
+elsif diffRms = 0
+    diffRel$ = "exactly zero (output = input)"
+else
+    diffRel$ = "n/a"
+endif
+# Layer relative to the ORIGINAL's own energy in the harmonic band:
+# how much the addition stands out where it is actually added.
+selectObject: original
+Filter (pass Hann band): harmLowEdge, 0, harmEdgeSmooth
+hbTmp = selected("Sound")
+Filter (pass Hann band): 0, harmonic_lowpass, harmTopSmooth
+hbOrig = selected("Sound")
+hbOrigRms = Get root-mean-square: 0, 0
+removeObject: hbTmp, hbOrig
+if hbOrigRms > 0 and layerRms > 0 and harmonic_level <> 0
+    bandRel$ = fixed$(20 * log10(abs(harmonic_level) * layerRms / hbOrigRms), 1) + " dB re input in " + fixed$(harmLowEdge, 0) + "-" + fixed$(harmonic_lowpass, 0) + " Hz"
+else
+    bandRel$ = "n/a"
+endif
+if bassRms > 0 and layerRms > 0 and harmonic_level <> 0
+    layerRel$ = fixed$(20 * log10(abs(harmonic_level) * layerRms / bassRms), 1) + " dB re bass-band RMS"
+else
+    layerRel$ = "n/a (no layer)"
+endif
 
 # ============================================================
-# VISUALIZATION  (8 x 8 canvas — suite standard)
+# VISUALIZATION  (8-inch page, suite standard)
 # ============================================================
 
 if draw_visualization
     pageHeight = 8.0
+    vizName$ = replace$(originalName$, "_", "\_ ", 0)
+    Erase all
     Line width: 1
     Colour: "Black"
     Solid line
-    vizName$ = replace$(originalName$, "_", "\_ ", 0)
-    Erase all
-    
-    # ----------------------------------------------------------
-    # TITLE BAR
-    # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 0, 0.52
+
+    # ---------------- TITLE BAR ----------------
+    Font size: 12
     Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
-    Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##Virtual Subharmonic Generator v0.6.1##"
+    Text: 0.5, "centre", 0.68, "half", "##Virtual Subharmonic Generator v0.7.1##"
     Font size: 7
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
+    Axes: 0, 1, 0, 1
     Colour: "{0.35, 0.35, 0.52}"
     Text: 0.5, "centre", 0.22, "half",
         ... vizName$
         ... + "  |  " + presetName$
-        ... + "  |  Bass " + fixed$(bass_low_freq, 0) + "-" + fixed$(bass_high_freq, 0) + " Hz"
-        ... + "  |  Drive: " + fixed$(drive, 2)
-        ... + "  |  Harm gain: " + fixed$(harmonic_level, 2)
+        ... + "  |  y = direct + " + fixed$(harmonic_level, 2) + " x layer"
+        ... + "  |  direct: " + directShort$
         ... + "  |  M/S: " + msStr$
-        ... + "  |  Side HP: " + monoStr$
-    
-    # ----------------------------------------------------------
-    # PANEL A: PROCESSING CHAIN  (left, headline)
-    # Vertical 5-stage diagram (Input, Bass->Harmonics, HP+Mix,
-    # M/S Width, Output; style matching Chaos Distortion v0.3 and
-    # Distortion+BitCrusher v0.3 for visual consistency)
-    # ----------------------------------------------------------
-    Select outer viewport: 0, 4, 0.75, 4.60
-    Select inner viewport: 0.60, 3.85, 0.95, 4.40
-    
+
+    # ---------------- PANEL A: SIGNAL FLOW ----------------
+    Font size: 7
+    Select inner viewport: 0.60, 3.85, 0.95, 3.90
     Axes: 0, 1, 0, 6
     Paint rectangle: "{0.97, 0.97, 0.97}", 0, 1, 0, 6
-    
-    # Stage 1: Input
-    yTop = 5.6
-    yBot = 5.0
-    Paint rectangle: "{0.85, 0.85, 0.88}", 0.10, 0.90, yBot, yTop
+
+    # Input
+    Paint rectangle: "{0.85, 0.85, 0.88}", 0.30, 0.70, 5.25, 5.75
     Colour: "Black"
-    Font size: 7
-    Text: 0.50, "centre", (yTop + yBot) / 2 + 0.10, "half", "INPUT"
-    Font size: 7
+    Text: 0.50, "centre", 5.58, "half", "INPUT"
     Colour: "{0.45, 0.45, 0.45}"
-    Text: 0.50, "centre", (yTop + yBot) / 2 - 0.13, "half", "(stereo audio)"
-    
+    Text: 0.50, "centre", 5.38, "half", string$(numChannels) + " ch"
+
+    # Split arrows
+    Select inner viewport: 0.60, 3.85, 0.95, 3.90
+    Axes: 0, 1, 0, 6
     Colour: "{0.45, 0.45, 0.45}"
-    Draw arrow: 0.50, 5.0, 0.50, 4.7
-    
-    # Stage 2: Bass extraction + harmonic generation
-    yTop = 4.6
-    yBot = 4.0
-    Paint rectangle: "{0.85, 0.70, 0.55}", 0.10, 0.90, yBot, yTop
+    Draw arrow: 0.40, 5.25, 0.22, 4.75
+    Draw arrow: 0.60, 5.25, 0.76, 4.95
+
+    # Direct path (left column, spans the layer stages)
+    if original_low_cut > 0
+        Paint rectangle: "{0.92, 0.78, 0.70}", 0.05, 0.40, 1.95, 4.70
+    else
+        Paint rectangle: "{0.80, 0.90, 0.80}", 0.05, 0.40, 1.95, 4.70
+    endif
     Colour: "Black"
-    Font size: 7
-    Text: 0.50, "centre", (yTop + yBot) / 2 + 0.10, "half", "BASS -> HARMONICS"
-    Font size: 7
+    Text: 0.225, "centre", 3.55, "half", "DIRECT"
+    Colour: "{0.30, 0.30, 0.30}"
+    if original_low_cut > 0
+        Text: 0.225, "centre", 3.25, "half", "low-cut"
+        Text: 0.225, "centre", 3.00, "half", fixed$(original_low_cut, 0) + " Hz"
+    else
+        Text: 0.225, "centre", 3.25, "half", "untouched"
+        Text: 0.225, "centre", 3.00, "half", "(identity)"
+    endif
+
+    # Layer stages (right column)
+    Paint rectangle: "{0.85, 0.70, 0.55}", 0.52, 0.98, 4.30, 4.90
+    Colour: "Black"
+    Text: 0.75, "centre", 4.72, "half", "BASS BAND"
     Colour: "{0.40, 0.20, 0.10}"
-    Text: 0.50, "centre", (yTop + yBot) / 2 - 0.13, "half",
-        ... fixed$(bass_low_freq, 0) + "-" + fixed$(bass_high_freq, 0)
-        ... + " Hz, tanh x" + fixed$(drive, 1)
-    
-    Colour: "{0.45, 0.45, 0.45}"
-    Draw arrow: 0.50, 4.0, 0.50, 3.7
-    
-    # Stage 3: HP + mix
-    yTop = 3.6
-    yBot = 3.0
-    Paint rectangle: "{0.65, 0.85, 0.65}", 0.10, 0.90, yBot, yTop
+    Text: 0.75, "centre", 4.48, "half", fixed$(bass_low_freq, 0) + "-" + fixed$(bass_high_freq, 0) + " Hz"
+    Paint rectangle: "{0.85, 0.70, 0.55}", 0.52, 0.98, 3.30, 3.90
     Colour: "Black"
-    Font size: 7
-    Text: 0.50, "centre", (yTop + yBot) / 2 + 0.10, "half", "HP + MIX"
-    Font size: 7
-    Colour: "{0.15, 0.40, 0.15}"
-    Text: 0.50, "centre", (yTop + yBot) / 2 - 0.13, "half",
-        ... "HP " + fixed$(highpass_freq, 0) + " Hz + harm * "
-        ... + fixed$(harmonic_level, 2)
-    
-    Colour: "{0.45, 0.45, 0.45}"
-    Draw arrow: 0.50, 3.0, 0.50, 2.7
-    
-    # Stage 4: M/S widening (optional)
-    yTop = 2.6
-    yBot = 2.0
-    if apply_MS_widening
-        Paint rectangle: "{0.65, 0.65, 0.85}", 0.10, 0.90, yBot, yTop
+    Text: 0.75, "centre", 3.72, "half", "tanh RESIDUAL x " + string$(nSub)
+    Colour: "{0.40, 0.20, 0.10}"
+    if nSub > 1
+        Text: 0.75, "centre", 3.48, "half", "sub-bands, equalised, drive " + fixed$(drive, 1)
     else
-        Paint rectangle: "{0.85, 0.85, 0.88}", 0.10, 0.90, yBot, yTop
+        Text: 0.75, "centre", 3.48, "half", "drive " + fixed$(drive, 1) + ", linear removed"
     endif
+    Paint rectangle: "{0.85, 0.70, 0.55}", 0.52, 0.98, 2.30, 2.90
     Colour: "Black"
-    Font size: 7
-    Text: 0.50, "centre", (yTop + yBot) / 2 + 0.10, "half", "M/S WIDTH"
-    Font size: 7
-    if apply_MS_widening
-        Colour: "{0.15, 0.15, 0.40}"
-        Text: 0.50, "centre", (yTop + yBot) / 2 - 0.13, "half",
-            ... "S * " + fixed$(stereo_width, 2)
-    else
-        Colour: "{0.55, 0.55, 0.55}"
-        Text: 0.50, "centre", (yTop + yBot) / 2 - 0.13, "half", "off"
-    endif
-    
+    Text: 0.75, "centre", 2.72, "half", "HARMONIC BAND"
+    Colour: "{0.40, 0.20, 0.10}"
+    Text: 0.75, "centre", 2.48, "half", fixed$(harmLowEdge, 0) + "-" + fixed$(harmonic_lowpass, 0) + " Hz, x " + fixed$(harmonic_level, 2)
+
+    Select inner viewport: 0.60, 3.85, 0.95, 3.90
+    Axes: 0, 1, 0, 6
     Colour: "{0.45, 0.45, 0.45}"
-    Draw arrow: 0.50, 2.0, 0.50, 1.7
-    
-    # Stage 5: Output
-    yTop = 1.6
-    yBot = 1.0
-    Paint rectangle: "{0.65, 0.85, 0.75}", 0.10, 0.90, yBot, yTop
+    Draw arrow: 0.75, 4.30, 0.75, 3.92
+    Draw arrow: 0.75, 3.30, 0.75, 2.92
+    Draw arrow: 0.75, 2.30, 0.56, 1.55
+    Draw arrow: 0.225, 1.95, 0.44, 1.55
+
+    # Sum
+    Paint rectangle: "{0.65, 0.65, 0.85}", 0.30, 0.70, 1.00, 1.50
     Colour: "Black"
-    Font size: 7
-    Text: 0.50, "centre", (yTop + yBot) / 2 + 0.10, "half", "OUTPUT"
-    Font size: 7
+    Text: 0.50, "centre", 1.33, "half", "SUM"
+    Colour: "{0.15, 0.15, 0.40}"
+    if msActive
+        Text: 0.50, "centre", 1.13, "half", "then M/S x " + fixed$(stereo_width, 2)
+    else
+        Text: 0.50, "centre", 1.13, "half", "stereo untouched"
+    endif
+    Select inner viewport: 0.60, 3.85, 0.95, 3.90
+    Axes: 0, 1, 0, 6
+    Colour: "{0.45, 0.45, 0.45}"
+    Draw arrow: 0.50, 1.00, 0.50, 0.75
+    Paint rectangle: "{0.65, 0.85, 0.75}", 0.30, 0.70, 0.20, 0.70
+    Colour: "Black"
+    Text: 0.50, "centre", 0.53, "half", "OUTPUT"
     Colour: "{0.15, 0.40, 0.30}"
-    Text: 0.50, "centre", (yTop + yBot) / 2 - 0.13, "half", "(enhanced stereo)"
-    
-    # Side low-cut badge
-    if apply_MS_widening and mono_bass_side_lowcut
-        Font size: 6
-        Colour: "{0.55, 0.30, 0.30}"
-        Text: 0.50, "centre", 0.50, "half", "[side HP @ 200 Hz]"
-    endif
-    
+    Text: 0.50, "centre", 0.33, "half", outputModeShort$
+
+    Select inner viewport: 0.60, 3.85, 0.95, 3.90
+    Axes: 0, 1, 0, 6
     Colour: "Black"
     Draw inner box
-    
-    # ----------------------------------------------------------
-    # PANEL B: PARAMETER REPORT  (right, headline-height)
-    # ----------------------------------------------------------
-    Select outer viewport: 4, 8, 0.75, 4.60
-    Select inner viewport: 4.45, 7.70, 0.95, 4.40
 
+    # ---------------- PANEL B: PARAMETER REPORT ----------------
+    Font size: 6
+    Select inner viewport: 4.45, 7.70, 0.95, 3.90
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.97, 0.97, 0.97}", 0, 1, 0, 1
-
-    Font size: 6
     Colour: "{0.30, 0.30, 0.30}"
-    Text: 0.05, "left", 0.95, "half", "Phantom Bass:"
-
-    Colour: "{0.85, 0.55, 0.20}"
-    Text: 0.10, "left", 0.87, "half", "Bass: " + fixed$(bass_low_freq, 0) + "-" + fixed$(bass_high_freq, 0) + " Hz"
-    Text: 0.10, "left", 0.79, "half", "Drive " + fixed$(drive, 2) + " | Harm gain " + fixed$(harmonic_level, 2)
-    Text: 0.10, "left", 0.71, "half", "Bass ref: " + bassRefShort$
-
-    Colour: "{0.30, 0.30, 0.30}"
-    Text: 0.05, "left", 0.61, "half", "Filtering:"
+    Text: 0.05, "left", 0.94, "half", "##Direct path##"
     Colour: "{0.30, 0.55, 0.30}"
-    Text: 0.10, "left", 0.53, "half", "HP " + fixed$(highpass_freq, 0) + " Hz | Harm LP " + fixed$(harmonic_lowpass, 0) + " Hz"
-
+    Text: 0.10, "left", 0.87, "half", directStr$
     Colour: "{0.30, 0.30, 0.30}"
-    Text: 0.05, "left", 0.43, "half", "Stereo:"
-    if apply_MS_widening
-        Colour: "{0.30, 0.30, 0.78}"
-        if stereo_width < 1
-            widthDir$ = "narrows"
-        elsif stereo_width > 1
-            widthDir$ = "widens"
-        else
-            widthDir$ = "identity"
-        endif
-        Text: 0.10, "left", 0.35, "half", "M/S ON | S x " + fixed$(stereo_width, 2) + " (" + widthDir$ + ")"
-    else
-        Colour: "{0.55, 0.55, 0.55}"
-        Text: 0.10, "left", 0.35, "half", "M/S OFF"
-    endif
-    Colour: "{0.55, 0.30, 0.30}"
-    Text: 0.10, "left", 0.27, "half", "Side low-cut: " + monoStr$
-
+    Text: 0.05, "left", 0.78, "half", "##Enhancement layer##"
+    Colour: "{0.85, 0.55, 0.20}"
+    Text: 0.10, "left", 0.71, "half", "Bass " + fixed$(bass_low_freq, 0) + "-" + fixed$(bass_high_freq, 0) + " Hz  |  Drive " + fixed$(drive, 2) + "  |  ref: " + bassRefShort$
+    Text: 0.10, "left", 0.64, "half", "Harmonic band " + fixed$(harmLowEdge, 0) + "-" + fixed$(harmonic_lowpass, 0) + " Hz  |  gain " + fixed$(harmonic_level, 2)
+    Text: 0.10, "left", 0.57, "half", "Generator: " + genStr$ + "  |  stereo layer: " + stereoLayerStr$
+    Text: 0.10, "left", 0.50, "half", "Layer: " + layerRel$
+    Text: 0.10, "left", 0.43, "half", "In band: " + bandRel$
     Colour: "{0.30, 0.30, 0.30}"
-    Text: 0.05, "left", 0.17, "half", "Output:"
+    Colour: "{0.30, 0.30, 0.78}"
+    Text: 0.10, "left", 0.36, "half", "M/S: " + msStr$ + "  |  Side low-cut: " + monoStr$
+    Colour: "{0.30, 0.30, 0.30}"
+    Text: 0.05, "left", 0.29, "half", "##Measured##"
     Colour: "{0.30, 0.45, 0.68}"
-    Text: 0.10, "left", 0.09, "half", outputModeShort$
-
+    Text: 0.10, "left", 0.23, "half", "RMS change: " + rmsChange$ + "  |  output: " + outputActionDesc$
+    Text: 0.10, "left", 0.17, "half", "Difference: " + diffRel$
+    Text: 0.10, "left", 0.11, "half", "Peak in " + fixed$(inputPeak, 3) + "  ->  out " + fixed$(finalPeak, 3)
+    Select inner viewport: 4.45, 7.70, 0.95, 3.90
+    Axes: 0, 1, 0, 1
     Colour: "Black"
     Draw inner box
 
-    # ----------------------------------------------------------
-    # ALIGNED PANEL TITLES
-    # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 0, 8
+    # Panel titles
+    Font size: 7
     Select inner viewport: 0, 8, 0, 8
     Axes: 0, 8, 0, 8
-    
-    Font size: 7
     Colour: "Black"
-    Text: 2.10, "centre", 7.30, "half", "Processing chain"
-    Text: 6.10, "centre", 7.30, "half", "Parameter report"
-    
-    # ----------------------------------------------------------
-    # PANEL C: ZOOM OVERLAY  (full width, first 30 ms)
-    # Original (gray) + enhanced (purple) overlaid.
-    # The harmonic content added in the bass region should be
-    # visible as additional high-frequency texture on the
-    # bass-band peaks of the original.
-    # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 4.68, 5.55
-    Select inner viewport: 0.60, 7.70, 4.75, 5.48
-    
-    # v0.4 FIX (blocker): v0.3 zoomed into the hardcoded range
-    # 0-0.03 s, which crashed ("value undefined" on Axes) whenever
-    # the Sound didn't start at time 0. Zoom relative to the
-    # object's real start time instead.
-    zoomDur = 0.03
-    if zoomDur > duration
-        zoomDur = duration
+    Text: 2.225, "centre", 7.20, "half", "Signal flow (parallel branches)"
+    Text: 6.075, "centre", 7.20, "half", "Parameter report"
+
+    # ---------------- PANEL C: LONG-TERM SPECTRUM ----------------
+    # Mono sums of input, output and difference; 5 Hz Ltas read on
+    # log-spaced bands 20-2000 Hz.
+    # Per-channel Ltas averaged in the energy domain (a mono sum would
+    # cancel out-of-phase content and misreport the energy).
+    @energyLtas: original
+    ltIn = energyLtas.ltas
+    @energyLtas: result
+    ltOut = energyLtas.ltas
+    @energyLtas: diffSound
+    ltDiff = energyLtas.ltas
+
+    specLo = 20
+    specHi = min(2000, nyquist)
+    nBands = 140
+    specMax = -1000
+    for ib to nBands
+        fLo = specLo * (specHi / specLo) ^ ((ib - 1) / nBands)
+        fHi = specLo * (specHi / specLo) ^ (ib / nBands)
+        fC = sqrt(fLo * fHi)
+        specF[ib] = fC
+        for il to 3
+            if il = 1
+                selectObject: ltIn
+            elsif il = 2
+                selectObject: ltOut
+            else
+                selectObject: ltDiff
+            endif
+            if fHi - fLo >= 10
+                v = Get mean: fLo, fHi, "energy"
+            else
+                v = Get value at frequency: fC, "linear"
+            endif
+            if v = undefined
+                v = -300
+            endif
+            spec[il, ib] = v
+            if il < 3 and v > specMax
+                specMax = v
+            endif
+        endfor
+    endfor
+    if specMax < -200
+        specMax = 0
     endif
-    zoomStart = xminOrig
-    zoomEnd = zoomStart + zoomDur
-    if zoomEnd > xmaxOrig
-        zoomEnd = xmaxOrig
+    specTop = ceiling((specMax + 5) / 10) * 10
+    specBot = specTop - 70
+
+    Font size: 7
+    Select inner viewport: 0.60, 7.70, 4.45, 5.75
+    Axes: log10(specLo), log10(specHi), specBot, specTop
+    Paint rectangle: "{0.97, 0.97, 0.97}", log10(specLo), log10(specHi), specBot, specTop
+    # Band shading: bass band and harmonic band
+    Paint rectangle: "{0.95, 0.90, 0.84}", log10(max(specLo, bass_low_freq)), log10(min(specHi, bass_high_freq)), specBot, specTop
+    if harmLowEdge < specHi
+        Paint rectangle: "{0.93, 0.93, 0.86}", log10(harmLowEdge), log10(min(specHi, harmonic_lowpass)), specBot, specTop
     endif
-    
-    selectObject: original
-    origPeak = Get absolute extremum: zoomStart, zoomEnd, "None"
-    selectObject: result
-    resPeak = Get absolute extremum: zoomStart, zoomEnd, "None"
-    zoomMax = origPeak
-    if resPeak > zoomMax
-        zoomMax = resPeak
-    endif
-    if zoomMax < 0.001
-        zoomMax = 0.001
-    endif
-    zAmpViz = zoomMax * 1.15
-    
-    Axes: zoomStart, zoomEnd, -zAmpViz, zAmpViz
-    Paint rectangle: "{0.97, 0.97, 0.97}", zoomStart, zoomEnd, -zAmpViz, zAmpViz
-    Colour: "{0.82, 0.82, 0.82}"
-    Draw line: zoomStart, 0, zoomEnd, 0
-    
-    # Original (gray, behind)
-    selectObject: original
-    if numChannels > 1
-        Extract one channel: 1
-        zOrig = selected("Sound")
-        Colour: "{0.65, 0.65, 0.65}"
-        Line width: 1
-        Draw: zoomStart, zoomEnd, -zAmpViz, zAmpViz, "no", "Curve"
-        removeObject: zOrig
-    else
-        Colour: "{0.65, 0.65, 0.65}"
-        Line width: 1
-        Draw: zoomStart, zoomEnd, -zAmpViz, zAmpViz, "no", "Curve"
-    endif
-    
-    # Enhanced (purple, on top)
-    selectObject: result
-    Extract one channel: 1
-    zRes = selected("Sound")
-    Colour: "{0.55, 0.30, 0.65}"
-    Line width: 1.3
-    Draw: zoomStart, zoomEnd, -zAmpViz, zAmpViz, "no", "Curve"
-    removeObject: zRes
+
+    Select inner viewport: 0.60, 7.70, 4.45, 5.75
+    Axes: log10(specLo), log10(specHi), specBot, specTop
+    for il to 3
+        if il = 1
+            Colour: "{0.60, 0.60, 0.60}"
+            Line width: 2
+        elsif il = 2
+            Colour: "{0.55, 0.30, 0.65}"
+            Line width: 1
+        else
+            Colour: "{0.85, 0.50, 0.15}"
+            Line width: 1
+        endif
+        for ib from 2 to nBands
+            y1 = max(specBot, min(specTop, spec[il, ib - 1]))
+            y2 = max(specBot, min(specTop, spec[il, ib]))
+            Draw line: log10(specF[ib - 1]), y1, log10(specF[ib]), y2
+        endfor
+    endfor
     Line width: 1
-    
+
+    # Marks first (fresh frame), box after: Draw inner box moves the
+    # drawing frame to the outer viewport.
+    Font size: 6
+    Select inner viewport: 0.60, 7.70, 4.45, 5.75
+    Axes: log10(specLo), log10(specHi), specBot, specTop
     Colour: "Black"
-    Draw inner box
-    Font size: 7
-    Text top: "no", "Zoom: first " + fixed$((zoomEnd - zoomStart) * 1000, 0) + " ms  (gray = original L, purple = enhanced L)"
-    Text left: "yes", "Amp"
-    Text bottom: "yes", "Time (s)"
-    
-    # ----------------------------------------------------------
-    # PANEL D: OUTPUT WAVEFORM (full file)
-    # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 5.62, 6.55
-    Select inner viewport: 0.60, 7.70, 5.69, 6.48
-    
-    # v0.4 FIX: axes were drawn as 0-finalDur while `result` actually
-    # occupies the source's original time domain (e.g. 2.5-3.5 s),
-    # so the waveform was drawn outside the visible axes and never
-    # appeared. Use the result's real start/end time instead.
-    selectObject: result
-    resultStart = Get start time
-    resultEnd = Get end time
-    outPeakViz = Get absolute extremum: resultStart, resultEnd, "None"
-    if outPeakViz < 0.001
-        outPeakViz = 0.001
+    One mark bottom: log10(20), "no", "yes", "no", "20"
+    One mark bottom: log10(50), "no", "yes", "no", "50"
+    One mark bottom: log10(100), "no", "yes", "no", "100"
+    One mark bottom: log10(200), "no", "yes", "no", "200"
+    One mark bottom: log10(500), "no", "yes", "no", "500"
+    One mark bottom: log10(1000), "no", "yes", "no", "1000"
+    if specHi >= 2000
+        One mark bottom: log10(2000), "no", "yes", "no", "2000"
     endif
-    ampViz = outPeakViz * 1.15
-    
+    Marks left every: 1, 20, "yes", "yes", "no"
+    Font size: 7
+    Select inner viewport: 0.60, 7.70, 4.45, 5.75
+    Axes: log10(specLo), log10(specHi), specBot, specTop
+    Draw inner box
+    Text top: "no", "Long-term spectrum, channel energy average  (grey = input, purple = output, orange = difference)"
+    Text left: "yes", "dB"
+
+    removeObject: ltIn, ltOut, ltDiff
+
+    # ---------------- PANEL D: DIFFERENCE WAVEFORM ----------------
+    # Difference (output - input), channel 1, drawn on the INPUT's
+    # amplitude scale so its true size is visible.
+    Font size: 7
+    Select inner viewport: 0.60, 7.70, 6.20, 6.95
+    selectObject: original
+    resultStart = xminOrig
+    resultEnd = xmaxOrig
+    ampViz = max(inputPeak, diffPeak)
+    if ampViz < 0.001
+        ampViz = 0.001
+    endif
+    ampViz = ampViz * 1.1
     Axes: resultStart, resultEnd, -ampViz, ampViz
     Paint rectangle: "{0.97, 0.97, 0.97}", resultStart, resultEnd, -ampViz, ampViz
-    Colour: "{0.82, 0.82, 0.82}"
-    Draw line: resultStart, 0, resultEnd, 0
-    
-    selectObject: result
+
+    selectObject: original
     Extract one channel: 1
-    vCh1 = selected("Sound")
-    Colour: "{0.25, 0.50, 0.82}"
-    Line width: 1
+    vIn = selected("Sound")
+    Select inner viewport: 0.60, 7.70, 6.20, 6.95
+    Colour: "{0.75, 0.75, 0.75}"
     Draw: resultStart, resultEnd, -ampViz, ampViz, "no", "Curve"
-    removeObject: vCh1
-    
-    selectObject: result
-    Extract one channel: 2
-    vCh2 = selected("Sound")
-    Colour: "{0.82, 0.45, 0.25}"
+    removeObject: vIn
+    selectObject: diffSound
+    Extract one channel: 1
+    vD = selected("Sound")
+    Select inner viewport: 0.60, 7.70, 6.20, 6.95
+    Colour: "{0.85, 0.50, 0.15}"
     Draw: resultStart, resultEnd, -ampViz, ampViz, "no", "Curve"
-    removeObject: vCh2
-    
+    removeObject: vD
+
+    Select inner viewport: 0.60, 7.70, 6.20, 6.95
+    Axes: resultStart, resultEnd, -ampViz, ampViz
     Colour: "Black"
-    Line width: 1
     Draw inner box
     Font size: 7
-    Text top: "no", "Output (full file)  (blue=L  orange=R)"
-    Text left: "yes", "Amp"
-    Text bottom: "yes", "Time (s)"
-    
-    # ----------------------------------------------------------
-    # PANEL E: SUMMARY BAR
-    # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 6.62, 7.30
-    Select inner viewport: 0.60, 7.70, 6.68, 7.24
+    Text top: "no", "Difference output - input, ch 1  (orange), over input  (grey), same scale"
+    Text left: "no", "Amp"
+
+    # ---------------- PANEL E: SUMMARY BAR ----------------
+    Font size: 6
+    Select inner viewport: 0.60, 7.70, 7.15, 7.85
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
-    
-    Font size: 6
     Colour: "{0.28, 0.28, 0.28}"
     Text: 0.02, "left", 0.78, "half",
-        ... "##" + presetName$ + "##"
-        ... + "  " + vizName$
-        ... + "  |  Bass " + fixed$(bass_low_freq, 0) + "-" + fixed$(bass_high_freq, 0) + " Hz"
-        ... + "  |  Drive " + fixed$(drive, 2)
-        ... + "  |  Harm " + fixed$(harmonic_level, 2)
-
+        ... "##" + presetName$ + "##  " + vizName$
+        ... + "  |  " + fixed$(finalDur, 2) + " s, " + string$(numChannels) + " ch"
+        ... + "  |  direct: " + directShort$
+        ... + "  |  layer: " + layerRel$
     Text: 0.02, "left", 0.50, "half",
-        ... "Bass ref: " + bassRefShort$
-        ... + "  |  M/S: " + msStr$
-        ... + "  |  Side low-cut: " + monoStr$
-
+        ... "Bass " + fixed$(bass_low_freq, 0) + "-" + fixed$(bass_high_freq, 0) + " Hz"
+        ... + "  |  Drive " + fixed$(drive, 2) + " (" + bassRefShort$ + ")"
+        ... + "  |  harmonic band " + fixed$(harmLowEdge, 0) + "-" + fixed$(harmonic_lowpass, 0) + " Hz"
+        ... + "  |  gain " + fixed$(harmonic_level, 2)
     Text: 0.02, "left", 0.22, "half",
         ... "Output: " + outputModeShort$
-        ... + "  |  " + fixed$(finalDur, 2) + " s"
-        ... + "  |  peak " + fixed$(finalPeak, 3)
-    
+        ... + "  |  RMS change " + rmsChange$
+        ... + "  |  peak " + fixed$(inputPeak, 3) + " -> " + fixed$(finalPeak, 3)
+        ... + "  |  M/S: " + msStr$
+    Select inner viewport: 0.60, 7.70, 7.15, 7.85
+    Axes: 0, 1, 0, 1
     Colour: "Black"
-    Draw rectangle: 0, 1, 0, 1
-    
-    Font size: 7
-    Colour: "Black"
-    Line width: 1
+    Draw inner box
 
     # Restore complete page for Picture export / clipboard.
-    Select outer viewport: 0, 8, 0, pageHeight
     Font size: 10
     Colour: "Black"
     Line width: 1
     Solid line
+    Select outer viewport: 0, 8, 0, pageHeight
 endif
 
 # === Final Info ===
-selectObject: result
-
 appendInfoLine: ""
 appendInfoLine: "=== Done ==="
+selectObject: result
 appendInfoLine: "Created: ", selected$("Sound")
-appendInfoLine: "Duration: ", fixed$(finalDur, 2), " s"
+appendInfoLine: "Duration: ", fixed$(finalDur, 2), " s, ", numChannels, " ch"
+appendInfoLine: "Layer level: ", layerRel$
+appendInfoLine: "Layer in its own band: ", bandRel$
 appendInfoLine: "Pre-output peak: ", fixed$(preOutputPeak, 4)
 appendInfoLine: "Output action: ", outputActionDesc$
 appendInfoLine: "Output scale factor applied: ", fixed$(normFactor, 4)
-appendInfoLine: "Final peak: ", fixed$(finalPeak, 4)
+appendInfoLine: "Peak: ", fixed$(inputPeak, 4), " in -> ", fixed$(finalPeak, 4), " out"
+appendInfoLine: "RMS change: ", rmsChange$
+appendInfoLine: "Difference (output - input): peak ", fixed$(diffPeak, 6), ", ", diffRel$
+
+if keep_difference
+    appendInfoLine: "Kept difference object: ", originalName$, "_vsg_difference"
+else
+    removeObject: diffSound
+endif
 
 if play_result
     selectObject: result
@@ -1114,5 +1001,148 @@ endif
 
 selectObject: result
 
-# (No procedures remain: the v0.3 `peakSafety` procedure was
-# removed in v0.4 -- see changelog.)
+# ============================================================
+# PROCEDURES
+# ============================================================
+
+# Enhancement layer from a (multichannel) bass-band Sound.
+# Uses globals: nSub, subHi[], xoW[], subGain[], k, refScale,
+# linkedActive, harmLowEdge, harmEdgeSmooth, harmonic_lowpass,
+# harmTopSmooth. Sub-bands are split by successive subtraction, so
+# they sum exactly to the input band; each is shaped on its own, so
+# notes in different sub-bands cannot intermodulate.
+procedure buildLayer: .bb
+    selectObject: .bb
+    .nch = Get number of channels
+    if linkedActive and .nch > 1
+        Convert to mono
+    else
+        Copy: "vsg_bb"
+    endif
+    .rest = selected("Sound")
+    Copy: "vsg_res"
+    .res = selected("Sound")
+    Formula: "0"
+    for .i to nSub
+        if .i < nSub
+            selectObject: .rest
+            Filter (pass Hann band): 0, subHi[.i], xoW[.i]
+            .sub = selected("Sound")
+            selectObject: .rest
+            Formula: "self - object[" + string$(.sub) + ", row, col]"
+        else
+            .sub = .rest
+        endif
+        selectObject: .sub
+        .kk = k * subDrive[.i]
+        Formula: "(tanh(self * " + string$(.kk) + ") - self * " + string$(.kk) + ") * " + string$(subGain[.i] / (refScale * subDrive[.i]))
+        selectObject: .res
+        Formula: "self + object[" + string$(.sub) + ", row, col]"
+        removeObject: .sub
+    endfor
+    selectObject: .res
+    Filter (pass Hann band): harmLowEdge, 0, harmEdgeSmooth
+    .tmp = selected("Sound")
+    Filter (pass Hann band): 0, harmonic_lowpass, harmTopSmooth
+    .lay = selected("Sound")
+    removeObject: .tmp, .res
+    if linkedActive and .nch > 1
+        # Spread the shared layer by each channel's bass RMS relative
+        # to the mono sum, so harmonic level ratios follow the
+        # fundamentals' ratios instead of being exaggerated by tanh.
+        selectObject: .bb
+        Convert to mono
+        .bm = selected("Sound")
+        .rm = Get root-mean-square: 0, 0
+        removeObject: .bm
+        .w$ = "0"
+        for .c to .nch
+            selectObject: .bb
+            Extract one channel: .c
+            .bc = selected("Sound")
+            .rc = Get root-mean-square: 0, 0
+            removeObject: .bc
+            if .rm > 0
+                .wc = .rc / .rm
+            else
+                .wc = 1
+            endif
+            .w$ = "if row = " + string$(.c) + " then " + string$(.wc) + " else " + .w$ + " fi"
+        endfor
+        selectObject: .bb
+        Copy: "vsg_layer"
+        .layer = selected("Sound")
+        Formula: "object[" + string$(.lay) + ", 1, col] * (" + .w$ + ")"
+        removeObject: .lay
+    else
+        .layer = .lay
+    endif
+endproc
+
+# Gated level of a bass-band Sound: energy mean of 10 ms Intensity
+# frames within 30 dB of the loudest frame, loudest channel, returned
+# as a sine-equivalent peak (RMS * sqrt 2).
+procedure gatedSinePeak: .snd
+    selectObject: .snd
+    .nch = Get number of channels
+    .dur = Get total duration
+    .level = 0
+    for .c to .nch
+        selectObject: .snd
+        Extract one channel: .c
+        .ch = selected("Sound")
+        if .dur >= 0.2
+            To Intensity: 40, 0.01, "no"
+            .int = selected("Intensity")
+            .nf = Get number of frames
+            .mx = Get maximum: 0, 0, "None"
+            .acc = 0
+            .n = 0
+            if .mx <> undefined
+                for .j to .nf
+                    .v = Get value in frame: .j
+                    if .v <> undefined
+                        if .v > .mx - 30
+                            .acc = .acc + 10 ^ (.v / 10)
+                            .n = .n + 1
+                        endif
+                    endif
+                endfor
+            endif
+            if .n > 0
+                .rms = 2e-5 * sqrt(.acc / .n)
+            else
+                .rms = 0
+            endif
+            removeObject: .int
+        else
+            .rms = Get root-mean-square: 0, 0
+        endif
+        removeObject: .ch
+        .level = max(.level, .rms * sqrt(2))
+    endfor
+endproc
+
+# Long-term spectrum averaged over channels in the energy domain.
+procedure energyLtas: .snd
+    selectObject: .snd
+    .nch = Get number of channels
+    for .c to .nch
+        selectObject: .snd
+        Extract one channel: .c
+        .ch = selected("Sound")
+        To Ltas: 5
+        .lt = selected("Ltas")
+        removeObject: .ch
+        if .c = 1
+            .ltas = .lt
+            Formula: "10 ^ (self / 10)"
+        else
+            selectObject: .ltas
+            Formula: "self + 10 ^ (object[" + string$(.lt) + ", col] / 10)"
+            removeObject: .lt
+        endif
+    endfor
+    selectObject: .ltas
+    Formula: "10 * log10(max(self / " + string$(.nch) + ", 1e-30))"
+endproc
