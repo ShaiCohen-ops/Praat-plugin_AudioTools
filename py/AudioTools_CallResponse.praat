@@ -3,7 +3,7 @@
 # Script:      AudioTools_CallResponse.praat
 # Author:      Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
-# Version:     0.4.0 (2026) - Polyphonic Spatial Playback (from v0.3.2)
+# Version:     0.4.12 (2026) - Performer display (from v0.4.11)
 # License:     MIT License
 # Repository:  https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -38,6 +38,152 @@
 #     Unchanged v0.1.3 behaviour: one blocking listen, render, Play.
 #   Selected Sound(s) / Test all six / List audio devices
 #     As in v0.1.3 (List now shows output devices too).
+#
+# Changelog v0.4.12 - Performer display (from v0.4.11):
+#   The display now separates what the PERFORMER can do from what the
+#   SYSTEM is doing (they are independent in continuous mode):
+#     YOUR PERFORMANCE   STAY QUIET (calibrating)
+#                        PLAY WHEN READY - start at any moment, also while
+#                          answers sound
+#                        RECORDING YOUR PHRASE - with a progress bar of the
+#                          silence that will end it (End_silence_s); a long
+#                          phrase split at Max_phrase_s says "keep playing"
+#                        PHRASE CAPTURED - for 2 s after a phrase ended; it
+#                          never blocks a new phrase
+#     SYSTEM RESPONSE    processing / playing / voices / memory / action,
+#                        "waiting for your phrase" when idle
+#   READY is gone (it suggested waiting for the answers).  The memory map
+#   shows the performance headline at the top.  Detection, memory and the
+#   six engines are unchanged.
+#
+# Changelog v0.4.11 - Reliable phrase ends (from v0.4.10):
+#   Engine: fixes phrases that never ended (v0.4.10 regression when the
+#   mic noise rose just after calibration; and, in every version, a
+#   calibration on digital silence).  Flat background is recognised and
+#   learned; a held tone is never turned into background.  Display: the
+#   DETECTOR line shows the last detector event for 3 s - "phrase end
+#   (silence)", "split at Max_phrase_s (continues)", "noise ignored ..."
+#   - so a split is no longer mistaken for the end of a gesture.
+#
+# Changelog v0.4.10 - Phrase detection (from v0.4.9):
+#   Engine: crescendos are detected (the noise floor no longer follows the
+#   playing), gradual entries are captured from where they begin, and a
+#   phrase longer than Max_phrase_s is cut at a quiet point and continues
+#   without loss.  Display: a DETECTOR line (input, start and end
+#   thresholds, floor, accumulated quiet against End_silence_s), threshold
+#   marks on the level meter (orange = start, grey = end), and READY is
+#   no longer shown while a phrase is being recorded.
+#
+# Changelog v0.4.9 - Influence memory fixes (from v0.4.8):
+#   Engine only: the coherence gate uses the retrieval's own similarity
+#   (an unpitched phrase in Pitch mode was judged too similar), influence
+#   arcs show each earlier phrase's real share of the chosen sound's score,
+#   and the history ages from the time each phrase ENDED.  Form, dialogs
+#   and defaults unchanged.
+#
+# Changelog v0.4.8 - Phrase-level influence memory (from v0.4.7):
+#   The answer responds to the recent history of gestures: the previous
+#   phrases also shape what is recalled, fading with their position and
+#   with time (details in audiotools_call_response.py).  Memory_settings,
+#   page "Limits & influence...": Influence_depth (1 = v0.4.7, default 3),
+#   Influence_decay (0.5), Trend_weight (0 = off; > 0 also looks for where
+#   the gesture is heading).  An earlier phrase counts only as far as it
+#   resembles the last one: a sudden new idea starts a new history.
+#   Map: earlier phrases' share = pale lilac
+#   arcs.  MATCH shows "(n phrases)".  The main form is unchanged.
+#
+# Changelog v0.4.7 - Loudness balance (from v0.4.6):
+#   Engine only (audiotools_call_response.py): Level_matching now measures
+#   perceptual loudness with both stereo channels counted (decorrelated
+#   stereo answers - Paulstretch, Markov, Speed Deviations - were 2-6 dB too
+#   loud), keeps the loudest 100 ms of a sound <= 6 dB above its target
+#   (Groove / MDS transients), and keeps each voice's peak <= 0.9 after
+#   stereo placement.  One static gain per sound - no compression.  The
+#   form, the dialogs and the six AudioTools scripts are unchanged.
+#
+# Changelog v0.4.6 - Memory map (from v0.4.5):
+#   NEW memory map in the Demo window (default view when Sonic memory is
+#   on; G switches between the map and the status view).  An arc diagram
+#   in the spirit of the OMax / DYCI2 memory views, drawn from graph.tsv
+#   written by the engine:
+#     line ......... the memory: Corpus C left, the performance (phrases A,
+#                    answers B, unstored phrases as light points) right
+#     upper arcs ... similar sounds (colour = gesture class, paler = weaker)
+#     lower arcs ... what happened: recall (purple), recall + transform
+#                    (magenta), transformation phrase -> result (teal);
+#                    thicker = closer match, paler = older
+#     red ring ..... a sound that is sounding now; red tick = latest phrase
+#   The map is redrawn only when it changes (not with the level bar).
+#   Engine behaviour and the form are unchanged.
+#
+# Changelog v0.4.5 - Whole answers (from v0.4.4):
+#   Answers and memory sounds are no longer cut before their natural end
+#   (details in audiotools_call_response.py):
+#   - memory layers: whole sounds by default (were random 60-100 %
+#     excerpts with a random start).  NEW Playback_settings field
+#     Layer_shape: "Whole sounds" | "Excerpts (onset -> natural end)".
+#   - Corpus B keeps whole answers up to Max_response_s + 1.5 s (was the
+#     first Max_item_s seconds, raw slice).  Max_item_s now applies to
+#     live phrases and Corpus C segmentation only.
+#   - playback cap Max_response_s + 1.5 s grace; a longer sound is cut at
+#     its quietest point near the limit and faded.
+#   - the log (Debug_log) names every voice's shape: whole / excerpt /
+#     trimmed; the summary counts trimmed voices and excerpts.
+#
+# Changelog v0.4.4 - Engine arguments via file (from v0.4.3):
+#   FIX (the real cause of "argument --w-preloaded: invalid float value: ''"
+#     / "expected one argument"): the engine was started with one command
+#     line of ~130 arguments (~2 KB on Windows).  runSubprocess cut it off
+#     at about 1 KB, so arguments from there on were lost or emptied - with
+#     a Corpus C path the cut fell in the middle (an error); without one it
+#     could fall at the end and SILENTLY drop the last options (e.g.
+#     Follow_live_input, Corpus_C_balance_dB, which then took defaults).
+#     The arguments are now written to engine_args.txt in the session (one
+#     per line, closed by #end) and launch reads them; Python starts the
+#     engine with an argument list.  The v0.4.3 path normalisation stays
+#     (still correct, but it was not the cause).
+#
+# Changelog v0.4.3 - Windows path fix (from v0.4.2):
+#   FIX: a Corpus_C_folder (or praatExe$) ending in a backslash, e.g.
+#     C:\Sounds\corpus\, broke the engine start ("argument --w-preloaded:
+#     invalid float value: ''").  On Windows the final \ escapes the quote
+#     Praat puts around the argument, so the next arguments are merged.
+#     User-typed paths are now normalised before they are passed on:
+#     spaces and quotes trimmed, \ -> / (Python accepts it), trailing /
+#     removed (a drive root keeps it).  Nothing else changed.
+#
+# Changelog v0.4.2 - Performance presets (from v0.4.1):
+#   Engine behaviour is unchanged.  NEW first form field Preset: one menu
+#   choice sets the response mode, the Sonic memory settings and the
+#   Playback settings for a typical way of playing.  "Custom" (default)
+#   = exactly v0.4.1: form + dialogs.  A preset OVERRIDES Sonic_memory,
+#   Response_mode, the Memory_settings values and the Playback_settings
+#   values; Transformation, devices, phrase detection, Corpus_C_folder and
+#   Advanced settings stay as set in the form.  Ticking Memory_settings /
+#   Playback_settings opens the dialogs PRE-FILLED with the preset, to
+#   fine-tune it.  Presets apply to continuous mode only.  Corpus presets
+#   stop with a message when Corpus_C_folder is empty.
+#   Display: MODE line shows the preset.  RENDER_FORM_ARGS gains one value.
+#
+# Changelog v0.4.1 - Corpus-only recall + adaptive level (from v0.4.0):
+#   Analysis, classifier, the six transformations, retrieval, mixer,
+#   spatialisation and session safety are unchanged.  Corpus C files are
+#   still only read.  The main form has no new field.
+#   NEW Response_mode "Corpus only - unprocessed recall": every answer is
+#     a stored sound played as it is (envelope, level, placement only).
+#     Without a qualified match the engine stays SILENT and keeps
+#     listening - no Transform fallback, no passthrough.  No memory layers
+#     and no background texture in this mode.  For answers from the
+#     preloaded folder only, untick corpora A and B in Memory_settings.
+#   NEW Playback_settings: Follow_live_input (off by default) moves the
+#     answers' level with the performer's playing level, relative to the
+#     session (K-weighted, +-Follow_range_dB, from the 3rd phrase; phrases
+#     with strong speaker leakage are not counted).
+#     Corpus_C_balance_dB adds gain to sounds from the preloaded corpus.
+#   Display: VOICES line shows LEVEL +x dB when Follow_live_input is on;
+#     ACTION shows "Silent (no corpus match)".
+#   NOTE: Layered_response off does NOT remove memory layers in the other
+#     modes - Polyphonic_density 0 (or Polyphony off) does.
 #
 # Changelog v0.4.0 - Polyphonic spatial playback (from v0.3.2):
 #   The analysis, classifier, six transformations and their parameters,
@@ -180,6 +326,9 @@
 #   Memory_settings and Advanced_settings dialogs are GUI-only: keep them
 #   unticked when this script is run from another script.
 #
+# Presets (v0.4.2): pick one in the first form field; tick Memory_settings
+#   / Playback_settings to see and fine-tune what it set.
+#
 # Testing without a microphone:
 #   Select Sounds, Source = "Selected Sound(s)" (one answer per Sound, or
 #   "Test all six").  python audiotools_call_response.py --self-test
@@ -195,7 +344,23 @@
 #     session / idle limits).
 # ============================================================
 
-form: "AudioTools Call & Response 0.4.0"
+form: "AudioTools Call & Response 0.4.12"
+    optionmenu: "Preset", 1
+        option: "Custom (form and dialogs)"
+        option: "Classic transform (v0.2)"
+        option: "Transform + ambience"
+        option: "Hybrid memory (default)"
+        option: "Echo memory (recall own phrases)"
+        option: "Corpus only - hybrid match"
+        option: "Corpus only - timbre match"
+        option: "Corpus only - pitch gesture match"
+        option: "Corpus only - rhythm match"
+        option: "Corpus only - contrast (most different)"
+        option: "Corpus re-composed (corpus + transform)"
+        option: "Dense ensemble"
+        option: "Sparse / intimate"
+        option: "Ambient bed"
+        option: "Percussive / rhythmic"
     optionmenu: "Source", 1
         option: "Live - continuous (v0.2)"
         option: "Live - turn-taking (v0.1.3)"
@@ -224,6 +389,7 @@ form: "AudioTools Call & Response 0.4.0"
         option: "Transform only (v0.2)"
         option: "Recall"
         option: "Recall + Transform"
+        option: "Corpus only - unprocessed recall"
     sentence: "Corpus_C_folder", ""
     boolean: "Memory_settings", 0
     boolean: "Playback_settings", 0
@@ -241,7 +407,7 @@ praatExe$ = ""
 # ------------------------------------------------------------------------
 waitTimeout = 30
 preroll = 0.25
-version$ = "0.4.0"
+version$ = "0.4.12"
 diagnostics = 0
 
 # ---- Advanced settings: defaults (also used when the dialog is skipped) ----
@@ -270,6 +436,10 @@ fade_in_ms = 30
 fade_out_ms = 400
 preserve_transients = 1
 level_matching = 1
+follow_live_input = 0
+follow_range_dB = 9
+corpus_C_balance_dB = 0
+layer_shape = 1
 
 # ---- Sonic memory settings: defaults (also used when the dialog is skipped) ----
 use_live_corpus_A = 1
@@ -294,6 +464,9 @@ candidates = 5
 cooldown_recalls = 4
 exclude_recent_phrases = 2
 same_family_exclusion = 0
+influence_depth = 3
+influence_decay = 0.5
+trend_weight = 0
 renderJob$ = environment$ ("AUDIOTOOLS_CR_JOB")
 renderMode = renderJob$ <> ""
 headless = environment$ ("AUDIOTOOLS_CR_HEADLESS") = "1"
@@ -337,6 +510,11 @@ tStem$[6] = "_groove_"
 
 log$ = ""
 currentStatus$ = "AudioTools Call & Response"
+displayCore$ = ""
+# v0.4.6 memory map (Demo window): view 1 = map, 0 = status; G toggles
+graphView = 1
+graphTable = 0
+graphVer$ = ""
 
 # ============================================================
 # RENDER MODE (headless child launched by the continuous engine)
@@ -407,9 +585,178 @@ if renderMode
     exitScript: ""
 endif
 
+# ============================================================
+# PRESETS (v0.4.2) - applied BEFORE the dialogs, so a ticked
+# Memory_settings / Playback_settings box opens them pre-filled.
+# Each preset starts from the v0.4.1 defaults, then changes only what
+# makes it different.  Option numbers:
+#   response_mode   1 hybrid  2 transform  3 recall  4 recall+transform
+#                   5 corpus only
+#   similarity_mode 1 hybrid  2 timbre  3 pitch  4 rhythm  5 envelope
+#                   6 contrast
+# ============================================================
+presetName$ = preset$
+presetNeedsC = 0
+if preset > 1 and source = 1
+    # common base for every preset = the v0.4.1 defaults
+    sonic_memory = 1
+    response_mode = 1
+    use_live_corpus_A = 1
+    use_processed_corpus_B = 1
+    use_preloaded_corpus_C = 1
+    similarity_mode = 1
+    minimum_similarity = 0.45
+    weight_A_live = 40
+    weight_B_processed = 30
+    weight_C_preloaded = 30
+    weight_transform = 40
+    weight_recall = 30
+    weight_recall_transform = 30
+    evolving_memory = 0
+    layered_response = 0
+    max_generation = 2
+    candidates = 5
+    cooldown_recalls = 4
+    exclude_recent_phrases = 2
+    same_family_exclusion = 0
+    polyphony = 1
+    max_voices = 4
+    polyphonic_density = 0.5
+    background_layer = 1
+    background_level_dB = -33
+    stereo_width = 1.0
+    spatial_movement = 0.3
+    pan_variation = 0.5
+    fade_in_ms = 30
+    fade_out_ms = 400
+    preserve_transients = 1
+    level_matching = 1
+    follow_live_input = 0
+    follow_range_dB = 9
+    corpus_C_balance_dB = 0
+    layer_shape = 1
+    influence_depth = 3
+    influence_decay = 0.5
+    trend_weight = 0
+
+    if preset = 2
+        # Classic transform (v0.2): one transformed answer at a time, nothing else
+        sonic_memory = 0
+        response_mode = 2
+        polyphony = 0
+        background_layer = 0
+        spatial_movement = 0
+    elsif preset = 3
+        # Transform + ambience: transformed answers over a texture of the answers
+        response_mode = 2
+        polyphonic_density = 0
+        background_level_dB = -30
+        follow_live_input = 1
+    elsif preset = 4
+        # Hybrid memory (default): the v0.4.1 defaults unchanged
+    elsif preset = 5
+        # Echo memory: answers recalled from your own earlier phrases / answers
+        response_mode = 3
+        use_preloaded_corpus_C = 0
+        minimum_similarity = 0.5
+        cooldown_recalls = 3
+        polyphonic_density = 0.3
+        follow_live_input = 1
+    elsif preset >= 6 and preset <= 10
+        # Corpus only: answers = preloaded sounds as they are, silence otherwise
+        presetNeedsC = 1
+        response_mode = 5
+        use_live_corpus_A = 0
+        use_processed_corpus_B = 0
+        use_preloaded_corpus_C = 1
+        weight_C_preloaded = 100
+        cooldown_recalls = 2
+        polyphonic_density = 0
+        background_layer = 0
+        follow_live_input = 1
+        if preset = 6
+            similarity_mode = 1
+        elsif preset = 7
+            similarity_mode = 2
+            minimum_similarity = 0.5
+        elsif preset = 8
+            similarity_mode = 3
+            minimum_similarity = 0.4
+        elsif preset = 9
+            similarity_mode = 4
+            minimum_similarity = 0.4
+            fade_in_ms = 5
+            fade_out_ms = 150
+        else
+            # contrast: score = 1 - similarity must reach the minimum
+            similarity_mode = 6
+            minimum_similarity = 0.3
+        endif
+    elsif preset = 11
+        # Corpus re-composed: a similar corpus sound rendered by one of the six
+        response_mode = 4
+        presetNeedsC = 1
+        use_live_corpus_A = 0
+        use_processed_corpus_B = 0
+        weight_C_preloaded = 100
+        max_generation = 1
+        polyphonic_density = 0.3
+        follow_live_input = 1
+    elsif preset = 12
+        # Dense ensemble: many voices, layers on every answer, wide movement
+        max_voices = 6
+        polyphonic_density = 0.9
+        layered_response = 1
+        spatial_movement = 0.6
+        pan_variation = 0.8
+        background_level_dB = -30
+        candidates = 8
+        follow_live_input = 1
+    elsif preset = 13
+        # Sparse / intimate: few voices, narrow image, long releases
+        max_voices = 2
+        polyphonic_density = 0.15
+        background_layer = 0
+        stereo_width = 0.6
+        spatial_movement = 0.1
+        pan_variation = 0.2
+        fade_out_ms = 800
+        cooldown_recalls = 6
+        follow_live_input = 1
+    elsif preset = 14
+        # Ambient bed: a present background, slow soft entries, moving space
+        polyphonic_density = 0.6
+        background_level_dB = -27
+        spatial_movement = 0.6
+        fade_in_ms = 300
+        fade_out_ms = 1500
+        preserve_transients = 0
+        evolving_memory = 1
+    elsif preset = 15
+        # Percussive / rhythmic: rhythm matching, attacks kept, short tails,
+        # layers land on the phrase's own pulse
+        similarity_mode = 4
+        polyphonic_density = 0.4
+        background_layer = 0
+        fade_in_ms = 5
+        fade_out_ms = 150
+        preserve_transients = 1
+        pan_variation = 0.8
+    endif
+
+    # a preset that recalls from the preloaded corpus needs its folder
+    presetCdir$ = replace_regex$ (corpus_C_folder$, "^\s+|\s+$", "", 0)
+    if presetNeedsC and presetCdir$ = ""
+        exitScript: "Preset """ + preset$ + """ answers from the preloaded corpus:" + newline$
+            ... + "set Corpus_C_folder in the form to the folder of your sound files."
+    endif
+elsif preset > 1
+    presetName$ = "Custom (form and dialogs)"
+endif
+
 # ---- Advanced dialog (GUI only; keep the box unticked for batch runs) ----
 if advanced_settings
-    beginPause: "Call & Response 0.4.0 - advanced"
+    beginPause: "Call & Response 0.4.12 - advanced"
         comment: "Audio"
         positive: "Sample_rate", string$ (sample_rate)
         natural: "Channels", string$ (channels)
@@ -434,33 +781,41 @@ endif
 # ---- Sonic memory dialog (continuous mode) ----
 # ---- Playback dialog (v0.4.0, continuous mode) ----
 if playback_settings and source = 1
-    beginPause: "Call & Response 0.4.0 - playback"
+    beginPause: "Call & Response 0.4.12 - playback"
         comment: "Polyphony"
         boolean: "Polyphony", polyphony
         natural: "Max_voices", string$ (max_voices)
         real: "Polyphonic_density", string$ (polyphonic_density)
+        optionmenu: "Layer_shape", layer_shape
+            option: "Whole sounds"
+            option: "Excerpts (onset -> natural end)"
         boolean: "Background_layer", background_layer
         real: "Background_level_dB", string$ (background_level_dB)
         comment: "Space (0..1)"
         real: "Stereo_width", string$ (stereo_width)
         real: "Spatial_movement", string$ (spatial_movement)
         real: "Pan_variation", string$ (pan_variation)
-        comment: "Envelopes"
+        comment: "Envelopes and level"
         positive: "Fade_in_ms", string$ (fade_in_ms)
         positive: "Fade_out_ms", string$ (fade_out_ms)
         boolean: "Preserve_transients", preserve_transients
         boolean: "Level_matching", level_matching
+        boolean: "Follow_live_input", follow_live_input
+        positive: "Follow_range_dB", string$ (follow_range_dB)
+        real: "Corpus_C_balance_dB", string$ (corpus_C_balance_dB)
     pbClicked = endPause: "Cancel", "Start", 2, 1
     if pbClicked = 1
         exitScript: "Cancelled."
     endif
+    corpus_C_balance_dB = min (12, max (-12, corpus_C_balance_dB))
+    follow_range_dB = min (18, follow_range_dB)
 endif
 
 if memory_settings and sonic_memory and source = 1
     memPage = 1
     while memPage > 0
         if memPage = 1
-            beginPause: "Call & Response 0.4.0 - sonic memory"
+            beginPause: "Call & Response 0.4.12 - sonic memory"
                 comment: "Corpora (C also needs Corpus_C_folder in the main form)"
                 boolean: "Use_live_corpus_A", use_live_corpus_A
                 boolean: "Use_processed_corpus_B", use_processed_corpus_B
@@ -483,13 +838,13 @@ if memory_settings and sonic_memory and source = 1
                 real: "Weight_recall_transform", string$ (weight_recall_transform)
                 boolean: "Evolving_memory", evolving_memory
                 boolean: "Layered_response", layered_response
-            memClicked = endPause: "Cancel", "Limits...", "Start", 3, 1
+            memClicked = endPause: "Cancel", "Limits & influence...", "Start", 3, 1
             if memClicked = 1
                 exitScript: "Cancelled."
             endif
             memPage = if memClicked = 2 then 2 else 0 fi
         else
-            beginPause: "Call & Response 0.4.0 - memory limits"
+            beginPause: "Call & Response 0.4.12 - memory limits and influence"
                 natural: "Max_generation", string$ (max_generation)
                 natural: "Max_live_phrases", string$ (max_live_phrases)
                 natural: "Max_processed_responses", string$ (max_processed_responses)
@@ -499,6 +854,10 @@ if memory_settings and sonic_memory and source = 1
                 natural: "Cooldown_recalls", string$ (cooldown_recalls)
                 integer: "Exclude_recent_phrases", string$ (exclude_recent_phrases)
                 boolean: "Same_family_exclusion", same_family_exclusion
+                comment: "Influence of earlier phrases (1 = last phrase only)"
+                natural: "Influence_depth", string$ (influence_depth)
+                real: "Influence_decay", string$ (influence_decay)
+                real: "Trend_weight", string$ (trend_weight)
             memClicked = endPause: "Cancel", "Back", "Start", 3, 1
             if memClicked = 1
                 exitScript: "Cancelled."
@@ -1336,6 +1695,8 @@ procedure continuousSession
         .rm$ = "recall"
     elsif response_mode = 4
         .rm$ = "recall_transform"
+    elsif response_mode = 5
+        .rm$ = "corpus_only"
     endif
     .sim$ = "hybrid"
     if similarity_mode = 2
@@ -1349,8 +1710,8 @@ procedure continuousSession
     elsif similarity_mode = 6
         .sim$ = "contrast"
     endif
-    .cdir$ = replace_regex$ (corpus_C_folder$, "^\s+|\s+$", "", 0)
-    .cdir$ = replace_regex$ (.cdir$, "^""|""$", "", 0)
+    @argPath: corpus_C_folder$
+    .cdir$ = argPath.p$
     .useC = use_preloaded_corpus_C and .cdir$ <> ""
     if .useC and sonic_memory and not folderExists (.cdir$)
         @cleanup
@@ -1359,7 +1720,8 @@ procedure continuousSession
     if not .useC
         .cdir$ = "none"
     endif
-    .praat$ = if praatExe$ = "" then "none" else praatExe$ fi
+    @argPath: praatExe$
+    .praat$ = if argPath.p$ = "" then "none" else argPath.p$ fi
     .in$ = if input_device$ = "" then "default" else input_device$ fi
     .out$ = if output_device$ = "" then "default" else output_device$ fi
     .overflow$ = if overflow_policy = 1 then "drop_oldest" else "drop_newest" fi
@@ -1368,37 +1730,148 @@ procedure continuousSession
         ... + string$ (max_pending_responses) + ", " + .overflow$
     # Ordinary blocking call: "launch" starts the engine DETACHED and returns
     # at once.  ("asynchronous runSubprocess" never ran the engine on Windows.)
-    runSubprocess: python$, pyScript$, "launch", "--session", session$,
-        ... "--script", .self$, "--praat", .praat$, "--plugin-root", pluginRoot$,
-        ... "--force", force$, "--device", .in$, "--output-device", .out$,
-        ... "--sr", fixed$ (sample_rate, 0), "--channels", string$ (channels),
-        ... "--sensitivity", fixed$ (sensitivity_dB, 3), "--min-phrase", fixed$ (min_phrase_s, 3),
-        ... "--end-silence", fixed$ (end_silence_s, 3), "--max-phrase", fixed$ (max_phrase_s, 3),
-        ... "--preroll", fixed$ (preroll, 3), "--max-pending", string$ (max_pending_phrases),
-        ... "--max-responses", string$ (max_pending_responses), "--overflow", .overflow$,
-        ... "--max-response", fixed$ (max_response_s, 3), "--session-minutes", fixed$ (session_minutes, 3),
-        ... "--idle-stop", fixed$ (idle_stop_s, 3), "--leak-guard", string$ (leakage_guard),
-        ... "--play", string$ (play_response), "--debug-log", debugPath$,
-        ... "--memory", string$ (sonic_memory), "--response-mode", .rm$,
-        ... "--use-a", string$ (use_live_corpus_A), "--use-b", string$ (use_processed_corpus_B),
-        ... "--use-c", string$ (.useC), "--corpus-c", .cdir$, "--sim-mode", .sim$,
-        ... "--min-sim", fixed$ (minimum_similarity, 3), "--w-live", fixed$ (weight_A_live, 3),
-        ... "--w-processed", fixed$ (weight_B_processed, 3), "--w-preloaded", fixed$ (weight_C_preloaded, 3),
-        ... "--p-transform", fixed$ (weight_transform, 3), "--p-recall", fixed$ (weight_recall, 3),
-        ... "--p-recall-transform", fixed$ (weight_recall_transform, 3),
-        ... "--max-generation", string$ (max_generation), "--max-live", string$ (max_live_phrases),
-        ... "--max-processed", string$ (max_processed_responses),
-        ... "--max-ram-min", fixed$ (max_audio_memory_min, 3), "--max-item-s", fixed$ (max_item_s, 3),
-        ... "--candidates", string$ (candidates), "--evolving", string$ (evolving_memory),
-        ... "--layered", string$ (layered_response), "--recent-exclude", string$ (exclude_recent_phrases),
-        ... "--cooldown", string$ (cooldown_recalls), "--same-family", string$ (same_family_exclusion),
-        ... "--polyphony", string$ (polyphony), "--max-voices", string$ (max_voices),
-        ... "--density", fixed$ (polyphonic_density, 3), "--background", string$ (background_layer),
-        ... "--background-db", fixed$ (background_level_dB, 2), "--stereo-width", fixed$ (stereo_width, 3),
-        ... "--movement", fixed$ (spatial_movement, 3), "--pan-variation", fixed$ (pan_variation, 3),
-        ... "--fade-in-ms", fixed$ (fade_in_ms, 2), "--fade-out-ms", fixed$ (fade_out_ms, 2),
-        ... "--preserve-transients", string$ (preserve_transients),
-        ... "--level-match", string$ (level_matching)
+    # v0.4.4: the engine arguments go through a FILE (one per line).  A
+    # long command line was cut off by runSubprocess on Windows (arguments
+    # after about 1 KB were lost or emptied).  The last line marks a
+    # complete file; Python starts the engine with a proper argument list.
+    argsFile$ = session$ + "/engine_args.txt"
+    writeFileLine: argsFile$, "# AudioTools Call & Response engine arguments"
+    appendFileLine: argsFile$, "--session"
+    appendFileLine: argsFile$, session$
+    appendFileLine: argsFile$, "--script"
+    appendFileLine: argsFile$, .self$
+    appendFileLine: argsFile$, "--praat"
+    appendFileLine: argsFile$, .praat$
+    appendFileLine: argsFile$, "--plugin-root"
+    appendFileLine: argsFile$, pluginRoot$
+    appendFileLine: argsFile$, "--force"
+    appendFileLine: argsFile$, force$
+    appendFileLine: argsFile$, "--device"
+    appendFileLine: argsFile$, .in$
+    appendFileLine: argsFile$, "--output-device"
+    appendFileLine: argsFile$, .out$
+    appendFileLine: argsFile$, "--sr"
+    appendFileLine: argsFile$, fixed$ (sample_rate, 0)
+    appendFileLine: argsFile$, "--channels"
+    appendFileLine: argsFile$, string$ (channels)
+    appendFileLine: argsFile$, "--sensitivity"
+    appendFileLine: argsFile$, fixed$ (sensitivity_dB, 3)
+    appendFileLine: argsFile$, "--min-phrase"
+    appendFileLine: argsFile$, fixed$ (min_phrase_s, 3)
+    appendFileLine: argsFile$, "--end-silence"
+    appendFileLine: argsFile$, fixed$ (end_silence_s, 3)
+    appendFileLine: argsFile$, "--max-phrase"
+    appendFileLine: argsFile$, fixed$ (max_phrase_s, 3)
+    appendFileLine: argsFile$, "--preroll"
+    appendFileLine: argsFile$, fixed$ (preroll, 3)
+    appendFileLine: argsFile$, "--max-pending"
+    appendFileLine: argsFile$, string$ (max_pending_phrases)
+    appendFileLine: argsFile$, "--max-responses"
+    appendFileLine: argsFile$, string$ (max_pending_responses)
+    appendFileLine: argsFile$, "--overflow"
+    appendFileLine: argsFile$, .overflow$
+    appendFileLine: argsFile$, "--max-response"
+    appendFileLine: argsFile$, fixed$ (max_response_s, 3)
+    appendFileLine: argsFile$, "--session-minutes"
+    appendFileLine: argsFile$, fixed$ (session_minutes, 3)
+    appendFileLine: argsFile$, "--idle-stop"
+    appendFileLine: argsFile$, fixed$ (idle_stop_s, 3)
+    appendFileLine: argsFile$, "--leak-guard"
+    appendFileLine: argsFile$, string$ (leakage_guard)
+    appendFileLine: argsFile$, "--play"
+    appendFileLine: argsFile$, string$ (play_response)
+    appendFileLine: argsFile$, "--debug-log"
+    appendFileLine: argsFile$, debugPath$
+    appendFileLine: argsFile$, "--memory"
+    appendFileLine: argsFile$, string$ (sonic_memory)
+    appendFileLine: argsFile$, "--response-mode"
+    appendFileLine: argsFile$, .rm$
+    appendFileLine: argsFile$, "--use-a"
+    appendFileLine: argsFile$, string$ (use_live_corpus_A)
+    appendFileLine: argsFile$, "--use-b"
+    appendFileLine: argsFile$, string$ (use_processed_corpus_B)
+    appendFileLine: argsFile$, "--use-c"
+    appendFileLine: argsFile$, string$ (.useC)
+    appendFileLine: argsFile$, "--corpus-c"
+    appendFileLine: argsFile$, .cdir$
+    appendFileLine: argsFile$, "--sim-mode"
+    appendFileLine: argsFile$, .sim$
+    appendFileLine: argsFile$, "--min-sim"
+    appendFileLine: argsFile$, fixed$ (minimum_similarity, 3)
+    appendFileLine: argsFile$, "--w-live"
+    appendFileLine: argsFile$, fixed$ (weight_A_live, 3)
+    appendFileLine: argsFile$, "--w-processed"
+    appendFileLine: argsFile$, fixed$ (weight_B_processed, 3)
+    appendFileLine: argsFile$, "--w-preloaded"
+    appendFileLine: argsFile$, fixed$ (weight_C_preloaded, 3)
+    appendFileLine: argsFile$, "--p-transform"
+    appendFileLine: argsFile$, fixed$ (weight_transform, 3)
+    appendFileLine: argsFile$, "--p-recall"
+    appendFileLine: argsFile$, fixed$ (weight_recall, 3)
+    appendFileLine: argsFile$, "--p-recall-transform"
+    appendFileLine: argsFile$, fixed$ (weight_recall_transform, 3)
+    appendFileLine: argsFile$, "--max-generation"
+    appendFileLine: argsFile$, string$ (max_generation)
+    appendFileLine: argsFile$, "--max-live"
+    appendFileLine: argsFile$, string$ (max_live_phrases)
+    appendFileLine: argsFile$, "--max-processed"
+    appendFileLine: argsFile$, string$ (max_processed_responses)
+    appendFileLine: argsFile$, "--max-ram-min"
+    appendFileLine: argsFile$, fixed$ (max_audio_memory_min, 3)
+    appendFileLine: argsFile$, "--max-item-s"
+    appendFileLine: argsFile$, fixed$ (max_item_s, 3)
+    appendFileLine: argsFile$, "--candidates"
+    appendFileLine: argsFile$, string$ (candidates)
+    appendFileLine: argsFile$, "--evolving"
+    appendFileLine: argsFile$, string$ (evolving_memory)
+    appendFileLine: argsFile$, "--layered"
+    appendFileLine: argsFile$, string$ (layered_response)
+    appendFileLine: argsFile$, "--recent-exclude"
+    appendFileLine: argsFile$, string$ (exclude_recent_phrases)
+    appendFileLine: argsFile$, "--cooldown"
+    appendFileLine: argsFile$, string$ (cooldown_recalls)
+    appendFileLine: argsFile$, "--same-family"
+    appendFileLine: argsFile$, string$ (same_family_exclusion)
+    appendFileLine: argsFile$, "--polyphony"
+    appendFileLine: argsFile$, string$ (polyphony)
+    appendFileLine: argsFile$, "--max-voices"
+    appendFileLine: argsFile$, string$ (max_voices)
+    appendFileLine: argsFile$, "--density"
+    appendFileLine: argsFile$, fixed$ (polyphonic_density, 3)
+    appendFileLine: argsFile$, "--background"
+    appendFileLine: argsFile$, string$ (background_layer)
+    appendFileLine: argsFile$, "--background-db"
+    appendFileLine: argsFile$, fixed$ (background_level_dB, 2)
+    appendFileLine: argsFile$, "--stereo-width"
+    appendFileLine: argsFile$, fixed$ (stereo_width, 3)
+    appendFileLine: argsFile$, "--movement"
+    appendFileLine: argsFile$, fixed$ (spatial_movement, 3)
+    appendFileLine: argsFile$, "--pan-variation"
+    appendFileLine: argsFile$, fixed$ (pan_variation, 3)
+    appendFileLine: argsFile$, "--fade-in-ms"
+    appendFileLine: argsFile$, fixed$ (fade_in_ms, 2)
+    appendFileLine: argsFile$, "--fade-out-ms"
+    appendFileLine: argsFile$, fixed$ (fade_out_ms, 2)
+    appendFileLine: argsFile$, "--preserve-transients"
+    appendFileLine: argsFile$, string$ (preserve_transients)
+    appendFileLine: argsFile$, "--level-match"
+    appendFileLine: argsFile$, string$ (level_matching)
+    appendFileLine: argsFile$, "--follow-input"
+    appendFileLine: argsFile$, string$ (follow_live_input)
+    appendFileLine: argsFile$, "--follow-range"
+    appendFileLine: argsFile$, fixed$ (follow_range_dB, 2)
+    appendFileLine: argsFile$, "--corpus-c-db"
+    appendFileLine: argsFile$, fixed$ (corpus_C_balance_dB, 2)
+    appendFileLine: argsFile$, "--influence-depth"
+    appendFileLine: argsFile$, string$ (max (1, min (8, influence_depth)))
+    appendFileLine: argsFile$, "--influence-decay"
+    appendFileLine: argsFile$, fixed$ (max (0, min (1, influence_decay)), 3)
+    appendFileLine: argsFile$, "--trend-weight"
+    appendFileLine: argsFile$, fixed$ (max (0, min (1, trend_weight)), 3)
+    appendFileLine: argsFile$, "--layer-shape"
+    appendFileLine: argsFile$, if layer_shape = 2 then "excerpt" else "whole" fi
+    appendFileLine: argsFile$, "#end"
+    runSubprocess: python$, pyScript$, "launch", "--args-file", argsFile$
 
     .statusFile$ = session$ + "/status.txt"
     .stopFile$ = session$ + "/stop.request"
@@ -1492,6 +1965,16 @@ procedure continuousSession
             stopNote$ = "the engine did not confirm the stop within 15 s"
             .running = 0
         endif
+        if not headless
+            @stField: "graph"
+            if stField.v$ <> "" and stField.v$ <> "off" and stField.v$ <> "0"
+                ... and stField.v$ <> graphVer$
+                @readGraph: session$ + "/graph.tsv"
+                if readGraph.ok
+                    graphVer$ = stField.v$
+                endif
+            endif
+        endif
         @buildDisplay: .stopSent and .running
         if display$ <> lastShown$
             writeInfoLine: display$
@@ -1502,7 +1985,11 @@ procedure continuousSession
             @stField: "input_db"
             .lv = number (stField.v$)
             .lvq = if .lv = undefined then -99 else round (.lv / 2) fi
-            .frame$ = display$ + string$ (.lvq) + string$ (.stopSent)
+            if graphView and graphTable
+                .frame$ = displayCore$ + "|map " + graphVer$ + "|" + string$ (.stopSent)
+            else
+                .frame$ = display$ + string$ (.lvq) + string$ (.stopSent) + "|status"
+            endif
             if .frame$ <> .lastFrame$
                 @drawDemo: .stopSent and .running
                 .lastFrame$ = .frame$
@@ -1535,6 +2022,10 @@ procedure continuousSession
             endif
         endif
     endwhile
+    if graphTable
+        removeObject: graphTable
+        graphTable = 0
+    endif
 endproc
 
 procedure demoStopHit
@@ -1547,6 +2038,22 @@ procedure demoStopHit
     elsif demoKeyPressed ()
         .key$ = demoKey$ ()
         .hit = .key$ = unicode$ (27) or .key$ = "s" or .key$ = "S"
+        if .key$ = "g" or .key$ = "G"
+            graphView = 1 - graphView
+        endif
+    endif
+endproc
+
+procedure argPath: .in$
+    # v0.4.3: a path typed by the user, made safe as a subprocess argument.
+    # On Windows a trailing backslash escapes the closing quote of the
+    # argument and merges the following arguments.  Forward slashes work
+    # for Python and Praat on every platform.
+    .p$ = replace_regex$ (.in$, "^\s+|\s+$", "", 0)
+    .p$ = replace_regex$ (.p$, "^""|""$", "", 0)
+    .p$ = replace$ (.p$, "\", "/", 0)
+    if not (length (.p$) = 3 and right$ (.p$, 2) = ":/") and .p$ <> "/"
+        .p$ = replace_regex$ (.p$, "/+$", "", 0)
     endif
 endproc
 
@@ -1588,26 +2095,18 @@ procedure buildDisplay: .stopping
     @stField: "message"
     .msg$ = stField.v$
     display$ = "AudioTools Call & Response v" + version$ + newline$ + newline$
-        ... + "MODE: CONTINUOUS" + newline$
+        ... + "MODE: CONTINUOUS   PRESET: " + presetName$ + newline$
     if engineState$ = "starting"
         display$ = display$ + "STARTING: " + .msg$ + newline$
     elsif engineState$ = "running" and .stopping
         display$ = display$ + "STOPPING" + newline$
     elsif engineState$ = "running" or engineState$ = "stopping"
-        if .phrase$ = "1"
-            display$ = display$ + "LISTENING: ON - PHRASE DETECTED" + newline$
-        else
-            display$ = display$ + "LISTENING: ON" + newline$
-        endif
-        if .proc$ <> ""
-            display$ = display$ + "PROCESSING: " + .proc$ + newline$
-        endif
-        if .play$ <> ""
-            display$ = display$ + "PLAYING: " + .play$ + newline$
-        endif
-        if .proc$ = "" and .play$ = "" and .pend$ = "0"
-            display$ = display$ + "READY" + newline$
-        endif
+        # v0.4.12: the performer's side first, then the system's side
+        @perfState
+        display$ = display$ + newline$ + "YOUR PERFORMANCE: " + perfState.head$ + newline$
+            ... + "  " + perfState.sub$ + newline$ + newline$
+        @responseLine
+        display$ = display$ + "SYSTEM RESPONSE (independent): " + responseLine.txt$ + newline$
         display$ = display$ + "PENDING: " + .pend$ + newline$
         @voiceLine
         if voiceLine.txt$ <> ""
@@ -1617,6 +2116,14 @@ procedure buildDisplay: .stopping
         display$ = display$ + memoryLines.txt$
         if .leak$ = "1"
             display$ = display$ + "WARNING: the microphone hears the answers - use headphones" + newline$
+        endif
+        displayCore$ = display$
+        @detLine
+        if detLine.txt$ <> ""
+            display$ = display$ + detLine.txt$ + newline$
+        endif
+        if detLine.last$ <> ""
+            display$ = display$ + detLine.last$ + newline$
         endif
     elsif not cleanupDone
         # v0.3.0: never report STOPPED before the temporary files are gone
@@ -1629,6 +2136,117 @@ procedure buildDisplay: .stopping
             display$ = display$ + "STOPPED - " + .why$ + newline$
         endif
         display$ = display$ + cleanupReport$ + newline$
+    endif
+endproc
+
+procedure perfState
+    # v0.4.12: what the performer can do now, from the detector's state
+    .head$ = "PLAY WHEN READY"
+    .sub$ = "The microphone is listening - start at any moment, also while answers sound."
+    .short$ = "start at any moment"
+    .col$ = "{0.15, 0.55, 0.25}"
+    .kind$ = "ready"
+    .q = 0
+    .es = 0.6
+    @stField: "det_state"
+    .ds$ = stField.v$
+    @stField: "det_event"
+    .ev$ = stField.v$
+    @stField: "det_event_age"
+    .age = number (stField.v$)
+    if .age = undefined
+        .age = 99
+    endif
+    @stField: "quiet_s"
+    .q = number (stField.v$)
+    @stField: "end_silence"
+    .es = number (stField.v$)
+    if .q = undefined
+        .q = 0
+    endif
+    if .es = undefined
+        .es = 0.6
+    endif
+    if .ds$ = "calibrating"
+        .head$ = "STAY QUIET"
+        .sub$ = "Measuring the room for a moment - then play whenever you like."
+        .short$ = "measuring the room"
+        .col$ = "{0.35, 0.35, 0.50}"
+        .kind$ = "calibrating"
+    elsif .ds$ = "phrase"
+        .head$ = "RECORDING YOUR PHRASE"
+        .sub$ = "Stop playing for " + fixed$ (.es, 1) + " s when your gesture is complete."
+        .short$ = "stop for " + fixed$ (.es, 1) + " s to end it"
+        if index (.ev$, "split at") = 1 and .age <= 2
+            .sub$ = "Long phrase: split at Max_phrase_s - keep playing, it continues."
+            .short$ = "long phrase split - keep playing"
+        endif
+        .col$ = "{0.85, 0.38, 0.18}"
+        .kind$ = "recording"
+    elsif .ds$ = "done" or (index (.ev$, "phrase end") = 1 and .age <= 2)
+        .head$ = "PHRASE CAPTURED"
+        .sub$ = "The answer is coming - you can play again at any time."
+        .short$ = "play again any time"
+        .col$ = "{0.20, 0.48, 0.75}"
+        .kind$ = "captured"
+    elsif index (.ev$, "noise ignored") = 1 and .age <= 2
+        .sub$ = "Background noise was ignored - play when ready."
+    elsif index (.ev$, "too short") = 1 and .age <= 2
+        .sub$ = "That was too short for a phrase - play when ready."
+    endif
+endproc
+
+procedure responseLine
+    # v0.4.12: the system's side, one line
+    @stField: "playing"
+    .play$ = stField.v$
+    @stField: "processing"
+    .proc$ = stField.v$
+    @stField: "pending"
+    .pend$ = stField.v$
+    .txt$ = ""
+    if .proc$ <> ""
+        .txt$ = "PROCESSING: " + .proc$
+    endif
+    if .play$ <> ""
+        .txt$ = if .txt$ = "" then "" else .txt$ + "   |   " fi + "PLAYING: " + .play$
+    endif
+    if .txt$ = ""
+        .txt$ = if .pend$ = "0" or .pend$ = "" then "Silent - waiting for your phrase" else "Preparing an answer" fi
+    endif
+endproc
+
+procedure detLine
+    # v0.4.10: the detector in its own terms (rounded so the Info window
+    # is not rewritten on every 0.1 dB)
+    .txt$ = ""
+    .last$ = ""
+    @stField: "on_db"
+    .on = number (stField.v$)
+    if .on <> undefined
+        @stField: "input_db"
+        .in = number (stField.v$)
+        @stField: "off_db"
+        .off = number (stField.v$)
+        @stField: "floor_db"
+        .fl = number (stField.v$)
+        @stField: "quiet_s"
+        .q$ = stField.v$
+        @stField: "end_silence"
+        .es$ = stField.v$
+        .in$ = if .in = undefined or .in < -99 then "-99" else fixed$ (.in, 0) fi
+        .txt$ = "DETECTOR: input " + .in$ + " dB  |  start " + fixed$ (.on, 0) + "  |  end "
+            ... + fixed$ (.off, 0) + "  |  floor " + fixed$ (.fl, 0) + "  |  quiet " + .q$ + " / " + .es$ + " s"
+        # v0.4.11: the last detector event, for 3 s
+        @stField: "det_event"
+        .ev$ = stField.v$
+        @stField: "det_event_age"
+        .age = number (stField.v$)
+        if .ev$ <> "" and .age <> undefined
+            if .age <= 3
+                .last$ = "LAST: " + .ev$
+            endif
+        endif
     endif
 endproc
 
@@ -1654,6 +2272,12 @@ procedure voiceLine
         .s2$ = if .sec$ = "1" then "" else "s" fi
         .txt$ = "VOICES: " + .n$ + "/" + .mx$ + " (" + .fg$ + " response" + .s1$ + ", "
             ... + .sec$ + " layer" + .s2$ + ", background " + .bg$ + ")"
+    endif
+    # v0.4.1: level offset when Follow_live_input is on
+    @stField: "level_offset"
+    if stField.v$ <> "" and stField.v$ <> "off"
+        .lvl$ = "LEVEL: " + stField.v$ + " dB (follows input)"
+        .txt$ = if .txt$ = "" then .lvl$ else .txt$ + "   " + .lvl$ fi
     endif
 endproc
 
@@ -1697,6 +2321,152 @@ procedure dtext: .x, .y, .size, .colour$, .txt$
 endproc
 
 procedure drawDemo: .stopping
+    if graphView and graphTable and engineState$ = "running" and not .stopping
+        @drawGraphView
+    else
+        @drawStatusView: .stopping
+    endif
+endproc
+
+procedure readGraph: .path$
+    # v0.4.6: graph.tsv -> a Table (replaces the previous one).  Like
+    # safeRead, a read that collides with the engine replacing the file is
+    # simply skipped (.ok = 0) and the previous map stays.
+    .ok = 0
+    selectObject ( )
+    nocheck Read Table from tab-separated file: .path$
+    if numberOfSelected ("Table") = 1
+        .new = selected ("Table")
+        .nc = Get number of columns
+        if .nc = 9
+            if graphTable
+                removeObject: graphTable
+            endif
+            graphTable = .new
+            .ok = 1
+        else
+            removeObject: .new
+        endif
+    endif
+endproc
+
+procedure ltext: .x, .y, .size, .colour$, .txt$
+    demo Font size: .size
+    demo Select inner viewport: 0, 100, 0, 100
+    demo Axes: 0, 100, 0, 100
+    demo Colour: .colour$
+    demo Text: .x, "left", .y, "half", .txt$
+endproc
+
+procedure drawGraphView
+    # v0.4.6 memory map.  graph.tsv rows arrive in drawing order: regions,
+    # similarity arcs (weakest first), action arcs (oldest first), points,
+    # latest-phrase tick.  x and point sizes are 0..1 of the drawing width.
+    .gx0 = 4
+    .gw = 92
+    .y0 = 51
+    .h = 27
+    demo Erase all
+    demo Font size: 10
+    demo Select inner viewport: 0, 100, 0, 100
+    demo Axes: 0, 100, 0, 100
+    demo Paint rectangle: "{0.97, 0.97, 0.97}", 0, 100, 0, 100
+    @dtext: 50, 95, 18, "{0.20, 0.20, 0.30}", "##AudioTools Call & Response " + version$ + "##   memory map"
+    # v0.4.12: the performer's state first, the system's response below it
+    @perfState
+    @dtext: 50, 89, 14, perfState.col$, "##" + perfState.head$ + "##  -  " + perfState.short$
+    @responseLine
+    .pl$ = responseLine.txt$
+    if length (.pl$) > 110
+        .pl$ = left$ (.pl$, 107) + "..."
+    endif
+    @dtext: 50, 84.5, 10, "{0.48, 0.36, 0.72}", "SYSTEM RESPONSE:  " + .pl$
+    demo Select inner viewport: 0, 100, 0, 100
+    demo Axes: 0, 100, 0, 100
+    selectObject: graphTable
+    .n = Get number of rows
+    .based = 0
+    for .i to .n
+        selectObject: graphTable
+        .k$ = Get value: .i, "kind"
+        .x1 = Get value: .i, "x1"
+        .x2 = Get value: .i, "x2"
+        .side = Get value: .i, "side"
+        .w = Get value: .i, "width"
+        .r = Get value: .i, "r"
+        .g = Get value: .i, "g"
+        .b = Get value: .i, "b"
+        .col$ = "{" + fixed$ (.r, 3) + ", " + fixed$ (.g, 3) + ", " + fixed$ (.b, 3) + "}"
+        if .k$ <> "region" and not .based
+            demo Colour: "{0.55, 0.55, 0.60}"
+            demo Line width: 1
+            demo Draw line: .gx0, .y0, .gx0 + .gw, .y0
+            .based = 1
+        endif
+        if .k$ = "region"
+            .lab$ = Get value: .i, "label"
+            demo Paint rectangle: .col$, .gx0 + .gw * .x1, .gx0 + .gw * .x2, .y0 - .h - 1, .y0 + .h + 1
+            @dtext: .gx0 + .gw * (.x1 + .x2) / 2, .y0 - .h - 3.5, 10, "{0.40, 0.40, 0.48}", .lab$
+        elsif .k$ = "edge"
+            .xa = .gx0 + .gw * min (.x1, .x2)
+            .xb = .gx0 + .gw * max (.x1, .x2)
+            .rad = (.xb - .xa) / 2
+            if .rad > 0.02
+                .c = (.xa + .xb) / 2
+                .hh = .h * sqrt ((.xb - .xa) / .gw)
+                .steps = max (10, min (64, round (.rad * 3)))
+                demo Colour: .col$
+                demo Line width: .w
+                demo Draw function: .xa, .xb, .steps, fixed$ (.y0, 3) + " + " + fixed$ (.side * .hh, 4)
+                    ... + " * sqrt (max (0, 1 - ((x - " + fixed$ (.c, 4) + ") / " + fixed$ (.rad, 4) + ")^2))"
+            endif
+        elsif .k$ = "node"
+            .xx = .gx0 + .gw * .x1
+            .rr = max (0.15, .gw * .x2)
+            demo Paint circle: .col$, .xx, .y0, .rr
+            if .side = 1
+                demo Colour: "{0.85, 0.15, 0.15}"
+                demo Line width: 2.5
+                demo Draw circle: .xx, .y0, .rr + 0.9
+            endif
+        elsif .k$ = "live"
+            .xx = .gx0 + .gw * .x1
+            demo Colour: "{0.80, 0.20, 0.20}"
+            demo Line width: 3
+            demo Draw line: .xx, .y0 - 3.5, .xx, .y0 + 3.5
+        endif
+    endfor
+    demo Line width: 1
+    # legend: two rows of coloured words above the STOP button
+    @ltext: 3, 17.5, 10, "{0.40, 0.40, 0.48}", "Upper arcs - similar:"
+    @ltext: 19, 17.5, 10, "{0.20, 0.40, 0.80}", "Paulstretch"
+    @ltext: 29, 17.5, 10, "{0.55, 0.60, 0.20}", "Markov"
+    @ltext: 37, 17.5, 10, "{0.90, 0.55, 0.15}", "MDS"
+    @ltext: 43, 17.5, 10, "{0.75, 0.25, 0.65}", "Spiral"
+    @ltext: 50, 17.5, 10, "{0.15, 0.60, 0.55}", "Speed Deviations"
+    @ltext: 64, 17.5, 10, "{0.80, 0.25, 0.25}", "Groove"
+    @ltext: 72, 17.5, 10, "{0.50, 0.50, 0.55}", "untransformed"
+    @ltext: 3, 14.5, 10, "{0.40, 0.40, 0.48}", "Lower arcs - actions:"
+    @ltext: 19, 14.5, 10, "{0.45, 0.20, 0.60}", "recall"
+    @ltext: 26, 14.5, 10, "{0.80, 0.30, 0.65}", "recall + transform"
+    @ltext: 40, 14.5, 10, "{0.15, 0.62, 0.55}", "transformation"
+    @ltext: 52, 14.5, 10, "{0.66, 0.58, 0.80}", "earlier phrases (influence)"
+    @ltext: 2, 8, 10, "{0.40, 0.40, 0.48}", "Points:"
+    @ltext: 7, 8, 10, "{0.20, 0.40, 0.80}", "A phrase"
+    @ltext: 14, 8, 10, "{0.85, 0.45, 0.15}", "B answer"
+    @ltext: 21.5, 8, 10, "{0.45, 0.45, 0.50}", "C corpus"
+    @ltext: 29, 8, 10, "{0.85, 0.15, 0.15}", "sounding"
+    # STOP button (same place as in the status view) + hint
+    demo Font size: 10
+    demo Select inner viewport: 0, 100, 0, 100
+    demo Axes: 0, 100, 0, 100
+    demo Paint rectangle: "{0.80, 0.25, 0.25}", 36, 64, 3, 13
+    @dtext: 50, 8, 20, "{1.00, 1.00, 1.00}", "##STOP##  (Esc / S)"
+    @dtext: 84, 8, 11, "{0.35, 0.35, 0.50}", "G: status view"
+    demoShow ()
+endproc
+
+procedure drawStatusView: .stopping
     @stField: "playing"
     .play$ = stField.v$
     @stField: "processing"
@@ -1719,17 +2489,18 @@ procedure drawDemo: .stopping
     demo Axes: 0, 100, 0, 100
     demo Paint rectangle: "{0.97, 0.97, 0.97}", 0, 100, 0, 100
     @dtext: 50, 92, 26, "{0.20, 0.20, 0.30}", "##AudioTools Call & Response " + version$ + "##"
-    @dtext: 50, 83, 18, "{0.35, 0.35, 0.50}", "MODE: CONTINUOUS"
+    .msz = if length (presetName$) > 20 then 14 else 18 fi
+    @dtext: 50, 85.5, .msz, "{0.35, 0.35, 0.50}", "MODE: CONTINUOUS   |   " + presetName$
     if engineState$ = "starting"
         @dtext: 50, 66, 30, "{0.35, 0.35, 0.50}", "STARTING..."
         @dtext: 50, 54, 14, "{0.35, 0.35, 0.50}", .msg$
     elsif engineState$ = "running" and not .stopping
-        if .phrase$ = "1"
-            @dtext: 50, 70, 34, "{0.85, 0.38, 0.18}", "##PHRASE DETECTED##"
-        else
-            @dtext: 50, 70, 34, "{0.15, 0.55, 0.25}", "##LISTENING: ON##"
-        endif
-        # input level bar, -60..0 dBFS
+        # ---- v0.4.12: YOUR PERFORMANCE ----
+        @perfState
+        @dtext: 50, 77.5, 11, "{0.40, 0.40, 0.48}", "YOUR PERFORMANCE"
+        @dtext: 50, 71.5, 30, perfState.col$, "##" + perfState.head$ + "##"
+        @dtext: 50, 66, 13, perfState.col$, perfState.sub$
+        # input level bar, -60..0 dBFS, with the detector's thresholds
         if .lv = undefined
             .lv = -120
         endif
@@ -1741,35 +2512,66 @@ procedure drawDemo: .stopping
         if .fill > 0
             demo Paint rectangle: "{0.15, 0.55, 0.25}", 25, 25 + 50 * .fill, 60, 62.5
         endif
-        if .proc$ <> ""
-            @dtext: 50, 50, 26, "{0.20, 0.48, 0.75}", "PROCESSING: " + .proc$
+        @stField: "on_db"
+        .onT = number (stField.v$)
+        @stField: "off_db"
+        .offT = number (stField.v$)
+        if .onT <> undefined and .offT <> undefined
+            demo Line width: 2
+            demo Colour: "{0.55, 0.55, 0.60}"
+            .xt = 25 + 50 * max (0, min (1, (.offT + 60) / 60))
+            demo Draw line: .xt, 59, .xt, 63.5
+            demo Colour: "{0.90, 0.50, 0.15}"
+            .xt = 25 + 50 * max (0, min (1, (.onT + 60) / 60))
+            demo Draw line: .xt, 59, .xt, 63.5
+            demo Line width: 1
         endif
-        if .play$ <> ""
-            # several answers can sound at once (v0.4.0): smaller type if long
-            .psz = if length (.play$) > 40 then 18 else 26 fi
-            @dtext: 50, 42, .psz, "{0.48, 0.36, 0.72}", "PLAYING: " + .play$
+        @detLine
+        if detLine.txt$ <> ""
+            @dtext: 50, 56.8, 10, "{0.45, 0.45, 0.52}", detLine.txt$
         endif
-        if .proc$ = "" and .play$ = "" and .pend$ = "0"
-            @dtext: 50, 45, 26, "{0.35, 0.35, 0.50}", "READY"
+        if perfState.kind$ = "recording"
+            # progress of the silence that will end the phrase
+            .frac = max (0, min (1, perfState.q / max (perfState.es, 0.05)))
+            demo Font size: 10
+            demo Select inner viewport: 0, 100, 0, 100
+            demo Axes: 0, 100, 0, 100
+            demo Paint rectangle: "{0.90, 0.88, 0.86}", 35, 65, 52, 53.5
+            if .frac > 0
+                demo Paint rectangle: "{0.85, 0.38, 0.18}", 35, 35 + 30 * .frac, 52, 53.5
+            endif
+            @dtext: 50, 50, 10, "{0.45, 0.45, 0.52}", "end silence " + fixed$ (perfState.q, 1)
+                ... + " / " + fixed$ (perfState.es, 1) + " s"
         endif
+        # ---- v0.4.12: SYSTEM RESPONSE (independent of the performer) ----
+        demo Font size: 10
+        demo Select inner viewport: 0, 100, 0, 100
+        demo Axes: 0, 100, 0, 100
+        demo Colour: "{0.80, 0.80, 0.84}"
+        demo Draw line: 15, 46.5, 85, 46.5
+        @dtext: 50, 44.3, 11, "{0.40, 0.40, 0.48}", "SYSTEM RESPONSE  -  independent of your playing"
+        @responseLine
+        .psz = if length (responseLine.txt$) > 70 then 13 else if length (responseLine.txt$) > 40 then 16 else 20 fi fi
+        .rcol$ = if .proc$ = "" and .play$ = "" then "{0.45, 0.45, 0.52}" else "{0.48, 0.36, 0.72}" fi
+        @dtext: 50, 39.5, .psz, .rcol$, responseLine.txt$
         @voiceLine
         if voiceLine.txt$ <> ""
-            @dtext: 50, 36, 14, "{0.48, 0.36, 0.72}", voiceLine.txt$
+            @dtext: 50, 34.5, 13, "{0.48, 0.36, 0.72}", voiceLine.txt$
         endif
-        @dtext: 50, 31, 16, "{0.25, 0.25, 0.35}", "PENDING: " + .pend$ + "      ANSWERS: " + .done$
+        @dtext: 50, 30.5, 13, "{0.25, 0.25, 0.35}", "PENDING: " + .pend$ + "      ANSWERS: " + .done$
         @memoryLines
         if memoryLines.on$ = "on"
             .memTxt$ = "MEMORY:  A " + memoryLines.a$ + "  |  B " + memoryLines.b$ + "  |  C " + memoryLines.c$
             if memoryLines.line2$ <> ""
                 .memTxt$ = .memTxt$ + "      " + memoryLines.line2$
             endif
-            @dtext: 50, 26, 14, "{0.30, 0.30, 0.42}", .memTxt$
+            @dtext: 50, 26.5, 13, "{0.30, 0.30, 0.42}", .memTxt$
         endif
         if memoryLines.act$ <> ""
-            @dtext: 50, 21.5, 14, "{0.30, 0.30, 0.42}", "ACTION: " + memoryLines.act$
+            @dtext: 50, 22.5, 13, "{0.30, 0.30, 0.42}", "ACTION: " + memoryLines.act$
         endif
         if .leak$ = "1"
-            @dtext: 50, 77, 14, "{0.85, 0.38, 0.18}", "The microphone hears the answers - use headphones"
+            @dtext: 50, 81, 12, "{0.85, 0.38, 0.18}", "The microphone hears the answers - use headphones"
         endif
     elsif .stopping or not cleanupDone
         @dtext: 50, 60, 30, "{0.85, 0.38, 0.18}", "STOPPING..."
@@ -1788,6 +2590,9 @@ procedure drawDemo: .stopping
         demo Paint rectangle: "{0.80, 0.25, 0.25}", 36, 64, 3, 13
         @dtext: 50, 8, 20, "{1.00, 1.00, 1.00}", "##STOP##  (Esc / S)"
         @dtext: 50, 16, 11, "{0.35, 0.35, 0.50}", "If Praat then reports ""Mouse click not completely handled"", press OK - the session stops."
+        if graphTable
+            @dtext: 84, 8, 11, "{0.35, 0.35, 0.50}", "G: memory map"
+        endif
     endif
     demoShow ()
 endproc
@@ -1806,6 +2611,7 @@ else
 endif
 srcName$ = if continuous then "live continuous" else if isLive then "live turn-taking" else "selected Sound(s)" fi fi
 @log: "Source: " + srcName$ + "   Mode: " + modeName$ + "   Python: " + python$
+@log: "Preset: " + presetName$
 @log: "Plugin: " + pluginRoot$
 @log: "Session: " + session$
 if missing$ <> ""

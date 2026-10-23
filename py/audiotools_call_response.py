@@ -4,7 +4,7 @@
 # Script:      audiotools_call_response.py
 # Author:      Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
-# Version:     0.4.0 (2026) - Polyphonic Spatial Playback (from v0.3.2)
+# Version:     0.4.12 (2026) - Performer display (from v0.4.11)
 # License:     MIT License
 # Repository:  https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -30,6 +30,219 @@
 #
 #   Both paths share the same feature extraction, scoring, eligibility
 #   gates, parameter mapping and phrase detector.
+#
+# Changelog v0.4.12 - Performer display (from v0.4.11):
+#   Engine unchanged except: det_event_age is reported with 0.1 s
+#   resolution (the Praat display holds PHRASE CAPTURED for 2 s).
+#
+# Changelog v0.4.11 - Reliable phrase ends (from v0.4.10):
+#   FIX (regression in v0.4.10): the stable noise floor learned a rise of
+#     the room / microphone noise only after 4 s.  When the noise rose
+#     6-8 dB just after calibration (Windows gain control, mic
+#     "enhancements") and the performer began within those 4 s, the noise
+#     stayed above the END threshold and no phrase ever ended (only the
+#     12 s splits).  Now a FLAT input above the floor (< 2 dB variation
+#     over 0.3 s) is learned within 0.3 s, as in v0.4.9; a crescendo is not
+#     flat, so it stays protected.
+#   FIX (also in v0.4.9 and earlier): calibration on digital silence set the
+#     floor to -200 dBFS, so microphone noise counted as playing for the
+#     rest of the session.  Calibration now ignores frames below -100 dBFS,
+#     waits for 0.5 s of real input (3 s at most, else -80), and the floor
+#     never goes below -90 dBFS.
+#   NEW release of a stuck phrase: if the last 1.5 s of a phrase are flat
+#     (< 3 dB), noise-like (spectral flatness > 0.25) and >= 10 dB below
+#     the phrase peak, that is background, not playing: the phrase ends
+#     where it began (ended_by "background") and the floor learns it.  A
+#     phrase that is ONLY flat noise is discarded (no answer).
+#   CHANGED steady background at Max_phrase_s: only flat AND noise-like
+#     (a held tone is never turned into background; the "flat twice in a
+#     row" rule of v0.4.10 is gone).
+#   Display: the last detector event for 3 s - phrase end (silence) /
+#     split at Max_phrase_s (continues) / background learned / noise or
+#     too short, ignored.
+#
+# Changelog v0.4.10 - Phrase detection (from v0.4.9):
+#   FIX crescendos were never detected: in LISTENING the noise floor rose
+#     3 % per 10 ms with any input below the threshold, so a gradual entry
+#     (2-3 s fade-in, even when it then held a loud tone) pulled the
+#     threshold up with it.  The floor now learns only from input within
+#     3 dB of it (slowly), falls quickly, and learns a change of room noise
+#     only after 4 s of higher quiet input without a phrase.
+#   NEW gradual entries: every phrase is captured from where its rise
+#     began (walking back while above floor + 3 dB, up to 2 s) - the soft
+#     opening of a gesture belongs to it.  (A "soft rise" trigger below the
+#     threshold was tried and left out: a step in room noise looks the
+#     same.  Very quiet playing = lower Sensitivity_dB.)
+#   FIX long phrases: at Max_phrase_s the phrase was cut wherever it was
+#     and the next one began after a fresh onset (part of the sound fell
+#     between them).  Now it is cut at its quietest point in the last 30 %
+#     and the rest continues directly as the next phrase.  A phrase that
+#     reaches the limit completely flat (< 4 dB between quiet and loud) and
+#     noise-like (a fan switched on) - or flat twice in a row - is steady
+#     background: the floor learns it and the chain stops (otherwise steady
+#     noise could chain phrases forever).  A held tone is not affected.
+#   Display: the level meter is the detector's own frame level (max of the
+#     last 100 ms), and the status carries det_state, floor / start / end
+#     thresholds and the accumulated quiet (Praat: DETECTOR line, threshold
+#     marks on the meter, READY no longer shown during a phrase).
+#   The decision layer, memory and engines are unchanged.
+#
+# Changelog v0.4.9 - Influence memory fixes (from v0.4.8):
+#   FIX coherence gate: it used the map's vectorised similarity, which (a)
+#     did not switch PITCH mode to hybrid for an unpitched phrase and (b)
+#     has no contour stage - a noise phrase vs a percussive one read 0.49
+#     at the gate but 0.20 in retrieval, so an unrelated earlier phrase
+#     kept influence.  The gate now calls SonicMemory.similarity itself
+#     (same mode, same unpitched rule, contour stage, memory-wide scales).
+#   FIX map similarity: PITCH mode falls back to hybrid weights for an
+#     unpitched query, as retrieval does.
+#   FIX influence arcs: their thickness was the earlier phrase's WEIGHT in
+#     the model; it is now its actual SHARE of the chosen sound's score
+#     (w_k * similarity(phrase_k, chosen) / total).  The debug log lists the
+#     shares, trend included.
+#   FIX timing: the history and the 45 s half-life use the time the phrase
+#     ENDED (as played), not the time the engine analysed it - a backlog
+#     no longer ages the history.
+#
+# Changelog v0.4.8 - Phrase-level influence memory (from v0.4.7):
+#   The answer now responds to the recent HISTORY of gestures, not only to
+#   the last phrase.  Retrieval scores every stored sound against the last
+#   phrase AND the previous ones, each with a weight that fades with its
+#   position (Influence_decay ^ k) and with time (half-life 45 s, so after
+#   a long pause the history is forgotten):
+#       influence(sound) = sum_k w_k * similarity(phrase_k, sound) / sum_k w_k
+#   The last phrase always has weight 1.  Influence_depth 1 = exactly the
+#   v0.4.7 behaviour.  Optional Trend_weight: a further query extrapolated
+#   from the previous phrase to the last one (descriptor groups: last +
+#   (last - previous); contours, voicing from the last) - it looks for
+#   where the gesture is heading.  Minimum similarity, ranking, candidate
+#   draw, contrast mode and Recall + Transform use the influence score;
+#   the duplicate guard (re-captured playback) still uses the last phrase.
+#   Coherence gating: an earlier phrase counts only as far as it resembles
+#   the last one (similarity < 0.30: not at all - a new idea starts a new
+#   history; > 0.60: fully).  Without it a sudden change of gesture was
+#   answered with material pulled from the previous idea.
+#   Map: the earlier phrases' share in a recall is drawn as pale lilac
+#   arcs (thicker = larger share).  Display: MATCH shows "(n phrases)".
+#   Defaults: depth 3, decay 0.5, trend 0 (off).  New arguments
+#   --influence-depth, --influence-decay, --trend-weight.
+#
+# Changelog v0.4.7 - Loudness balance between the six answers (from v0.4.6):
+#   Level matching (Level_matching on) is now a perceptual, burst-aware
+#   STATIC gain per sound - no compression, the sound's own dynamics are
+#   untouched.  Measured on emulations of the six outputs:
+#   FIX stereo measurement: the RMS was taken of (L + R) / 2, so
+#     decorrelated stereo (Paulstretch, Markov, 8-Channel Speed Deviations:
+#     L/R correlation ~0) read up to 3 dB low and was raised +2.4..+5.8 dB
+#     above its target.  Now: K-weighted (BS.1770 pre-filter) loudness of
+#     the 400 ms blocks within 20 dB of the loudest, measured AS PLAYED:
+#     real stereo = the two channel powers summed (BS.1770), mono and
+#     dual-mono = the mono power that equal-power panning preserves.  So
+#     mono, dual-mono and decorrelated stereo answers end up equally loud
+#     after placement, and L and R can no longer cancel in the reading.
+#   NEW burst constraint: the loudest 100 ms of a sound may be at most
+#     6 dB above the role's target.  The emulated Groove Creator / MDS
+#     outputs have 100 ms bursts +8..9 dB over their average (Speed
+#     Deviations +6, sustained answers +1..3): they now play 2-3 dB lower
+#     instead of hitting the listener with their transients.
+#   FIX peak after spatialisation: the equal-power balance of a STEREO
+#     source can raise one channel by up to +3 dB after level matching
+#     (measured 0.90 -> 1.15).  Each voice is now scaled so its peak stays
+#     <= 0.9 after placement; the mix limiter only handles overlaps.
+#   Debug log: per voice the integrated and burst loudness and what limited
+#     the gain (target / burst / peak / boost); summary: peak-trimmed voices.
+#   Not changed: no fixed per-transformation trims (Speed Deviations already
+#     lands on target on average - a trim would make it quieter than the
+#     others); the standalone AudioTools scripts are untouched.
+#
+# Changelog v0.4.6 - Memory map (from v0.4.5):
+#   NEW memory map (an arc diagram in the spirit of the OMax / DYCI2
+#     memory views).  The engine writes graph.tsv to the session whenever
+#     the memory or the sounding voices change (at most 4 per second); the
+#     Praat Demo window draws it.  Musical behaviour is unchanged.
+#     - one horizontal line = the memory: Corpus C (preloaded) on the left,
+#       the performance (live phrases A, processed answers B) in time order
+#       on the right.  Live phrases that are not stored (A off) still appear
+#       as light points, so corpus-only answers are visible.
+#     - upper arcs: similarity links (each sound's 3 nearest sounds above
+#       Minimum_similarity; colour = gesture class, paler = weaker).  The
+#       map uses the weighted group distance of the similarity mode; the
+#       second-stage contour comparison that refines a RECALL is not drawn.
+#     - lower arcs: what happened (the last 40 actions): recall (purple),
+#       recall + transform (magenta), transformation phrase -> result
+#       (teal); thicker = closer match, paler = older.
+#     - points: sounds (A blue, B orange, C grey); a red ring marks a sound
+#       that is sounding now; a red tick marks the latest phrase.
+#     Links are computed vectorised: one row per new sound, one matrix for
+#     Corpus C at start-up (300 sounds: well under a second).
+#
+# Changelog v0.4.5 - Whole answers (from v0.4.4):
+#   Answers and memory sounds are no longer cut before their natural end.
+#   FIX layers: a memory layer was a RANDOM excerpt (60-100 % of the sound,
+#     random start) - so layers, often earlier processed answers, entered
+#     mid-sound and stopped before their end.  New --layer-shape:
+#     whole (default) = the complete stored sound; excerpt = from an onset
+#     in the first 40 % of the sound to its natural END (never a random
+#     start or an early stop).
+#   FIX Corpus B: a processed answer was stored as its first Max_item_s
+#     (15 s) by a raw slice - a recalled / layered answer stopped abruptly.
+#     B now keeps the whole answer up to Max_response_s + 1.5 s.  Max_item_s
+#     applies to live phrases (A) and Corpus C segmentation only.
+#   FIX playback cap: Max_response_s + 1.5 s grace, so a natural tail
+#     slightly longer than planned (e.g. Paulstretch) is kept.  A sound that
+#     is still longer is cut at its QUIETEST point near the limit (never
+#     inside the first 85 % of it) and faded (>= 0.5 s).  The same
+#     quiet-point cut + fade is used for Corpus A storage.
+#   Log: every voice records its shape - whole / excerpt a-b of c s /
+#     trimmed from x to y s; summary counts trimmed voices and excerpts.
+#   Unchanged and still intended: Paulstretch on a phrase longer than
+#     ~10 s stretches its most stable 10 s window (planned, not a cut).
+#
+# Changelog v0.4.4 - Engine arguments via file (from v0.4.3):
+#   FIX: "launch --args-file FILE" reads the engine arguments from a file
+#     (one per line, closed by "#end"; Praat writes it as Latin-1, UTF-8 or
+#     UTF-16 - all detected).  The Praat script no longer passes ~130
+#     arguments on one command line, which runSubprocess cut off at about
+#     1 KB on Windows (arguments lost / emptied from there on: the
+#     "--w-preloaded" start-up error, or silently dropped last options).
+#     "launch" with plain arguments still works as before.
+#
+# Changelog v0.4.3 - Windows path fix (from v0.4.2):
+#   The engine is unchanged.  The Praat script now normalises user-typed
+#   paths (Corpus_C_folder, praatExe$): a trailing backslash escaped the
+#   closing quote of the argument on Windows and merged the next ones
+#   ("argument --w-preloaded: invalid float value: ''").
+#
+# Changelog v0.4.2 - Performance presets (from v0.4.1):
+#   The engine is unchanged.  The Praat form gained a first field (Preset),
+#   so RENDER_FORM_ARGS gains a first value ("Custom (form and dialogs)");
+#   presets are resolved in Praat and reach the engine as ordinary
+#   arguments.
+#
+# Changelog v0.4.1 - Corpus-only recall + adaptive level (from v0.4.0):
+#   Analysis, classifier, the six transformations, retrieval, mixer,
+#   spatialisation and session safety are unchanged.  Corpus C files are
+#   still only read.
+#   NEW response mode corpus_only ("Corpus only - unprocessed recall"):
+#     every answer is a stored sound played as it is (only envelope,
+#     level and placement - no transformation).  Without a qualified match
+#     the engine stays SILENT and keeps listening: no Transform fallback
+#     and no passthrough of the phrase.  No memory layers and no
+#     background texture in this mode (the texture is granulated).
+#   NEW Follow live input (off by default): the K-weighted loudness of
+#     every phrase (BS.1770 pre-filter, active 100 ms blocks) is tracked
+#     RELATIVE to the session median (EMA, alpha 0.4 per phrase); the
+#     difference, clamped to +-follow range (9 dB), shifts all role
+#     targets alike, so response / layer / background keep their ratios.
+#     Relative, so no microphone / speaker calibration is needed.  Phrases
+#     recorded while the expected speaker leakage is within 15 dB of the
+#     phrase are not counted (no feedback loop).  Applied from the 3rd
+#     counted phrase, at voice creation only (never inside a sound).
+#   NEW Corpus C balance (dB, -12..+12): extra gain for sounds taken from
+#     the preloaded corpus (recalls, layers, background built from C).
+#   NOTE: with level matching on, the +12 dB boost cap and the peak
+#     ceiling still apply after both offsets.
+#   Status: level_offset; summary: silent answers, follow offset.
 #
 # Changelog v0.4.0 - Polyphonic spatial playback (from v0.3.2):
 #   The analysis, classifier, six transformations and their parameters,
@@ -163,6 +376,7 @@
 #
 # Commands:
 #   launch        <serve arguments>        start "serve" detached, return at once
+#   launch        --args-file FILE         the same, arguments read from FILE (v0.4.4)
 #   serve         --session DIR --script PRAAT_SCRIPT ...   continuous engine
 #   probe         --out FILE [--live]      dependency check, writes FILE
 #   devices       --out FILE               list audio input + output devices
@@ -213,7 +427,7 @@ import time
 import zlib
 
 T_PROCESS_START = time.perf_counter()
-VERSION = "0.4.0"
+VERSION = "0.4.12"
 
 TRANSFORM_IDS = ["paulstretch", "markov", "mds", "spiral", "speeddev", "groove"]
 TRANSFORM_NAMES = {
@@ -1160,7 +1374,45 @@ class PhraseDetector:
     `on_frames` consecutive frames above floor + sensitivity; the phrase
     stays alive while frames exceed (onset threshold - hysteresis);
     `end_silence` of continuous quiet ends it; phrases shorter than
-    `min_phrase` are discarded as false triggers."""
+    `min_phrase` are discarded as false triggers.
+    v0.4.10:
+    - STABLE noise floor: it learns only from input within 3 dB of it
+      (slowly, time constant ~2.5 s) and falls quickly; input that stays
+      higher for 4 s without a phrase is taken as a change of room noise
+      and learned (~1 s).  Before, the floor rose 3 %% per 10 ms with ANY
+      input below the threshold, so a crescendo pulled the threshold up
+      with it and was never detected.
+    - GRADUAL ENTRY: a phrase is captured from where its rise began
+      (walking back while above floor + 3 dB, up to 2 s), not only 0.25 s
+      before the threshold was crossed.
+    - LONG PHRASE: at max_phrase the phrase is cut at its quietest point in
+      the last 30 %% (the latest frame within 3 dB of the quietest) and the
+      rest CONTINUES as the next phrase (rearm) - no sample is lost.  A
+      phrase that reaches max_phrase completely FLAT (< 4 dB between its
+      5th and 95th percentile level) AND noise-like (spectral flatness >
+      0.25: a fan, air conditioning) is steady background: the floor
+      learns its level and nothing is carried.  A held tone continues.
+    v0.4.11: calibration ignores digital silence (floor >= -90 dBFS); flat
+      input above the floor is learned within 0.3 s (a rise of the mic
+      noise after calibration no longer blocks every phrase end); a phrase
+      whose last 1.5 s are flat noise-like background ends where that
+      background began (or is discarded when it is nothing else)."""
+    FLOOR_NEAR_DB = 3.0
+    FLOOR_RISE = 0.004
+    FLOOR_FALL = 0.2
+    FLOOR_DRIFT_S = 4.0
+    FLOOR_DRIFT = 0.01
+    PRE_MAX_S = 2.0
+    STEADY_DB = 4.0
+    CALIB_MIN_DB = -100.0        # v0.4.11: calibration ignores digital silence
+    CALIB_TIMEOUT_S = 3.0
+    FLOOR_MIN_DB = -90.0
+    FLAT_LEARN_S = 0.3           # v0.4.11: flat input above the floor learned after 0.3 s
+    FLAT_LEARN_DB = 2.0
+    FLAT_LEARN_RATE = 0.03
+    RELEASE_S = 1.5              # v0.4.11: flat noise-like tail -> the phrase is over
+    RELEASE_FLAT_DB = 3.0
+    RELEASE_BELOW_PEAK_DB = 10.0
 
     def __init__(self, sr, channels, sensitivity_db=9.0, min_phrase=0.5,
                  end_silence=0.6, max_phrase=12.0, preroll=0.25, hop_s=0.01,
@@ -1178,19 +1430,33 @@ class PhraseDetector:
         self.state = "CALIBRATING"
         self.calib = []
         self.floor = None
-        self.pre = []
-        self.buf = []
+        self.pre, self.pre_db = [], []
+        self.buf, self.buf_db = [], []
         self.above = 0
         self.frames_in = 0
         self.silent_run = 0
         self.last_active = 0
         self.start_active = 0
         self.false_triggers = 0
+        self.gradual_entries = 0     # phrases captured from further back than the pre-roll
+        self.steady_learned = 0      # flat max_phrase phrases learned as background
+        self.continued = False       # this phrase continues a flat max_phrase phrase
+        self.next_continued = False
+        self.pending_cont = False
+        self.pending_frames = 0
         self.digital_silence = True
         self.ended_by = ""
         self.peak_db = -200.0
+        self.last_db = -200.0
+        self.quiet_above = 0
+        self.carry = None
+        self.cut_end = None
+        self.calib_frames = 0
+        self.last_discard = ""
+        self.background_releases = 0
+        self.pre_max = int(round(self.PRE_MAX_S / self.hop_s)) + self.pre_n + self.on_frames
         # v0.2.0: optional callable returning the expected speaker->mic
-        # leakage level in dBFS (or None).  None = exact v0.1.3 behaviour.
+        # leakage level in dBFS (or None).  None = no leakage lifting.
         self.leak_level = None
 
     def thresholds(self):
@@ -1203,13 +1469,151 @@ class PhraseDetector:
                 off = max(off, lv + 3.0)
         return on, off
 
+    # ---- helpers ----
+    def _pre_push(self, block, db):
+        self.pre.append(block)
+        self.pre_db.append(db)
+        if len(self.pre) > self.pre_max:
+            del self.pre[:len(self.pre) - self.pre_max]
+            del self.pre_db[:len(self.pre_db) - self.pre_max]
+
+    def _floor_update(self, db):
+        if db < self.floor:
+            self.floor += self.FLOOR_FALL * (db - self.floor)
+            self.quiet_above = 0
+        elif db < self.floor + self.FLOOR_NEAR_DB:
+            self.floor += self.FLOOR_RISE * (db - self.floor)
+            self.quiet_above = 0
+        else:
+            self.quiet_above += 1
+            k = int(round(self.FLAT_LEARN_S / self.hop_s))
+            if self.quiet_above >= k and len(self.pre_db) >= k:
+                recent = self.pre_db[-k:] + [db]
+                if max(recent) - min(recent) < self.FLAT_LEARN_DB:
+                    # v0.4.11: steady input above the floor = the room / mic changed
+                    self.floor += self.FLAT_LEARN_RATE * (db - self.floor)
+                    return
+            if self.quiet_above * self.hop_s >= self.FLOOR_DRIFT_S:
+                self.floor += self.FLOOR_DRIFT * (db - self.floor)
+        self.floor = max(self.floor, self.FLOOR_MIN_DB)
+
+    def _entry_start(self):
+        """(start, rise) indices in pre: rise = first frame of the rise
+        (walking back while above floor + 3 dB, at most PRE_MAX_S), start =
+        rise minus the pre-roll."""
+        n = len(self.pre_db)
+        rise = n - self.above
+        thr = self.floor + self.FLOOR_NEAR_DB
+        while rise > 0 and self.pre_db[rise - 1] > thr:
+            rise -= 1
+        return max(0, rise - self.pre_n), rise
+
+    def _noise_like(self, i0=None, i1=None, n_frames=12, n_fft=2048):
+        """spectral flatness (geometric / arithmetic mean power, 100 Hz-8 kHz)
+        of frames spread over the phrase: > 0.25 = noise-like (a fan, air
+        conditioning), a held tone or chord is far below."""
+        np = self.np
+        a = self.buf[self.start_active if i0 is None else i0:i1]
+        if not a:
+            return False
+        x = np.concatenate(a, axis=0)
+        x = x.mean(axis=1) if x.ndim == 2 else x
+        if len(x) < n_fft:
+            return False
+        fq = np.fft.rfftfreq(n_fft, 1.0 / self.sr)
+        band = (fq >= 100) & (fq <= min(8000, self.sr / 2))
+        vals = []
+        for st in np.linspace(0, len(x) - n_fft, n_frames).astype(int):
+            pw = np.abs(np.fft.rfft(x[st:st + n_fft] * np.hanning(n_fft))) ** 2
+            pb = pw[band] + 1e-20
+            vals.append(np.exp(np.mean(np.log(pb))) / np.mean(pb))
+        return float(np.median(vals)) > 0.25
+
+    def _release_check(self):
+        """v0.4.11: is the end of this 'phrase' only background?  The last
+        RELEASE_S flat (< RELEASE_FLAT_DB between 10th and 90th percentile)
+        and noise-like, and either >= RELEASE_BELOW_PEAK_DB under the phrase
+        peak (a tail of background after the playing: end the phrase where
+        it began) or the whole phrase flat noise (discard it)."""
+        np = self.np
+        w = int(round(self.RELEASE_S / self.hop_s))
+        n = len(self.buf_db)
+        if n - self.start_active < w:
+            return None
+        win = np.array(self.buf_db[n - w:])
+        p10, p50, p90 = np.percentile(win, [10, 50, 90])
+        if p90 - p10 >= self.RELEASE_FLAT_DB:
+            return None
+        whole = np.array(self.buf_db[self.start_active:])
+        only_noise = np.percentile(whole, 95) - np.percentile(whole, 5) < self.STEADY_DB
+        tail = p50 < self.peak_db - self.RELEASE_BELOW_PEAK_DB
+        if not (only_noise or tail) or not self._noise_like(n - w, n):
+            return None
+        self.floor = max(float(p50) - 1.0, self.FLOOR_MIN_DB)
+        self.background_releases += 1
+        if only_noise:
+            self.false_triggers += 1
+            self.last_discard = "noise"
+            self.state = "LISTENING"
+            self.pre, self.pre_db = self.buf[-self.pre_n:], self.buf_db[-self.pre_n:]
+            self.buf, self.buf_db = [], []
+            self.above = 0
+            return "discarded"
+        end = n - w                                  # the background began here
+        self.last_active = min(self.last_active, end - 1)
+        if (self.last_active - self.start_active + 1) * self.hop_s < self.min_phrase:
+            self.false_triggers += 1
+            self.last_discard = "short"
+            self.state = "LISTENING"
+            self.pre, self.pre_db = self.buf[-self.pre_n:], self.buf_db[-self.pre_n:]
+            self.buf, self.buf_db = [], []
+            self.above = 0
+            return "discarded"
+        self.ended_by = "background"
+        self.state = "DONE"
+        return "end"
+
+    def _quiet_cut(self):
+        """cut index for a phrase at max_phrase: after the latest frame within
+        3 dB of the quietest one in the last 30 % of the phrase."""
+        a = self.start_active
+        n = len(self.buf_db)
+        lo = a + int(0.7 * (n - a))
+        seg = self.buf_db[lo:n]
+        if len(seg) < 2:
+            return n
+        m = min(seg)
+        k = max(i for i, v in enumerate(seg) if v <= m + 3.0)
+        return min(n, lo + k + 1)
+
     def rearm(self):
         """v0.2.0: continue listening after an 'end' without recalibrating.
         The noise floor is kept and the quiet tail after the phrase becomes
-        the pre-roll of the next one."""
-        tail = self.buf[self.last_active + 1:]
-        self.pre = list(tail[-(self.pre_n + self.on_frames):])
-        self.buf = []
+        the pre-roll of the next one.  v0.4.10: after a max_phrase cut, the
+        rest of the sound continues as the next phrase (state PHRASE)."""
+        self.continued = False
+        # a flat max_phrase phrase whose cut left nothing to carry: if the next
+        # phrase starts within 0.5 s it still counts as its continuation
+        self.pending_cont = self.next_continued and self.ended_by == "max_duration"
+        self.pending_frames = 0
+        if self.carry is not None and len(self.carry[0]):
+            self.continued = self.next_continued       # a flat phrase continues
+            self.buf, self.buf_db = list(self.carry[0]), list(self.carry[1])
+            self.carry, self.cut_end = None, None
+            self.start_active = 0
+            self.last_active = len(self.buf) - 1
+            self.silent_run = 0
+            self.above = 0
+            self.ended_by = ""
+            self.peak_db = max(self.buf_db)
+            self.state = "PHRASE"
+            return
+        k = self.last_active + 1
+        keep = self.pre_n + self.on_frames
+        self.pre = list(self.buf[k:][-keep:])
+        self.pre_db = list(self.buf_db[k:][-keep:])
+        self.buf, self.buf_db = [], []
+        self.carry, self.cut_end = None, None
         self.above = 0
         self.silent_run = 0
         self.ended_by = ""
@@ -1222,41 +1626,50 @@ class PhraseDetector:
         mono = block.mean(axis=1) if block.ndim == 2 else block
         e = float(np.sqrt(np.mean(mono.astype(np.float64) ** 2) + 1e-20))
         db = 20 * math.log10(e + 1e-12)
+        self.last_db = db
         if e > 1e-7:
             self.digital_silence = False
         if self.state == "CALIBRATING":
-            self.calib.append(db)
-            self.pre.append(block)
-            self.pre = self.pre[-self.pre_n:]
-            if len(self.calib) >= self.calib_n:
-                self.floor = float(np.percentile(self.calib, 30))
+            self.calib_frames += 1
+            if db > self.CALIB_MIN_DB:              # v0.4.11: not digital silence
+                self.calib.append(db)
+            self._pre_push(block, db)
+            if len(self.calib) >= self.calib_n or \
+                    self.calib_frames * self.hop_s >= self.CALIB_TIMEOUT_S:
+                fl = float(np.percentile(self.calib, 30)) if self.calib else -80.0
+                self.floor = max(fl, self.FLOOR_MIN_DB)
                 self.state = "LISTENING"
             return None
         if self.state == "LISTENING":
+            self.pending_frames += 1
             on, _ = self.thresholds()
             if db > on:
                 self.above += 1
-                self.pre.append(block)
+                self._pre_push(block, db)
                 if self.above >= self.on_frames:
-                    self.state = "PHRASE"
-                    keep = self.pre_n + self.above
-                    self.buf = list(self.pre[-keep:])
-                    self.pre = []
-                    self.start_active = len(self.buf) - self.above
+                    start, rise = self._entry_start()
+                    self.buf, self.buf_db = self.pre[start:], self.pre_db[start:]
+                    self.pre, self.pre_db = [], []
+                    self.start_active = rise - start
                     self.last_active = len(self.buf) - 1
                     self.silent_run = 0
-                    self.peak_db = db
+                    self.peak_db = max(self.buf_db)
+                    self.quiet_above = 0
+                    if self.start_active > self.pre_n + self.on_frames:
+                        self.gradual_entries += 1
+                    self.continued = self.pending_cont and \
+                        self.pending_frames * self.hop_s <= 0.5
+                    self.pending_cont = False
+                    self.state = "PHRASE"
                     return "onset"
             else:
                 self.above = 0
-                # adaptive floor: rises slowly, falls quickly
-                a = 0.03 if db > self.floor else 0.2
-                self.floor += a * (db - self.floor)
-                self.pre.append(block)
-            self.pre = self.pre[-(self.pre_n + self.on_frames):]
+                self._floor_update(db)
+                self._pre_push(block, db)
             return None
         if self.state == "PHRASE":
             self.buf.append(block)
+            self.buf_db.append(db)
             _, off = self.thresholds()
             if db > off:
                 self.last_active = len(self.buf) - 1
@@ -1266,28 +1679,55 @@ class PhraseDetector:
                 self.silent_run += 1
             active_len = (self.last_active - self.start_active + 1) * self.hop_s
             total_len = (len(self.buf) - self.start_active) * self.hop_s
+            if len(self.buf) % 10 == 0 and self.silent_run * self.hop_s < self.end_silence:
+                rel = self._release_check()
+                if rel:
+                    return rel
             if self.silent_run * self.hop_s >= self.end_silence:
                 if active_len < self.min_phrase:
+                    self.last_discard = "short"
                     self.false_triggers += 1
                     self.state = "LISTENING"
-                    self.pre = self.buf[-self.pre_n:]
-                    self.buf = []
+                    self.pre, self.pre_db = self.buf[-self.pre_n:], self.buf_db[-self.pre_n:]
+                    self.buf, self.buf_db = [], []
                     self.above = 0
                     return "discarded"
                 self.ended_by = "silence"
                 self.state = "DONE"
                 return "end"
             if total_len >= self.max_phrase:
-                self.ended_by = "max_duration"
+                cut = self._quiet_cut()
+                lv = np.array(self.buf_db[self.start_active:])
+                p5, p50, p95 = np.percentile(lv, [5, 50, 95])
+                flat = p95 - p5 < self.STEADY_DB
+                if flat and self._noise_like():
+                    # steady NOISE background (a fan): learn it, carry nothing;
+                    # v0.4.11: a held tone is never turned into background
+                    self.floor = float(p50) - 1.0
+                    self.carry = None
+                    self.ended_by = "max_duration_steady"
+                    self.steady_learned += 1
+                else:
+                    self.carry = (self.buf[cut:], self.buf_db[cut:]) if cut < len(self.buf) else None
+                    self.ended_by = "max_duration"
+                self.next_continued = flat
+                self.cut_end = cut
+                self.last_active = cut - 1
                 self.state = "DONE"
                 return "end"
         return None
 
+    def phrase_end_index(self, tail_s=0.15):
+        """v0.4.10: where the phrase audio ends in buf (the quiet cut of a
+        max_phrase phrase, else the last active frame + tail_s)."""
+        if self.cut_end is not None:
+            return self.cut_end
+        tail = int(round(tail_s / self.hop_s))
+        return min(len(self.buf), self.last_active + 1 + tail)
+
     def phrase_audio(self, tail_s=0.15):
         np = self.np
-        tail = int(round(tail_s / self.hop_s))
-        end = min(len(self.buf), self.last_active + 1 + tail)
-        return np.concatenate(self.buf[:end], axis=0)
+        return np.concatenate(self.buf[:self.phrase_end_index(tail_s)], axis=0)
 
     def silence_frames_after_last_active(self):
         return len(self.buf) - 1 - self.last_active
@@ -1931,6 +2371,16 @@ def cmd_self_test(args):
         print("[%s] %s: %s" % ("OK " if ok else "FAIL", name, detail))
         if not ok:
             failures += 1
+    print("\n" + "-" * 72 + "\nv0.4.1 corpus-only recall + adaptive level tests")
+    for name, fn in V041_TESTS:
+        try:
+            ok, detail = fn(sr)
+        except Exception as ex:                              # noqa: BLE001
+            import traceback
+            ok, detail = False, "exception: %s %s" % (ex, traceback.format_exc()[-400:])
+        print("[%s] %s: %s" % ("OK " if ok else "FAIL", name, detail))
+        if not ok:
+            failures += 1
     print("\n%d failure(s)" % failures)
     return 1 if failures else 0
 
@@ -2548,6 +2998,596 @@ V040_TESTS = [("stereo placement / mono compatibility", _t_pb_stereo),
               ("stereo leakage fit", _t_pb_leak_stereo)]
 
 
+# ---------------- v0.4.1 unit tests ----------------
+def _t_corpus_only(sr):
+    mem0 = SonicMemory(_mem_cfg(response_mode="corpus_only"), 1)
+    a0 = mem0.choose_action(None, None)
+    mem = _mem_fill(sr, corpus="C", response_mode="corpus_only", use_A=False, use_B=False)
+    q = mem.items["C"][0]
+    ch, top, why = mem.retrieve(q.desc, exclude_ids={q.id})
+    rt = pick_recall_transform(ch, top, None, 2)
+    acts = set(mem.choose_action(ch, rt)[0] for _ in range(50))
+    strict = _mem_fill(sr, corpus="C", response_mode="corpus_only", min_similarity=0.999)
+    ch2, _, _ = strict.retrieve(q.desc, exclude_ids={q.id})
+    a2 = strict.choose_action(ch2, None)
+    ok = a0[0] == "silence" and ch is not None and acts == {"recall"} and \
+        ch2 is None and a2[0] == "silence"
+    return ok, ("empty memory -> %s; with a match (and a R+T candidate) 50 draws -> %s; "
+                "no match above 0.999 -> %s" % (a0[0], sorted(acts), a2[0]))
+
+
+def _t_kweight(sr):
+    import numpy as np
+    t = np.arange(int(3.0 * sr)) / sr
+    l1k = active_loudness_db(0.1 * np.sin(2 * np.pi * 997 * t), sr)
+    l1k48 = active_loudness_db(0.1 * np.sin(2 * np.pi * 997 * np.arange(3 * 48000) / 48000), 48000)
+    l40 = active_loudness_db(0.1 * np.sin(2 * np.pi * 40 * t), sr)
+    l4k = active_loudness_db(0.1 * np.sin(2 * np.pi * 4000 * t), sr)
+    st = np.stack([0.1 * np.sin(2 * np.pi * 997 * t)] * 2, axis=1)
+    lst = active_loudness_db(st, sr)
+    gap = np.concatenate([0.1 * np.sin(2 * np.pi * 997 * t[:sr]), np.zeros(2 * sr)])
+    lgap = active_loudness_db(gap, sr)
+    ok = abs(l1k + 23.01) < 0.3 and abs(l1k48 + 23.01) < 0.3 and l40 < l1k - 2.0 and \
+        l4k > l1k + 2.0 and abs(lst - l1k - 3.01) < 0.05 and abs(lgap - l1k) < 0.3
+    return ok, ("997 Hz at -20 dBFS: %.2f (44.1k) / %.2f (48k) [BS.1770: -23.01]; 40 Hz %.2f, "
+                "4 kHz %.2f; stereo +%.2f; silence gated %.2f" % (
+                    l1k, l1k48, l40, l4k, lst - l1k, lgap))
+
+
+def _t_follow(sr):
+    f = LevelFollower(9.0)
+    seq = []
+    for db in (-30, -30, -30, -30, -30):
+        seq.append(f.update(db))
+    steady = seq[-1]
+    for db in (-36, -36, -36):
+        f.update(db)
+    softer = f.offset
+    f.update(-10.0, excluded=True)
+    after_excl = f.offset
+    for _ in range(3):
+        f.update(-80.0)
+    clamped = f.offset
+    early = LevelFollower(9.0)
+    e = [early.update(d) for d in (-20.0, -40.0)]
+    ok = steady == 0.0 and -6.0 < softer < -2.0 and after_excl == softer and \
+        clamped == -9.0 and e == [0.0, 0.0] and f.excluded == 1
+    return ok, ("steady %.1f; 6 dB softer x3 -> %+.1f dB; leaked phrase ignored (%+.1f); "
+                "40 dB softer -> clamped %+.1f; no offset before 3 phrases" % (
+                    steady, softer, after_excl, clamped))
+
+
+def _t_voice_level(sr):
+    """Offsets reach the voice: same tone, follow -6 dB and Corpus C +3 dB."""
+    import numpy as np
+    import random
+    import types
+
+    class FakeArgs:
+        max_response = 20.0
+
+    class FakeEngine:
+        pass
+
+    def make(off, corpus_db, corpus):
+        e = FakeEngine()
+        e.np, e.sr, e.a = np, sr, FakeArgs()
+        e.pcfg = {"fade_in": 0.03, "fade_out": 0.4, "transients": True, "level_match": True,
+                  "movement": 0.0, "width": 1.0, "corpus_c_db": corpus_db}
+        e.follower = LevelFollower(9.0)
+        e.follower.offset = off
+        e.prng = random.Random(1)
+        e.mixer = Mixer(sr)
+        e.space = SpaceAllocator(e.prng, 1.0, 0.0)
+        e._level_offset = types.MethodType(Engine._level_offset, e)
+        mk = types.MethodType(Engine._make_voice, e)
+        v, _ = mk(_tone(sr, 330, 2.0, 0.2), sr, "fg", "t", corpus=corpus)
+        return 20 * math.log10(active_rms(v.buf))
+    base = make(0.0, 0.0, None)
+    soft = make(-6.0, 0.0, None)
+    c_up = make(0.0, 3.0, "C")
+    c_ign = make(0.0, 3.0, "A")
+    ok = abs(soft - base + 6.0) < 0.1 and abs(c_up - base - 3.0) < 0.1 and abs(c_ign - base) < 0.01
+    return ok, ("follow -6 dB -> %+.2f dB; Corpus C +3 dB -> %+.2f dB; non-C sound %+.2f dB" % (
+        soft - base, c_up - base, c_ign - base))
+
+
+def _t_args_file(sr):
+    """v0.4.4: the argument file as Praat writes it, in every encoding Praat
+    may choose, with a non-Latin path and an incomplete file."""
+    import tempfile
+    args = ["--session", "C:/Temp/AudioTools_CR_1", "--corpus-c",
+            "C:/Users/user/\u05e7\u05d5\u05e8\u05e4\u05d5\u05e1 C/sounds", "--w-preloaded", "100.000",
+            "--sensitivity", "9.000"]
+    body = "# AudioTools Call & Response engine arguments\n" + "\n".join(args) + "\n#end\n"
+    out = []
+    with tempfile.TemporaryDirectory(prefix="atcr_args_") as d:
+        p = os.path.join(d, "a.txt")
+        for enc, bom, nl in (("utf-16-le", b"\xff\xfe", "\n"), ("utf-8", b"", "\r\n"),
+                             ("utf-8", b"\xef\xbb\xbf", "\n")):
+            with open(p, "wb") as fh:
+                fh.write(bom + body.replace("\n", nl).encode(enc))
+            out.append(read_args_file(p) == args)
+        latin = list(args)
+        latin[3] = "C:/Users/Ren\u00e9/sounds"
+        with open(p, "wb") as fh:
+            fh.write(("\n".join(latin) + "\n#end\n").encode("latin-1"))
+        out.append(read_args_file(p) == latin)
+        with open(p, "w") as fh:
+            fh.write("\n".join(args[:3]) + "\n")            # cut off: no #end
+        try:
+            read_args_file(p)
+            out.append(False)
+        except ValueError:
+            out.append(True)
+    # and the parsed values arrive intact
+    ok = all(out)
+    return ok, "UTF-16 / UTF-8 CRLF / UTF-8 BOM / Latin-1 read exactly; incomplete file refused (%s)" % out
+
+
+def _t_trim_quiet(sr):
+    """v0.4.5: fits -> untouched; too long -> cut at the quiet point near
+    the limit, faded, never early; no quiet point -> cut near the limit."""
+    import numpy as np
+    t = np.arange(int(25 * sr)) / sr
+    x = (0.3 * np.sin(2 * np.pi * 220 * t)).astype(np.float32)
+    x[int(20.4 * sr):int(20.6 * sr)] *= 0.001             # a near-silence at 20.4-20.6 s
+    a1, c1 = trim_quiet(x[:int(21 * sr)], sr, 21.5)
+    a2, c2 = trim_quiet(x, sr, 21.5)
+    y = (0.3 * np.sin(2 * np.pi * 220 * t)).astype(np.float32)
+    a3, c3 = trim_quiet(np.stack([y, y], axis=1), sr, 21.5)
+    end2 = len(a2) / sr
+    ok = (not c1 and len(a1) == int(21 * sr) and c2 and 20.4 <= end2 <= 20.62
+          and abs(float(a2[-1])) < 1e-3 and c3 and 0.85 * 21.5 <= len(a3) / sr <= 21.5
+          and float(np.max(np.abs(a3[-5:]))) < 1e-3 and len(a3) / sr >= 21.0)
+    return ok, ("21 s under a 21.5 s limit untouched; 25 s cut at the quiet point %.2f s; "
+                "no quiet point: cut at %.2f s (close to the limit), faded" % (
+                    end2, len(a3) / sr))
+
+
+def _t_whole_answers(sr):
+    """v0.4.5 end to end on Engine methods (no device): an answer slightly
+    over Max_response_s plays whole, Corpus B keeps a 19 s answer whole,
+    a layer is the whole sound or an onset -> natural-end excerpt."""
+    import numpy as np
+    import random
+    import types
+
+    class A_:
+        max_response = 20.0
+
+    class E:
+        pass
+    e = E()
+    e.np, e.sr, e.a = np, sr, A_()
+    e.c = collections.Counter()
+    e.log = lambda *a, **k: None
+    e.pcfg = {"fade_in": 0.03, "fade_out": 0.4, "transients": True, "level_match": False,
+              "movement": 0.0, "width": 1.0, "corpus_c_db": 0.0, "polyphony": True,
+              "max_voices": 4, "density": 1.0, "layer_shape": "whole"}
+    e.follower = None
+    e.graph = None
+    e.prng = random.Random(3)
+    e.mixer = Mixer(sr)
+    e.space = SpaceAllocator(e.prng, 1.0, 0.0)
+    for nm in ("_level_offset", "_make_voice", "_insert_processed", "_plan_secondary"):
+        setattr(e, nm, types.MethodType(getattr(Engine, nm), e))
+    v1, t1 = e._make_voice(_tone(sr, 330, 21.0, 0.3), sr, "fg", "x")
+    v2, t2 = e._make_voice(_tone(sr, 330, 30.0, 0.3), sr, "fg", "x")
+    e.mcfg = _mem_cfg(max_item_s=15.0, layered=True, max_generation=2)
+    e.memory = SonicMemory(e.mcfg, 1)
+    e.layer_history = collections.deque(maxlen=4)
+    t = np.arange(int(19 * sr)) / sr
+    ans = (0.3 * np.sin(2 * np.pi * 300 * t) * (1 + 0.5 * np.sin(2 * np.pi * 0.3 * t)))
+    e._insert_processed({"tag": "0001", "answer": ans.astype(np.float32)[:, None], "sr": sr,
+                         "used": "paulstretch", "source_id": "A0001", "gen_out": 1})
+    b = e.memory.items["B"]
+    b_len = b[0].duration if b else 0.0
+    b_audio = len(b[0].audio) / sr if b else 0.0
+    # layers from a memory of the six gestures (groove has clear onsets)
+    mem = _mem_fill(sr, layered=True)
+    e.memory = mem
+    F = _mem_items(sr)["paulstretch"][1]
+    lens = {}
+    for shape in ("whole", "excerpt"):
+        e.pcfg["layer_shape"] = shape
+        out = []
+        for k in range(12):
+            e.layer_history.clear()
+            for it in mem.all_items():
+                it.recalls = 0
+            j = Job(k + 1, np.zeros((sr, 1), np.float32), sr, {"end": 0})
+            j.phrase_id = j.source_id = "none"
+            e._plan_secondary(j, F, None, [])
+            if j.secondary is not None:
+                src = [it for it in mem.all_items() if it.id == j.secondary["name"].split()[-1]][0]
+                full = len(src.get_audio())
+                got = len(j.secondary["audio"])
+                tail_same = bool(np.array_equal(j.secondary["audio"][-50:], src.get_audio()[-50:]))
+                out.append((got == full, tail_same, got / full))
+        lens[shape] = out
+    whole_ok = lens["whole"] and all(w for w, _, _ in lens["whole"])
+    exc_ok = lens["excerpt"] and all(tail for _, tail, _ in lens["excerpt"]) and \
+        all(r >= 0.6 - 1e-9 for _, _, r in lens["excerpt"])
+    n_exc = sum(1 for w, _, _ in lens["excerpt"] if not w)
+    ok = (not t1 and abs(v1.n / sr - 21.0) < 0.01 and t2 and 21.0 <= v2.n / sr <= 21.5
+          and abs(b_len - 19.0) < 0.05 and abs(b_audio - 19.0) < 0.05 and whole_ok and exc_ok)
+    return ok, ("21 s answer plays %.1f s (%s); 30 s -> %.1f s (%s); Corpus B keeps %.1f s of a "
+                "19 s answer (Max_item_s 15); layers whole: %d/%d complete; excerpt: %d/%d end "
+                "at the natural end (%d started at an onset)" % (
+                    v1.n / sr, v1.shape, v2.n / sr, v2.shape, b_audio,
+                    sum(1 for w, _, _ in lens["whole"] if w), len(lens["whole"]),
+                    sum(1 for _, tl, _ in lens["excerpt"] if tl), len(lens["excerpt"]), n_exc))
+
+
+def _t_graph_sim(sr):
+    """v0.4.6: the vectorised map similarity equals SonicMemory.similarity
+    in modes without the contour stage (timbre, rhythm)."""
+    import numpy as np
+    mem = _mem_fill(sr)
+    its = mem.items["A"]
+    sc = mem._scales(its, its[0].desc)
+    err = 0.0
+    for mode in ("timbre", "rhythm"):
+        S = graph_similarity([it.desc for it in its], [it.desc for it in its], sc, mode)
+        for i, it in enumerate(its):
+            for p, s, _ in mem.similarity(it.desc, its, mode, scales=sc):
+                err = max(err, abs(S[i, its.index(p)] - s))
+    return err < 1e-9, "max difference to the retrieval similarity %.1e (timbre, rhythm)" % err
+
+
+def _t_graph_map(sr):
+    """v0.4.6: a map with C, A, B, a ghost phrase and all action kinds;
+    rows are well-formed, every arc's ends are on the line, Corpus C on the
+    left, the sounding item flagged, links of 300 C sounds fast."""
+    import numpy as np
+    mem = _mem_fill(sr, corpus="C")
+    a_mem = _mem_fill(sr)
+    for it in a_mem.items["A"][:3]:
+        it.t = time.time()
+        mem.items["A"].append(it)
+    g = MemoryGraph(mem, "hybrid", 0.3)
+    g.link(mem.items["C"], pool=mem.items["C"])
+    g.link(mem.items["A"])
+    a0 = mem.items["A"][0].id
+    g.phrase(a0, mem.items["A"][0].t, "paulstretch")
+    g.phrase("A0099", time.time() + 1, "groove")          # not stored: ghost
+    g.action(a0, mem.items["C"][2].id, "recall", 0.8)
+    g.action("A0099", mem.items["C"][5].id, "recall_transform", 0.6)
+    b = CorpusItem("B0001", "B", np.zeros((sr, 1), np.float32), sr, mem.items["C"][5].F,
+                   mem.items["C"][5].desc, mem.items["C"][5].info, time.time() + 2,
+                   {"root": "x", "parent": mem.items["C"][5].id, "generation": 1})
+    mem.items["B"].append(b)
+    g.link([b])
+    g.action(mem.items["C"][5].id, "B0001", "transform")
+    rows, nodes = g.build()
+    text = graph_tsv(rows, nodes, sounding={"B0001"})
+    lines = text.strip().split("\n")
+    cols = [l.split("\t") for l in lines[1:]]
+    ok = all(len(c) == 9 for c in cols) and lines[0].startswith("kind\t")
+    xs = dict((c[8], float(c[1])) for c in cols if c[0] == "node")
+    kinds = collections.Counter(c[0] for c in cols)
+    acts = [c[8] for c in cols if c[0] == "edge" and c[3] == "-1"]
+    ok &= set(acts) == {"recall", "recall_transform", "transform"}
+    ok &= max(x for k, x in xs.items() if k.startswith("C")) < min(
+        x for k, x in xs.items() if not k.startswith("C"))
+    ok &= "A0099" in xs and [c for c in cols if c[0] == "node" and c[8] == "B0001"][0][3] == "1"
+    ends = all(float(c[1]) in xs.values() and float(c[2]) in xs.values()
+               for c in cols if c[0] == "edge")
+    # speed: 300 corpus sounds
+    big = SonicMemory(_mem_cfg(), 1)
+    rng = np.random.default_rng(1)
+    src = list(_mem_items(sr).values())
+    for i in range(300):
+        au, F, info, d = src[i % 6]
+        d2 = dict(d, groups={k: v + rng.normal(0, 0.3, v.shape) for k, v in d["groups"].items()})
+        big.items["C"].append(CorpusItem("C%04d" % i, "C", None, sr, F, d2, info, 0,
+                                         {"root": "x", "generation": 0}))
+    t0 = time.perf_counter()
+    gb = MemoryGraph(big, "hybrid", 0.45)
+    gb.link(big.items["C"], pool=big.items["C"])
+    rb, nb_ = gb.build()
+    dt = time.perf_counter() - t0
+    ok &= ends and dt < 2.0
+    return ok, ("rows %s, actions %s, ghost phrase shown, C left of the performance, sounding "
+                "flag set; 300 corpus sounds linked + laid out in %.2f s (%d arcs)" % (
+                    dict(kinds), sorted(set(acts)), dt, sum(1 for r in rb if r[0] == "edge")))
+
+
+def _t_level_stereo(sr):
+    """v0.4.7: mono, dual-mono and decorrelated stereo sources, level-matched
+    and placed, play equally loud (acoustic total of both channels).  The
+    v0.4.6 rule made the decorrelated one +6 dB louder."""
+    import numpy as np
+    import random
+    rng = np.random.default_rng(2)
+    n = 3 * sr
+    mono = (0.1 * rng.standard_normal(n)).astype(np.float32)
+    srcs = {"mono": mono[:, None], "dual-mono": np.stack([mono, mono], axis=1),
+            "decorrelated": np.stack([mono, (0.1 * rng.standard_normal(n)).astype(np.float32)], 1)}
+    out, old = {}, {}
+    for k, a in srcs.items():
+        for ver, dst in (("new", out), ("old", old)):
+            b, _ = level_match(a, -18.0, sr=sr) if ver == "new" else level_match(a, -18.0)
+            st = spatialize(b, sr, 0.3, 0.0, 1.0, random.Random(1))
+            dst[k] = loudness_profile(st, sr, "sum")[0]
+    spread = max(out.values()) - min(out.values())
+    ok = spread < 0.3 and old["decorrelated"] - old["mono"] > 5.0
+    return ok, ("played loudness: %s (spread %.2f dB); v0.4.6: decorrelated %+.1f dB vs mono" % (
+        ", ".join("%s %.2f" % kv for kv in out.items()), spread, old["decorrelated"] - old["mono"]))
+
+
+def _t_level_burst(sr):
+    """v0.4.7: sustained sounds reach the target; a percussive sequence is
+    held by its loudest 100 ms (<= target + 6 dB); decorrelated stereo no
+    longer overshoots; a stereo voice panned hard stays <= 0.9 after
+    placement."""
+    import numpy as np
+    import random
+    import types
+    cases = synth_cases(sr)
+    tgt = -18.0
+    res = {}
+    rng = np.random.default_rng(5)
+    stereo_noise = np.stack([0.05 * rng.standard_normal(3 * sr),
+                             0.05 * rng.standard_normal(3 * sr)], axis=1).astype(np.float32)
+    for name, a in (("tone", cases["paulstretch"]), ("drums", cases["groove"]),
+                    ("stereo noise", stereo_noise)):
+        info = {}
+        b, g = level_match(np.asarray(a, np.float32), tgt, sr=sr, info=info)
+        i2, b2 = voice_loudness(b, sr)
+        res[name] = (i2, b2, info["limited_by"])
+    old_b, _ = level_match(stereo_noise, tgt)
+    old_i, _ = voice_loudness(old_b, sr)
+
+    class A_:
+        max_response = 20.0
+
+    class E:
+        pass
+    e = E()
+    e.np, e.sr, e.a, e.c = np, sr, A_(), collections.Counter()
+    e.pcfg = {"fade_in": 0.03, "fade_out": 0.4, "transients": True, "level_match": True,
+              "movement": 0.0, "width": 1.0, "corpus_c_db": 0.0}
+    e.follower, e.graph = None, None
+    e.prng = random.Random(1)
+    e.mixer = Mixer(sr)
+
+    class Left:
+        def place(self, role, others):
+            return -0.95
+    e.space = Left()
+    e._level_offset = types.MethodType(Engine._level_offset, e)
+    v, _ = types.MethodType(Engine._make_voice, e)(
+        np.stack([cases["groove"], 0.2 * cases["groove"]], axis=1).astype(np.float32), sr, "fg", "x")
+    vpk = float(np.max(np.abs(v.buf)))
+    ok = (abs(res["tone"][0] - tgt) < 0.3 and res["drums"][1] <= tgt + BURST_HEADROOM_DB + 0.05
+          and res["drums"][2] in ("burst", "peak") and abs(res["stereo noise"][0] - tgt) < 0.3
+          and old_i > tgt + 2.0 and vpk <= VOICE_PEAK_CEILING + 1e-6)
+    return ok, ("tone -> %.1f dB (%s); drums -> %.1f dB, burst %.1f dB (%s); decorrelated stereo -> "
+                "%.1f dB (old rule %.1f); hard-panned stereo voice peak %.2f" % (
+                    res["tone"][0], res["tone"][2], res["drums"][0], res["drums"][1],
+                    res["drums"][2], res["stereo noise"][0], old_i, vpk))
+
+
+def _blend_desc(a, b, wa):
+    import numpy as np
+    g = {k: wa * np.asarray(a["groups"][k], float) + (1 - wa) * np.asarray(b["groups"][k], float)
+         for k in a["groups"]}
+    return {"groups": g, "pitch_contour": a["pitch_contour"], "env_contour": a["env_contour"],
+            "voiced": a["voiced"]}
+
+
+def _t_influence(sr):
+    """v0.4.8: (1) no influences = v0.4.7 ranking; (2) an ambiguous last
+    phrase is pulled towards the gesture of the earlier phrases; (3) old
+    history fades (half-life) and depth 1 ignores it; (4) the trend query
+    is last + (last - previous)."""
+    import numpy as np
+    mem = _mem_fill(sr, min_similarity=0.0, candidates=6)
+    its = _mem_items(sr)
+    P, Sp = its["paulstretch"][3], its["spiral"][3]
+    q = _blend_desc(P, Sp, 0.62)
+    _, top0, _ = mem.retrieve(q)
+    base = [(r["item"].p["source"], round(r["sim"], 9)) for r in top0]
+    ranked = mem.similarity(q, [r["item"] for r in top0], "hybrid")
+    same = base == [(it.p["source"], round(s, 9)) for it, s, _ in ranked]
+    now = 1000.0
+    hist = [("A0901", Sp, now - 20), ("A0902", Sp, now - 10)]
+    infl = influence_queries(hist, now, 3, 0.5, 0.0, q)
+    _, top1, _ = mem.retrieve(q, influences=infl)
+    first0, first1 = top0[0]["item"].p["source"], top1[0]["item"].p["source"]
+    old = influence_queries([("A0901", Sp, now - 600)], now, 3, 0.5, 0.0, q)
+    d1 = influence_queries(hist, now, 1, 0.5, 0.0, q)
+    tr = influence_queries(hist, now, 3, 0.5, 0.5, q)
+    tq = [d for d, w, lab, pid in tr if lab == "trend"][0]
+    exp_t = 2 * np.asarray(q["groups"]["timbre"]) - np.asarray(Sp["groups"]["timbre"])
+    gated = influence_queries(hist, now, 3, 0.5, 0.5, q, gate=lambda d: influence_gate(0.2))
+    half = influence_queries(hist, now, 3, 0.5, 0.0, q, gate=lambda d: influence_gate(0.45))
+    ok = (same and first0 == "paulstretch" and first1 == "spiral" and old == [] and d1 == []
+          and gated == [] and abs(half[0][1] - 0.5 * infl[0][1]) < 1e-9
+          and np.allclose(tq["groups"]["timbre"], exp_t)
+          and [lab for _, _, lab, _ in tr] == ["-1", "-2", "trend"])
+    return ok, ("no influence: same ranking as v0.4.7 (top %s); after two Spiral phrases the "
+                "same ambiguous phrase recalls %s (weights %s); 10-min-old history and depth 1 "
+                "ignored; trend = last + (last - previous); unrelated history (sim 0.20) gated out, "
+                "sim 0.45 counts half" % (
+                    first0, first1, ", ".join("%s %.2f" % (lab, w) for _, w, lab, _ in infl)))
+
+
+def _t_influence_fixes(sr):
+    """v0.4.9: the gate sees the retrieval similarity (pitch mode, unpitched
+    query); the map's pitch mode falls back to hybrid for unpitched queries;
+    the score parts of a candidate add up to its influence score."""
+    import numpy as np
+    its = _mem_items(sr)
+    mem = _mem_fill(sr, sim_mode="pitch", min_similarity=0.0)
+    q, h = its["markov"][3], its["groove"][3]
+    sc = mem._scales(mem.all_items(), q)
+    real = mem.similarity(q, [_DescOnly(h)], "pitch", scales=sc)[0][1]
+    gmap = float(graph_similarity([q], [h], sc, "pitch")[0, 0])
+    ghyb = float(graph_similarity([q], [h], sc, "hybrid")[0, 0])
+    infl = [(its["spiral"][3], 0.5, "-1", "x"), (its["paulstretch"][3], 0.25, "-2", "y")]
+    cand, top, _ = mem.retrieve(its["spiral"][3], influences=infl)
+    r = top[0]
+    tot = 1.0 + 0.5 + 0.25
+    ok = (abs(gmap - ghyb) < 1e-12 and q["voiced"] is False and len(r["parts"]) == 3
+          and abs(sum(r["parts"]) / tot - r["sim"]) < 1e-9)
+    return ok, ("unpitched phrase, pitch mode: gate now uses %.2f (= retrieval; the map's old "
+                "pitch-only value was higher), map falls back to hybrid %.2f; score parts %s add "
+                "up to the influence score %.3f" % (real, gmap, [round(p, 3) for p in r["parts"]],
+                                                    r["sim"]))
+
+
+def _det_run(sr, sig, **kw):
+    det = PhraseDetector(sr, 1, 9.0, 0.5, 0.6, kw.get("max_phrase", 12.0), 0.25)
+    hop = det.hop
+    ev, phrases = [], []
+    for i in range(0, len(sig) - hop, hop):
+        e = det.feed(sig[i:i + hop])
+        if e:
+            ev.append((e, round(i / sr, 2)))
+        if e == "end":
+            phrases.append((round((i + hop) / sr, 2), len(det.phrase_audio()) / sr, det.ended_by))
+            det.rearm()
+    return det, ev, phrases
+
+
+def _t_det_crescendo(sr):
+    """v0.4.10: 2 s and 3 s crescendos from near-silence are detected and
+    captured from (close to) their start; an abrupt entry still works."""
+    import numpy as np
+    rng = np.random.default_rng(1)
+    noise = lambda s: 0.002 * rng.standard_normal(int(s * sr))
+    out = []
+    ok = True
+    for ramp in (2.0, 3.0):
+        t = np.arange(int(ramp * sr)) / sr
+        tone = 0.2 * np.sin(2 * np.pi * 330 * t) * (t / ramp) ** 2
+        hold = 0.2 * np.sin(2 * np.pi * 330 * np.arange(sr) / sr)
+        sig = np.concatenate([noise(1.0), tone + noise(ramp), hold + noise(1.0), noise(1.5)])
+        det, ev, ph = _det_run(sr, sig)
+        on_t = [t_ for e, t_ in ev if e == "onset"]
+        dur = ph[0][1] if ph else 0.0
+        # the sounding part is ramp + 1 s; quieter than floor + 3 dB at the very start
+        ok &= len(on_t) == 1 and dur >= ramp * 0.75 + 1.0
+        out.append("%.0f s fade-in: onset at %.2f s, phrase %.2f s" % (ramp, on_t[0] if on_t else -1, dur))
+    t = np.arange(int(1.5 * sr)) / sr
+    det, ev, ph = _det_run(sr, np.concatenate([noise(1.0), 0.2 * np.sin(2 * np.pi * 330 * t), noise(1.5)]))
+    ok &= [e for e, _ in ev] == ["onset", "end"]
+    return ok, "; ".join(out) + "; abrupt entry: %s" % [e for e, _ in ev]
+
+
+def _t_det_long(sr):
+    """v0.4.10: a 14 s phrase is cut at its quiet dip near 12 s and the rest
+    continues as the next phrase - the two phrases together hold the whole
+    sound; without a dip the cut falls near the limit, again without loss."""
+    import numpy as np
+    rng = np.random.default_rng(2)
+    noise = lambda s: 0.002 * rng.standard_normal(int(s * sr))
+    t = np.arange(int(14 * sr)) / sr
+    tone = 0.2 * np.sin(2 * np.pi * 220 * t)
+    dip = tone.copy()
+    dip[int(10.5 * sr):int(10.58 * sr)] *= 0.08                # 80 ms quiet moment at 10.5 s
+    res = []
+    ok = True
+    for name, x in (("with a dip", dip), ("steady", tone)):
+        det, ev, ph = _det_run(sr, np.concatenate([noise(1.0), x, noise(1.5)]))
+        total = sum(p[1] for p in ph)
+        cut = ph[0][0] if ph else -1
+        ok &= len(ph) == 2 and ph[0][2] == "max_duration" and 14.0 <= total <= 14.6
+        res.append("%s: cut at %.2f s, phrases %s s, together %.2f s" % (
+            name, ph[0][1] if ph else -1, [round(p[1], 2) for p in ph], total))
+        if name == "with a dip":
+            ok &= abs(ph[0][1] - (10.58 + 0.25 - 0.0)) < 0.25
+    return ok, "; ".join(res)
+
+
+def _t_det_room(sr):
+    """v0.4.10: when the room noise rises 8 dB and stays, the floor learns it
+    within seconds and false phrases stop (at most one)."""
+    import numpy as np
+    rng = np.random.default_rng(3)
+    sig = np.concatenate([0.002 * rng.standard_normal(3 * sr), 0.005 * rng.standard_normal(14 * sr)])
+    det, ev, ph = _det_run(sr, sig)
+    onsets = sum(1 for e, _ in ev if e == "onset")
+    floor_new = 20 * math.log10(0.005)
+    ok = onsets == 0 and abs(det.floor - floor_new) < 3.0
+    # a fan much louder than the threshold: one phrase, learned as background,
+    # no endless chain of continuation phrases
+    sig2 = np.concatenate([0.002 * rng.standard_normal(2 * sr), 0.02 * rng.standard_normal(40 * sr)])
+    det2, ev2, ph2 = _det_run(sr, sig2)
+    ok &= len(ph2) == 0 and det2.state == "LISTENING" and \
+        sum(1 for e, _ in ev2 if e == "discarded") == 1
+    t3 = np.arange(int(30 * sr)) / sr
+    det3, ev3, ph3 = _det_run(sr, np.concatenate([0.002 * rng.standard_normal(sr),
+                                                  0.2 * np.sin(2 * np.pi * 220 * t3)]))
+    kinds3 = [p[2] for p in ph3]
+    ok &= kinds3[:2] == ["max_duration", "max_duration"] and \
+        "max_duration_steady" not in kinds3
+    return ok, ("room noise +8 dB: %d onsets, floor learned %.1f dBFS (noise %.1f); a fan 20 dB "
+                "above: %d answered phrase(s), discarded as noise after %.1f s; a 30 s held "
+                "tone: %s" % (onsets, det.floor, floor_new, len(ph2),
+                              [t_ for e, t_ in ev2 if e == "discarded"][0] - 2.0 if
+                              any(e == "discarded" for e, _ in ev2) else -1, kinds3))
+
+
+def _t_det_release(sr):
+    """v0.4.11: phrases end reliably when (a) the first 0.5 s were digital
+    silence (then mic noise), (b) calibration ran on a much quieter input,
+    (c) the mic noise rose 4-8 dB just after calibration - each with 5
+    played phrases.  (Playing from the very first moment, before any real
+    input was heard, makes calibration measure the playing: that first
+    phrase can be lost; the detector recovers by itself.)"""
+    import numpy as np
+    rng = np.random.default_rng(7)
+
+    def perf(noise, n=5, lead=()):
+        parts = list(lead)
+        for k in range(n):
+            parts += [0.1 * np.sin(2 * np.pi * (330 + 40 * k) * np.arange(int(1.5 * sr)) / sr)
+                      + noise * rng.standard_normal(int(1.5 * sr)),
+                      noise * rng.standard_normal(int(2.5 * sr))]
+        return np.concatenate(parts)
+    mic = 0.0014
+    cases = {
+        "digital silence first": perf(mic, lead=[np.zeros(int(0.5 * sr)),
+                                                 mic * rng.standard_normal(int(1.0 * sr))]),
+        "calibrated at -85": perf(mic, lead=[0.00008 * rng.standard_normal(int(0.6 * sr))]),
+    }
+    for rise in (4, 6, 8):
+        lo = 0.0007
+        hi = lo * 10 ** (rise / 20)
+        cases["noise +%d dB after calibration" % rise] = perf(
+            hi, lead=[lo * rng.standard_normal(int(0.8 * sr)), hi * rng.standard_normal(int(1.2 * sr))])
+    res, ok = [], True
+    for name, sig in cases.items():
+        det, ev, ph = _det_run(sr, sig)
+        n_sil = sum(1 for p in ph if p[2] in ("silence", "background"))
+        ok &= n_sil == 5 and not any(p[2].startswith("max") for p in ph)
+        res.append("%s: %d/5" % (name, n_sil))
+    return ok, "phrases ended: " + ", ".join(res)
+
+
+V041_TESTS = [("engine arguments via file (v0.4.4)", _t_args_file),
+              ("phrase ends: calibration / noise changes (v0.4.11)", _t_det_release),
+              ("phrase detection: crescendo entries (v0.4.10)", _t_det_crescendo),
+              ("phrase detection: long phrase cut without loss (v0.4.10)", _t_det_long),
+              ("phrase detection: change of room noise (v0.4.10)", _t_det_room),
+              ("influence fixes: gate similarity, shares (v0.4.9)", _t_influence_fixes),
+              ("phrase-level influence memory (v0.4.8)", _t_influence),
+              ("stereo loudness measurement (v0.4.7)", _t_level_stereo),
+              ("burst-aware level + peak after placement (v0.4.7)", _t_level_burst),
+              ("memory map similarity = retrieval similarity (v0.4.6)", _t_graph_sim),
+              ("memory map rows and layout (v0.4.6)", _t_graph_map),
+              ("quiet-point trim (v0.4.5)", _t_trim_quiet),
+              ("whole answers, Corpus B, layer shapes (v0.4.5)", _t_whole_answers),
+              ("corpus only: recall or silence, never transform", _t_corpus_only),
+              ("K-weighted loudness (BS.1770 reference)", _t_kweight),
+              ("relative level follower", _t_follow),
+              ("level offsets applied to voices", _t_voice_level)]
+
+
 # ============================================================
 # v0.3.0 SONIC MEMORY
 #   Three in-RAM corpora (A live phrases, B processed responses, C preloaded
@@ -2640,6 +3680,62 @@ def memory_descriptor(F):
                                              ("rhythm", rhythm), ("envelope", envelope),
                                              ("duration", duration))}
     return {"groups": g, "pitch_contour": pc, "env_contour": ec, "voiced": voiced}
+
+
+INFLUENCE_HALF_LIFE_S = 45.0   # v0.4.8: an earlier phrase's influence halves every 45 s
+
+
+class _DescOnly:
+    """v0.4.9: a bare descriptor holder, so SonicMemory.similarity can
+    compare two phrases that are not memory items."""
+    __slots__ = ("desc",)
+
+    def __init__(self, desc):
+        self.desc = desc
+INFLUENCE_GATE = (0.30, 0.60)  # v0.4.8: similarity to the last phrase -> 0 .. full influence
+
+
+def influence_gate(sim):
+    """v0.4.8 coherence gating: an earlier phrase influences only as far as
+    it resembles the last one.  Below 0.30 nothing (a new idea starts a new
+    history), above 0.60 fully, linear in between."""
+    lo, hi = INFLUENCE_GATE
+    return clamp((sim - lo) / (hi - lo), 0.0, 1.0)
+
+
+def trend_descriptor(last, prev, amount=1.0):
+    """v0.4.8: a descriptor extrapolated from `prev` to `last`:
+    groups = last + amount * (last - prev) (a NaN in either stays NaN, i.e.
+    'not measurable'); contours and voicing are those of `last`."""
+    import numpy as np
+    g = {}
+    for k, v in last["groups"].items():
+        d = np.asarray(v, float) - np.asarray(prev["groups"][k], float)
+        g[k] = np.asarray(v, float) + amount * d
+    return {"groups": g, "pitch_contour": last["pitch_contour"],
+            "env_contour": last["env_contour"], "voiced": last["voiced"]}
+
+
+def influence_queries(history, now, depth, decay, trend_weight, last_desc, gate=None):
+    """v0.4.8: the weighted extra queries for retrieval.  history = list of
+    (phrase id, desc, time) of the PREVIOUS phrases, newest last.  Returns
+    [(desc, weight, label, phrase id)]: earlier phrases k = 1..depth-1 with
+    weight decay^k * 0.5^(age / half-life), plus the trend query.
+    gate(desc) -> 0..1 (coherence with the last phrase) multiplies each
+    earlier phrase's weight; the trend uses the previous phrase's gate."""
+    out = []
+    prev = list(history)[::-1][:max(0, int(depth) - 1)]
+    gates = [1.0 if gate is None else gate(d) for pid, d, t in prev]
+    for k, (pid, d, t) in enumerate(prev, 1):
+        w = (decay ** k) * 0.5 ** (max(0.0, now - t) / INFLUENCE_HALF_LIFE_S) * gates[k - 1]
+        if w >= 0.02:
+            out.append((d, w, "-%d" % k, pid))
+    if trend_weight > 0 and prev:
+        pid, d, t = prev[0]
+        w = trend_weight * 0.5 ** (max(0.0, now - t) / INFLUENCE_HALF_LIFE_S) * gates[0]
+        if w >= 0.02:
+            out.append((trend_descriptor(last_desc, d), w, "trend", None))
+    return out
 
 
 class CorpusItem:
@@ -2844,9 +3940,14 @@ class SonicMemory:
         return [(it, _m.exp(-SIM_SCALE * d), d) for it, d in res]
 
     # ---------------- retrieval ----------------
-    def retrieve(self, qdesc, exclude_ids=(), exclude_roots=(), progress=0.0, k=None):
+    def retrieve(self, qdesc, exclude_ids=(), exclude_roots=(), progress=0.0, k=None,
+                 influences=()):
         """Ranked qualified candidates and a weighted-random choice.
-        Returns (choice or None, ranked list of dicts, reason)."""
+        Returns (choice or None, ranked list of dicts, reason).
+        v0.4.8 influences = [(desc, weight, ...)]: extra weighted queries
+        (earlier phrases, trend).  A sound's similarity becomes the weighted
+        mean over the last phrase (weight 1) and these; the duplicate guard
+        keeps using the last phrase alone.  No influences = v0.4.7."""
         c = self.cfg
         k = k or c.get("candidates", 5)
         mode = c.get("sim_mode", "hybrid")
@@ -2866,6 +3967,19 @@ class SonicMemory:
         if not pool:
             return None, [], "every stored sound is excluded (self / recent / cooldown)"
         ranked = self.similarity(qdesc, pool, mode)
+        latest = dict((it.id, s) for it, s, _ in ranked)
+        parts = dict((it.id, [s]) for it, s, _ in ranked)     # v0.4.9: score parts
+        if influences:
+            acc = dict((it.id, s) for it, s, _ in ranked)
+            wsum = 1.0
+            for inf in influences:
+                d, w = inf[0], inf[1]
+                for it, s, _ in self.similarity(d, pool, mode):
+                    acc[it.id] += w * s
+                    parts[it.id].append(w * s)
+                wsum += w
+            ranked = sorted([(it, acc[it.id] / wsum, dist) for it, _, dist in ranked],
+                            key=lambda r: -r[1])
         minsim = c.get("min_similarity", 0.5)
         qual = []
         for it, sim, dist in ranked:
@@ -2874,11 +3988,12 @@ class SonicMemory:
                 if score < minsim:
                     continue
             else:
-                if sim < minsim or sim >= DUPLICATE_SIM:
+                if sim < minsim or latest[it.id] >= DUPLICATE_SIM:
                     continue
                 score = sim
             novelty = 1.0 / (1.0 + it.recalls)
-            qual.append({"item": it, "sim": sim, "match": score,
+            qual.append({"item": it, "sim": sim, "match": score, "sim_last": latest[it.id],
+                         "parts": parts[it.id],
                          "score": score * (1.0 + 0.15 * novelty), "dist": dist})
         if not qual:
             best = ranked[0][1] if ranked else 0.0
@@ -2910,6 +4025,10 @@ class SonicMemory:
         mode = c.get("response_mode", "hybrid")
         if mode == "transform" or not c.get("enabled", True):
             return "transform", "response mode Transform"
+        if mode == "corpus_only":
+            # v0.4.1: never a transformation, never the phrase itself
+            return ("recall", "corpus only") if candidate else \
+                   ("silence", "corpus only: no qualified match -> silence")
         if mode == "recall":
             return ("recall", "response mode Recall") if candidate else \
                    ("transform", "Recall: no qualified match -> transform fallback")
@@ -3162,19 +4281,218 @@ def active_rms(a):
     return float(np.sqrt(np.mean(act ** 2)))
 
 
-def level_match(a, target_db, max_boost_db=12.0, peak_ceiling=0.9):
-    """Gain towards a role's RMS target, at most +12 dB, never above the
-    peak ceiling.  Returns (audio, gain_db)."""
+BURST_HEADROOM_DB = 6.0       # v0.4.7: loudest 100 ms <= role target + this
+VOICE_PEAK_CEILING = 0.9      # v0.4.7: per-voice peak after spatialisation
+
+
+def loudness_profile(a, sr, combine="mean"):
+    """v0.4.7: (integrated, burst) loudness in dB of (n,) or (n, ch) audio.
+    K-weighted (BS.1770 pre-filter); channel powers summed (combine="sum",
+    BS.1770 - the acoustic total of what two speakers play) or averaged
+    ("mean" - for identical channels = the mono reading).  integrated =
+    mean power of the 400 ms blocks (100 ms hop) within 20 dB of the loudest
+    and above -70; burst = the loudest 100 ms window (25 ms hop)."""
     import numpy as np
-    rms = active_rms(a)
-    if rms < 1e-6:
-        return a, 0.0
-    g = 10 ** (target_db / 20.0) / rms
-    g = min(g, 10 ** (max_boost_db / 20.0))
-    pk = float(np.max(np.abs(a)))
+    import scipy.signal
+    x = np.asarray(a, np.float64)
+    if x.ndim == 1:
+        x = x[:, None]
+    if len(x) == 0:
+        return -120.0, -120.0
+    for kind, fc, q, g in (("shelf", 1500.0, 1 / math.sqrt(2), 4.0), ("hp", 38.0, 0.5, 0.0)):
+        b, a_ = _rbj(kind, sr, fc, q, g)
+        x = scipy.signal.lfilter(b, a_, x, axis=0)
+    p = np.sum(x * x, axis=1) if combine == "sum" else np.mean(x * x, axis=1)
+    c = np.concatenate([[0.0], np.cumsum(p)])
+
+    def windows(w, hop):
+        k = max(1, int(w * sr))
+        if len(p) <= k:
+            return np.array([c[-1] / max(len(p), 1)])
+        idx = np.arange(0, len(p) - k + 1, max(1, int(hop * sr)))
+        return (c[idx + k] - c[idx]) / k
+    blk = windows(0.4, 0.1)
+    db = 10 * np.log10(blk + 1e-20)
+    keep = (db >= db.max() - 20.0) & (db > -70.0)
+    integ = float(np.mean(blk[keep])) if keep.any() else float(blk.max())
+    burst = float(windows(0.1, 0.025).max())
+    return -0.691 + 10 * math.log10(integ + 1e-20), -0.691 + 10 * math.log10(burst + 1e-20)
+
+
+def voice_loudness(a, sr):
+    """v0.4.7: loudness of a sound AS IT WILL BE PLAYED.  spatialize() keeps a
+    real stereo source as stereo (both channels at full power: the channel
+    powers ADD) and pans anything else as mono (equal power: the total stays
+    the mono power).  Measuring it that way gives mono, dual-mono and
+    decorrelated stereo sources the same loudness after placement."""
+    import numpy as np
+    x = np.asarray(a)
+    if x.ndim == 2 and x.shape[1] >= 2 and is_real_stereo(x):
+        return loudness_profile(x[:, :2], sr, "sum")
+    if x.ndim == 2:
+        x = x[:, 0] if x.shape[1] == 1 else x.mean(axis=1)
+    return loudness_profile(x, sr, "mean")
+
+
+def level_match(a, target_db, max_boost_db=12.0, peak_ceiling=0.9, sr=None, info=None):
+    """Static gain towards a role's target, at most +max_boost_db, never above
+    the peak ceiling.  Returns (audio, gain_db).
+    v0.4.7 with sr: perceptual - K-weighted integrated loudness of the sound
+    as it will be played (voice_loudness: real stereo = channel powers
+    summed, anything else = mono; L and R never cancel), and the
+    loudest 100 ms kept <= target + BURST_HEADROOM_DB.  `info` (a dict)
+    receives the measurements and what limited the gain.
+    Without sr: the v0.4.0 RMS rule (kept for callers that have no rate)."""
+    import numpy as np
+    pk = float(np.max(np.abs(a))) if len(a) else 0.0
+    if sr is None:
+        rms = active_rms(a)
+        if rms < 1e-6:
+            return a, 0.0
+        cands = {"target": target_db - 20 * math.log10(rms)}
+    else:
+        integ, burst = voice_loudness(a, sr)
+        if integ < -90.0:
+            return a, 0.0
+        cands = {"target": target_db - integ, "burst": target_db + BURST_HEADROOM_DB - burst}
+        if info is not None:
+            info.update(integrated=integ, burst=burst)
+    cands["boost"] = max_boost_db
     if pk > 0:
-        g = min(g, peak_ceiling / pk)
-    return (a * g).astype(np.float32), 20 * math.log10(max(g, 1e-9))
+        cands["peak"] = 20 * math.log10(peak_ceiling / pk)
+    why = min(cands, key=cands.get)
+    gdb = cands[why]
+    if info is not None:
+        info.update(gain_db=gdb, limited_by=why)
+    return (a * 10 ** (gdb / 20.0)).astype(np.float32), gdb
+
+
+def _rbj(kind, sr, fc, q, gain_db=0.0):
+    """RBJ biquad (b, a) for the BS.1770 K-weighting pre-filter."""
+    w = 2 * math.pi * fc / sr
+    c, al = math.cos(w), math.sin(w) / (2 * q)
+    if kind == "shelf":
+        A = 10 ** (gain_db / 40.0)
+        s = 2 * math.sqrt(A) * al
+        b = [A * ((A + 1) + (A - 1) * c + s), -2 * A * ((A - 1) + (A + 1) * c),
+             A * ((A + 1) + (A - 1) * c - s)]
+        a = [(A + 1) - (A - 1) * c + s, 2 * ((A - 1) - (A + 1) * c), (A + 1) - (A - 1) * c - s]
+    else:
+        b = [(1 + c) / 2, -(1 + c), (1 + c) / 2]
+        a = [1 + al, -2 * c, 1 - al]
+    return b, a
+
+
+def active_loudness_db(a, sr, block_s=0.1, rel_gate_db=20.0):
+    """v0.4.1: K-weighted loudness (BS.1770 pre-filter: +4 dB shelf at
+    1.5 kHz, high-pass at 38 Hz) over the 100 ms blocks that sound (within
+    20 dB of the loudest block, above -70).  Channel powers are summed as in
+    BS.1770.  A 997 Hz sine at amplitude 1 reads -3.0."""
+    import numpy as np
+    import scipy.signal
+    x = np.asarray(a, np.float64)
+    if x.ndim == 1:
+        x = x[:, None]
+    if len(x) == 0:
+        return -120.0
+    for kind, fc, q, g in (("shelf", 1500.0, 1 / math.sqrt(2), 4.0), ("hp", 38.0, 0.5, 0.0)):
+        b, a_ = _rbj(kind, sr, fc, q, g)
+        x = scipy.signal.lfilter(b, a_, x, axis=0)
+    k = max(1, int(block_s * sr))
+    nb = len(x) // k
+    if nb < 1:
+        p = np.array([float(np.sum(np.mean(x ** 2, axis=0)))])
+    else:
+        p = np.sum(np.mean(x[:nb * k].reshape(nb, k, x.shape[1]) ** 2, axis=1), axis=1)
+    db = -0.691 + 10 * np.log10(p + 1e-20)
+    keep = (db >= db.max() - rel_gate_db) & (db > -70.0)
+    if not keep.any():
+        return float(db.max())
+    return float(-0.691 + 10 * math.log10(float(np.mean(p[keep])) + 1e-20))
+
+
+class LevelFollower:
+    """v0.4.1: how loud the performer plays NOW relative to this session.
+    offset = EMA(phrase loudness) - median(phrase loudness), clamped to
+    +-range.  Relative on purpose: microphone dBFS and speaker dBFS are not
+    comparable without calibration, but a change of playing level is."""
+
+    def __init__(self, range_db=9.0, min_phrases=3, history=200, alpha=0.4):
+        self.range = max(0.0, float(range_db))
+        self.min_phrases = max(1, int(min_phrases))
+        self.alpha = alpha
+        self.hist = collections.deque(maxlen=history)
+        self.ema = None
+        self.offset = 0.0
+        self.counted = 0
+        self.excluded = 0
+
+    def update(self, db, excluded=False):
+        import numpy as np
+        if excluded or db is None or not math.isfinite(db) or db < -90.0:
+            self.excluded += 1
+            return self.offset
+        self.hist.append(float(db))
+        self.counted += 1
+        self.ema = db if self.ema is None else (1 - self.alpha) * self.ema + self.alpha * db
+        if len(self.hist) >= self.min_phrases:
+            self.offset = clamp(self.ema - float(np.median(self.hist)), -self.range, self.range)
+        return self.offset
+
+
+TAIL_GRACE_S = 1.5             # v0.4.5: a natural tail may exceed Max_response_s by this
+
+
+def trim_quiet(a, sr, limit_s, fade_s=0.05, search_from=0.85):
+    """v0.4.5: shorten (n, ch) or (n,) audio to at most limit_s seconds,
+    cutting at its quietest 10 ms frame between search_from x limit and the
+    limit (the latest frame within 3 dB of the quietest), with a raised-cosine fade over the last fade_s before the cut.
+    Returns (audio, cut) - unchanged audio and False when it already fits."""
+    import numpy as np
+    n = len(a)
+    lim = int(round(limit_s * sr))
+    if n <= lim:
+        return a, False
+    hop = max(1, int(0.01 * sr))
+    lo = int(search_from * lim)
+    seg = np.asarray(a[lo:lim], np.float64)
+    if seg.ndim == 2:
+        seg = seg.mean(axis=1)
+    nf = len(seg) // hop
+    cut = lim
+    if nf >= 2:
+        e = np.mean(seg[:nf * hop].reshape(nf, hop) ** 2, axis=1)
+        # the LATEST frame within 3 dB of the quietest one: a real dip is
+        # still chosen, a sound without one is cut close to the limit
+        quiet = np.where(e <= float(e.min()) * 10 ** 0.3 + 1e-20)[0]
+        cut = lo + (int(quiet[-1]) + 1) * hop
+    b = np.array(a[:cut], np.float32, copy=True)
+    nfd = min(len(b), int(fade_s * sr))
+    if nfd > 0:
+        w = raised_cosine(nfd, False)
+        if b.ndim == 2:
+            b[len(b) - nfd:] *= w[:, None]
+        else:
+            b[len(b) - nfd:] *= w
+    return b, True
+
+
+def onset_starts(a, sr, within=0.4):
+    """v0.4.5: sample positions where a sound may sensibly start an excerpt:
+    0 plus the spectral-flux onsets in its first `within` fraction (each
+    moved 10 ms earlier so the attack is kept)."""
+    import numpy as np
+    m = a.mean(axis=1) if a.ndim == 2 else a
+    m = np.asarray(m, np.float64)
+    hop_s = 0.01
+    mag, _ = stft_mag(m, sr, 1024, int(round(hop_s * sr)))
+    pk, _ = onset_detect(mag, hop_s)
+    out = [0]
+    for p in pk:
+        s = max(0, int((p * hop_s - 0.01) * sr))
+        if 0 < s < within * len(m):
+            out.append(s)
+    return sorted(set(out))
 
 
 def is_real_stereo(a):
@@ -3257,6 +4575,7 @@ class Voice:
         self.kill = False
         self.done = False
         self.t_created = time.time()
+        self.item_id = None          # v0.4.6: memory item shown on the map
 
     def remaining_s(self, sr):
         return (self.n - self.pos + self.wait) / float(sr)
@@ -3464,6 +4783,208 @@ def build_texture(sources, sr, seconds, width, movement, rng, fade_s=3.0):
 
 
 # ============================================================
+# v0.4.6 MEMORY MAP  (graph.tsv for the Praat Demo window)
+# ============================================================
+GRAPH_FILE = "graph.tsv"
+GRAPH_BG = (0.97, 0.97, 0.97)
+CLASS_RGB = {"paulstretch": (0.20, 0.40, 0.80), "markov": (0.55, 0.60, 0.20),
+             "mds": (0.90, 0.55, 0.15), "spiral": (0.75, 0.25, 0.65),
+             "speeddev": (0.15, 0.60, 0.55), "groove": (0.80, 0.25, 0.25),
+             "passthrough": (0.50, 0.50, 0.55)}
+CORPUS_RGB = {"A": (0.20, 0.40, 0.80), "B": (0.85, 0.45, 0.15), "C": (0.45, 0.45, 0.50),
+              "P": (0.62, 0.70, 0.88)}
+ACTION_RGB = {"recall": (0.45, 0.20, 0.60), "recall_transform": (0.80, 0.30, 0.65),
+              "transform": (0.15, 0.62, 0.55), "influence": (0.66, 0.58, 0.80)}
+REGION_RGB = {"C": (0.92, 0.92, 0.94), "P": (0.95, 0.95, 0.97)}
+
+
+def _blend(rgb, amount, to=GRAPH_BG):
+    """rgb moved `amount` (0..1) towards the background."""
+    return tuple(c + (t - c) * clamp(amount, 0.0, 1.0) for c, t in zip(rgb, to))
+
+
+def graph_similarity(qdescs, pdescs, scales, mode="hybrid"):
+    """Vectorised group-weighted similarity, Q x N: the same z-normalised
+    group distance as SonicMemory.similarity (incl. the pitched/unpitched
+    penalty), WITHOUT its second-stage contour refinement.  For the map."""
+    import numpy as np
+    if mode == "pitch":
+        # v0.4.9: as SonicMemory.similarity - an unpitched query is ranked
+        # with hybrid weights (pitch mode cannot compare it)
+        S = graph_similarity(qdescs, pdescs, scales, "_pitch_only")
+        unv = [i for i, d in enumerate(qdescs) if not d["voiced"]]
+        if unv:
+            S[unv] = graph_similarity([qdescs[i] for i in unv], pdescs, scales, "hybrid")
+        return S
+    if mode == "_pitch_only":
+        mode = "pitch"
+    elif mode not in SIM_MODES or mode == "contrast":
+        mode = "hybrid"
+    W = SIM_MODES[mode]
+    Q, N = len(qdescs), len(pdescs)
+    num = np.zeros((Q, N))
+    den = np.zeros((Q, N))
+    for g, w in W.items():
+        if g.startswith("_") or w <= 0:
+            continue
+        A = np.vstack([d["groups"][g] for d in qdescs])
+        B = np.vstack([d["groups"][g] for d in pdescs])
+        Z = (A[:, None, :] - B[None, :, :]) / scales[g][None, None, :]
+        ok = ~np.isnan(Z)
+        cnt = ok.sum(axis=2)
+        dist = np.sqrt(np.where(ok, Z * Z, 0.0).sum(axis=2) / np.maximum(cnt, 1))
+        if g == "pitch":
+            vq = np.array([bool(d["voiced"]) for d in qdescs])
+            vp = np.array([bool(d["voiced"]) for d in pdescs])
+            dist = dist + 0.5 * (vq[:, None] != vp[None, :])
+        has = cnt > 0
+        num += np.where(has, w * dist, 0.0)
+        den += np.where(has, w, 0.0)
+    d = np.where(den > 0, num / np.maximum(den, 1e-12), 3.0)
+    return np.exp(-SIM_SCALE * d)
+
+
+class MemoryGraph:
+    """The data behind the memory map.  Owned by the engine's brain thread
+    (like SonicMemory); build() returns plain rows that the main thread
+    writes to graph.tsv."""
+    MAX_GHOSTS = 40
+
+    def __init__(self, memory, mode="hybrid", min_sim=0.45, k=3, max_sim_edges=220,
+                 max_actions=40):
+        self.mem = memory
+        self.mode = "hybrid" if mode == "contrast" else mode
+        self.thr = 0.45 if mode == "contrast" else float(min_sim)
+        self.k = k
+        self.max_sim_edges = max_sim_edges
+        self.nb = {}                                     # id -> [(id, sim)]
+        self.ghosts = collections.OrderedDict()          # phrase id -> (t, gesture)
+        self.actions = collections.deque(maxlen=max_actions)
+        self.live = None
+
+    # ---- updates ----
+    def link(self, items, pool=None, chunk=64):
+        import numpy as np
+        pool = [p for p in (self.mem.all_items() if pool is None else pool)
+                if p is not None and p.desc is not None]
+        items = [it for it in items if it is not None and it.desc is not None]
+        if not items or len(pool) < 2:
+            return
+        sc = self.mem._scales(pool, items[0].desc)
+        pd = [p.desc for p in pool]
+        for c0 in range(0, len(items), chunk):
+            part = items[c0:c0 + chunk]
+            S = graph_similarity([it.desc for it in part], pd, sc, self.mode)
+            for r, it in enumerate(part):
+                out = []
+                for j in np.argsort(-S[r]):
+                    if pool[j].id == it.id:
+                        continue
+                    if S[r, j] < self.thr or len(out) >= self.k:
+                        break
+                    out.append((pool[j].id, float(S[r, j])))
+                self.nb[it.id] = out
+
+    def phrase(self, pid, t, gesture):
+        self.ghosts[pid] = (t, gesture)
+        while len(self.ghosts) > self.MAX_GHOSTS:
+            self.ghosts.popitem(last=False)
+        self.live = pid
+
+    def action(self, src, dst, kind, match=None):
+        if src and dst and kind in ACTION_RGB:
+            self.actions.append((src, dst, kind, match))
+
+    # ---- layout ----
+    def build(self):
+        """(rows, nodes): rows = region / edge / live lines for graph.tsv,
+        nodes = [(id, x, size, rgb)] (the main thread adds the 'sounding' flag).
+        x and size are in 0..1 units of the drawing width."""
+        mem = self.mem
+        cs = sorted(mem.items["C"], key=lambda it: it.id)
+        perf = [(it.t, it.id, it.corpus, it) for it in mem.items["A"] + mem.items["B"]]
+        stored = {it.id for it in mem.items["A"]}
+        perf += [(t, pid, "P", None) for pid, (t, g) in self.ghosts.items() if pid not in stored]
+        perf.sort(key=lambda r: (r[0], r[1]))
+        if cs and perf:
+            regions = [("C", 0.0, 0.28), ("P", 0.32, 1.0)]
+        elif cs:
+            regions = [("C", 0.0, 1.0)]
+        else:
+            regions = [("P", 0.0, 1.0)]
+        reg = dict((k, (a, b)) for k, a, b in regions)
+        pos, nodes, gest = {}, [], {}
+
+        def place(seq, key):
+            a, b = reg[key]
+            n = len(seq)
+            step = (b - a) / max(n, 1)
+            for i, (nid, corpus, it, g) in enumerate(seq):
+                x = a + step * (i + 0.5)
+                dur = it.duration if it is not None else 1.0
+                size = clamp(0.42 * step, 0.0012, 0.0085) * (0.75 + 0.05 * min(dur, 5.0))
+                pos[nid] = x
+                gest[nid] = g
+                nodes.append((nid, x, size, CORPUS_RGB[corpus]))
+        if "C" in reg:
+            place([(it.id, "C", it, it.gesture) for it in cs], "C")
+        if "P" in reg:
+            place([(nid, corp, it, it.gesture if it is not None else self.ghosts[nid][1])
+                   for _, nid, corp, it in perf], "P")
+        rows = []
+        names = {"C": "Preloaded C (%d)" % len(cs),
+                 "P": "Performance - phrases A, answers B (%d)" % len(perf)}
+        for k, a, b in regions:
+            rows.append(("region", a, b, 0, 0.0, REGION_RGB[k], names[k]))
+        # upper arcs: similarity, newest sounds first, capped, weakest drawn first
+        order = [nid for _, nid, _, _ in reversed(perf)] + [it.id for it in cs]
+        seen, sims = set(), []
+        for nid in order:
+            for oid, s in self.nb.get(nid, ()):
+                key = tuple(sorted((nid, oid)))
+                if oid in pos and nid in pos and key not in seen:
+                    seen.add(key)
+                    sims.append((s, nid, oid))
+            if len(sims) >= self.max_sim_edges:
+                break
+        for s, nid, oid in sorted(sims[:self.max_sim_edges]):
+            st = clamp((s - self.thr) / max(1.0 - self.thr, 1e-6), 0.0, 1.0)
+            rgb = _blend(CLASS_RGB.get(gest.get(nid), CLASS_RGB["passthrough"]), 0.7 * (1 - st))
+            rows.append(("edge", pos[nid], pos[oid], 1, 1.0 + (st > 0.6), rgb, nid + ">" + oid))
+        # lower arcs: actions, oldest first and palest
+        acts = [a for a in self.actions if a[0] in pos and a[1] in pos]
+        n = len(acts)
+        for i, (a, b, kind, match) in enumerate(acts):
+            age = (n - 1 - i) / max(n - 1, 1)
+            w = 3.0 if match is None else 1.5 + 4.5 * clamp(match, 0.0, 1.0)
+            if kind == "influence":
+                w = 1.0 + 4.0 * clamp(match, 0.0, 1.0)
+            rows.append(("edge", pos[a], pos[b], -1, round(w, 1),
+                         _blend(ACTION_RGB[kind], 0.72 * age), kind))
+        if self.live in pos:
+            rows.append(("live", pos[self.live], 0.0, 0, 0.0, (0.80, 0.20, 0.20), self.live))
+        return rows, nodes
+
+
+def graph_tsv(rows, nodes, sounding=()):
+    """graph.tsv text: kind x1 x2 side width r g b label (one header line)."""
+    out = ["kind\tx1\tx2\tside\twidth\tr\tg\tb\tlabel"]
+
+    def fmt(k, a, b, side, w, rgb, label):
+        return "%s\t%.5f\t%.5f\t%d\t%.2f\t%.3f\t%.3f\t%.3f\t%s" % (
+            k, a, b, side, w, rgb[0], rgb[1], rgb[2], (label or "-").replace("\t", " "))
+    for r in rows:
+        if r[0] != "live":
+            out.append(fmt(*r))
+    for nid, x, size, rgb in nodes:
+        out.append(fmt("node", x, size, 1 if nid in sounding else 0, 0.0, rgb, nid))
+    for r in rows:
+        if r[0] == "live":
+            out.append(fmt(*r))
+    return "\n".join(out) + "\n"
+
+
+# ============================================================
 # v0.2.0 CONTINUOUS ENGINE  (command: serve)
 # ============================================================
 # Ownership (one owner per resource; no shared lock is held during
@@ -3493,7 +5014,8 @@ LEAK_LAG_TOL_S = 0.003         # v0.4.0: phrase check accepts +-3 ms of clock dr
 # AudioTools_CallResponse.praat form, one value per field in form order.
 # Render mode (env AUDIOTOOLS_CR_JOB) ignores the values, but "praat --run"
 # requires one argument per field.  KEEP IN SYNC WITH THE PRAAT FORM.
-RENDER_FORM_ARGS = ["Selected Sound(s)", "Automatic (gesture classifier)", "4",
+RENDER_FORM_ARGS = ["Custom (form and dialogs)",                    # v0.4.2 Preset
+                    "Selected Sound(s)", "Automatic (gesture classifier)", "4",
                     "default", "default", "9", "0.5", "0.6", "12",
                     "0", "Transform only (v0.2)", "-",          # v0.3.0 memory fields
                     "0", "0",                                   # Memory / Playback settings
@@ -3918,6 +5440,9 @@ class Job:
         self.match = None
         self.gen_out = 1              # generation of a Praat result
         self.secondary = None         # v0.4.0 secondary voice spec (dict) or None
+        self.leak_expected = None     # v0.4.1 expected leakage dBFS at phrase end
+        self.influences = []          # v0.4.8 (label, weight, phrase id) of earlier phrases
+        self.contrib = []             # v0.4.9 (label, share of the chosen score, phrase id)
         self.action_name = ""
 
 
@@ -4066,6 +5591,8 @@ class Engine:
         self.state, self.message, self.processing, self.playing = "starting", "", "", ""
         self.stage = "start"
         self.input_db = -120.0
+        self.lv_hist = collections.deque(maxlen=10)       # v0.4.10: last 100 ms
+        self.det_event = ("", 0.0)                         # v0.4.11: last detector event
         self.leak_db, self.leak_rho = None, 0.0
         self.leak_lag, self.leak_cand, self.leak_conf = None, None, 0
         self.out_hold_db, self.out_hold_t = -120.0, 0.0
@@ -4105,6 +5632,11 @@ class Engine:
         seed = args.seed if args.seed > 0 else 1 + (zlib.crc32(self.session.encode()) % 2000000000)
         self.memory = SonicMemory(self.mcfg, seed, self.log)
         self.last_recall, self.last_match, self.last_action = "", "", ""
+        # v0.4.8 phrase-level influence memory: previous phrases (id, desc, t)
+        self.inf_depth = max(1, min(8, int(args.influence_depth)))
+        self.inf_decay = clamp(float(args.influence_decay), 0.0, 1.0)
+        self.inf_trend = clamp(float(args.trend_weight), 0.0, 1.0)
+        self.history = collections.deque(maxlen=max(1, self.inf_depth))
         self.fault = os.environ.get("AUDIOTOOLS_CR_FAULT", "")   # test hook, inert by default
         self.status_fail_streak = 0
         # ---- v0.4.0 polyphonic spatial playback ----
@@ -4118,9 +5650,14 @@ class Engine:
             "fade_out": max(0.003, args.fade_out_ms / 1000.0),
             "transients": bool(args.preserve_transients),
             "level_match": bool(args.level_match),
-            "background": bool(args.background) and bool(args.polyphony),
+            "background": bool(args.background) and bool(args.polyphony)
+                          and args.response_mode != "corpus_only",
             "bg_db": float(args.background_db),
+            "corpus_c_db": clamp(float(args.corpus_c_db), -12.0, 12.0),
+            "layer_shape": args.layer_shape,
         }
+        # v0.4.1: relative follower of the performer's playing level
+        self.follower = LevelFollower(args.follow_range) if args.follow_input else None
         self.prng = random.Random(seed + 7919)       # playback choices only
         self.mixer = Mixer(self.sr)
         self.space = SpaceAllocator(self.prng, self.pcfg["width"], self.pcfg["pan_variation"])
@@ -4131,6 +5668,14 @@ class Engine:
         self.bg_paused = False
         self.recent_answers = collections.deque(maxlen=3)
         self.layer_history = collections.deque(maxlen=4)
+        # ---- v0.4.6 memory map ----
+        self.graph = MemoryGraph(self.memory, args.sim_mode, args.min_sim) \
+            if self.mcfg["enabled"] else None
+        self.graph_data = None           # (rows, nodes), replaced whole by the brain thread
+        self.graph_ver = 0
+        self.graph_written = (0, None)
+        self.graph_file_ver = 0
+        self.t_graph = 0.0
 
     # ---------------- logging ----------------
     def log(self, msg, event=False):
@@ -4232,8 +5777,9 @@ class Engine:
                 pending = np.concatenate([pending, block], axis=0) if len(pending) else block
                 while len(pending) >= hop:
                     ev = self.det.feed(pending[:hop])
-                    lv = db_of(pending[:hop, 0] if self.ch == 1 else pending[:hop].mean(axis=1))
-                    self.input_db = max(lv, self.input_db - 1.5)
+                    # v0.4.10: the meter shows the detector's own frame level
+                    self.lv_hist.append(self.det.last_db)
+                    self.input_db = max(self.lv_hist)
                     pending = pending[hop:]
                     if self.det.state == "PHRASE":
                         self.t_performer = tb
@@ -4241,8 +5787,20 @@ class Engine:
                         self.log("onset (floor %.1f dBFS, thr %.1f)" %
                                  (self.det.floor, self.det.thresholds()[0]))
                     elif ev == "discarded":
-                        self.log("short trigger discarded (< %.2f s)" % self.a.min_phrase)
+                        if self.det.last_discard == "noise":
+                            self.det_event = ("noise ignored, background learned", time.time())
+                            self.log("background noise mistaken for a phrase - ignored, floor "
+                                     "%.1f dBFS" % self.det.floor, True)
+                        else:
+                            self.det_event = ("too short, ignored", time.time())
+                            self.log("short trigger discarded (< %.2f s)" % self.a.min_phrase)
                     elif ev == "end":
+                        self.det_event = ({"silence": "phrase end (silence)",
+                                           "background": "phrase end (background learned)",
+                                           "max_duration": "split at Max_phrase_s (continues)",
+                                           "max_duration_steady": "steady noise learned as "
+                                                                  "background"}.get(
+                            self.det.ended_by, self.det.ended_by), time.time())
                         self._finalize(tb)
                         self.det.rearm()
                 if tb - t_leak >= 1.0:
@@ -4303,8 +5861,7 @@ class Engine:
         the brain worker.  Analysis and memory work happen THERE."""
         np = self.np
         d = self.det
-        tail = int(round(0.15 / d.hop_s))
-        end_idx = min(len(d.buf), d.last_active + 1 + tail)
+        end_idx = d.phrase_end_index()
         audio = d.phrase_audio()
         t_audio_end = tb - (len(d.buf) - end_idx) * d.hop_s
         t_end = tb - d.silence_frames_after_last_active() * d.hop_s
@@ -4317,6 +5874,7 @@ class Engine:
                   {"onset": t_onset, "end": t_end, "detected": time.time()})
         self.c["phrases"] += 1
         self.t_activity = time.time()
+        job.leak_expected = self._expected_leak_db()
         self.log("phrase %s: %.2f s, ended by %s, detection delay %.3f s" %
                  (job.tag, dur, d.ended_by, time.time() - t_end))
         mono = audio[:, 0] if audio.shape[1] == 1 else audio.mean(axis=1)
@@ -4374,6 +5932,47 @@ class Engine:
             self.log(self.fatal + " | " + traceback.format_exc().replace("\n", " | "), True)
             self.stop_ev.set()
 
+    def _graph_publish(self):
+        """v0.4.6 (brain thread, or main thread before the workers start)."""
+        if self.graph is None:
+            return
+        try:
+            self.graph_data = self.graph.build()
+            self.graph_ver += 1
+        except Exception as ex:                              # noqa: BLE001
+            self.log("memory map not updated: %s" % ex)
+
+    def _graph_write(self, now):
+        """v0.4.6 (main thread): graph.tsv when the map or the sounding set
+        changed, at most 4 times per second; a locked file is skipped."""
+        if self.graph_data is None or now - self.t_graph < 0.25:
+            return
+        sounding = frozenset(v.item_id for v in self.mixer.active() if v.item_id)
+        key = (self.graph_ver, sounding)
+        if key == self.graph_written:
+            return
+        self.t_graph = now
+        rows, nodes = self.graph_data
+        path = os.path.join(self.session, GRAPH_FILE)
+        try:
+            write_text_atomic(path, graph_tsv(rows, nodes, sounding))
+        except OSError:
+            try:
+                os.remove(path + ".tmp")
+            except OSError:
+                pass
+            return
+        self.graph_written = key
+        self.graph_file_ver += 1
+
+    @staticmethod
+    def _inf_note(job):
+        n = sum(1 for lab, w, pid in getattr(job, "influences", ()) if lab != "trend")
+        t = any(lab == "trend" for lab, w, pid in getattr(job, "influences", ()))
+        if not n and not t:
+            return ""
+        return " (%d phrases%s)" % (n + 1, " + trend" if t else "")
+
     def _forced(self):
         return None if self.a.force in ("", "auto") else self.a.force
 
@@ -4403,6 +6002,13 @@ class Engine:
             self.log("phrase %s analysis failed: %s" % (job.tag, ex), True)
             return
         job.t["analysed"] = time.time()
+        if self.follower is not None:
+            ld = active_loudness_db(job.audio, self.sr)
+            le = job.leak_expected
+            excl = le is not None and le > ld - 15.0
+            off = self.follower.update(ld, excl)
+            self.log("phrase %s loudness %.1f dB%s -> level offset %+.1f dB" %
+                     (job.tag, ld, " (not counted: speaker leakage)" if excl else "", off))
         mem = self.memory
         job.phrase_id = mem.new_id("A")
         action, why, cand, rt = "transform", "sonic memory off", None, None
@@ -4413,20 +6019,51 @@ class Engine:
                 if self.mcfg["recent_exclude"] > 0 else []
             horizon = 60.0 * (self.a.session_minutes if self.a.session_minutes > 0 else 20.0)
             progress = (time.time() - self.t_start) / horizon
+            gsc = mem._scales(mem.all_items(), desc)
+            smode = mem.cfg.get("sim_mode", "hybrid")
+
+            def coherence(d, _q=desc, _sc=gsc):
+                # v0.4.9: the retrieval's own similarity (mode, unpitched
+                # rule, contour stage), not the map's approximation
+                return influence_gate(mem.similarity(_q, [_DescOnly(d)], smode, scales=_sc)[0][1])
+            t_phrase = job.t.get("end", time.time())
+            infl = influence_queries(self.history, t_phrase, self.inf_depth, self.inf_decay,
+                                     self.inf_trend, desc, gate=coherence)
+            job.influences = [(lab, w, pid) for d, w, lab, pid in infl]
             cand, top, why = mem.retrieve(desc, exclude_ids={job.phrase_id} | set(recentA),
-                                          exclude_roots=set(recentA), progress=progress)
+                                          exclude_roots=set(recentA), progress=progress,
+                                          influences=infl)
+            if infl:
+                self.log("phrase %s influence: last 1.00, %s" % (job.tag, ", ".join(
+                    "%s %.2f" % (lab, w) for d, w, lab, pid in infl)))
             rt = pick_recall_transform(cand, top, self._forced(), self.mcfg["max_generation"])
             action, why2 = mem.choose_action(cand, rt)
             why = why2 if cand or rt else why + " -> transform"
         t_mem = time.perf_counter() - t_mem
+        chosen = cand if action == "recall" else rt if action == "recall_transform" else None
+        if chosen is not None and job.influences and len(chosen.get("parts", ())) == \
+                1 + len(job.influences):
+            tot = sum(chosen["parts"]) or 1.0
+            job.contrib = [(lab, part / tot, pid) for (lab, w, pid), part in
+                           zip(job.influences, chosen["parts"][1:])]
+            self.log("phrase %s: share of the chosen sound's score - last %.2f, %s" % (
+                job.tag, chosen["parts"][0] / tot,
+                ", ".join("%s %.2f" % (lab, sh) for lab, sh, pid in job.contrib)))
+        if desc is not None:
+            self.history.append((job.phrase_id, desc, job.t.get("end", time.time())))
         job.kind = action
-        if action == "recall":
+        if action == "silence":
+            job.selected = "silence"
+            job.action_name = "Silent (no corpus match)"
+            self.last_recall, self.last_match = "", ""
+        elif action == "recall":
             it = cand["item"]
             mem.mark_recalled(it)
             job.recall_item, job.match, job.selected = it, cand["match"], "recall"
             job.source_id, job.source_corpus = it.id, it.corpus
             job.action_name = "Recall %s (%s)" % (it.id, CORPUS_NAMES[it.corpus])
-            self.last_recall, self.last_match = "Corpus %s" % it.corpus, "%.2f" % cand["match"]
+            self.last_recall, self.last_match = "Corpus %s" % it.corpus, "%.2f%s" % (
+                cand["match"], self._inf_note(job))
         elif action == "recall_transform":
             it = rt["item"]
             mem.mark_recalled(it)
@@ -4445,7 +6082,8 @@ class Engine:
             job.source_id, job.source_corpus = it.id, it.corpus
             job.gen_out = it.generation + 1
             job.action_name = "%s on %s" % (DISPLAY_NAMES.get(job.selected, job.selected), it.id)
-            self.last_recall, self.last_match = "Corpus %s" % it.corpus, "%.2f" % rt["match"]
+            self.last_recall, self.last_match = "Corpus %s" % it.corpus, "%.2f%s" % (
+                rt["match"], self._inf_note(job))
         else:
             job.selected = info["selected"]
             job.source_id, job.source_corpus, job.gen_out = job.phrase_id, "A", 1
@@ -4460,7 +6098,7 @@ class Engine:
             if not self.mcfg["enabled"]:
                 self.last_recall, self.last_match = "", ""
         self.last_action = job.action_name
-        if self.mcfg["enabled"]:
+        if self.mcfg["enabled"] and self.mcfg["response_mode"] != "corpus_only":
             self._plan_secondary(job, F, cand, top if self.mcfg["enabled"] else [])
         self.log("phrase %s (%s) -> %s (%s)%s  [analysis %.0f ms, memory search %.0f ms over %d "
                  "sounds]" % (job.tag, job.phrase_id, job.action_name, why,
@@ -4473,10 +6111,26 @@ class Engine:
                      (job.tag, t1 - t0, t2 - t1, rep.rstrip()))
         # the live phrase enters Corpus A only AFTER its own retrieval
         if self.mcfg["enabled"] and self.mcfg["use_A"]:
-            a_store = job.audio[:int(self.mcfg["max_item_s"] * self.sr)]
+            a_store, _ = trim_quiet(job.audio, self.sr, self.mcfg["max_item_s"])
             mem.add(CorpusItem(job.phrase_id, "A", a_store, self.sr, F, desc, info, time.time(),
                                {"root": job.phrase_id, "parent": None, "method": None,
                                 "generation": 0, "source": "live phrase %s" % job.tag}))
+        if self.graph is not None:
+            g = self.graph
+            g.phrase(job.phrase_id, time.time(), info["selected"])
+            if self.mcfg["use_A"]:
+                g.link([mem.find(job.phrase_id)])
+            if action in ("recall", "recall_transform"):
+                for lab, share, pid in job.contrib:             # v0.4.9: real shares
+                    if pid:
+                        g.action(pid, job.source_id, "influence", share)
+                g.action(job.phrase_id, job.source_id, action, job.match)
+            self._graph_publish()
+        if action == "silence":
+            # v0.4.1 corpus only: no answer, keep listening
+            self.c["kind_silence"] += 1
+            self._cleanup_job(job)
+            return
         self.render_q.put(job)
 
     def _plan_secondary(self, job, F, cand, top):
@@ -4518,20 +6172,30 @@ class Engine:
         if a is None or len(a) < int(0.5 * it.sr):
             return
         L = len(a)
-        seg = int(L * rng.uniform(0.6, 1.0))
-        seg = max(min(L, int(0.8 * it.sr)), seg)
-        st = rng.randint(0, max(0, L - seg))
+        st = 0
+        if self.pcfg.get("layer_shape", "whole") == "excerpt":
+            # v0.4.5: start at an onset of the first 40 %, ALWAYS run to the
+            # natural end of the sound (never a random start / early stop)
+            starts = [s for s in onset_starts(a, it.sr) if L - s >= int(0.8 * it.sr)]
+            st = rng.choice(starts) if starts else 0
+        seg = L - st
+        shape = "whole" if st == 0 else "excerpt %.1f-%.1f of %.1f s" % (
+            st / float(it.sr), L / float(it.sr), L / float(it.sr))
         delay = rng.uniform(0.6, 3.5)
         ioi = F.get("ioi_median", 0.0) or 0.0
         if F.get("onset_rate", 0.0) > 1.5 and 0.08 < ioi < 1.5:
             delay = max(ioi, round(delay / ioi) * ioi)        # on the phrase's pulse
         it.recalls += 1                       # novelty bookkeeping only
         self.layer_history.append(it.id)
-        job.secondary = {"audio": a[st:st + seg], "sr": it.sr, "delay": delay,
+        if st > 0:
+            self.c["layers_excerpt"] += 1
+        job.secondary = {"audio": a[st:], "sr": it.sr, "delay": delay,
+                         "corpus": it.corpus, "shape": shape, "item_id": it.id,
                          "gain_db": rng.uniform(-3.0, 1.0),
                          "name": "%s %s" % ("echo of" if how == "related" else "memory", it.id)}
-        self.log("phrase %s: secondary voice planned: %s, %.1f s excerpt, enters %.2f s after "
-                 "the answer" % (job.tag, job.secondary["name"], seg / float(it.sr), delay), True)
+        self.log("phrase %s: secondary voice planned: %s, %s (%.1f s), enters %.2f s after "
+                 "the answer" % (job.tag, job.secondary["name"], shape, seg / float(it.sr), delay),
+                 True)
 
     def _insert_processed(self, r):
         """A genuinely NEW Praat result becomes a Corpus B entry, analysed
@@ -4546,7 +6210,11 @@ class Engine:
             return
         np = self.np
         sr = r["sr"]
-        a = r["answer"][:int(self.mcfg["max_item_s"] * sr)]
+        # v0.4.5: the WHOLE answer (it was a raw first-Max_item_s slice)
+        a, cut = trim_quiet(r["answer"], sr, self.a.max_response + TAIL_GRACE_S)
+        if cut:
+            self.log("job %s: stored answer trimmed at a quiet point to %.1f s" %
+                     (r["tag"], len(a) / float(sr)))
         if len(a) < int(0.3 * sr):
             return
         a64 = a.astype(np.float64)
@@ -4566,6 +6234,10 @@ class Engine:
                                          "source": "%s of %s" % (r["used"], r["source_id"])}))
         self.log("memory: %s = %s of %s (generation %d)" %
                  (iid, r["used"], r["source_id"], r["gen_out"]), True)
+        if self.graph is not None:
+            self.graph.link([mem.find(iid)])
+            self.graph.action(r["source_id"], iid, "transform")
+            self._graph_publish()
 
     # ---------------- RENDER thread ----------------
     def _render_loop(self):
@@ -4630,7 +6302,14 @@ class Engine:
             self.stop_ev.set()
 
     # ---------------- PLAY thread (v0.4.0: voices, not one buffer) -----------
-    def _make_voice(self, a, sr, role, name, wait_s=0.0, gain_db=0.0):
+    def _level_offset(self, corpus=None):
+        """v0.4.1: follow-input offset + Corpus C balance, in dB."""
+        off = self.follower.offset if self.follower is not None else 0.0
+        if corpus == "C":
+            off += self.pcfg["corpus_c_db"]
+        return off
+
+    def _make_voice(self, a, sr, role, name, wait_s=0.0, gain_db=0.0, corpus=None):
         """Format conversion, length cap, envelope, level, placement, slow
         movement -> a Voice (all off the audio thread).  Returns
         (voice or None, truncated)."""
@@ -4643,22 +6322,43 @@ class Engine:
         if sr != self.sr:
             g = math.gcd(int(sr), self.sr)
             a = scipy.signal.resample_poly(a, self.sr // g, int(sr) // g, axis=0).astype(np.float32)
-        cap = int(self.a.max_response * self.sr)
-        trunc = len(a) > cap
+        # v0.4.5: Max_response_s + grace; longer sounds are cut at their
+        # quietest point near the limit (never inside the first 85 %)
+        n_in = len(a)
+        a, trunc = trim_quiet(a, self.sr, self.a.max_response + TAIL_GRACE_S)
+        shape = "whole %.1f s" % (n_in / float(self.sr)) if not trunc else \
+            "trimmed %.1f -> %.1f s" % (n_in / float(self.sr), len(a) / float(self.sr))
         if trunc:
-            a = a[:cap]
+            self.c["voices_trimmed"] += 1
         if len(a) < int(0.02 * self.sr):
             return None, trunc
         b, fi, fo = shape_envelope(a, self.sr, pc["fade_in"], pc["fade_out"],
                                    pc["transients"], truncated=trunc)
+        gain_db = gain_db + self._level_offset(corpus)
+        lvl = {}
         if pc["level_match"]:
-            b, _ = level_match(b, ROLE_TARGET_DB[role] + gain_db)
+            b, _ = level_match(b, ROLE_TARGET_DB[role] + gain_db, sr=self.sr, info=lvl)
         elif gain_db:
             b = (b * 10 ** (gain_db / 20.0)).astype(np.float32)
         center = self.space.place(role, self.mixer.active())
         st = spatialize(b, self.sr, center, pc["movement"], pc["width"], self.prng,
                         slow=(role == "bg"))
-        return Voice(st, role, name, center, wait=int(wait_s * self.sr)), trunc
+        # v0.4.7: the stereo balance can raise one channel (up to +3 dB):
+        # keep the placed voice under the per-voice ceiling
+        pk = float(np.max(np.abs(st))) if len(st) else 0.0
+        if pk > VOICE_PEAK_CEILING:
+            st *= VOICE_PEAK_CEILING / pk
+            lvl["after_space_db"] = 20 * math.log10(VOICE_PEAK_CEILING / pk)
+            self.c["voices_peak_trimmed"] += 1
+        v = Voice(st, role, name, center, wait=int(wait_s * self.sr))
+        v.shape = shape
+        if lvl:
+            v.shape += "; level %s%s" % (
+                "" if "integrated" not in lvl else "%.1f / burst %.1f dB -> %+.1f dB (%s)" % (
+                    lvl["integrated"], lvl["burst"], lvl["gain_db"], lvl["limited_by"]),
+                "" if "after_space_db" not in lvl else ", %+.1f dB after placement" %
+                lvl["after_space_db"])
+        return v, trunc
 
     def _allocate(self, v, may_wait):
         """Voice allocation.  Priority fg > sec > bg: a new answer takes a
@@ -4713,11 +6413,17 @@ class Engine:
                     name = "%s on %s" % (DISPLAY_NAMES.get(job.used, job.used), job.source_id)
                 else:
                     name = DISPLAY_NAMES.get(job.used, job.used)
-                v, trunc = self._make_voice(job.answer, job.answer_sr, "fg", name)
+                v, trunc = self._make_voice(job.answer, job.answer_sr, "fg", name,
+                                            corpus=job.source_corpus if job.kind == "recall"
+                                            else None)
                 if trunc:
-                    self.log("job %s answer truncated to %.1f s (Max_response_s) with a "
-                             "fade-out" % (job.tag, self.a.max_response), True)
+                    self.log("job %s answer %s (Max_response_s %.1f s + %.1f s grace, cut at "
+                             "a quiet point, faded)" % (job.tag, v.shape if v is not None else
+                                                        "trimmed", self.a.max_response,
+                                                        TAIL_GRACE_S), True)
                 out_s = v.n / float(self.sr) if v is not None else 0.0
+                if v is not None:
+                    v.item_id = job.source_id or job.phrase_id or None
                 # keep the latest answers as material for the background layer
                 if job.answer is not None:
                     m = job.answer.mean(axis=1) if job.answer.ndim == 2 else job.answer
@@ -4728,17 +6434,21 @@ class Engine:
                     played = self._allocate(v, may_wait=True)
                 job.t["play_start"] = time.time()
                 if played:
-                    self.log("job %s: voice %d '%s' at %+.2f (%.1f s)" %
-                             (job.tag, v.id, name, v.center, out_s))
+                    self.log("job %s: voice %d '%s' at %+.2f, %s" %
+                             (job.tag, v.id, name, v.center, v.shape), True)
                     sec = job.secondary
                     if sec is not None:
                         sv, _ = self._make_voice(sec["audio"], sec["sr"], "sec", sec["name"],
-                                                 wait_s=sec["delay"], gain_db=sec["gain_db"])
+                                                 wait_s=sec["delay"], gain_db=sec["gain_db"],
+                                                 corpus=sec.get("corpus"))
+                        if sv is not None:
+                            sv.item_id = sec.get("item_id")
                         if sv is not None and self._allocate(sv, may_wait=False):
                             self.c["voices_secondary"] += 1
                             self.log("job %s: secondary voice %d '%s' at %+.2f enters after "
-                                     "%.2f s" % (job.tag, sv.id, sv.name, sv.center,
-                                                 sec["delay"]), True)
+                                     "%.2f s, %s / %s" % (job.tag, sv.id, sv.name, sv.center,
+                                                          sec["delay"], sec.get("shape", "whole"),
+                                                          sv.shape), True)
                         elif sv is not None:
                             self.log("job %s: no free voice for the secondary layer - skipped" %
                                      job.tag)
@@ -4830,8 +6540,13 @@ class Engine:
                             max(0.3, self.pcfg["movement"]), rng)
         if tex is None:
             return None
+        from_c = any(not isinstance(p[1], tuple) and p[1].corpus == "C" for p in picks)
+        off = self._level_offset("C" if from_c else None)
         if self.pcfg["level_match"]:
-            tex, _ = level_match(tex, self.pcfg["bg_db"], max_boost_db=18.0, peak_ceiling=0.5)
+            tex, _ = level_match(tex, self.pcfg["bg_db"] + off, max_boost_db=18.0, peak_ceiling=0.5,
+                                 sr=self.sr)
+        elif off:
+            tex = (tex * 10 ** (off / 20.0)).astype(self.np.float32)
         name = "texture from " + " + ".join(p[0] for p in picks)
         v = Voice(tex, "bg", name, 0.0, gain=0.0, rate=1.0 / 3.0)
         return v
@@ -4927,6 +6642,9 @@ class Engine:
             ("background", self.bg_state if self.pcfg["background"] else "off"),
             ("bg_gain", fnum(max([v.gain for v in act if v.role == "bg"] or [0.0]), 3)),
             ("polyphony", "on" if self.pcfg["polyphony"] else "off"),
+            ("level_offset", "off" if self.follower is None else fnum(self.follower.offset, 1)),
+        ] + self._det_pairs() + [
+            ("graph", "off" if self.graph is None else self.graph_file_ver),
             ("pending", len(self.phrase_q) + len(self.render_q) + len(self.play_q)),
             ("pending_render", len(self.render_q)), ("pending_play", len(self.play_q)),
             ("phrases", self.c["phrases"]), ("done", self.c["done"]),
@@ -4942,6 +6660,19 @@ class Engine:
             ("message", self.message), ("uptime", fnum(time.time() - self.t_start, 1)),
             ("heartbeat", "%.3f" % time.time()),
         ]
+
+    def _det_pairs(self):
+        """v0.4.10: what the phrase detector is doing, in its own terms."""
+        d = self.det
+        if d.floor is None:
+            return [("det_state", d.state.lower())]
+        on, off = d.thresholds()
+        quiet = d.silent_run * d.hop_s if d.state == "PHRASE" else 0.0
+        lab, t = self.det_event
+        return [("det_state", d.state.lower()), ("floor_db", fnum(d.floor, 1)),
+                ("on_db", fnum(on, 1)), ("off_db", fnum(off, 1)),
+                ("quiet_s", fnum(quiet, 1)), ("end_silence", fnum(d.end_silence, 1)),
+                ("det_event", lab), ("det_event_age", fnum(time.time() - t, 1) if lab else "")]
 
     def write_status(self, final=False):
         """v0.3.2: status.txt is replaced atomically.  On Windows the rename
@@ -5000,6 +6731,13 @@ class Engine:
                 self.log(nt, True)
             self.log("Corpus C indexed: %d sounds (%.1f min of audio in RAM)" %
                      (n, self.memory.ram_seconds() / 60.0), True)
+            if self.graph is not None and n:
+                self.message = "drawing the memory map of the preloaded corpus"
+                self.write_status()
+                t0 = time.perf_counter()
+                self.graph.link(self.memory.items["C"], pool=self.memory.items["C"])
+                self.log("memory map: %d corpus links in %.2f s" % (
+                    sum(len(v) for v in self.graph.nb.values()), time.perf_counter() - t0), True)
             self.message = ""
         try:
             in_dev = resolve_device(sd, a.device, "input")
@@ -5029,6 +6767,7 @@ class Engine:
         for t in threads:
             t.start()
         self.state, self.stage = "running", "running"
+        self._graph_publish()
         self.log("engine running: in %s / out %s (%d ch), %d Hz, pending<=%d, responses<=%d, "
                  "overflow %s, max response %.1f s, leakage guard %s, sonic memory %s (%s, %s), "
                  "seed %d" % (a.device, a.output_device, self.out_ch, self.sr, a.max_pending,
@@ -5045,6 +6784,13 @@ class Engine:
                      1000 * pc["fade_out"], "kept" if pc["transients"] else "faded",
                      "on" if pc["level_match"] else "off",
                      "on" if pc["background"] else "off", pc["bg_db"]), True)
+        self.log("influence memory: depth %d, decay %.2f, trend %.2f, half-life %.0f s" % (
+            self.inf_depth, self.inf_decay, self.inf_trend, INFLUENCE_HALF_LIFE_S), True)
+        self.log("layers: %s sounds; playback cap %.1f s + %.1f s grace; Corpus B keeps "
+                 "whole answers" % (pc["layer_shape"], a.max_response, TAIL_GRACE_S), True)
+        self.log("level: follow live input %s, Corpus C balance %+.1f dB" % (
+            "off" if self.follower is None else "on (+-%.0f dB)" % self.follower.range,
+            pc["corpus_c_db"]), True)
         stop_file = os.path.join(self.session, "stop.request")
         alive_file = os.path.join(self.session, "praat_alive.txt")
         t_last_status = 0.0
@@ -5083,6 +6829,7 @@ class Engine:
                 if reason:
                     break
                 if now - t_last_status >= 0.1:
+                    self._graph_write(now)
                     self.write_status()
                     t_last_status = now
         except KeyboardInterrupt:
@@ -5157,16 +6904,27 @@ class Engine:
                          self.c["passthrough"], self.c["leak_discarded"], self.c["overruns"],
                          self.c["input_status"], self.c["output_status"]))
         lines.append("status_write_failures=%d" % self.c["status_write_failures"])
+        lines.append("detector gradual_entries=%d steady_background=%d background_releases=%d "
+                     "false_triggers=%d final_floor=%s" % (
+            self.det.gradual_entries, self.det.steady_learned, self.det.background_releases,
+            self.det.false_triggers,
+            "none" if self.det.floor is None else fnum(self.det.floor, 1)))
         lines.append("memory live=%d processed=%d preloaded=%d answers transform=%d recall=%d "
-                     "recall_transform=%d evicted=%d" % (
+                     "recall_transform=%d silent=%d evicted=%d" % (
                          mc["A"], mc["B"], mc["C"], self.c["kind_transform"],
                          self.c["kind_recall"], self.c["kind_recall_transform"],
-                         self.memory.evicted))
+                         self.c["kind_silence"], self.memory.evicted))
         mx = self.mixer
+        fo = self.follower
         lines.append("playback voices_max=%d secondary=%d textures=%d stolen=%d peak=%.3f "
-                     "limiter_max_reduction=%.1f dB" % (
+                     "limiter_max_reduction=%.1f dB follow=%s corpus_c=%+.1f dB "
+                     "trimmed=%d layer_excerpts=%d peak_after_placement=%d" % (
                          mx.max_active, self.c["voices_secondary"], self.c["textures"],
-                         self.c["voices_stolen"], mx.peak_out, mx.max_reduction_db))
+                         self.c["voices_stolen"], mx.peak_out, mx.max_reduction_db,
+                         "off" if fo is None else "%+.1f dB (%d counted, %d excluded)" % (
+                             fo.offset, fo.counted, fo.excluded),
+                         self.pcfg["corpus_c_db"], self.c["voices_trimmed"],
+                         self.c["layers_excerpt"], self.c["voices_peak_trimmed"]))
         if self.delays:
             d = np.array(self.delays)
             lines.append("delay phrase end -> answer: mean %.2f s, min %.2f s, max %.2f s" %
@@ -5347,7 +7105,7 @@ def main(argv=None):
     # ---- v0.3.0 sonic memory ----
     p.add_argument("--memory", type=int, default=1)
     p.add_argument("--response-mode", dest="response_mode", default="hybrid",
-                   choices=["transform", "recall", "recall_transform", "hybrid"])
+                   choices=["transform", "recall", "recall_transform", "hybrid", "corpus_only"])
     p.add_argument("--use-a", dest="use_a", type=int, default=1)
     p.add_argument("--use-b", dest="use_b", type=int, default=1)
     p.add_argument("--use-c", dest="use_c", type=int, default=0)
@@ -5390,6 +7148,17 @@ def main(argv=None):
     p.add_argument("--level-match", dest="level_match", type=int, default=1)
     p.add_argument("--background", type=int, default=1)
     p.add_argument("--background-db", dest="background_db", type=float, default=-33.0)
+    # ---- v0.4.1 adaptive level ----
+    p.add_argument("--follow-input", dest="follow_input", type=int, default=0)
+    p.add_argument("--follow-range", dest="follow_range", type=float, default=9.0)
+    p.add_argument("--corpus-c-db", dest="corpus_c_db", type=float, default=0.0)
+    # ---- v0.4.5 ----
+    p.add_argument("--layer-shape", dest="layer_shape", default="whole",
+                   choices=["whole", "excerpt"])
+    # ---- v0.4.8 ----
+    p.add_argument("--influence-depth", dest="influence_depth", type=int, default=3)
+    p.add_argument("--influence-decay", dest="influence_decay", type=float, default=0.5)
+    p.add_argument("--trend-weight", dest="trend_weight", type=float, default=0.0)
     p = sub.add_parser("cleanup")
     p.add_argument("--session", required=True)
     p.add_argument("--wait", type=float, default=15.0)
@@ -5409,6 +7178,32 @@ def main(argv=None):
     return fn(args)
 
 
+def read_args_file(path):
+    """v0.4.4: engine arguments written by Praat, one per line, closed by
+    "#end" (a missing marker = incomplete file).  Lines starting with "#"
+    are comments.  Praat writes ASCII / Latin-1, UTF-8 or UTF-16 (non-Latin
+    characters, e.g. a Hebrew folder name): detected from the BOM, else
+    UTF-8, else Latin-1.  Returns the list of arguments."""
+    with open(path, "rb") as fh:
+        raw = fh.read()
+    if raw.startswith(b"\xff\xfe") or raw.startswith(b"\xfe\xff"):
+        text = raw.decode("utf-16")
+    elif raw.startswith(b"\xef\xbb\xbf"):
+        text = raw[3:].decode("utf-8")
+    else:
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            text = raw.decode("latin-1")
+    lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+    if "#end" not in lines:
+        raise ValueError("argument file is incomplete (no #end line): %s" % path)
+    lines = lines[:lines.index("#end")]
+    return [l for l in lines if not l.startswith("#")]
+
+
 def cmd_launch(rest):
     """v0.2.0: start the continuous engine as a DETACHED process and return
     at once.  Praat calls this with an ordinary (blocking) runSubprocess - the
@@ -5416,6 +7211,15 @@ def cmd_launch(rest):
     child never ran on a Windows test machine.  The engine gets this Python's
     absolute path, no inherited handles (stdin/stdout/stderr -> DEVNULL, so
     Praat's blocking call can finish) and its own process group."""
+    if len(rest) >= 2 and rest[0] == "--args-file":
+        try:
+            rest = read_args_file(rest[1])
+        except (OSError, ValueError) as ex:
+            sys.stderr.write("launch: %s\n" % ex)
+            sess = os.path.dirname(os.path.abspath(rest[1]))
+            if os.path.isdir(sess):
+                _boot_status(sess, "error", "cannot read the engine arguments: %s" % ex)
+            return 2
     if "--session" not in rest:
         sys.stderr.write("launch: --session is required\n")
         return 2
