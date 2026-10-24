@@ -103,6 +103,7 @@ form Bimodal Contour Generator v0.7.1
     comment === Display Options ===
     boolean showGrid 1
     boolean showNoteLabels 1
+    boolean Draw_visualization 1
     boolean playAfterGeneration 1
 endform
 
@@ -234,14 +235,16 @@ endif
 Create PitchTier: name$, startTime, endTime
 pt_id = selected("PitchTier")
 
-# Extract intensity for loudness modulation
-selectObject: workMono
-intensityID = To Intensity: 75, 0.01, "yes"
+# The source Intensity object exists only for visual colour/size mapping.
+# No analysis or Picture commands are executed when Draw_visualization = no.
+if draw_visualization
+    selectObject: workMono
+    intensityID = To Intensity: 75, 0.01, "yes"
 
-# Setup Picture window
-Erase all
-Select outer viewport: 0, image_width/100, 0, image_height/100
-Font size: 10
+    Erase all
+    Select outer viewport: 0, image_width/100, 0, image_height/100
+    Font size: 10
+endif
 
 # Determine MIDI range from pitch parameters (incl. coda floor + wobble)
 @hzToMidi: 50
@@ -252,46 +255,49 @@ hiMidiData = hzToMidi.midi
 currentMidiMin = floor(loMidiData) - 2
 currentMidiMax = ceiling(hiMidiData) + 2
 
-Axes: startTime, endTime, currentMidiMin - 0.5, currentMidiMax + 0.5
+if draw_visualization
+    Axes: startTime, endTime, currentMidiMin - 0.5, currentMidiMax + 0.5
 
-# ========================================================================================
-# DRAW GRID
-# ========================================================================================
+    # ========================================================================================
+    # DRAW GRID
+    # ========================================================================================
 
-if showGrid
-    appendInfoLine: "Drawing grid..."
+    if showGrid
+        appendInfoLine: "Drawing grid..."
     
-    # Horizontal grid lines
-    for midiLine from currentMidiMin to currentMidiMax
-        noteClass = midiLine - 12 * floor(midiLine / 12)
-        
-        if noteClass = 0
-            Colour: "{0.65, 0.65, 0.65}"
-            Line width: 2
-            Draw line: startTime, midiLine, endTime, midiLine
-        else
-            Colour: "{0.92, 0.92, 0.92}"
-            Line width: 0.4
-            Draw line: startTime, midiLine, endTime, midiLine
-        endif
-    endfor
-   
-    # Note labels
-    if showNoteLabels
-        Font size: 7
-        Colour: "{0.5, 0.5, 0.5}"
-        
+        # Horizontal grid lines
         for midiLine from currentMidiMin to currentMidiMax
             noteClass = midiLine - 12 * floor(midiLine / 12)
-            
+        
             if noteClass = 0
-                @getMidiNoteName: midiLine
-                Text: startTime - duration * 0.02, "right", midiLine, "half", getMidiNoteName.fullName$
+                Colour: "{0.65, 0.65, 0.65}"
+                Line width: 2
+                Draw line: startTime, midiLine, endTime, midiLine
+            else
+                Colour: "{0.92, 0.92, 0.92}"
+                Line width: 0.4
+                Draw line: startTime, midiLine, endTime, midiLine
             endif
         endfor
+   
+        # Note labels
+        if showNoteLabels
+            Font size: 7
+            Colour: "{0.5, 0.5, 0.5}"
         
-        Font size: 10
+            for midiLine from currentMidiMin to currentMidiMax
+                noteClass = midiLine - 12 * floor(midiLine / 12)
+            
+                if noteClass = 0
+                    @getMidiNoteName: midiLine
+                    Text: startTime - duration * 0.02, "right", midiLine, "half", getMidiNoteName.fullName$
+                endif
+            endfor
+        
+            Font size: 10
+        endif
     endif
+
 endif
 
 # ========================================================================================
@@ -386,21 +392,24 @@ removeObject: workMono
 # LABELS
 # ========================================================================================
 
-Colour: "Black"
-Line width: 1
-Font size: 12
+if draw_visualization
+    Colour: "Black"
+    Line width: 1
+    Font size: 12
 
-Text top: "yes", "Bimodal Grammar v0.7.1: " + name$ + "  [" + presetName$ + "]  (S → Phrase + S)"
-Text bottom: "yes", "Time (s)"
-Text left: "yes", "MIDI Note (Hz mapped)"
+    Text top: "yes", "Bimodal Grammar v0.7.1: " + name$ + "  [" + presetName$ + "]  (S → Phrase + S)"
+    Text bottom: "yes", "Time (s)"
+    Text left: "yes", "MIDI Note (Hz mapped)"
 
-Font size: 7
-Select outer viewport: 0, image_width/100, 0, image_height/100
-Text: endTime, "right", currentMidiMax, "top", colorScheme$
-if lineStyle = 3
-    Text: endTime, "right", currentMidiMax - 2, "top", "Dots: " + fixed$(minDotSize, 1) + "-" + fixed$(maxDotSize, 1)
-else
-    Text: endTime, "right", currentMidiMax - 2, "top", lineStyle$
+    Font size: 7
+    Select outer viewport: 0, image_width/100, 0, image_height/100
+    Text: endTime, "right", currentMidiMax, "top", colorScheme$
+    if lineStyle = 3
+        Text: endTime, "right", currentMidiMax - 2, "top", "Dots: " + fixed$(minDotSize, 1) + "-" + fixed$(maxDotSize, 1)
+    else
+        Text: endTime, "right", currentMidiMax - 2, "top", lineStyle$
+    endif
+
 endif
 
 # ========================================================================================
@@ -435,186 +444,189 @@ removeObject: pt_id
 #   3. Stats bar                  (phrase count, points, MIDI range, seed)
 # ========================================================================================
 
-appendInfoLine: "Drawing extended panels..."
+if draw_visualization
+    appendInfoLine: "Drawing extended panels..."
 
-imgH = image_height / 100
+    imgH = image_height / 100
 
-# == Panel 1: Phrase structure timeline ====================================================
-# Label strip
-Select outer viewport: 1, 8, imgH + 0.05, imgH + 0.45
-Axes: 0, 1, 0, 1
-Font size: 7
-Colour: "{0.40, 0.40, 0.40}"
-Text: 0, "left", 0.5, "half", "Phrase structure  " + string$(phrase_count) + " phrases    orange = onset   teal = nucleus   blue = coda"
+    # == Panel 1: Phrase structure timeline ====================================================
+    # Label strip
+    Select outer viewport: 1, 8, imgH + 0.05, imgH + 0.45
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "{0.40, 0.40, 0.40}"
+    Text: 0, "left", 0.5, "half", "Phrase structure  " + string$(phrase_count) + " phrases    orange = onset   teal = nucleus   blue = coda"
 
-# Drawing panel
-Select outer viewport: 0, 8, imgH + 0.45, imgH + 1.25
-Select inner viewport: 0.6, 7.6, imgH + 0.55, imgH + 1.15
-Axes: startTime, endTime, 0, 1
+    # Drawing panel
+    Select outer viewport: 0, 8, imgH + 0.45, imgH + 1.25
+    Select inner viewport: 0.6, 7.6, imgH + 0.55, imgH + 1.15
+    Axes: startTime, endTime, 0, 1
 
-Paint rectangle: "{0.97, 0.97, 0.97}", startTime, endTime, 0, 1
+    Paint rectangle: "{0.97, 0.97, 0.97}", startTime, endTime, 0, 1
 
-for i from 1 to phrase_count
-    if i mod 2 = 0
-        Paint rectangle: "{0.93, 0.93, 0.93}", phrase_start_'i', coda_end_'i', 0, 1
+    for i from 1 to phrase_count
+        if i mod 2 = 0
+            Paint rectangle: "{0.93, 0.93, 0.93}", phrase_start_'i', coda_end_'i', 0, 1
+        endif
+
+        Paint rectangle: "{0.88, 0.42, 0.18}", phrase_start_'i', onset_end_'i', 0.08, 0.92
+        Paint rectangle: "{0.18, 0.60, 0.44}", nuc_start_'i', nuc_end_'i', 0.08, 0.92
+        Paint rectangle: "{0.22, 0.42, 0.72}", coda_start_'i', coda_end_'i', 0.08, 0.92
+
+        Colour: "{0.55, 0.55, 0.55}"
+        Line width: 0.6
+        Draw line: phrase_start_'i', 0, phrase_start_'i', 1
+
+        Font size: 6
+        Colour: "White"
+
+        segW = onset_end_'i' - phrase_start_'i'
+        if segW > duration * 0.04
+            midT = (phrase_start_'i' + onset_end_'i') / 2
+            Text: midT, "centre", 0.50, "half", onset_type_'i'$
+        endif
+
+        segW = nuc_end_'i' - nuc_start_'i'
+        if segW > duration * 0.04
+            midT = (nuc_start_'i' + nuc_end_'i') / 2
+            Text: midT, "centre", 0.50, "half", nuc_type_'i'$
+        endif
+
+        segW = coda_end_'i' - coda_start_'i'
+        if segW > duration * 0.03
+            midT = (coda_start_'i' + coda_end_'i') / 2
+            Text: midT, "centre", 0.50, "half", coda_type_'i'$
+        endif
+    endfor
+
+    Colour: "Black"
+    Line width: 1
+    Draw inner box
+    Font size: 7
+    Select outer viewport: 0, 0.65, imgH + 0.45, imgH + 1.25
+    Text left: "yes", "Gestures"
+
+    # == Panel 2: Output waveform =================================================================
+
+    Select outer viewport: 0, 8, imgH + 1.30, imgH + 2.10
+    Select inner viewport: 0.6, 7.6, imgH + 1.35, imgH + 2.05
+
+    selectObject: resynthID
+    resPeak = Get absolute extremum: 0, 0, "None"
+    if resPeak < 0.001
+        resPeak = 0.001
     endif
+    resAmpMax = resPeak * 1.15
 
-    Paint rectangle: "{0.88, 0.42, 0.18}", phrase_start_'i', onset_end_'i', 0.08, 0.92
-    Paint rectangle: "{0.18, 0.60, 0.44}", nuc_start_'i', nuc_end_'i', 0.08, 0.92
-    Paint rectangle: "{0.22, 0.42, 0.72}", coda_start_'i', coda_end_'i', 0.08, 0.92
+    Axes: startTime, endTime, -resAmpMax, resAmpMax
+    Paint rectangle: "{0.97, 0.97, 0.97}", startTime, endTime, -resAmpMax, resAmpMax
+    Colour: "{0.80, 0.80, 0.80}"
+    Draw line: startTime, 0, endTime, 0
+    selectObject: resynthID
+    Colour: "{0.22, 0.55, 0.72}"
+    Draw: 0, 0, -resAmpMax, resAmpMax, "no", "Curve"
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text left: "yes", "Output"
+    Text top: "no", name$ + "_grammar  (PSOLA resynthesis)"
+    Text bottom: "yes", "Time (s)"
 
-    Colour: "{0.55, 0.55, 0.55}"
-    Line width: 0.6
-    Draw line: phrase_start_'i', 0, phrase_start_'i', 1
+    # == Panel 3: Intensity curve ==============================================================
 
+    selectObject: intensityID
+    intMin = Get minimum: 0, 0, "Parabolic"
+    intMax = Get maximum: 0, 0, "Parabolic"
+    intLo = intMin - 4
+    intHi = intMax + 4
+
+    # Label strip
+    Select outer viewport: 1, 8, imgH + 2.15, imgH + 2.50
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "{0.40, 0.40, 0.40}"
+    Text: 0, "left", 0.5, "half", "Source intensity  " + fixed$(intMin, 0) + " – " + fixed$(intMax, 0) + " dB   dashed = output base target (" + fixed$(baseLoudness, 0) + " dB)"
+
+    # Drawing panel
+    Select outer viewport: 0, 8, imgH + 2.50, imgH + 3.30
+    Select inner viewport: 0.6, 7.6, imgH + 2.60, imgH + 3.20
+    Axes: startTime, endTime, intLo, intHi
+
+    Paint rectangle: "{0.97, 0.97, 0.97}", startTime, endTime, intLo, intHi
+
+    Colour: "{0.65, 0.30, 0.30}"
+    Line width: 0.8
+    Dashed line
+    Draw line: startTime, baseLoudness, endTime, baseLoudness
+    Solid line
+
+    selectObject: intensityID
+    Colour: "{0.28, 0.52, 0.72}"
+    Line width: 1.8
+    Draw: startTime, endTime, intLo, intHi, "no"
+
+    Colour: "Black"
+    Line width: 1
+    Draw inner box
+    Font size: 7
+    Select outer viewport: 0, 0.65, imgH + 2.50, imgH + 3.30
+    Text left: "yes", "Intensity (dB)"
+    Select outer viewport: 0.6, 7.6, imgH + 3.20, imgH + 3.37
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "{0.50, 0.50, 0.50}"
+    Text: 0.5, "centre", 0.5, "half", "Time (s)"
+
+    # == Panel 4: Stats bar ====================================================================
+
+    jumpUp_count = 0
+    glissUp_count = 0
+    plateau_count = 0
+    wobble_count = 0
+    fall_count = 0
+    deepDrop_count = 0
+
+    for i from 1 to phrase_count
+        if onset_type_'i'$ = "JumpUp"
+            jumpUp_count = jumpUp_count + 1
+        else
+            glissUp_count = glissUp_count + 1
+        endif
+        if nuc_type_'i'$ = "Plateau"
+            plateau_count = plateau_count + 1
+        else
+            wobble_count = wobble_count + 1
+        endif
+        if coda_type_'i'$ = "Fall"
+            fall_count = fall_count + 1
+        else
+            deepDrop_count = deepDrop_count + 1
+        endif
+    endfor
+
+    Select outer viewport: 0, 8, imgH + 3.42, imgH + 4.10
+    Axes: 0, 1, 0, 1
     Font size: 6
-    Colour: "White"
+    Colour: "{0.40, 0.40, 0.40}"
+    Text: 0.5, "centre", 0.78, "half",
+        ... "##" + presetName$ + "##   Phrases: " + string$(phrase_count)
+        ... + "   Points: " + string$(point_count)
+        ... + "   MIDI: " + string$(currentMidiMin) + "–" + string$(currentMidiMax)
+        ... + "   Seed: " + string$(seedValue)
+    Text: 0.5, "centre", 0.42, "half",
+        ... "Pitch: " + fixed$(pitch_base_lo_Hz, 0) + "–" + fixed$(pitch_base_hi_Hz, 0) + " Hz"
+        ... + "   GestScale: " + fixed$(gesture_scale, 2)
+        ... + "   IntScale: " + fixed$(interval_scale, 2)
+        ... + "   Wobble: ±" + fixed$(wobble_depth_Hz, 1) + " Hz"
+        ... + "   Loud: " + fixed$(baseLoudness, 0) + "±" + fixed$(loudnessVariation, 0) + " dB"
+    Text: 0.5, "centre", 0.10, "half", "Onsets  JumpUp: " + string$(jumpUp_count) + "  GlissUp: " + string$(glissUp_count) + "     Nuclei  Plateau: " + string$(plateau_count) + "  Wobble: " + string$(wobble_count) + "     Codas  Fall: " + string$(fall_count) + "  DeepDrop: " + string$(deepDrop_count)
 
-    segW = onset_end_'i' - phrase_start_'i'
-    if segW > duration * 0.04
-        midT = (phrase_start_'i' + onset_end_'i') / 2
-        Text: midT, "centre", 0.50, "half", onset_type_'i'$
-    endif
+    Font size: 10
+    Colour: "Black"
+    appendInfoLine: "Extended panels complete."
+    removeObject: intensityID
 
-    segW = nuc_end_'i' - nuc_start_'i'
-    if segW > duration * 0.04
-        midT = (nuc_start_'i' + nuc_end_'i') / 2
-        Text: midT, "centre", 0.50, "half", nuc_type_'i'$
-    endif
-
-    segW = coda_end_'i' - coda_start_'i'
-    if segW > duration * 0.03
-        midT = (coda_start_'i' + coda_end_'i') / 2
-        Text: midT, "centre", 0.50, "half", coda_type_'i'$
-    endif
-endfor
-
-Colour: "Black"
-Line width: 1
-Draw inner box
-Font size: 7
-Select outer viewport: 0, 0.65, imgH + 0.45, imgH + 1.25
-Text left: "yes", "Gestures"
-
-# == Panel 2: Output waveform =================================================================
-
-Select outer viewport: 0, 8, imgH + 1.30, imgH + 2.10
-Select inner viewport: 0.6, 7.6, imgH + 1.35, imgH + 2.05
-
-selectObject: resynthID
-resPeak = Get absolute extremum: 0, 0, "None"
-if resPeak < 0.001
-    resPeak = 0.001
 endif
-resAmpMax = resPeak * 1.15
-
-Axes: startTime, endTime, -resAmpMax, resAmpMax
-Paint rectangle: "{0.97, 0.97, 0.97}", startTime, endTime, -resAmpMax, resAmpMax
-Colour: "{0.80, 0.80, 0.80}"
-Draw line: startTime, 0, endTime, 0
-selectObject: resynthID
-Colour: "{0.22, 0.55, 0.72}"
-Draw: 0, 0, -resAmpMax, resAmpMax, "no", "Curve"
-Colour: "Black"
-Draw inner box
-Font size: 7
-Text left: "yes", "Output"
-Text top: "no", name$ + "_grammar  (PSOLA resynthesis)"
-Text bottom: "yes", "Time (s)"
-
-# == Panel 3: Intensity curve ==============================================================
-
-selectObject: intensityID
-intMin = Get minimum: 0, 0, "Parabolic"
-intMax = Get maximum: 0, 0, "Parabolic"
-intLo = intMin - 4
-intHi = intMax + 4
-
-# Label strip
-Select outer viewport: 1, 8, imgH + 2.15, imgH + 2.50
-Axes: 0, 1, 0, 1
-Font size: 7
-Colour: "{0.40, 0.40, 0.40}"
-Text: 0, "left", 0.5, "half", "Source intensity  " + fixed$(intMin, 0) + " – " + fixed$(intMax, 0) + " dB   dashed = output base target (" + fixed$(baseLoudness, 0) + " dB)"
-
-# Drawing panel
-Select outer viewport: 0, 8, imgH + 2.50, imgH + 3.30
-Select inner viewport: 0.6, 7.6, imgH + 2.60, imgH + 3.20
-Axes: startTime, endTime, intLo, intHi
-
-Paint rectangle: "{0.97, 0.97, 0.97}", startTime, endTime, intLo, intHi
-
-Colour: "{0.65, 0.30, 0.30}"
-Line width: 0.8
-Dashed line
-Draw line: startTime, baseLoudness, endTime, baseLoudness
-Solid line
-
-selectObject: intensityID
-Colour: "{0.28, 0.52, 0.72}"
-Line width: 1.8
-Draw: startTime, endTime, intLo, intHi, "no"
-
-Colour: "Black"
-Line width: 1
-Draw inner box
-Font size: 7
-Select outer viewport: 0, 0.65, imgH + 2.50, imgH + 3.30
-Text left: "yes", "Intensity (dB)"
-Select outer viewport: 0.6, 7.6, imgH + 3.20, imgH + 3.37
-Axes: 0, 1, 0, 1
-Font size: 7
-Colour: "{0.50, 0.50, 0.50}"
-Text: 0.5, "centre", 0.5, "half", "Time (s)"
-
-# == Panel 4: Stats bar ====================================================================
-
-jumpUp_count = 0
-glissUp_count = 0
-plateau_count = 0
-wobble_count = 0
-fall_count = 0
-deepDrop_count = 0
-
-for i from 1 to phrase_count
-    if onset_type_'i'$ = "JumpUp"
-        jumpUp_count = jumpUp_count + 1
-    else
-        glissUp_count = glissUp_count + 1
-    endif
-    if nuc_type_'i'$ = "Plateau"
-        plateau_count = plateau_count + 1
-    else
-        wobble_count = wobble_count + 1
-    endif
-    if coda_type_'i'$ = "Fall"
-        fall_count = fall_count + 1
-    else
-        deepDrop_count = deepDrop_count + 1
-    endif
-endfor
-
-Select outer viewport: 0, 8, imgH + 3.42, imgH + 4.10
-Axes: 0, 1, 0, 1
-Font size: 6
-Colour: "{0.40, 0.40, 0.40}"
-Text: 0.5, "centre", 0.78, "half",
-    ... "##" + presetName$ + "##   Phrases: " + string$(phrase_count)
-    ... + "   Points: " + string$(point_count)
-    ... + "   MIDI: " + string$(currentMidiMin) + "–" + string$(currentMidiMax)
-    ... + "   Seed: " + string$(seedValue)
-Text: 0.5, "centre", 0.42, "half",
-    ... "Pitch: " + fixed$(pitch_base_lo_Hz, 0) + "–" + fixed$(pitch_base_hi_Hz, 0) + " Hz"
-    ... + "   GestScale: " + fixed$(gesture_scale, 2)
-    ... + "   IntScale: " + fixed$(interval_scale, 2)
-    ... + "   Wobble: ±" + fixed$(wobble_depth_Hz, 1) + " Hz"
-    ... + "   Loud: " + fixed$(baseLoudness, 0) + "±" + fixed$(loudnessVariation, 0) + " dB"
-Text: 0.5, "centre", 0.10, "half", "Onsets  JumpUp: " + string$(jumpUp_count) + "  GlissUp: " + string$(glissUp_count) + "     Nuclei  Plateau: " + string$(plateau_count) + "  Wobble: " + string$(wobble_count) + "     Codas  Fall: " + string$(fall_count) + "  DeepDrop: " + string$(deepDrop_count)
-
-Font size: 10
-Colour: "Black"
-appendInfoLine: "Extended panels complete."
-removeObject: intensityID
 
 if playAfterGeneration
     appendInfoLine: ""
@@ -637,96 +649,101 @@ procedure addPoint: .t, .f
         .f = 50
     endif
 
-    # Convert Hz to MIDI for visualization
-    @hzToMidi: .f
-    .midi = hzToMidi.midi
-    
+    # MIDI conversion is needed only for visual drawing.
+    if draw_visualization
+        @hzToMidi: .f
+        .midi = hzToMidi.midi
+    endif
+
     # SOUND MODE: Add to PitchTier
     selectObject: pt_id
     Add point: .t, .f
     
-    # Get intensity at this time for color/size modulation
-    selectObject: intensityID
-    .intensity = Get value at time: .t, "Cubic"
-    if .intensity = undefined
-        .intensity = baseLoudness
-    endif
+    if draw_visualization
+        # Get intensity at this time for color/size modulation
+        selectObject: intensityID
+        .intensity = Get value at time: .t, "Cubic"
+        if .intensity = undefined
+            .intensity = baseLoudness
+        endif
     
-    # Calculate brightness/size from intensity
-    @mapToRange: .intensity, baseLoudness - loudnessVariation, baseLoudness + loudnessVariation, 0.3, 1.0
-    brightness = mapToRange.result
+        # Calculate brightness/size from intensity
+        @mapToRange: .intensity, baseLoudness - loudnessVariation, baseLoudness + loudnessVariation, 0.3, 1.0
+        brightness = mapToRange.result
     
-    # VISUAL MODE: Draw on Picture
-    if has_prev
-        # Choose color scheme
-        if colorScheme = 1
-            @pitchHeightToRGB: .midi, brightness
-            r = pitchHeightToRGB.red
-            g = pitchHeightToRGB.green
-            b = pitchHeightToRGB.blue
+        # VISUAL MODE: Draw on Picture
+        if has_prev
+            # Choose color scheme
+            if colorScheme = 1
+                @pitchHeightToRGB: .midi, brightness
+                r = pitchHeightToRGB.red
+                g = pitchHeightToRGB.green
+                b = pitchHeightToRGB.blue
             
-        elsif colorScheme = 2
-            @pitchClassToRGB: .midi, brightness
-            r = pitchClassToRGB.red
-            g = pitchClassToRGB.green
-            b = pitchClassToRGB.blue
+            elsif colorScheme = 2
+                @pitchClassToRGB: .midi, brightness
+                r = pitchClassToRGB.red
+                g = pitchClassToRGB.green
+                b = pitchClassToRGB.blue
             
-        elsif colorScheme = 3
-            @mapToRange: .intensity, baseLoudness - loudnessVariation, baseLoudness + loudnessVariation, 0, 1
-            heatValue = mapToRange.result
+            elsif colorScheme = 3
+                @mapToRange: .intensity, baseLoudness - loudnessVariation, baseLoudness + loudnessVariation, 0, 1
+                heatValue = mapToRange.result
             
-            if heatValue < 0.33
-                r = 0
-                g = heatValue * 3
-                b = 1 - heatValue * 3
-            elsif heatValue < 0.66
-                localVal = (heatValue - 0.33) * 3
-                r = localVal
-                g = 1
-                b = 0
-            else
-                localVal = (heatValue - 0.66) * 3
-                r = 1
-                g = 1 - localVal
-                b = 0
+                if heatValue < 0.33
+                    r = 0
+                    g = heatValue * 3
+                    b = 1 - heatValue * 3
+                elsif heatValue < 0.66
+                    localVal = (heatValue - 0.33) * 3
+                    r = localVal
+                    g = 1
+                    b = 0
+                else
+                    localVal = (heatValue - 0.66) * 3
+                    r = 1
+                    g = 1 - localVal
+                    b = 0
+                endif
+            
+            elsif colorScheme = 4
+                @octaveSpiralRGB: .midi, brightness
+                r = octaveSpiralRGB.red
+                g = octaveSpiralRGB.green
+                b = octaveSpiralRGB.blue
             endif
-            
-        elsif colorScheme = 4
-            @octaveSpiralRGB: .midi, brightness
-            r = octaveSpiralRGB.red
-            g = octaveSpiralRGB.green
-            b = octaveSpiralRGB.blue
-        endif
         
-        colourString$ = "{" + string$(r) + ", " + string$(g) + ", " + string$(b) + "}"
-        Colour: colourString$
+            colourString$ = "{" + string$(r) + ", " + string$(g) + ", " + string$(b) + "}"
+            Colour: colourString$
         
-        # Convert MIDI back for visualization
-        prev_midi = prev_freq
-        if prev_midi > 0
-            @hzToMidi: prev_midi
-            prev_midi_note = hzToMidi.midi
-        else
-            prev_midi_note = .midi
-        endif
+            # Convert MIDI back for visualization
+            prev_midi = prev_freq
+            if prev_midi > 0
+                @hzToMidi: prev_midi
+                prev_midi_note = hzToMidi.midi
+            else
+                prev_midi_note = .midi
+            endif
         
-        # Apply line style
-        if lineStyle = 1
-            Line width: 1.5
-            Draw line: prev_time, prev_midi_note, .t, .midi
+            # Apply line style
+            if lineStyle = 1
+                Line width: 1.5
+                Draw line: prev_time, prev_midi_note, .t, .midi
             
-        elsif lineStyle = 2
-            @mapToRange: .intensity, baseLoudness - loudnessVariation, baseLoudness + loudnessVariation, 0.5, 4.5
-            Line width: mapToRange.result
-            Draw line: prev_time, prev_midi_note, .t, .midi
+            elsif lineStyle = 2
+                @mapToRange: .intensity, baseLoudness - loudnessVariation, baseLoudness + loudnessVariation, 0.5, 4.5
+                Line width: mapToRange.result
+                Draw line: prev_time, prev_midi_note, .t, .midi
             
-        elsif lineStyle = 3
-            @mapToRange: .intensity, baseLoudness - loudnessVariation, baseLoudness + loudnessVariation, minDotSize, maxDotSize
-            dotSize = mapToRange.result
-            Paint circle (mm): colourString$, .t, .midi, dotSize
+            elsif lineStyle = 3
+                @mapToRange: .intensity, baseLoudness - loudnessVariation, baseLoudness + loudnessVariation, minDotSize, maxDotSize
+                dotSize = mapToRange.result
+                Paint circle (mm): colourString$, .t, .midi, dotSize
+            endif
         endif
-    endif
     
+    endif
+
     # Update previous point
     prev_time = .t
     prev_freq = .f
@@ -896,28 +913,31 @@ endproc
 
 
 # ----------------------------------------------------------
-# Summary strip
+# Summary strip (only when drawing is enabled)
 # ----------------------------------------------------------
-Select outer viewport: 0, 8, imgH + 4.20, imgH + 4.76
-Select inner viewport: 0.60, 7.70, imgH + 4.20 + 0.04, imgH + 4.76 - 0.04
-Axes: 0, 1, 0, 1
-Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
-Font size: 7
-Colour: "Black"
-Text: 0.02, "left", 0.72, "half", "##Summary##"
-Font size: 6
-Colour: "{0.25, 0.25, 0.35}"
-Text: 0.02, "left", 0.45, "half", "Grammar contour • phrase structure • intensity dynamics"
-Text: 0.02, "left", 0.20, "half", "Bimodal Contour Grammar • run parameters are reported in the Info window"
-Colour: "Black"
-Draw rectangle: 0, 1, 0, 1
+if draw_visualization
+    Select outer viewport: 0, 8, imgH + 4.20, imgH + 4.76
+    Select inner viewport: 0.60, 7.70, imgH + 4.20 + 0.04, imgH + 4.76 - 0.04
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text: 0.02, "left", 0.72, "half", "##Summary##"
+    Font size: 6
+    Colour: "{0.25, 0.25, 0.35}"
+    Text: 0.02, "left", 0.45, "half", "Grammar contour • phrase structure • intensity dynamics"
+    Text: 0.02, "left", 0.20, "half", "Bimodal Contour Grammar • run parameters are reported in the Info window"
+    Colour: "Black"
+    Draw rectangle: 0, 1, 0, 1
 
-pageHeight = imgH + 4.86
-Select outer viewport: 0, 8, 0, pageHeight
-Font size: 10
-Colour: "Black"
-Line width: 1
-Solid line
+    pageHeight = imgH + 4.86
+    Select outer viewport: 0, 8, 0, pageHeight
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
+endif
+
 # ========================================================================================
 # HELPER FUNCTIONS (from visualization script)
 # ========================================================================================
