@@ -1,4 +1,4 @@
-# NoDraw test copy. Drawing & visualization-only calculations are OFF by default.
+# Test copy. Standalone visualization defaults ON; chains explicitly turn it off.
 # Original v1.2 source remains unchanged in main.
 # ============================================================
 # Praat AudioTools - Neural_Ambient_Drone_Designer.praat
@@ -370,7 +370,7 @@ form Cluster-Based Ambient Drone Designer v1.2
     real Stereo_width 0.7
     integer Seed 0
     boolean Play_result 1
-    boolean Draw_visualization 0
+    boolean Draw_visualization 1
 endform
 
 # Number_of_layers replaces Layer_density: it is a layer COUNT, not a
