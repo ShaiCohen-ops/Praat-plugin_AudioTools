@@ -1997,7 +1997,8 @@ Colour: "Black"
 Line width: 1
 Solid line
 
-endif  ; End optional visualization. All visual-only analysis is skipped when Draw_visualization = no.
+endif
+# Optional visualization ends here. All visual-only analysis is skipped when disabled.
 
 # ============================================
 # CLEANUP & FINISH
