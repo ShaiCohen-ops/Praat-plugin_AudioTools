@@ -1,3 +1,5 @@
+# Test version: visualization ON by default; set OFF only in chain.
+# Source: supplied Neural_Ambient_Drone_Designer v1.2; synthesis unchanged.
 # ============================================================
 # Praat AudioTools - Neural_Ambient_Drone_Designer.praat
 # Author: Shai Cohen
@@ -367,6 +369,7 @@ form Cluster-Based Ambient Drone Designer v1.2
     integer Kmeans_iterations 10
     real Stereo_width 0.7
     integer Seed 0
+    boolean Draw_visualization 1
     boolean Play_result 1
 endform
 
@@ -1414,6 +1417,7 @@ endfor
 # a fourth copy on the canvas would not earn its space.
 # ============================================
 
+if draw_visualization
 appendInfoLine: ""
 appendInfoLine: "Creating visualization..."
 
@@ -1992,6 +1996,8 @@ Font size: 10
 Colour: "Black"
 Line width: 1
 Solid line
+
+endif
 
 # ============================================
 # CLEANUP & FINISH
