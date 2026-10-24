@@ -675,7 +675,10 @@ if preset > 1 and source = 1
         background_layer = 0
         follow_live_input = 1
         if preset = 6
+            # Live-tested value for Corpus only - hybrid match;
+            # all other presets retain their own similarity thresholds.
             similarity_mode = 1
+            minimum_similarity = 0.25
         elsif preset = 7
             similarity_mode = 2
             minimum_similarity = 0.5
