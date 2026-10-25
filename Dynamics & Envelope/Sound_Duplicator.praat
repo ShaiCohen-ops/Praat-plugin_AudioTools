@@ -3,14 +3,16 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.3 (2026)
+# Version: 1.4 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Duplicates a selected Sound N times, assembles the copies
-#   into a single longer Sound with crossfades at every join,
-#   and applies a shaping envelope across the full output.
+#   Duplicates a selected Sound either N times OR to a user-specified
+#   target duration in seconds. Joins use crossfades; target-duration
+#   mode trims the last copy to the nearest sample (no time stretch).
+#   An optional anti-click tail fade is available in duration mode.
+#   A shaping envelope spans the exact final output, not the uncut loop.
 #
 #   Envelope types:
 #     Linear             -- straight rise, unity sustain, straight fall
@@ -29,6 +31,22 @@
 #     Assembly is incremental: one copy in RAM at a time.
 #     Envelope is a single vectorised Formula: call.
 #     No sample-by-sample loops.
+#
+# Changelog v1.4 (2026):
+#   - Duplication mode: repetition count (original behavior) or target
+#     duration in seconds. The requested duration is rounded to an
+#     integer number of source samples, with achieved duration reported.
+#   - Duration mode builds until the actual sample count is sufficient,
+#     then truncates only the final copy with a rectangular extraction.
+#     The assembled length is measured after every overlap, avoiding
+#     dependence on overlap rounding and theoretical hop lengths.
+#   - Envelope is always computed AFTER sample-exact target trimming.
+#   - Optional 5 ms raised-cosine end fade in duration mode prevents
+#     a click where a truncated loop would otherwise end abruptly.
+#     The fade is included in both the audio and envelope display.
+#   - Duration mode identifies the requested and achieved sample counts;
+#     duplicate-join markers beyond the target are omitted.
+#   - Repetition mode keeps v1.3 processing and defaults intact.
 #
 # Changelog v1.3 (2026):
 #   - VISUALIZATION / UI STANDARDIZATION ONLY. Audio analysis,
@@ -85,7 +103,7 @@ srcSound = selected("Sound")
 srcName$ = selected$("Sound")
 
 # === Form ===
-form Sound Duplicator v1.3
+form Sound Duplicator v1.4
     comment === Preset ===
     optionmenu Preset: 1
         option Custom
@@ -96,7 +114,12 @@ form Sound Duplicator v1.3
         option Pulse Burst
         option Long Fade
     comment === Duplication ===
+    optionmenu Duplication_mode: 1
+        option Number of repetitions
+        option Target duration (seconds)
     natural Number_of_repetitions 4
+    positive Target_duration_seconds 18.54
+    comment Only the selected duplication mode is used.
     comment === Crossfade ===
     positive Crossfade_duration_ms 50
     comment === Overall Envelope ===
@@ -114,6 +137,9 @@ form Sound Duplicator v1.3
     boolean Draw_visualization 1
     boolean Peak_normalize_output 0
     boolean Play_result 1
+    comment === Optional end fade (target-duration mode only) ===
+    boolean Target_mode_end_fade 1
+    positive Target_fade_duration_ms 5
 endform
 
 # === Apply presets ===
@@ -167,16 +193,30 @@ selectObject: srcSound
 srcDur      = Get total duration
 srcSR       = Get sampling frequency
 srcChannels = Get number of channels
+srcSamples  = Get number of samples
 
 # === Validate settings ===
-# Repetitions must be a whole number: the assembly loop can only run an
-# integer number of times, so every derived quantity is computed from the
-# rounded value and nothing downstream can disagree with the audio.
+# In the original mode, the integer number of repetitions is unchanged.
+# In target mode, the exact length is represented as an INTEGER sample
+# count. An arbitrary decimal duration need not lie on the sample grid;
+# the closest realizable duration is targetSamples / srcSR.
 n = round(number_of_repetitions)
 if n < 1
     n = 1
 endif
 number_of_repetitions = n
+
+targetSamples = 0
+if duplication_mode = 2
+    targetSamples = round(target_duration_seconds * srcSR)
+    if targetSamples < 1
+        exitScript: "Target duration is shorter than half a sample at " +
+        ... fixed$(srcSR, 0) + " Hz. Please enter a longer duration."
+    endif
+    requestedHasJoins = targetSamples > srcSamples
+else
+    requestedHasJoins = n > 1
+endif
 
 # Crossfade. Order matters: the floor is expressed in SAMPLES, and the
 # upper clamp is applied LAST so that the overlap is always shorter than
@@ -190,10 +230,10 @@ xfSec = crossfade_duration_ms / 1000.0
 minOverlap = 2 / srcSR
 maxOverlap = 0.90 * srcDur
 
-if n > 1 and maxOverlap < minOverlap
+if requestedHasJoins and maxOverlap < minOverlap
     exitScript: "Source is too short to crossfade: " + fixed$(srcDur * 1000, 4) +
     ... " ms is under 3 samples at " + fixed$(srcSR, 0) + " Hz. Use a longer Sound, " +
-    ... "or set Number_of_repetitions to 1."
+    ... "or use one repetition (or a target no longer than the source)."
 endif
 
 xfRequested_ms = crossfade_duration_ms
@@ -253,17 +293,23 @@ elsif envelope_type = 4
     usesFadeOut = 0
 endif
 
-# === Predicted output duration (verified against the real one later) ===
-predictedDur = n * srcDur - (n - 1) * xfSec
-
 # === Info ===
 clearinfo
-writeInfoLine:  "=== Sound Duplicator v1.3 ==="
+writeInfoLine:  "=== Sound Duplicator v1.4 ==="
 appendInfoLine: "Source:          ", srcName$
 appendInfoLine: "Source duration: ", fixed$(srcDur, 4), " s"
 appendInfoLine: "Sample rate:     ", srcSR, " Hz"
 appendInfoLine: "Channels:        ", srcChannels
-appendInfoLine: "Repetitions:     ", n
+if duplication_mode = 1
+    appendInfoLine: "Mode:            Number of repetitions"
+    appendInfoLine: "Repetitions:     ", n
+else
+    appendInfoLine: "Mode:            Target duration"
+    appendInfoLine: "Requested:       ", fixed$(target_duration_seconds, 6), " s"
+    appendInfoLine: "Target samples:  ", targetSamples
+    appendInfoLine: "Grid duration:   ", fixed$(targetSamples / srcSR, 9), " s"
+    appendInfoLine: "Repetitions:     auto (enough to reach target)"
+endif
 appendInfoLine: "Crossfade:       ", fixed$(crossfade_duration_ms, 3), " ms"
 if xfFloored
     appendInfoLine: "                 (raised from ", fixed$(xfRequested_ms, 3),
@@ -277,15 +323,29 @@ appendInfoLine: "Envelope:        ", envStr$
 appendInfoLine: ""
 
 # === Build duplicated sound ===
-# Incremental assembly: keep only 2 sounds in RAM at a time.
-# Each iteration: grow result by one copy then free the copy.
-# Avoids allocating all N copies simultaneously.
-appendInfoLine: "[1/3] Building ", n, " copies (incremental)..."
+# The original repetition mode builds the specified number of copies.
+# Duration mode appends copies until the MEASURED sample count reaches
+# the requested count (rather than guessing Praat's overlap rounding).
+# Incremental assembly uses only the current result and one new copy.
+if duplication_mode = 1
+    appendInfoLine: "[1/3] Building ", n, " copies (incremental)..."
+else
+    appendInfoLine: "[1/3] Building to ", fixed$(targetSamples / srcSR, 6), " s (incremental)..."
+endif
 
 selectObject: srcSound
 resultSound = Copy: "dup_tmp"
+selectObject: resultSound
+assembledSamples = Get number of samples
+copiesBuilt = 1
 
-for rep from 2 to n
+if duplication_mode = 1
+    keepBuilding = copiesBuilt < n
+else
+    keepBuilding = assembledSamples < targetSamples
+endif
+
+while keepBuilding
     selectObject: srcSound
     nextCopy = Copy: "dup_next"
     oldResult = resultSound
@@ -294,28 +354,67 @@ for rep from 2 to n
     Concatenate with overlap: xfSec
     resultSound = selected("Sound")
     removeObject: oldResult, nextCopy
-    appendInfo: "."
-endfor
 
+    selectObject: resultSound
+    newSamples = Get number of samples
+    if newSamples <= assembledSamples
+        removeObject: resultSound
+        exitScript: "Crossfade made no progress in samples. Choose a longer source or shorter overlap."
+    endif
+    assembledSamples = newSamples
+    copiesBuilt = copiesBuilt + 1
+    appendInfo: "."
+    if duplication_mode = 1
+        keepBuilding = copiesBuilt < n
+    else
+        keepBuilding = assembledSamples < targetSamples
+    endif
+endwhile
+n = copiesBuilt
 appendInfoLine: ""
 
-# Normalize the time domain. With a single repetition there is no
-# concatenation, so a source with xmin <> 0 would otherwise keep its own
-# start time while the envelope below reckons x from zero.
+# Normalize the time domain before any extraction. This also handles
+# the single-repetition case when the source xmin is not zero.
 selectObject: resultSound
 Shift times to: "start time", 0
 
-# === Envelope parameters from the MEASURED duration ===
-# Not from the predicted one: this is what kept the v1.1 envelope from
-# ending with the audio.
+# Rectangular extraction keeps the samples unchanged and trims the FINAL
+# copy, without resampling or stretching. targetSamples/srcSR lies on
+# the exact sample grid. Check the actual sample count, never assume it.
+if duplication_mode = 2 and assembledSamples > targetSamples
+    selectObject: resultSound
+    cutSound = Extract part: 0, targetSamples / srcSR, "rectangular", 1, "no"
+    removeObject: resultSound
+    resultSound = cutSound
+endif
+
+selectObject: resultSound
+outputSamples = Get number of samples
+if duplication_mode = 2 and outputSamples <> targetSamples
+    removeObject: resultSound
+    exitScript: "Target-length verification failed (got " + string$(outputSamples) +
+    ... " samples instead of " + string$(targetSamples) + ")."
+endif
+
+# === Envelope parameters from the final MEASURED duration ===
+# This guarantees the selected envelope terminates with the actual audio.
 selectObject: resultSound
 totalDur = Get total duration
+predictedDur = n * srcDur - (n - 1) * xfSec
 
 appendInfoLine: "  Done.  Crossfade: ", fixed$(xfSec * 1000, 3), " ms"
-appendInfoLine: "  Output duration: ", fixed$(totalDur, 4), " s (predicted ",
-... fixed$(predictedDur, 4), " s)"
-if abs(totalDur - predictedDur) > 2 / srcSR
-    appendInfoLine: "  WARNING: measured and predicted duration differ by more than two samples."
+if duplication_mode = 2
+    appendInfoLine: "  Copies used: ", n
+    appendInfoLine: "  Samples after assembly: ", assembledSamples
+    appendInfoLine: "  Final samples: ", outputSamples, " (target: ", targetSamples, ")"
+    appendInfoLine: "  Achieved duration: ", fixed$(totalDur, 9), " s"
+    appendInfoLine: "  Difference from requested: ", fixed$((totalDur - target_duration_seconds) * 1000, 6), " ms"
+else
+    appendInfoLine: "  Output duration: ", fixed$(totalDur, 4), " s (predicted ",
+    ... fixed$(predictedDur, 4), " s)"
+    if abs(totalDur - predictedDur) > 2 / srcSR
+        appendInfoLine: "  WARNING: measured and predicted duration differ by more than two samples."
+    endif
 endif
 
 fiSec   = totalDur * fade_in_percent  / 100.0
@@ -404,6 +503,33 @@ endif
 
 envFormula$ = fixed$(peakAmp, 9) + " * (" + shape$ + ")"
 
+# Optional anti-click fade for target mode, combined directly into the
+# SAME envelope string used for both DSP and visualization. Using the
+# last sample centre gives the final sample exactly zero gain. The
+# user can turn this off to retain the original envelope unaltered.
+endFadeSamples = 0
+if duplication_mode = 2 and target_mode_end_fade = 1 and outputSamples >= 2
+    endFadeSamples = round(target_fade_duration_ms * srcSR / 1000)
+    if endFadeSamples < 2
+        endFadeSamples = 2
+    endif
+    if endFadeSamples > outputSamples
+        endFadeSamples = outputSamples
+    endif
+    fadeLastTime  = (outputSamples - 0.5) / srcSR
+    fadeBeginTime = (outputSamples - endFadeSamples + 0.5) / srcSR
+    fadeSpan      = fadeLastTime - fadeBeginTime
+    eb$ = fixed$(fadeBeginTime, 12)
+    el$ = fixed$(fadeLastTime, 12)
+    es$ = fixed$(fadeSpan, 12)
+    endShape$ = "if x <= " + eb$ + " then 1 else (if x >= " + el$ +
+    ... " then 0 else 0.5 + 0.5 * cos(pi * (x - " + eb$ + ") / " + es$ + ") fi) fi"
+    envFormula$ = "(" + envFormula$ + ") * (" + endShape$ + ")"
+    appendInfoLine: "Target end fade: ", endFadeSamples, " samples (", fixed$((endFadeSamples - 1) * 1000 / srcSR, 3), " ms), raised cosine"
+elsif duplication_mode = 2
+    appendInfoLine: "Target end fade: OFF"
+endif
+
 # === Apply overall envelope via single Formula: call ===
 appendInfoLine: "[2/3] Applying ", envStr$, " envelope..."
 
@@ -416,7 +542,11 @@ appendInfoLine: "  Done."
 appendInfoLine: "[3/3] Finalizing..."
 
 xfLabel$ = string$(round(crossfade_duration_ms))
-outName$ = srcName$ + "_dup" + string$(n) + "_xf" + xfLabel$ + "_" + envStr$
+if duplication_mode = 1
+    outName$ = srcName$ + "_dup" + string$(n) + "_xf" + xfLabel$ + "_" + envStr$
+else
+    outName$ = srcName$ + "_dup" + string$(n) + "_T" + fixed$(totalDur, 3) + "s_xf" + xfLabel$ + "_" + envStr$
+endif
 
 selectObject: resultSound
 Rename: outName$
@@ -438,6 +568,10 @@ appendInfoLine: "=== COMPLETE ==="
 appendInfoLine: "Output:          ", outName$
 appendInfoLine: "Duration:        ", fixed$(finalDur, 4), " s"
 appendInfoLine: "Repetitions:     ", n
+if duplication_mode = 2
+    appendInfoLine: "Target duration: ", fixed$(target_duration_seconds, 6), " s"
+    appendInfoLine: "Output samples:  ", outputSamples, " (", fixed$(finalDur, 9), " s)"
+endif
 appendInfoLine: "Crossfade:       ", fixed$(crossfade_duration_ms, 3), " ms"
 appendInfoLine: "Envelope:        ", envStr$
 appendInfoLine: "Peak before normalization: ", fixed$(prePeak, 4)
@@ -467,10 +601,15 @@ if draw_visualization = 1
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##Sound Duplicator v1.3##"
+    Text: 0.5, "centre", 0.68, "half", "##Sound Duplicator v1.4##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.50}"
-    Text: 0.5, "centre", 0.22, "half", vizName$ + " x" + string$(n) + " | xfade " + fixed$(crossfade_duration_ms, 1) + " ms | " + envStr$ + " | out " + fixed$(finalDur, 2) + " s"
+    if duplication_mode = 1
+        vizMode$ = " x" + string$(n)
+    else
+        vizMode$ = " x" + string$(n) + " | target " + fixed$(target_duration_seconds, 3) + " s"
+    endif
+    Text: 0.5, "centre", 0.22, "half", vizName$ + vizMode$ + " | xfade " + fixed$(crossfade_duration_ms, 1) + " ms | " + envStr$ + " | out " + fixed$(finalDur, 2) + " s"
 
     # ---- Source waveform ----
     Select outer viewport: 0, 8, 0.55, 1.80
@@ -504,7 +643,9 @@ if draw_visualization = 1
     Axes: 0, finalDur, mn, mx
     for rep from 1 to n - 1
         xBound = rep * srcDur - rep * xfSec
-        Draw line: xBound, mn, xBound, mx
+        if xBound < finalDur
+            Draw line: xBound, mn, xBound, mx
+        endif
     endfor
     Line width: 1
     Colour: "Black"
@@ -512,7 +653,12 @@ if draw_visualization = 1
     Font size: 7
     Text left: "yes", "Output"
     Text bottom: "yes", "Time (s)"
-    Text top: "no", string$(n) + " copies  |  orange lines = crossfade boundaries"
+    if duplication_mode = 1
+        outCaption$ = string$(n) + " copies  |  orange lines = crossfade boundaries"
+    else
+        outCaption$ = string$(n) + " copies (last may be trimmed)  |  orange lines = visible joins"
+    endif
+    Text top: "no", outCaption$
 
     # ---- Envelope curve ----
     Select outer viewport: 0, 8, 3.18, 4.18
@@ -561,6 +707,9 @@ if draw_visualization = 1
     endif
     if peak_normalize_output = 1 and normGain <> 1
         envCaption$ = envCaption$ + "  |  x" + fixed$(normGain, 2) + " norm"
+    endif
+    if endFadeSamples >= 2
+        envCaption$ = envCaption$ + "  |  anti-click tail " + string$(endFadeSamples) + " samples"
     endif
     Text top: "no", envCaption$
 
