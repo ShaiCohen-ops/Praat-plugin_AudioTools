@@ -3,6 +3,80 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
+# Version: 1.15.3 (2026) - Source-anchored loudness normalisation
+#   v1.15.3: "Loudness match tail to source, then peak" no longer rescales
+#   the whole result by its loudest sample (a peakier tail pushed the source
+#   down 6.9 dB in a listening test). The backend (v1.7.4) now matches the
+#   tail's loudness and caps its peaks at the source's own peak; here ONE
+#   common gain brings the source peak to -1 dBFS and is applied to both
+#   parts, so their balance is exactly the matched one. Needs backend v1.7.4.
+# Version: 1.15.2 (2026) - Continuation normalisation
+#   v1.15.2 adds "Normalize" to the second continuation dialog:
+#     Off                     - source copied bit-exactly (v1.15.1 behaviour)
+#     Peak, separately        - source part and tail part each scaled to
+#                               -1 dBFS BEFORE the crossfade, so the join
+#                               blends two equally normalised parts
+#     Loudness match + peak (default) - tail scaled so its sustained body (envelope
+#                               >= 0.5) has the RMS of the phrase's active
+#                               sound, then the whole result peaks at -1 dBFS
+#   Peak-matching equalises PEAKS, not loudness: measured on a flute phrase it
+#   left the tail ~5 dB louder than the source (lower crest factor), so the
+#   loudness option is the default.
+#   A final guard rescales the whole result to -1 dBFS only if the crossfade
+#   sum ever exceeds 0.999. Lengths stay sample-exact. Needs backend v1.7.3.
+# Version: 1.15.1 (2026) - Continuation tail level
+#   v1.15.1 adds "Tail level" to the second continuation dialog: Phrase level
+#   (default) settles the continuation at the phrase's median active level,
+#   rising from the join over 0.3 s, with the corpus grains' level swings
+#   smoothed; Ending level keeps the v1.15.0 behaviour (match the faded end).
+#   Requires corpus_concat_codec.py v1.7.2.
+# Version: 1.15.0 (2026) - Corpus Continuation Tail (mode 5)
+#   v1.15.0 adds a fifth mode that extends the selected (mono) Sound with a
+#   continuation built from the existing analysed corpus. The Python backend
+#   (corpus_concat_codec.py v1.7, subcommand continuation-tail) analyses the
+#   phrase's ending, plans a grain sequence over a cached corpus TRANSITION
+#   GRAPH (genuine chronological links + boundary-matched jumps), renders it,
+#   applies the chosen envelope, and returns ONLY the tail buffer (crossfade
+#   region + new material) as 32-bit float at the Sound's own sampling rate,
+#   plus a small result file. The JOIN happens here, in memory, on the
+#   untouched selected Sound: Extract part (sample-exact) of the source up to
+#   the crossfade, a Formula crossfade over exactly xfade_samples, and the rest
+#   of the tail, concatenated. Outside the crossfade the source samples are
+#   copied bit-exactly; the output has exactly join_end + tail samples (both
+#   integers computed with the same floor(x+0.5) rounding on both sides and
+#   cross-checked here). Trailing silence is trimmed only when it is clearly
+#   silent (option); the original Sound object is never modified.
+#   The transition graph is a separate versioned sidecar next to the internal
+#   corpus (current_corpus_graph.json/.npz), built once on first use and
+#   rebuilt automatically when the corpus changes. Mode 5 never builds or
+#   replaces the corpus. Modes 1-4 are unchanged.
+# Version: 1.14.0 (2026) - Audible preview in the Draw Demo window
+#   v1.14.0 adds Preview (P button / P key). It writes the current gesture
+#   and runs exactly the same backend draw call as Render (same grain rate,
+#   crossfade, repeat penalty, stretch setting) into a scratch WAV, plays it,
+#   deletes it, and returns to editing - so what you hear IS the render. No
+#   contour copy is saved for a preview; only Render saves one. The Demo
+#   window shows "Previewing" while the backend runs and "Playing" while the
+#   sound plays; Praat is busy for both (a preview of a long gesture plays in
+#   full). Playback is non-fatal: if the audio device refuses, the message
+#   line says so and editing continues. On Praat 7.0 each preview writes
+#   files, so it is subject to the same trust prompt as Render.
+# Version: 1.13.0 (2026) - Built-in gesture generators in the Draw Demo window
+#   v1.13.0 adds a second button row to the Demo window. Every generator is an
+#   ordinary edit: it rewrites the point list, stays click-editable, and U
+#   undoes it. Sine / Triangle / Angular fill the whole duration with the
+#   current "cycles" count (- / + buttons, 1..32) between the current
+#   drawing's min and max (full 0..1 when the drawing is flat or spans less
+#   than 0.02), so two end points set the floor and ceiling of the wave.
+#   Sine starts and ends on the low value; Triangle alternates low/high
+#   corners; Angular is a zigzag with random corner heights (low corners in
+#   the bottom 45%, high corners in the top 45% of the range) and jittered
+#   corner times - press it again for a new variant. "Faster x2" compresses
+#   the CURRENT drawing into half the duration and plays it twice; "Slower
+#   /2" keeps its first half and stretches it over the full duration, so the
+#   two are exact inverses (up to a 0.01% step inserted where a repeat joins
+#   two different values, because the contour holds one value per time).
+#   The point list is capped at 400 points; Faster refuses beyond that.
 # Version: 1.12.0 (2026) - Draw moved from the RealTier editor to the Demo window
 #   v1.12.0 replaces the interactive RealTier editor with a Demo-window drawing
 #   surface. Reason: the old flow opened a RealTier editor, held the script in
@@ -147,13 +221,14 @@
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 # ============================================================
 
-form Corpus Concatenative Synthesis (codec) v1.12.0
+form Corpus Concatenative Synthesis (codec) v1.15.3
     comment ── Mode ──
     optionmenu Mode: 1
         option Match (synthesise from corpus)
         option Build / replace corpus
         option Draw (brightness contour -> corpus)
         option Gesture rhyme (hashed bigram kinetics)
+        option Corpus continuation tail
     comment ── Codec (only used when BUILDING the index; match reuses the corpus codec) ──
     optionmenu Codec: 1
         option dac
@@ -204,6 +279,21 @@ gesture_energy_weight = 0.2
 sequence_context = 2
 random_baseline = 0
 random_seed = 1234
+
+# Corpus continuation tail (mode 5) - defaults set BEFORE the pause dialogs
+# so every field variable exists even where a pause auto-continues.
+tail_duration_mode = 1
+tail_percent = 50
+tail_seconds = 4.0
+continuation_mode = 1
+continuation_strength = 75
+trim_trailing_silence = 1
+dynamic_envelope = 1
+tail_level = 1
+normalize = 3
+join_crossfade_ms = 50
+output_mode = 1
+keep_metadata = 0
 
 if mode = 1
     # ---- MATCH MODE ----
@@ -283,6 +373,44 @@ elsif mode = 4
         positive: "Analysis hop ms", analysis_hop_ms
         positive: "Crossfade ms", crossfade_ms
         real: "Repeat penalty", repeat_penalty
+    endPause: "Continue", 1
+
+elsif mode = 5
+    # ---- CORPUS CONTINUATION TAIL ----
+    beginPause: "Continuation tail (1/2): length + behaviour"
+        optionMenu: "Tail duration mode", tail_duration_mode
+            option: "Percentage of source duration"
+            option: "Fixed duration in seconds"
+        positive: "Tail percent", string$(tail_percent)
+        positive: "Tail seconds", string$(tail_seconds)
+        optionMenu: "Continuation mode", continuation_mode
+            option: "Tight (follow the corpus, keep identity)"
+            option: "Textural (statistical, drifting)"
+        real: "Continuation strength", string$(continuation_strength)
+        comment: "Strength 0-100: attachment to the source ending (100 = strongest)."
+        integer: "Random seed", string$(random_seed)
+    endPause: "Continue", 1
+
+    beginPause: "Continuation tail (2/2): envelope + join + output"
+        optionMenu: "Dynamic envelope", dynamic_envelope
+            option: "Natural exponential decay"
+            option: "Sustain and drop"
+            option: "Tremolo decay"
+            option: "Swell and fade"
+        optionMenu: "Tail level", tail_level
+            option: "Phrase level (rises from the join)"
+            option: "Ending level (stays at the faded end)"
+        positive: "Join crossfade ms", string$(join_crossfade_ms)
+        boolean: "Trim trailing silence", trim_trailing_silence
+        comment: "Trim cuts only CLEARLY silent material after the last sound."
+        optionMenu: "Output mode", output_mode
+            option: "Original + tail"
+            option: "Tail only"
+        optionMenu: "Normalize", normalize
+            option: "Off (source untouched)"
+            option: "Peak, source and tail separately"
+            option: "Loudness match tail to source, then peak"
+        boolean: "Keep metadata", keep_metadata
     endPause: "Continue", 1
 endif
 
@@ -453,9 +581,13 @@ tempTG$     = tempDir$ + "ccc_output_" + runTag$ + ".TextGrid"
 # format). The backend reads it with --contour and writes the persistent copy
 # to usedContour$, so this one is deleted at cleanup like the other scratch files.
 tempDrawn$  = tempDir$ + "ccc_drawn_" + runTag$ + ".txt"
+# Scratch WAV for the Demo-window Preview button (deleted after each preview).
+tempPreview$ = tempDir$ + "ccc_preview_" + runTag$ + ".wav"
 tempLog$    = tempDir$ + "ccc_pylog_" + runTag$ + ".txt"
 probeMarker$ = tempDir$ + "ccc_probe_" + runTag$ + ".txt"
 tempBuildMarker$ = tempDir$ + "ccc_build_ok_" + runTag$ + ".txt"
+# Continuation Tail: key/value join description written by the backend.
+tempResult$ = tempDir$ + "ccc_result_" + runTag$ + ".txt"
 # Persistent, normalized Draw trajectory actually used by this run. Unlike the
 # scratch drawn-gesture file (tempDrawn$), this is NOT deleted at cleanup: it is the reusable
 # compositional gesture / reproducibility record.
@@ -513,6 +645,9 @@ procedure cleanUpTempFiles
     if fileReadable(tempDrawn$)
         deleteFile: tempDrawn$
     endif
+    if fileReadable(tempPreview$)
+        deleteFile: tempPreview$
+    endif
     if fileReadable(tempLog$)
         deleteFile: tempLog$
     endif
@@ -521,6 +656,9 @@ procedure cleanUpTempFiles
     endif
     if fileReadable(tempBuildMarker$)
         deleteFile: tempBuildMarker$
+    endif
+    if fileReadable(tempResult$)
+        deleteFile: tempResult$
     endif
     if fileReadable(tempCrash$)
         deleteFile: tempCrash$
@@ -626,25 +764,41 @@ procedure ddInit: .dur, .rateMs, .stretch
     # geometry (Demo-window percent units, y up)
     ddX1 = 8
     ddX2 = 82
-    ddY1 = 27
+    ddY1 = 30
     ddY2 = 86
     ddSX1 = 86
     ddSX2 = 96
     ddHitRadius = 2.0
-    # buttons: 1 Undo, 2 Reset, 3 Stretch, 4 Cancel, 5 Render
-    ddBy1 = 8
-    ddBy2 = 14
-    ddBx1[1] = 3
-    ddBx2[1] = 16
-    ddBx1[2] = 18
-    ddBx2[2] = 31
-    ddBx1[3] = 33
-    ddBx2[3] = 52
-    ddBx1[4] = 64
-    ddBx2[4] = 79
-    ddBx1[5] = 81
-    ddBx2[5] = 97
+    ddCycles = 2
+    ddMaxPts = 400
+    # Button table: ddBAct[k] is the action code handled by ddAction.
+    # Row B (y 8.5-13.5): Undo 1, Reset 2, Stretch 3, Cancel 4, Render 5
+    # Row A (y 15.5-20.5): Sine 7, Triangle 8, Angular 9, cycles- 10,
+    #                      cycles+ 11, Faster 12, Slower 13
+    ddNBtn = 0
+    @ddAddBtn: 1, 3, 16, 8.5, 13.5
+    @ddAddBtn: 2, 18, 31, 8.5, 13.5
+    @ddAddBtn: 3, 33, 52, 8.5, 13.5
+    @ddAddBtn: 14, 53.5, 62.5, 8.5, 13.5
+    @ddAddBtn: 4, 64, 79, 8.5, 13.5
+    @ddAddBtn: 5, 81, 97, 8.5, 13.5
+    @ddAddBtn: 7, 3, 14, 15.5, 20.5
+    @ddAddBtn: 8, 15.5, 26.5, 15.5, 20.5
+    @ddAddBtn: 9, 28, 39, 15.5, 20.5
+    @ddAddBtn: 10, 43, 47, 15.5, 20.5
+    @ddAddBtn: 11, 57, 61, 15.5, 20.5
+    @ddAddBtn: 12, 64, 79, 15.5, 20.5
+    @ddAddBtn: 13, 81, 97, 15.5, 20.5
     @ddResetPoints
+endproc
+
+procedure ddAddBtn: .act, .x1, .x2, .y1, .y2
+    ddNBtn = ddNBtn + 1
+    ddBAct[ddNBtn] = .act
+    ddBx1[ddNBtn] = .x1
+    ddBx2[ddNBtn] = .x2
+    ddBy1[ddNBtn] = .y1
+    ddBy2[ddNBtn] = .y2
 endproc
 
 procedure ddResetPoints
@@ -847,7 +1001,7 @@ procedure ddRedraw
     .stretchTxt$ = if ddStretch then "on" else "off" fi
     .sub$ = string$(ddNG) + " corpus grains  ·  " + fixed$(ddDur, 2) + " s  ·  grain rate "
         ... + fixed$(ddStep * 1000, 0) + " ms  ·  stretch " + .stretchTxt$
-        ... + "  ·  " + string$(ddN) + " points"
+        ... + "  ·  " + string$(ddN) + " points  ·  cycles " + string$(ddCycles)
     if ddSel > 0
         .sub$ = .sub$ + "  ·  point " + string$(ddSel) + " selected: click where it should go"
     endif
@@ -928,12 +1082,14 @@ procedure ddRedraw
         demo Draw line: ddT[.i], ddV[.i], ddT[.i + 1], ddV[.i + 1]
     endfor
     demo Line width: 1
+    # smaller dots once a generator has filled the list, so the curve stays legible
+    .dot = if ddN > 60 then 0.6 else 1.2 fi
     for .i to ddN
         if .i = ddSel
             demo Paint circle (mm): {0.85, 0.15, 0.15}, ddT[.i], ddV[.i], 3.2
             demo Paint circle (mm): {1.00, 1.00, 1.00}, ddT[.i], ddV[.i], 2.0
         endif
-        demo Paint circle (mm): {0.10, 0.10, 0.10}, ddT[.i], ddV[.i], 1.2
+        demo Paint circle (mm): {0.10, 0.10, 0.10}, ddT[.i], ddV[.i], .dot
     endfor
     demo Colour: "Black"
     @ddVP: ddX1, ddX2, ddY1, ddY2, 0, ddDur, 0, 1
@@ -966,35 +1122,60 @@ procedure ddRedraw
 
     # ---- control panel (grey), axes = percent units ----
     demo Font size: 11
-    @ddVP: 0, 100, 1.5, 17.5, 0, 100, 1.5, 17.5
-    demo Paint rectangle: {0.94, 0.94, 0.94}, 0, 100, 1.5, 17.5
-    for .k to 5
-        if .k = 1
+    @ddVP: 0, 100, 1.5, 22, 0, 100, 1.5, 22
+    demo Paint rectangle: {0.94, 0.94, 0.94}, 0, 100, 1.5, 22
+    for .k to ddNBtn
+        .a = ddBAct[.k]
+        .col# = {1.00, 1.00, 1.00}
+        if .a = 1
             .lab$ = "Undo (U)"
-            .col# = {1.00, 1.00, 1.00}
-        elsif .k = 2
+        elsif .a = 2
             .lab$ = "Reset (R)"
-            .col# = {1.00, 1.00, 1.00}
-        elsif .k = 3
+        elsif .a = 3
             .lab$ = "Stretch (S): " + .stretchTxt$
             .col# = if ddStretch then {0.82, 0.88, 0.97} else {1.00, 1.00, 1.00} fi
-        elsif .k = 4
+        elsif .a = 4
             .lab$ = "Cancel (Esc)"
             .col# = {0.98, 0.88, 0.88}
-        else
+        elsif .a = 5
             .lab$ = "##Render (Enter)##"
             .col# = {0.86, 0.94, 0.86}
+        elsif .a = 7
+            .lab$ = "Sine"
+            .col# = {0.96, 0.95, 0.90}
+        elsif .a = 8
+            .lab$ = "Triangle"
+            .col# = {0.96, 0.95, 0.90}
+        elsif .a = 9
+            .lab$ = "Angular"
+            .col# = {0.96, 0.95, 0.90}
+        elsif .a = 10
+            .lab$ = "−"
+        elsif .a = 11
+            .lab$ = "+"
+        elsif .a = 14
+            .lab$ = "Preview (P)"
+            .col# = {0.99, 0.93, 0.85}
+        elsif .a = 12
+            .lab$ = "Same wave faster ×2"
+            .col# = {0.96, 0.95, 0.90}
+        else
+            .lab$ = "Same wave slower ÷2"
+            .col# = {0.96, 0.95, 0.90}
         endif
-        demo Paint rectangle: .col#, ddBx1[.k], ddBx2[.k], ddBy1, ddBy2
+        demo Paint rectangle: .col#, ddBx1[.k], ddBx2[.k], ddBy1[.k], ddBy2[.k]
         demo Colour: "Black"
-        demo Draw rectangle: ddBx1[.k], ddBx2[.k], ddBy1, ddBy2
-        demo Text: (ddBx1[.k] + ddBx2[.k]) / 2, "centre", (ddBy1 + ddBy2) / 2, "half", .lab$
+        demo Draw rectangle: ddBx1[.k], ddBx2[.k], ddBy1[.k], ddBy2[.k]
+        demo Text: (ddBx1[.k] + ddBx2[.k]) / 2, "centre", (ddBy1[.k] + ddBy2[.k]) / 2, "half", .lab$
     endfor
+    demo Text: 52, "centre", 18, "half", "cycles " + string$(ddCycles)
     demo Font size: 10
-    @ddVP: 0, 100, 1.5, 17.5, 0, 100, 1.5, 17.5
-    demo Text: 50, "centre", 4.5, "half",
+    @ddVP: 0, 100, 1.5, 22, 0, 100, 1.5, 22
+    demo Text: 50, "centre", 6.2, "half",
         ... "click empty space: add point  ·  click a point, then click elsewhere: move it  ·  shift-click a point: delete  ·  end points move vertically only"
-    @ddVP: 0, 100, 1.5, 17.5, 0, 100, 1.5, 17.5
+    demo Text: 50, "centre", 3.6, "half",
+        ... "generators span your drawing's lowest..highest value (full range if flat)  ·  faster/slower transform the current drawing  ·  U undoes any of them"
+    @ddVP: 0, 100, 1.5, 22, 0, 100, 1.5, 22
     demo Draw inner box
     demoShow()
 endproc
@@ -1011,9 +1192,9 @@ procedure ddHandleInput
             @ddClickPanel: .px, .py, .shift
         else
             .hit = 0
-            for .k to 5
-                if .px >= ddBx1[.k] and .px <= ddBx2[.k] and .py >= ddBy1 and .py <= ddBy2
-                    .hit = .k
+            for .k to ddNBtn
+                if .px >= ddBx1[.k] and .px <= ddBx2[.k] and .py >= ddBy1[.k] and .py <= ddBy2[.k]
+                    .hit = ddBAct[.k]
                 endif
             endfor
             if .hit > 0
@@ -1038,6 +1219,12 @@ procedure ddHandleInput
         elsif .k$ = "x" or .k$ = "X" or .k$ = unicode$(8) or .k$ = unicode$(127)
             ... or .k$ = unicode$(65288) or .k$ = unicode$(65535)
             @ddAction: 6
+        elsif .k$ = "p" or .k$ = "P"
+            @ddAction: 14
+        elsif .k$ = "+" or .k$ = "="
+            @ddAction: 11
+        elsif .k$ = "-"
+            @ddAction: 10
         endif
     endif
 endproc
@@ -1065,7 +1252,235 @@ procedure ddAction: .a
         else
             ddMsg$ = "select a point first"
         endif
+    elsif .a >= 7 and .a <= 9
+        @ddPushUndo
+        @ddRange
+        if .a = 7
+            @ddGenSine
+        elsif .a = 8
+            @ddGenTriangle
+        else
+            @ddGenAngular
+        endif
+        @ddCommitNew
+    elsif .a = 10
+        ddCycles = max(1, ddCycles - 1)
+    elsif .a = 11
+        ddCycles = min(32, ddCycles + 1)
+    elsif .a = 12
+        if 2 * ddN > ddMaxPts
+            ddMsg$ = "too many points for Faster (max " + string$(ddMaxPts) + ")"
+        else
+            @ddPushUndo
+            @ddFaster
+            @ddCommitNew
+        endif
+    elsif .a = 13
+        @ddPushUndo
+        @ddSlower
+        @ddCommitNew
+    elsif .a = 14
+        @ddPreview
     endif
+endproc
+
+procedure ddStatusFrame: .text$
+    # overwrite the control panel with a one-line status; used while Praat
+    # is busy (backend running / sound playing) so the window is not mute
+    demo Font size: 12
+    @ddVP: 0, 100, 1.5, 22, 0, 100, 1.5, 22
+    demo Paint rectangle: {0.94, 0.94, 0.94}, 0, 100, 1.5, 22
+    demo Colour: "Black"
+    demo Text: 50, "centre", 11.5, "half", .text$
+    @ddVP: 0, 100, 1.5, 22, 0, 100, 1.5, 22
+    demo Draw inner box
+    demoShow()
+endproc
+
+procedure ddPreview
+    # Same backend call and parameters as Render, minus the persistent
+    # contour copy / metadata / TextGrid, so the preview is the render.
+    @ddStatusFrame: "##Previewing…## rendering the current gesture (Praat is busy)"
+    @ddWriteContour: tempDrawn$
+    if fileReadable(tempPreview$)
+        deleteFile: tempPreview$
+    endif
+    .t0 = stopwatch
+    nocheck runSubprocess: python_exe$, backend_script$, "draw",
+        ... "--contour", tempDrawn$,
+        ... "--output", tempPreview$,
+        ... "--index", corpusIndexPath$,
+        ... "--duration", "0",
+        ... "--grain-rate-ms", string$(grain_rate_ms),
+        ... "--xfade-ms", string$(crossfade_ms),
+        ... "--repeat-penalty", string$(repeat_penalty),
+        ... "--log", tempLog$
+    .tRender = stopwatch
+    if fileReadable(tempPreview$)
+        Read from file: tempPreview$
+        .snd = selected("Sound")
+        .dur = Get total duration
+        @ddStatusFrame: "##Playing preview…## " + fixed$(.dur, 1) + " s (rendered in " + fixed$(.tRender, 1) + " s)"
+        selectObject: .snd
+        nocheck Play
+        removeObject: .snd
+        deleteFile: tempPreview$
+        ddMsg$ = "previewed " + fixed$(.dur, 1) + " s (render " + fixed$(.tRender, 1) + " s)"
+    else
+        @showPyLog
+        ddMsg$ = "preview failed - the Python error is in the Info window"
+    endif
+endproc
+
+# ---- generators / transforms (v1.13.0) ----
+# All of them build a new list in ddNT[]/ddNV[] (ddNN points, sorted, first
+# point at t = 0 and last at t = ddDur) and ddCommitNew swaps it in.
+
+procedure ddCommitNew
+    ddN = ddNN
+    for .i to ddNN
+        ddT[.i] = ddNT[.i]
+        ddV[.i] = ddNV[.i]
+    endfor
+    ddSel = 0
+endproc
+
+procedure ddRange
+    # generator range = the current drawing's min..max (full 0..1 if flat)
+    ddLo = ddV[1]
+    ddHi = ddV[1]
+    for .i to ddN
+        ddLo = min(ddLo, ddV[.i])
+        ddHi = max(ddHi, ddV[.i])
+    endfor
+    if ddHi - ddLo < 0.02
+        ddLo = 0
+        ddHi = 1
+    endif
+endproc
+
+procedure ddGenSine
+    # starts and ends on the low value; point density drops for many cycles
+    # so the list stays under ddMaxPts
+    .per = max(8, min(24, floor((ddMaxPts - 1) / ddCycles)))
+    .n = ddCycles * .per
+    ddNN = 0
+    for .i from 0 to .n
+        ddNN = ddNN + 1
+        ddNT[ddNN] = .i / .n * ddDur
+        ddNV[ddNN] = ddLo + (ddHi - ddLo) * (1 - cos(2 * pi * ddCycles * .i / .n)) / 2
+    endfor
+endproc
+
+procedure ddGenTriangle
+    .n = 2 * ddCycles
+    ddNN = 0
+    for .i from 0 to .n
+        ddNN = ddNN + 1
+        ddNT[ddNN] = .i / .n * ddDur
+        ddNV[ddNN] = if .i mod 2 = 0 then ddLo else ddHi fi
+    endfor
+endproc
+
+procedure ddGenAngular
+    # zigzag: alternating low/high corners at random heights, corner times
+    # jittered by up to +-30% of the corner spacing
+    .n = 2 * ddCycles
+    .sp = ddDur / .n
+    .span = ddHi - ddLo
+    ddNN = 0
+    for .i from 0 to .n
+        ddNN = ddNN + 1
+        if .i = 0
+            ddNT[ddNN] = 0
+        elsif .i = .n
+            ddNT[ddNN] = ddDur
+        else
+            ddNT[ddNN] = .i * .sp + randomUniform(-0.3, 0.3) * .sp
+        endif
+        if .i mod 2 = 0
+            ddNV[ddNN] = ddLo + randomUniform(0, 0.45) * .span
+        else
+            ddNV[ddNN] = ddLo + randomUniform(0.55, 1) * .span
+        endif
+    endfor
+endproc
+
+procedure ddFaster
+    # the current drawing compressed into [0, dur/2] and played twice
+    .half = ddDur / 2
+    .eps = 1e-4 * ddDur
+    ddNN = 0
+    for .i to ddN
+        .t = ddT[.i] / 2
+        .keep = 1
+        if .i = ddN
+            # join: the repeat starts at dur/2 with the first value; if the
+            # values differ, end the first copy just before the join
+            if abs(ddV[ddN] - ddV[1]) < 1e-9
+                .keep = 0
+            else
+                .t = .half - .eps
+                if .t <= ddNT[ddNN]
+                    .keep = 0
+                endif
+            endif
+        endif
+        if .keep
+            ddNN = ddNN + 1
+            ddNT[ddNN] = .t
+            ddNV[ddNN] = ddV[.i]
+        endif
+    endfor
+    for .i to ddN
+        ddNN = ddNN + 1
+        ddNT[ddNN] = (ddT[.i] + ddDur) / 2
+        ddNV[ddNN] = ddV[.i]
+    endfor
+endproc
+
+procedure ddSlower
+    # the first half of the current drawing stretched over the full duration
+    .half = ddDur / 2
+    ddNN = 0
+    for .i to ddN
+        if ddT[.i] < .half * (1 - 1e-9)
+            ddNN = ddNN + 1
+            ddNT[ddNN] = 2 * ddT[.i]
+            ddNV[ddNN] = ddV[.i]
+        endif
+    endfor
+    # A kept point within 0.1% of the half is the end of a Faster copy (the
+    # step Faster inserts before a join) - it becomes the end point, so its
+    # value survives; otherwise the end value is interpolated at the half.
+    if ddNT[ddNN] > ddDur * (1 - 1e-3)
+        ddNT[ddNN] = ddDur
+    else
+        @ddInterpRaw: .half
+        ddNN = ddNN + 1
+        ddNT[ddNN] = ddDur
+        ddNV[ddNN] = ddInterpRawV
+    endif
+endproc
+
+procedure ddInterpRaw: .t
+    # like ddInterp but on the DRAWN values ddV[] (not the stretched ddE[])
+    ddInterpRawV = ddV[ddN]
+    .done = 0
+    for .i to ddN - 1
+        if .done = 0
+            .i1 = .i + 1
+            if .t <= ddT[.i1]
+                .span = ddT[.i1] - ddT[.i]
+                if .span > 0
+                    ddInterpRawV = ddV[.i] + (ddV[.i1] - ddV[.i]) * (.t - ddT[.i]) / .span
+                else
+                    ddInterpRawV = ddV[.i1]
+                endif
+                .done = 1
+            endif
+        endif
+    endfor
 endproc
 
 procedure ddClickPanel: .px, .py, .shift
@@ -1105,12 +1520,12 @@ procedure ddShowRendering
     # last frame before Praat blocks in runSubprocess, so the window does not
     # look frozen mid-edit
     demo Font size: 12
-    @ddVP: 0, 100, 1.5, 17.5, 0, 100, 1.5, 17.5
-    demo Paint rectangle: {0.94, 0.94, 0.94}, 0, 100, 1.5, 17.5
+    @ddVP: 0, 100, 1.5, 22, 0, 100, 1.5, 22
+    demo Paint rectangle: {0.94, 0.94, 0.94}, 0, 100, 1.5, 22
     demo Colour: "Black"
-    demo Text: 50, "centre", 9.5, "half",
+    demo Text: 50, "centre", 11.5, "half",
         ... "##Rendering…## Praat is busy until the synthesis finishes; progress and results go to the Info window."
-    @ddVP: 0, 100, 1.5, 17.5, 0, 100, 1.5, 17.5
+    @ddVP: 0, 100, 1.5, 22, 0, 100, 1.5, 22
     demo Draw inner box
     demoShow()
 endproc
@@ -1448,6 +1863,358 @@ if mode = 4
 
     # Clean the shared scratch (input/output/TextGrid/log/probe). The source-
     # named gestureMeta$ has a different name and is intentionally preserved.
+    @cleanUpTempFiles
+
+    if play_result
+        selectObject: result
+        Play
+    endif
+    selectObject: result
+    goto END
+endif
+
+# ============================================================
+# CORPUS CONTINUATION TAIL MODE (v1.15.0)
+# The backend returns only the tail buffer; the join is done HERE on the
+# untouched selected Sound, so the original samples outside the crossfade
+# are copied exactly and every length is an exact sample count.
+# ============================================================
+if mode = 5
+    if numberOfSelected("Sound") <> 1
+        exitScript: "Corpus Continuation Tail: please select exactly one Sound (the phrase to extend)."
+    endif
+    source = selected("Sound")
+    sourceName$ = selected$("Sound")
+    selectObject: source
+    srcChannels = Get number of channels
+    if srcChannels <> 1
+        exitScript: "Corpus Continuation Tail works on MONO Sounds only." + newline$
+            ... + "This Sound has " + string$(srcChannels) + " channels. Convert it to mono"
+            ... + " (or extract one channel) first - nothing was changed."
+    endif
+    srcSR = Get sampling frequency
+    srcN = Get number of samples
+    srcDur = Get total duration
+    srcDt = Get sampling period
+    srcX1 = Get time from sample number: 1
+    srcLeft = srcX1 - 0.5 * srcDt
+
+    if not fileReadable(corpusIndexPath$ + ".json")
+        exitScript: "No analysed corpus is available yet." + newline$
+            ... + "Run Build / replace corpus first. Continuation Tail uses the existing" + newline$
+            ... + "corpus and never builds or replaces it."
+    endif
+
+    # ---- validate the dialog values before calling Python ----
+    if tail_duration_mode = 1
+        if tail_percent <= 0 or tail_percent > 1000
+            exitScript: "Tail percent must be between 0 and 1000 (got " + string$(tail_percent) + ")."
+        endif
+        tailEstimate = srcDur * tail_percent / 100
+        durArg$ = "percent"
+    else
+        if tail_seconds <= 0
+            exitScript: "Tail seconds must be positive."
+        endif
+        tailEstimate = tail_seconds
+        durArg$ = "seconds"
+    endif
+    if tailEstimate > 300
+        exitScript: "The requested tail (" + fixed$(tailEstimate, 1) + " s) exceeds the 300 s limit."
+    endif
+    if continuation_strength < 0 or continuation_strength > 100
+        appendInfoLine: "Note: Continuation strength clamped to 0..100."
+        continuation_strength = max(0, min(100, continuation_strength))
+    endif
+    if join_crossfade_ms > 2000
+        appendInfoLine: "Note: Join crossfade limited to 2000 ms."
+        join_crossfade_ms = 2000
+    endif
+    if random_seed < 0
+        random_seed = 0
+    endif
+    contArg$ = if continuation_mode = 1 then "tight" else "textural" fi
+    if dynamic_envelope = 1
+        envArg$ = "exp-decay"
+    elsif dynamic_envelope = 2
+        envArg$ = "sustain-drop"
+    elsif dynamic_envelope = 3
+        envArg$ = "tremolo-decay"
+    else
+        envArg$ = "swell-fade"
+    endif
+    outArg$ = if output_mode = 1 then "original+tail" else "tail-only" fi
+    levelArg$ = if tail_level = 1 then "phrase" else "ending" fi
+    if normalize = 1
+        normArg$ = "off"
+    elsif normalize = 2
+        normArg$ = "peak"
+    else
+        normArg$ = "loudness"
+    endif
+
+    # Metadata is scratch unless the user asked to keep it.
+    metaPath$ = tempMeta$
+    if keep_metadata
+        metaDir$ = corpusDir$ + "continuation_meta/"
+        createDirectory: metaDir$
+        safeSourceName$ = replace_regex$(sourceName$, "[\\/:*?""<>|]", "_", 0)
+        metaPath$ = metaDir$ + safeSourceName$ + "_" + runTag$ + ".json"
+    endif
+    textgridArg$ = ""
+    if import_textgrid
+        textgridArg$ = tempTG$
+    endif
+
+    selectObject: source
+    Save as WAV file: tempInput$
+    if not fileReadable(tempInput$)
+        @cleanUpTempFiles
+        exitScript: "Could not export the selected Sound to a temp WAV."
+    endif
+
+    appendInfoLine: "=== Corpus Continuation Tail ==="
+    appendInfoLine: "Source: ", sourceName$, "  (", fixed$(srcDur, 3), " s, ", string$(srcSR), " Hz)"
+    appendInfoLine: "Corpus: ", corpusIndexPath$
+    appendInfoLine: "Mode: ", contArg$, "   strength ", string$(continuation_strength),
+        ... "   envelope ", envArg$, "   level ", levelArg$, "   crossfade ", string$(join_crossfade_ms), " ms"
+    if not fileReadable(corpusIndexPath$ + "_graph.json")
+        appendInfoLine: "No transition graph yet - it is built once now from the corpus grains"
+        appendInfoLine: "(one codec pass per grain; this can take minutes for a large corpus)."
+    endif
+    appendInfoLine: "Calling Python backend..."
+
+    nocheck runSubprocess: python_exe$, backend_script$,
+        ... "continuation-tail",
+        ... "--input", tempInput$,
+        ... "--output", tempOutput$,
+        ... "--result", tempResult$,
+        ... "--index", corpusIndexPath$,
+        ... "--duration-mode", durArg$,
+        ... "--tail-percent", string$(tail_percent),
+        ... "--tail-seconds", string$(tail_seconds),
+        ... "--continuation-mode", contArg$,
+        ... "--continuation-strength", string$(continuation_strength),
+        ... "--envelope", envArg$,
+        ... "--tail-level", levelArg$,
+        ... "--normalize", normArg$,
+        ... "--xfade-ms", string$(join_crossfade_ms),
+        ... "--output-mode", outArg$,
+        ... "--trim-silence", string$(trim_trailing_silence),
+        ... "--seed", string$(random_seed),
+        ... "--metadata", metaPath$,
+        ... "--textgrid", textgridArg$,
+        ... "--log", tempLog$
+
+    if not fileReadable(tempOutput$) or not fileReadable(tempResult$)
+        @showPyLog
+        @cleanUpTempFiles
+        exitScript: "Continuation Tail failed - the backend produced no tail." + newline$
+            ... + "The Python error is shown in the Info window above." + newline$
+            ... + "Common causes: obsolete corpus index (rebuild it), missing grain files," + newline$
+            ... + "a silent or very short source, or a codec package that is not installed."
+    endif
+
+    # ---- read the join description ----
+    res$ = readFile$(tempResult$)
+    resSR = extractNumber(res$, "sample_rate ")
+    resSrcN = extractNumber(res$, "source_samples ")
+    joinEnd = extractNumber(res$, "join_end_sample ")
+    xfN = extractNumber(res$, "xfade_samples ")
+    nTail = extractNumber(res$, "new_tail_samples ")
+    bufN = extractNumber(res$, "buffer_samples ")
+    joinRho = extractNumber(res$, "join_rho ")
+    predPeak = extractNumber(res$, "predicted_peak ")
+    trimmedN = extractNumber(res$, "trimmed_samples ")
+    srcActRms = extractNumber(res$, "source_active_rms ")
+    tailBodyRms = extractNumber(res$, "tail_body_rms ")
+    resErr$ = ""
+    if resSR = undefined or joinEnd = undefined or xfN = undefined or nTail = undefined or bufN = undefined or joinRho = undefined
+        resErr$ = "the result file is incomplete"
+    elsif resSR <> srcSR
+        resErr$ = "sampling rate mismatch (" + string$(resSR) + " vs " + string$(srcSR) + " Hz)"
+    elsif resSrcN <> srcN
+        resErr$ = "source length mismatch (" + string$(resSrcN) + " vs " + string$(srcN) + " samples)"
+    elsif joinEnd < 2 or joinEnd > srcN
+        resErr$ = "join point out of range"
+    elsif xfN < 1 or xfN >= joinEnd or xfN > nTail
+        resErr$ = "crossfade length out of range"
+    elsif bufN <> xfN + nTail
+        resErr$ = "tail buffer length does not equal crossfade + new samples"
+    endif
+    if resErr$ = ""
+        # independent recomputation of the new-material length (same rounding
+        # as the backend: floor(x + 0.5), which is Praat's round())
+        if tail_duration_mode = 1
+            expectTail = round(joinEnd * tail_percent / 100)
+        else
+            expectTail = round(tail_seconds * srcSR)
+        endif
+        if expectTail <> nTail
+            resErr$ = "tail length " + string$(nTail) + " differs from the expected " + string$(expectTail)
+        endif
+    endif
+    if resErr$ <> ""
+        @showPyLog
+        @cleanUpTempFiles
+        exitScript: "Continuation Tail: inconsistent backend result - " + resErr$ + "." + newline$
+            ... + "Nothing was joined; the selected Sound is unchanged."
+    endif
+
+    Read from file: tempOutput$
+    tailRaw = selected("Sound")
+    tailN = Get number of samples
+    tailSR = Get sampling frequency
+    tailCh = Get number of channels
+    if tailN <> bufN or tailSR <> srcSR or tailCh <> 1
+        removeObject: tailRaw
+        @cleanUpTempFiles
+        exitScript: "Continuation Tail: the tail file has " + string$(tailN) + " samples at "
+            ... + string$(tailSR) + " Hz (" + string$(tailCh) + " ch); expected "
+            ... + string$(bufN) + " at " + string$(srcSR) + " Hz mono."
+    endif
+    tailX1 = Get time from sample number: 1
+    tailLeft = tailX1 - 0.5 * srcDt
+
+    # ---- optional normalisation gains (applied to COPIES before the join) ----
+    normTarget = 10 ^ (-1 / 20)
+    gainSrc = 1
+    gainTail = 1
+    if normalize = 2
+        selectObject: tailRaw
+        tailPeak = Get absolute extremum: 0, 0, "None"
+        selectObject: source
+        srcPeak = Get absolute extremum: srcLeft, srcLeft + joinEnd * srcDt, "None"
+        if srcPeak > 1e-9
+            gainSrc = normTarget / srcPeak
+        endif
+        if tailPeak > 1e-9
+            gainTail = normTarget / tailPeak
+        endif
+    elsif normalize = 3
+        # the backend already matched the tail's loudness in SOURCE units and
+        # kept its peaks at or below the source peak: one common gain for both
+        selectObject: source
+        srcPeak = Get absolute extremum: srcLeft, srcLeft + joinEnd * srcDt, "None"
+        if srcPeak > 1e-9
+            gainSrc = normTarget / srcPeak
+        endif
+        gainTail = gainSrc
+    endif
+    if gainTail <> 1
+        selectObject: tailRaw
+        Formula: "self * " + fixed$(gainTail, 12)
+    endif
+
+    # NOTE: Concatenate joins the selected Sounds in OBJECT-LIST order (i.e.
+    # creation order), not in the order they were selected - so the head,
+    # the overlap and the new material are extracted in exactly that order.
+    if output_mode = 1
+        # ---- head: source samples 1 .. joinEnd - xfN (bit-exact copy) ----
+        headN = joinEnd - xfN
+        selectObject: source
+        srcHead = Extract part: srcLeft, srcLeft + headN * srcDt, "rectangular", 1, "no"
+        gotHeadN = Get number of samples
+        if gainSrc <> 1
+            Formula: "self * " + fixed$(gainSrc, 12)
+        endif
+        # ---- overlap: source samples headN+1 .. joinEnd crossfaded with tail 1 .. xfN ----
+        selectObject: source
+        srcOverlap = Extract part: srcLeft + headN * srcDt, srcLeft + joinEnd * srcDt, "rectangular", 1, "no"
+        gotOvN = Get number of samples
+        if gainSrc <> 1
+            Formula: "self * " + fixed$(gainSrc, 12)
+        endif
+        # ---- the new material: tail samples xfN+1 .. bufN (created LAST) ----
+        selectObject: tailRaw
+        tailRest = Extract part: tailLeft + xfN * srcDt, tailLeft + bufN * srcDt, "rectangular", 1, "no"
+        restN = Get number of samples
+        if gotHeadN <> headN or gotOvN <> xfN or restN <> nTail
+            removeObject: tailRaw, tailRest, srcHead, srcOverlap
+            @cleanUpTempFiles
+            exitScript: "Continuation Tail: sample-exact extraction failed (head " + string$(gotHeadN)
+                ... + "/" + string$(headN) + ", overlap " + string$(gotOvN) + "/" + string$(xfN)
+                ... + ", tail " + string$(restN) + "/" + string$(nTail) + ")."
+        endif
+        # a = cos^2, b = sin^2 at sample centres; c corrects for the measured
+        # correlation (1 for identical material, equal-power for unrelated) -
+        # the same law the backend used to predict and limit the join peak.
+        xf$ = string$(xfN)
+        rho$ = fixed$(joinRho, 9)
+        aa$ = "cos(pi/2*(col-0.5)/" + xf$ + ")^2"
+        bb$ = "sin(pi/2*(col-0.5)/" + xf$ + ")^2"
+        selectObject: srcOverlap
+        Formula: "(self*" + aa$ + " + object[" + string$(tailRaw) + ", 1, col]*" + bb$ + ")"
+            ... + " / sqrt((" + aa$ + ")^2 + (" + bb$ + ")^2 + 2*" + rho$ + "*" + aa$ + "*" + bb$ + ")"
+        selectObject: srcHead, srcOverlap, tailRest
+        result = Concatenate
+        # belt and braces: the head must be the source's own first sample
+        concatFirst = Get value at sample number: 1, 1
+        selectObject: srcHead
+        headFirst = Get value at sample number: 1, 1
+        if concatFirst <> headFirst
+            removeObject: result, srcHead, srcOverlap, tailRest, tailRaw
+            @cleanUpTempFiles
+            exitScript: "Continuation Tail: concatenation order check failed - nothing was joined."
+        endif
+        removeObject: srcHead, srcOverlap, tailRest
+        expectN = joinEnd + nTail
+        resultName$ = sourceName$ + "_continuation_tail"
+    else
+        selectObject: tailRaw
+        tailRest = Extract part: tailLeft + xfN * srcDt, tailLeft + bufN * srcDt, "rectangular", 1, "no"
+        restN = Get number of samples
+        result = tailRest
+        expectN = nTail
+        resultName$ = sourceName$ + "_tail_only"
+    endif
+    removeObject: tailRaw
+    selectObject: result
+    Rename: resultName$
+    normNote$ = ""
+    if normalize > 1
+        resPeak = Get absolute extremum: 0, 0, "None"
+        if resPeak > 0.999
+            if resPeak > 1e-9
+                Formula: "self * " + fixed$(normTarget / resPeak, 12)
+                normNote$ = " (whole result scaled to -1 dBFS)"
+            endif
+        endif
+    endif
+    resultN = Get number of samples
+    if resultN <> expectN
+        appendInfoLine: "WARNING: result has ", resultN, " samples, expected ", expectN, "."
+    endif
+
+    appendInfoLine: ""
+    appendInfoLine: "Imported result: ", resultName$, "  (", string$(resultN), " samples = ",
+        ... fixed$(resultN / srcSR, 4), " s)"
+    if trimmedN > 0
+        appendInfoLine: "Trailing silence trimmed before the join: ", fixed$(trimmedN / srcSR, 3),
+            ... " s (effective source ", fixed$(joinEnd / srcSR, 3), " s)"
+    endif
+    if normalize = 2
+        appendInfoLine: "Normalised separately: source ", fixed$(20 * log10(gainSrc), 2), " dB, tail ",
+            ... fixed$(20 * log10(gainTail), 2), " dB", normNote$
+    elsif normalize = 3
+        appendInfoLine: "Loudness matched in the backend; common gain ", fixed$(20 * log10(gainSrc), 2),
+            ... " dB (source peak -> -1 dBFS)", normNote$
+    endif
+    appendInfoLine: "New material: ", fixed$(nTail / srcSR, 3), " s   crossfade: ",
+        ... fixed$(xfN / srcSR * 1000, 1), " ms   join correlation: ", fixed$(joinRho, 3)
+    if predPeak <> undefined and predPeak > 1
+        appendInfoLine: "Note: predicted peak ", fixed$(predPeak, 3), " (the source itself exceeds full scale)."
+    endif
+
+    if import_textgrid and fileReadable(tempTG$)
+        Read from file: tempTG$
+        Rename: resultName$ + "_grains"
+        appendInfoLine: "Imported grain TextGrid (S start, C chronological, J graph jump, F fallback)."
+    endif
+    if keep_metadata and fileReadable(metaPath$)
+        appendInfoLine: "Metadata kept: ", metaPath$
+    endif
+
     @cleanUpTempFiles
 
     if play_result
