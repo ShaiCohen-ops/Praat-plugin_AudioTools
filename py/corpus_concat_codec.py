@@ -3,6 +3,44 @@
 # Praat AudioTools - corpus_concat_codec.py
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
+# Version: 1.8.3 (2026)
+#   v1.8.3: "@file" argument files (one argument per line, UTF-8 or UTF-16 as
+#   Praat writes them). Root cause of the Windows Polyphonic Layers failure:
+#   the child process received only the first 1024 characters of its command
+#   line, so --result was cut to "C:/Users/User/A" and --log was lost; mode 6
+#   now passes its arguments through a file.
+# Version: 1.8.2 (2026)
+#   v1.8.2: a missing stdout/stderr (GUI Praat on Windows, plain runSubprocess)
+#   is replaced by a null sink instead of crashing the final status print.
+#   polyphonic-layers reports failures as "status error" in its result file
+#   and exits 0, and echoes the absolute paths of its result, log and voice
+#   files (with existence) on stdout for the front-end's diagnostics.
+# Version: 1.8.1 (2026)
+#   v1.8.1: "-" is accepted as "no file" for optional path arguments
+#   (--textgrid, --metadata, --export-dir, --result, --contour-out, ...), and
+#   the log is opened before argument parsing. Praat's runSubprocess on Windows
+#   drops EMPTY arguments, so "--export-dir ''" became "--export-dir
+#   --export-name ..." and argparse exited before any log existed - reported
+#   as "Polyphonic Layers failed - the backend produced no result" with an empty
+#   Info window. The same latent fault hit every mode with Import TextGrid off.
+# Version: 1.8.0 (2026)
+#   v1.8.0: new subcommand polyphonic-layers ("Corpus Polyphonic Layers"): the
+#   whole source phrase is analysed over time (step grid = corpus hop; level,
+#   relative loudness, brightness, band shape + codec latent, spectral change,
+#   F0/periodicity, onset density, presence with hysteresis; fast/slow masked
+#   smoothing, direction of change, rest/sustained/active segmentation) and
+#   1-3 sample-aligned voices are planned through the EXISTING transition
+#   graph (schema 3, unchanged) with cost = transition + source relationship
+#   (parallel / complementary / independent targets and weights) + voice
+#   trajectory + inter-voice interaction (same grain / same passage /
+#   delayed copy / similar timbre, activity, brightness - scaled by
+#   diversity) + repetition + jump cost. Sequential conditioning plus an
+#   optional refinement sweep; per-voice SeedSequence streams. Voices are
+#   rendered with the continuation's Tukey OLA, resampled to the source rate,
+#   level-matched to the source's active RMS, written as 32-bit float WAV of
+#   exactly N samples; optional float DAW stems with a no-overwrite policy.
+#   Corpus schema 3 and graph schema 3 unchanged; continuation-tail and all
+#   other subcommands untouched (bit-identical output verified against 1.7.4).
 # Version: 1.7.4 (2026)
 #   v1.7.4 (from a listening test with a DAC corpus at 44.1 kHz):
 #   (1) BUG: chronological links were tested with a fixed 3-sample tolerance,
@@ -3869,6 +3907,1244 @@ def continuation_graph_cmd(args):
 
 
 # ============================================================
+# polyphonic-layers subcommand (v1.8.0)
+#   "Corpus Polyphonic Layers": the WHOLE source phrase is analysed over time
+#   and gives rise to 1-3 additional, simultaneously sounding voices built
+#   from real corpus grains along the cached Corpus Transition Graph (graph
+#   schema 3, reused unchanged). Every voice is exactly as long as the source,
+#   sample-aligned from sample 0, at the source's own sampling rate.
+#
+#   Relationship modes (different TARGETS, WEIGHTS and PRESENCE rules - not
+#   labels on one algorithm):
+#     parallel      - voices follow the source's behaviour over time: activity
+#                     (articulation), dynamic contour, brightness movement,
+#                     pauses; grain changes are encouraged at source onsets.
+#     complementary - voices answer the source: more internal movement while
+#                     the source sustains, stable material while it is dense,
+#                     activity in its pauses, moderate spectral contrast, and
+#                     activity distributed across the ensemble.
+#     independent   - each voice follows its own seeded behavioural walk and
+#                     phrasing; attachment to the source's identity decays.
+#   Per step and voice:  cost = transition + source relationship + voice
+#   trajectory + inter-voice interaction + repetition (+ jump cost).
+#   Voices are planned sequentially (v2 conditioned on v1, v3 on v1+v2), then
+#   an optional refinement sweep re-plans each voice against ALL others and
+#   keeps the new plan only if its mean cost is lower (--refine 0 keeps
+#   voice 1 identical whatever the voice count).
+#
+#   Division of labour with Praat (as in continuation-tail): Python writes
+#   each generated voice as 32-bit float mono WAV of exactly N samples and a
+#   key/value result (pan gains, mix gain). Praat builds the stereo mix from
+#   the UNTOUCHED in-memory source plus the imported voices. Optional DAW
+#   stems are written here as 32-bit float from a lossless 32-bit PCM export
+#   of the source, using exactly the gains Praat applies.
+# ============================================================
+
+from collections import OrderedDict
+
+POLY_RELATIONSHIPS = ("parallel", "complementary", "independent")
+POLY_MAX_VOICES = 3
+POLY_AUTO_PANS = {1: (45.0,), 2: (-60.0, 60.0), 3: (-70.0, 70.0, 0.0)}
+POLY_GRAIN_CACHE = 1536       # grains held in memory (float32) - bounded
+POLY_SEED_SALT_SELECT = 0x504F4C59   # "POLY"
+POLY_SEED_SALT_WALK = 0x57414C4B     # "WALK"
+_LN2 = math.log(2.0)
+
+
+class _GrainCache:
+    """Bounded LRU cache of grain audio (float32)."""
+
+    def __init__(self, index_prefix, grains, cap=POLY_GRAIN_CACHE):
+        self.p, self.g, self.cap = index_prefix, grains, int(cap)
+        self.d = OrderedDict()
+        self.loads = 0
+
+    def __call__(self, j):
+        j = int(j)
+        a = self.d.get(j)
+        if a is not None:
+            self.d.move_to_end(j)
+            return a
+        a = np.load(_resolve_grain_path(self.p, self.g[j]["grain_audio"])).astype(np.float32)
+        self.loads += 1
+        self.d[j] = a
+        if len(self.d) > self.cap:
+            self.d.popitem(last=False)
+        return a
+
+
+def _gauss_smooth(v, sigma):
+    v = np.asarray(v, dtype=np.float64)
+    if sigma < 0.3 or v.size < 3:
+        return v.copy()
+    r = int(math.ceil(3 * sigma))
+    t = np.arange(-r, r + 1)
+    w = np.exp(-0.5 * (t / sigma) ** 2)
+    w /= w.sum()
+    return np.convolve(np.pad(v, r, mode="edge"), w, mode="valid")
+
+
+def _masked_smooth(v, m, sigma):
+    """Smooth v using only the frames where m is true; frames with no valid
+    neighbours take the nearest valid value (rests never pollute features)."""
+    v = np.asarray(v, dtype=np.float64)
+    m = np.asarray(m, dtype=np.float64)
+    if m.sum() == 0:
+        return v.copy()
+    num = _gauss_smooth(v * m, sigma)
+    den = _gauss_smooth(m, sigma)
+    out = np.where(den > 1e-3, num / np.maximum(den, 1e-12), np.nan)
+    good = np.flatnonzero(~np.isnan(out))
+    bad = np.flatnonzero(np.isnan(out))
+    if bad.size:
+        near = good[np.clip(np.searchsorted(good, bad), 0, good.size - 1)]
+        near2 = good[np.clip(np.searchsorted(good, bad) - 1, 0, good.size - 1)]
+        pick = np.where(np.abs(near - bad) <= np.abs(near2 - bad), near, near2)
+        out[bad] = out[pick]
+    return out
+
+
+def _cdf(ref_sorted, v):
+    if ref_sorted.size == 0:
+        return np.zeros(len(v))
+    return np.searchsorted(ref_sorted, v, side="right") / float(ref_sorted.size)
+
+
+def _hysteresis(score, on, off, min_on, min_off):
+    """Boolean state: switches on when score >= on, off when score < off, and
+    enforces minimum run lengths (in steps) by merging short runs."""
+    st = np.zeros(len(score), dtype=bool)
+    cur = False
+    for i, s in enumerate(score):
+        if not cur and s >= on:
+            cur = True
+        elif cur and s < off:
+            cur = False
+        st[i] = cur
+    return _min_runs(st, min_on, min_off)
+
+
+def _min_runs(st, min_true, min_false):
+    st = st.copy()
+    for target, mn in ((False, min_false), (True, min_true)):
+        i, n = 0, len(st)
+        while i < n:
+            j = i
+            while j < n and st[j] == st[i]:
+                j += 1
+            if st[i] == target and (j - i) < mn and i > 0 and j < n:
+                st[i:j] = not target
+            i = j
+    return st
+
+
+def corpus_behaviour(arrays):
+    """Per-grain behaviour descriptors derived ONLY from the cached graph
+    arrays (no new analysis pass, no new cache file): internal activity
+    (head vs tail descriptor change + level change + change into the next
+    chronological grain), mapped to its percentile among usable grains;
+    level relative to its own recording (dB); brightness; tonality."""
+    hd, td, gd = arrays["head_desc"], arrays["tail_desc"], arrays["glob_desc"]
+    raw = (np.linalg.norm(hd - td, axis=1)
+           + 0.5 * np.abs(arrays["lnrms_head"] - arrays["lnrms_tail"]) / math.log(4.0))
+    succ = arrays["succ"]
+    nxt = np.zeros(len(raw))
+    has = succ >= 0
+    nxt[has] = np.linalg.norm(gd[has] - gd[succ[has]], axis=1)
+    raw = raw + 0.5 * nxt
+    fg = arrays["usable"].astype(bool) & ~arrays["background"].astype(bool)
+    if fg.sum() < 2:
+        fg = arrays["usable"].astype(bool)
+    ref = np.sort(raw[fg])
+    return {"act_raw": raw, "act": _cdf(ref, raw), "act_ref": ref,
+            "rel_db": 20.0 / math.log(10.0) * arrays["rel_level"].astype(np.float64),
+            "lncent": arrays["lncent_glob"].astype(np.float64),
+            "conf": np.clip(arrays["conf_glob"].astype(np.float64), 0, 1),
+            "foreground": fg}
+
+
+def analyze_source_trajectory(x, sr, codec, arrays, info, beh):
+    """Time-varying analysis of the WHOLE source on the synthesis step grid
+    (step k covers corpus-rate samples [k*H, k*H + Le)). Per step: level,
+    relative loudness, brightness, band shape + codec latent descriptor,
+    spectral change, F0 + periodicity, flatness, onset activity, articulation
+    density, presence. Then temporal context: fast (~0.15 s) and slow
+    (~0.5 s) masked smoothing, direction of change, phrase-level identity,
+    and a hysteresis segmentation into rest / sustained / active."""
+    sr_c = int(info["sample_rate"])
+    geo = info["geometry"]
+    H, O, Le, G = geo["H"], geo["O"], geo["Le"], geo["G"]
+    xc = resample_to(x.astype(np.float32), sr, sr_c).astype(np.float64)
+    Nc = len(xc)
+    n_src = len(x)
+    K = int(math.ceil(n_src * sr_c / float(sr) / H)) + 1
+    use_lat = info["descriptor"]["mode"] == "latent+spectral"
+    z = None
+    if use_lat:
+        z = codec.latent_from_tokens(codec.encode(xc.astype(np.float32)))
+        pm, pc = arrays["pca_mean"], arrays["pca_comp"]
+    pad = np.concatenate([xc, np.zeros(G + Le + H)])
+
+    def region(a, b):
+        seg = pad[a:b]
+        u, lr, lc, fl = _region_spectral(seg, sr_c)
+        if use_lat:
+            lp = (_latent_region_mean(z, Nc, a, b) - pm).dot(pc.T)
+            d = np.concatenate([SPEC_W * u, LAT_W * _unit(lp)])
+        else:
+            d = u
+        return d.astype(np.float32), lr, lc, fl
+
+    D = arrays["glob_desc"].shape[1]
+    d_h = np.zeros((K, D), np.float32)
+    d_t = np.zeros((K, D), np.float32)
+    d_g = np.zeros((K, D), np.float32)
+    lr_h, lr_t, lr_g = np.zeros(K), np.zeros(K), np.zeros(K)
+    lc, fl, f0, cf = np.zeros(K), np.zeros(K), np.zeros(K), np.zeros(K)
+    for k in range(K):
+        a = k * H
+        d_h[k], lr_h[k], _, _ = region(a, a + O)
+        d_t[k], lr_t[k], _, _ = region(a + H, a + Le)
+        d_g[k], lr_g[k], lc[k], fl[k] = region(a, a + G)
+        f0[k], cf[k] = _yin(pad[a:a + G], sr_c)
+    nxt = np.zeros(K)
+    nxt[:-1] = np.linalg.norm(d_g[1:] - d_g[:-1], axis=1)
+    act_raw = np.linalg.norm(d_h - d_t, axis=1) + 0.5 * np.abs(lr_h - lr_t) / math.log(4.0) + 0.5 * nxt
+    flux = nxt.copy()
+
+    # ---- presence: 10 ms frames, adaptive hysteresis thresholds (same
+    # analysis as the continuation's activity detector, trim disabled) ----
+    act_info = analyse_source_activity(x, sr, trim=False)
+    fn = max(1, _round_half_up(0.010 * sr))
+    nf = n_src // fn
+    fr = x[:nf * fn].reshape(nf, fn) if nf else np.zeros((1, 1))
+    fdb = 20 * np.log10(np.sqrt(np.mean(fr * fr, axis=1)) + 1e-10)
+    if nf >= 3:
+        fdb = np.median(np.stack([fdb, np.r_[fdb[0], fdb[:-1]], np.r_[fdb[1:], fdb[-1]]]), axis=0)
+    if "thr_on_db" in act_info:
+        on, off = act_info["thr_on_db"], act_info["thr_off_db"]
+        fa = np.zeros(nf, bool)
+        cur = False
+        for i, v in enumerate(fdb):
+            if not cur and v >= on:
+                cur = True
+            elif cur and v < off:
+                cur = False
+            fa[i] = cur
+    else:
+        fa = np.full(nf, act_info.get("policy") != "silent source")
+    t_step = np.arange(K) * H / float(sr_c)            # slot start (s)
+    slot = H / float(sr_c)
+    present = np.zeros(K, bool)
+    for k in range(K):
+        a = int(t_step[k] * sr / fn)
+        b = int(math.ceil((t_step[k] + slot) * sr / fn))
+        if a < nf:
+            present[k] = fa[a:min(b, nf)].mean() >= 0.3 if b > a else False
+    act_fr = np.sqrt(np.mean(fr * fr, axis=1))
+    thr_on_lin = 10 ** (act_info.get("thr_on_db", -200.0) / 20.0)
+    a_fr = act_fr[act_fr >= thr_on_lin]
+    phrase_rms = float(np.median(a_fr)) if a_fr.size else float(np.sqrt(np.mean(x ** 2)))
+
+    # ---- onsets: articulation density and nearness ----
+    ons = np.asarray(detect_onsets(x.astype(np.float32), sr), dtype=np.float64) / sr
+    if ons.size and ons[0] == 0.0 and not (nf and fa[0]):
+        ons = ons[1:]
+    t_c = t_step + 0.5 * slot
+    if ons.size:
+        dist = np.abs(t_c[:, None] - ons[None, :])
+        density = np.exp(-0.5 * (dist / 0.30) ** 2).sum(axis=1) / (0.30 * math.sqrt(2 * math.pi))
+        t_join = t_step + 0.5 * O / float(sr_c)
+        onset_near = np.exp(-np.abs(t_join[:, None] - ons[None, :]).min(axis=1) / 0.05)
+    else:
+        density = np.zeros(K)
+        onset_near = np.zeros(K)
+
+    m = present.astype(float)
+    sig_f = 0.15 / slot
+    sig_s = 0.50 / slot
+    act_cdf = _cdf(beh["act_ref"], act_raw)
+    A_fast = 0.6 * _masked_smooth(act_cdf, m, sig_f) + 0.4 * np.clip(density / 5.0, 0, 1)
+    A_slow = 0.6 * _masked_smooth(act_cdf, m, sig_s) + 0.4 * np.clip(_gauss_smooth(density, sig_s) / 5.0, 0, 1)
+    A_fast = np.where(present, A_fast, 0.0)
+    db = 20.0 / math.log(10.0) * lr_g
+    p95 = float(np.percentile(db[present], 95)) if present.any() else float(db.max())
+    rel_db = np.clip(db - p95, -60.0, 6.0)
+    rel_fast = np.where(present, _gauss_smooth(rel_db, sig_f), -60.0)
+    rel_slow = _gauss_smooth(np.where(present, rel_db, -60.0), sig_s)
+    lc_fast = _masked_smooth(lc, m, sig_f)
+    lc_slow = _masked_smooth(lc, m, sig_s)
+    cf_fast = _masked_smooth(np.clip(cf, 0, 1), m, sig_f)
+    cf_slow = _masked_smooth(np.clip(cf, 0, 1), m, sig_s)
+    pres_slow = _gauss_smooth(m, sig_s)
+    d_fast = np.zeros_like(d_g)
+    for k in range(K):
+        lo, hi = max(0, k - 1), min(K, k + 2)
+        w = m[lo:hi]
+        d_fast[k] = _unit((d_g[lo:hi] * w[:, None]).sum(axis=0)) if w.sum() > 0 else d_g[k]
+    phrase_desc = _unit(d_g[present].mean(axis=0)) if present.any() else _unit(d_g.mean(axis=0))
+    # direction of change (per second) of the slow loudness / brightness
+    slope_db = np.gradient(rel_slow) / slot
+    slope_lc = np.gradient(lc_slow) / slot
+    # segmentation (descriptive; also used by the complementary planner)
+    seg_active = _hysteresis(A_fast, 0.55, 0.45, int(math.ceil(0.25 / slot)), int(math.ceil(0.25 / slot)))
+    seg = np.where(~present, "rest", np.where(seg_active, "active", "sustained"))
+    return {
+        "K": K, "slot_s": slot, "t_step": t_step, "present": present, "pres_slow": pres_slow,
+        "desc": d_g, "desc_fast": d_fast, "phrase_desc": phrase_desc,
+        "lnrms": lr_g, "rel_db": rel_db, "rel_fast": rel_fast, "rel_slow": rel_slow,
+        "lncent": lc, "lc_fast": lc_fast, "lc_slow": lc_slow,
+        "lc_median": float(np.median(lc[present])) if present.any() else float(np.median(lc)),
+        "conf": cf, "cf_fast": cf_fast, "cf_slow": cf_slow, "f0": f0, "flat": fl,
+        "flux": flux, "act_raw": act_raw, "act_cdf": act_cdf, "A_fast": A_fast, "A_slow": A_slow,
+        "density": density, "onset_near": onset_near, "onsets_s": ons,
+        "slope_db": slope_db, "slope_lc": slope_lc, "segment": seg,
+        "phrase_rms": phrase_rms, "activity_info": act_info, "n_src": n_src,
+    }
+
+
+def find_source_copy_grains(xc, tr, arrays, info, cache, thr=0.95, per_frame=6):
+    """Corpus grains that ARE the source phrase (the source recording is part
+    of the corpus): descriptor kNN per present source step, then verified by
+    normalised waveform correlation over +-1 hop. Such grains get a strong
+    penalty in every voice, so no voice simply replays (or delays) the
+    phrase it accompanies. Returns a boolean mask over grains."""
+    geo = info["geometry"]
+    H, G = geo["H"], geo["G"]
+    N = len(arrays["glob_desc"])
+    is_copy = np.zeros(N, bool)
+    ks = np.flatnonzero(tr["present"])
+    if ks.size == 0:
+        return is_copy
+    fg = arrays["usable"].astype(bool)
+    base = np.flatnonzero(fg)
+    m = int(min(per_frame, base.size))
+    nn, _, _ = knn_search(tr["desc"][ks], arrays["glob_desc"][base], m)
+    pad = np.concatenate([np.zeros(H), xc, np.zeros(G + 2 * H)])
+    checked = set()
+    for r, k in enumerate(ks):
+        ref = pad[k * H: k * H + G + 2 * H]          # source around step k (+-1 hop)
+        if float(np.dot(ref, ref)) < 1e-10:
+            continue
+        for j in base[nn[r]]:
+            if is_copy[j] or (j, k) in checked:
+                continue
+            checked.add((j, k))
+            g = cache(j).astype(np.float64)[:G]
+            gn = float(np.linalg.norm(g))
+            if gn < 1e-9:
+                continue
+            L = 1 << int(math.ceil(math.log2(len(ref) + len(g))))
+            cc = np.fft.irfft(np.fft.rfft(ref, L) * np.conj(np.fft.rfft(g, L)), L)[:len(ref) - len(g) + 1]
+            e = np.convolve(ref * ref, np.ones(len(g)), mode="valid")
+            rho = cc / (gn * np.sqrt(np.maximum(e, 1e-12)))
+            if float(np.max(rho)) >= thr:
+                is_copy[j] = True
+    return is_copy
+
+
+def _poly_params(mode, s, D):
+    """Mode-dependent weights. s = relationship strength, D = diversity."""
+    rel = 0.25 + 0.75 * s
+    if mode == "parallel":
+        P = dict(w_tr=1.2, wp=1.0, w_act=1.2, w_bri=0.8, w_loud=0.6, w_ton=0.8,
+                 w_sim=0.6 + 0.8 * s, w_close=0.0, w_traj=0.5, jump0=0.5 + 0.5 * s,
+                 topk=1 + _round_half_up(3 * (1 - s)), temp=0.03 + 0.15 * (1 - s), w_int_act=0.2)
+    elif mode == "complementary":
+        P = dict(w_tr=1.2, wp=0.6, w_act=1.2, w_bri=0.6, w_loud=0.6, w_ton=0.4,
+                 w_sim=0.15 + 0.25 * s, w_close=0.4 * s, w_traj=0.7, jump0=0.6 + 0.4 * s,
+                 topk=2 + _round_half_up(4 * (1 - s)), temp=0.05 + 0.20 * (1 - s), w_int_act=0.8)
+    else:
+        P = dict(w_tr=1.4, wp=0.6, w_act=0.8, w_bri=0.8, w_loud=0.3, w_ton=0.5,
+                 w_sim=0.2 + 0.8 * s, w_close=0.0, w_traj=0.9, jump0=0.5,
+                 topk=3 + _round_half_up(6 * (1 - s)), temp=0.10 + 0.25 * (1 - s), w_int_act=0.5)
+    for k in ("w_act", "w_bri", "w_loud", "w_ton"):
+        P[k] *= rel
+    P["dwell_pen"] = 0.4
+    P["s"], P["D"], P["mode"] = s, D, mode
+    return P
+
+
+def _voice_offset(v, D, scale):
+    """Brightness offset (ln Hz) per voice slot: 0, +, - (voice 1 unshifted,
+    so it does not depend on how many voices exist)."""
+    return (0.0, +1.0, -1.0)[v] * scale * D * _LN2
+
+
+def _poly_voice_targets(mode, v, tr, s, D, rng_walk, others_act):
+    """Per-step targets for voice v (0-based). others_act: list of arrays
+    (activity * presence) of the voices this one is conditioned on."""
+    K = tr["K"]
+    slot = tr["slot_s"]
+    sig_s = 0.5 / slot
+    T = K * slot
+    present = tr["present"]
+    out = {"jump_factor": np.ones(K), "contour_db": np.zeros(K), "ref_desc": None,
+           "w_sim_t": np.ones(K), "w_close_t": np.zeros(K)}
+    if mode == "parallel":
+        bridge = _round_half_up(0.6 * (1 - s) / slot)
+        pres = _min_runs(present, max(1, _round_half_up(0.2 / slot)), bridge + 1) if bridge > 0 else present.copy()
+        # gaps longer than the bridge are kept: the voice follows the pauses
+        out["presence"] = pres
+        out["act"] = tr["A_fast"].copy()
+        out["loud"] = tr["rel_fast"].copy()
+        out["bright"] = tr["lc_fast"] + _voice_offset(v, D, 0.5)
+        out["tonal"] = tr["cf_fast"].copy()
+        out["ref_desc"] = tr["desc_fast"]
+        out["jump_factor"] = 1.0 - 0.75 * s * tr["onset_near"]
+        med = float(np.median(tr["rel_slow"][present])) if present.any() else 0.0
+        out["contour_db"] = np.clip(0.6 * s * (tr["rel_slow"] - med), -15.0, 6.0)
+    elif mode == "complementary":
+        E = tr["A_slow"] * tr["pres_slow"]
+        if others_act:
+            E = E + 0.5 * np.mean([_gauss_smooth(a, sig_s) for a in others_act], axis=0)
+        loudn = np.clip((tr["rel_slow"] + 30.0) / 30.0, 0.0, 1.0)
+        rest_score = _gauss_smooth(E * loudn, sig_s * 0.5)
+        thr = (0.60, 0.48, 0.70)[v] + 0.3 * (1 - s)
+        busy = _hysteresis(rest_score, thr, thr - 0.05, _round_half_up(0.35 / slot), _round_half_up(0.5 / slot))
+        out["presence"] = ~busy
+        out["act"] = np.clip((1 - s) * 0.5 + s * (1.0 - E), 0.1, 0.9)
+        out["loud"] = -12.0 * s * loudn
+        med = tr["lc_median"]
+        out["bright"] = med + 0.6 * s * (med - tr["lc_slow"]) + _voice_offset(v, D, 0.4)
+        out["tonal"] = (1 - 0.35 * s) * tr["cf_slow"] + 0.35 * s * (1 - tr["cf_slow"])
+        out["ref_desc"] = np.repeat(tr["phrase_desc"][None, :], K, axis=0)
+        out["w_close_t"] = np.ones(K)
+        out["jump_factor"] = 0.5 + 1.0 * tr["A_slow"]
+        dense = np.clip(tr["A_slow"] * loudn, 0, 1)
+        out["contour_db"] = _gauss_smooth(3.0 * s * (1 - tr["pres_slow"]) - 4.0 * s * dense, sig_s)
+    else:  # independent
+        # own phrasing: sound phrases 1.6-4.5 s separated by 0.2-0.8 s breaths,
+        # optionally snapped to nearby source pauses when s >= 0.5
+        pres = np.zeros(K, bool)
+        k = _round_half_up(rng_walk.uniform(0.0, 0.8) / slot) if v > 0 else 0
+        src_rest = np.flatnonzero(~present)
+        while k < K:
+            L = _round_half_up(rng_walk.uniform(1.6, 4.5) / slot)
+            e = min(K, k + L)
+            if s >= 0.5 and src_rest.size:
+                near = src_rest[(src_rest >= e - _round_half_up(0.5 / slot)) & (src_rest <= e + _round_half_up(0.5 / slot))]
+                if near.size:
+                    e = int(near[0])
+            pres[k:e] = True
+            k = e + max(1, _round_half_up(rng_walk.uniform(0.2, 0.8) / slot))
+        out["presence"] = pres
+
+        def ou(x0, mu, theta, sigma, lo, hi):
+            xs = np.zeros(K)
+            xv = x0
+            for i in range(K):
+                xs[i] = xv
+                xv = xv + theta * (mu - xv) * slot + sigma * math.sqrt(slot) * rng_walk.standard_normal()
+                xv = min(hi, max(lo, xv))
+            return xs
+        b0 = tr["lc_median"] + _voice_offset(v, D, 0.7)
+        out["bright"] = ou(b0, b0, 0.3, 0.25, b0 - 1.2, b0 + 1.2)
+        a0 = float(np.mean(tr["A_fast"][present])) if present.any() else 0.5
+        out["act"] = ou(a0, 0.5, 0.4, 0.30, 0.1, 0.9)
+        c0 = float(np.median(tr["conf"][present])) if present.any() else 0.5
+        out["tonal"] = ou(c0, c0, 0.3, 0.15, 0.0, 1.0)
+        out["loud"] = ou(-6.0, -6.0, 0.5, 3.0, -18.0, 0.0)
+        out["ref_desc"] = np.repeat(tr["phrase_desc"][None, :], K, axis=0)
+        tt = np.arange(K) * slot
+        out["w_sim_t"] = np.exp(-tt / max(1e-3, (0.25 + 0.75 * s) * T))
+    return out
+
+
+def polyphonic_relationship_cost(js, k, tg, beh, glob_desc, src_desc_k, P):
+    """Source-relationship term for candidate grains js at step k."""
+    c = (P["w_act"] * np.abs(beh["act"][js] - tg["act"][k])
+         + P["w_bri"] * np.abs(beh["lncent"][js] - tg["bright"][k]) / _LN2
+         + P["w_loud"] * np.abs(beh["rel_db"][js] - tg["loud"][k]) / 12.0
+         + P["w_ton"] * np.abs(beh["conf"][js] - tg["tonal"][k]))
+    if P["w_sim"] > 0:
+        c = c + P["w_sim"] * tg["w_sim_t"][k] * np.linalg.norm(glob_desc[js] - tg["ref_desc"][k][None, :], axis=1)
+    if beh.get("is_copy") is not None:
+        c = c + 3.0 * beh["is_copy"][js]
+    if P["w_close"] > 0 and tg["w_close_t"][k] > 0:
+        # bounded penalty for being nearly identical to the simultaneous source
+        # timbre - contrast without rewarding the most distant grain
+        dd = np.linalg.norm(glob_desc[js] - src_desc_k[None, :], axis=1)
+        c = c + P["w_close"] * np.maximum(0.0, 0.35 - dd) / 0.35
+    return c
+
+
+class _OtherVoices:
+    """Precomputed view of already planned voices for the interaction term."""
+
+    def __init__(self, plans, arrays, beh, D, window_steps):
+        self.v = []
+        rid, rpos = arrays["run_id"], arrays["run_pos"]
+        for pl in plans:
+            g = np.array([st["grain"] for st in pl], dtype=np.int64)
+            key = np.where(g >= 0, rid[np.maximum(g, 0)] * 1000003 + rpos[np.maximum(g, 0)], -1)
+            self.v.append({"g": g, "key": key})
+        self.A, self.beh, self.D, self.W = arrays, beh, D, int(window_steps)
+
+    def __bool__(self):
+        return bool(self.v)
+
+    def cost(self, js, k, P):
+        c = np.zeros(len(js))
+        if not self.v:
+            return c
+        A, beh, D = self.A, self.beh, self.D
+        rid, rpos = A["run_id"][js], A["run_pos"][js]
+        ckey = rid * 1000003 + rpos
+        for o in self.v:
+            g = o["g"]
+            K = len(g)
+            near = g[max(0, k - 1):min(K, k + 2)]
+            near = near[near >= 0]
+            if near.size:
+                c += np.isin(js, near) * (1.0 + 2.0 * D)       # same grain, same time
+            if D <= 0:
+                continue
+            if k < K and g[k] >= 0:
+                gk = g[k]
+                c += ((rid == A["run_id"][gk]) & (np.abs(rpos - A["run_pos"][gk]) <= 3)) * (2.0 * D)
+                dd = np.linalg.norm(A["glob_desc"][js] - A["glob_desc"][gk], axis=1)
+                c += D * 0.8 * np.maximum(0.0, 1.0 - dd / 0.6)
+                c += D * P["w_int_act"] * np.maximum(0.0, 1.0 - np.abs(beh["act"][js] - beh["act"][gk]) / 0.3)
+                c += D * 0.4 * np.maximum(0.0, 1.0 - np.abs(beh["lncent"][js] - beh["lncent"][gk]) / (0.5 * _LN2))
+            past = o["key"][max(0, k - self.W):max(0, k - 1)]
+            past = past[past >= 0]
+            if past.size:
+                c += np.isin(ckey, past) * (0.8 * D)            # delayed copy (canon)
+        return c
+
+
+def inter_voice_diversity_cost(js, k, others, P):
+    return others.cost(js, k, P) if others else np.zeros(len(js))
+
+
+def _poly_align(prev_seg_tail, gj, lim, length):
+    """Read offset 0..lim into grain gj maximising correlation with the
+    outgoing overlap (phase-aware splice). Returns (delta, rho>=0)."""
+    if lim < 0 or prev_seg_tail is None or len(prev_seg_tail) < 8:
+        return 0, 0.0
+    r0 = prev_seg_tail - prev_seg_tail.mean()
+    rn = float(np.linalg.norm(r0))
+    best, rb = 0, -2.0
+    step = max(1, lim // 40) if lim > 40 else 1
+    for d in range(0, lim + 1, step):
+        seg = gj[d:d + length]
+        if len(seg) < length:
+            break
+        s0 = seg - seg.mean()
+        den = rn * float(np.linalg.norm(s0))
+        rho = float(np.dot(r0, s0) / den) if den > 1e-12 else 0.0
+        if rho > rb:
+            best, rb = d, rho
+    return best, max(0.0, rb)
+
+
+def _plan_voice(v, ctx, tg, others, P, rng, forced=None):
+    """Greedy step-by-step planning of one voice (or, with forced, scoring a
+    given plan with exactly the same cost terms). Returns (steps, stats)."""
+    A, beh, tr, info, cache = ctx["arrays"], ctx["beh"], ctx["traj"], ctx["info"], ctx["cache"]
+    geo = info["geometry"]
+    H, O, Le, dmax = geo["H"], geo["O"], geo["Le"], geo["dmax"]
+    sr_c = info["sample_rate"]
+    K = tr["K"]
+    fg = beh["foreground"]
+    fg_idx = np.flatnonzero(fg)
+    usable = A["usable"].astype(bool)
+    succ, real_len = A["succ"], A["real_len"]
+    gd = A["glob_desc"]
+    run_id, run_pos = A["run_id"], A["run_pos"]
+    N = len(succ)
+    use_count = np.zeros(N)
+    recent = []                       # (grain, run_id, run_pos, k)
+    recent_w = max(2, int(math.ceil(1.5 * sr_c / H)))
+    replay_back = max(3, int(math.ceil(0.6 * sr_c / H)))
+    dwell = max(1, int(math.ceil(0.30 * sr_c / H)))
+    alpha = min(1.0, H / (0.4 * sr_c))
+    ema_d, ema_a = None, None
+    last_jump = -10 ** 9
+    steps = []
+    own_sum, int_sum, n_sound = 0.0, 0.0, 0
+    prev = None   # (grain, delta)
+
+    def rep_cost(js, k, jump):
+        r = 0.15 * use_count[js]
+        if recent:
+            rg = np.array([q[0] for q in recent if k - q[3] <= recent_w])
+            if rg.size:
+                r = r + np.isin(js, rg) * 0.6
+            if jump:
+                hit = np.zeros(len(js), bool)
+                for (g_, rr, rp, kk) in recent:
+                    if k - kk <= recent_w:
+                        hit |= ((run_id[js] == rr) & (run_pos[js] >= rp - replay_back)
+                                & (run_pos[js] <= rp + 3))
+                r = r + hit * 0.4
+        return r
+
+    def traj_cost(js):
+        if ema_d is None:
+            return np.zeros(len(js))
+        return (0.6 * np.linalg.norm(gd[js] - ema_d[None, :], axis=1)
+                + 0.4 * np.abs(beh["act"][js] - ema_a))
+
+    def jump_cost(k):
+        c = P["jump0"] * float(tg["jump_factor"][k])
+        if k - last_jump < dwell:
+            c += P["dwell_pen"]
+        return c
+
+    def score(js, tr_c, k, jump, entry):
+        own = (polyphonic_relationship_cost(js, k, tg, beh, gd, tr["desc"][k], P)
+               + P["w_traj"] * traj_cost(js) + rep_cost(js, k, jump and not entry))
+        if not entry:
+            own = own + P["w_tr"] * tr_c
+            if jump:
+                own = own + jump_cost(k)
+        inter = inter_voice_diversity_cost(js, k, others, P)
+        return own, inter
+
+    for k in range(K):
+        fstep = forced[k] if forced is not None else None
+        sounding = (fstep["grain"] >= 0) if fstep is not None else bool(tg["presence"][k])
+        if not sounding:
+            steps.append({"k": k, "grain": -1, "delta": 0, "kind": "rest", "rho": 0.0,
+                          "own": 0.0, "inter": 0.0, "fallback": None})
+            prev = None
+            continue
+        fallback = None
+        if prev is None:
+            js = fg_idx
+            trc = np.zeros(js.size)
+            kinds = np.array(["start"] * js.size, dtype=object)
+            jumpmask = np.zeros(js.size, bool)
+            entry = True
+        else:
+            entry = False
+            i, di = prev
+            s_ = int(succ[i])
+            s_ok = s_ >= 0 and usable[s_] and real_len[s_] >= di + Le
+            e = A["edge_dst"][i]
+            valid = e >= 0
+            ej = e[valid].astype(np.int64)
+            te = (A["edge_c_desc"][i][valid] + 1.0 * A["edge_c_energy"][i][valid]
+                  + P["wp"] * A["edge_c_pitch"][i][valid])
+            ok = fg[ej]
+            ej, te = ej[ok], te[ok]
+            if ej.size == 0 and not s_ok:
+                allj = fg_idx[fg_idx != i]
+                cd, ce, cp = _transition_components(A["tail_desc"][i], A["lnrms_tail"][i], A["f0_tail"][i],
+                                                    A["conf_tail"][i], A["head_desc"][allj], A["lnrms_head"][allj],
+                                                    A["f0_head"][allj], A["conf_head"][allj])
+                tall = cd + 1.0 * ce + P["wp"] * cp
+                o = np.argsort(tall, kind="stable")[:32]
+                ej, te = allj[o], tall[o]
+                fallback = "graph dead end - searched all heads directly"
+            if s_ok:
+                js = np.concatenate([[s_], ej]).astype(np.int64)
+                trc = np.concatenate([[float(A["succ_c_desc"][i])], te])
+                kinds = np.array(["chrono"] + ["graph"] * ej.size, dtype=object)
+            else:
+                js, trc = ej, te
+                kinds = np.array(["graph"] * ej.size, dtype=object)
+            if fallback:
+                kinds[kinds == "graph"] = "fallback"
+            jumpmask = kinds != "chrono"
+        if fstep is not None:
+            g = int(fstep["grain"])
+            hit = np.flatnonzero(js == g)
+            if hit.size:
+                n = int(hit[0])
+                own_v, int_v = score(js[n:n + 1], trc[n:n + 1], k, bool(jumpmask[n]), entry)
+            else:
+                # forced grain outside this step's candidate set (other plan's
+                # jump): score it with an exact transition cost
+                if entry:
+                    tcost = np.zeros(1)
+                else:
+                    i, di = prev
+                    cd, ce, cp = _transition_components(A["tail_desc"][i], A["lnrms_tail"][i], A["f0_tail"][i],
+                                                        A["conf_tail"][i], A["head_desc"][[g]], A["lnrms_head"][[g]],
+                                                        A["f0_head"][[g]], A["conf_head"][[g]])
+                    tcost = cd + ce + P["wp"] * cp
+                own_v, int_v = score(np.array([g]), tcost, k, not entry, entry)
+            ch, kind, delta, rho = g, fstep["kind"], int(fstep["delta"]), float(fstep["rho"])
+            own_c, int_c = float(own_v[0]), float(int_v[0])
+        else:
+            own_a, int_a = score(js, trc, k, True, entry) if entry else (None, None)
+            if not entry:
+                own_a = np.zeros(js.size)
+                int_a = np.zeros(js.size)
+                for flag in (False, True):
+                    sel = jumpmask == flag
+                    if sel.any():
+                        o_, i_ = score(js[sel], trc[sel], k, flag, False)
+                        own_a[sel], int_a[sel] = o_, i_
+            tot = own_a + int_a
+            n = _select(tot, {"topk": P["topk"], "temp": P["temp"]}, rng)
+            ch, kind = int(js[n]), str(kinds[n])
+            own_c, int_c = float(own_a[n]), float(int_a[n])
+            if kind == "chrono":
+                delta, rho = prev[1], 1.0
+            elif kind == "start":
+                delta, rho = 0, 0.0
+            else:
+                i, di = prev
+                gi = cache(i)
+                tail_ref = gi[di + H: di + Le].astype(np.float64)
+                gj = cache(ch).astype(np.float64)
+                delta, rho = _poly_align(tail_ref, gj, int(min(dmax, real_len[ch] - Le)), len(tail_ref))
+        if kind in ("graph", "fallback"):
+            last_jump = k
+        steps.append({"k": k, "grain": ch, "delta": int(delta), "kind": kind, "rho": float(rho),
+                      "own": round(own_c, 5), "inter": round(int_c, 5), "fallback": fallback})
+        own_sum += own_c
+        int_sum += int_c
+        n_sound += 1
+        prev = (ch, int(delta))
+        use_count[ch] += 1
+        recent.append((ch, int(run_id[ch]), int(run_pos[ch]), k))
+        if len(recent) > 4 * recent_w:
+            recent.pop(0)
+        dv = gd[ch].astype(np.float64)
+        ema_d = dv if ema_d is None else (1 - alpha) * ema_d + alpha * dv
+        ema_a = beh["act"][ch] if ema_a is None else (1 - alpha) * ema_a + alpha * beh["act"][ch]
+    stats = {"own_mean": own_sum / max(1, n_sound), "inter_mean": int_sum / max(1, n_sound),
+             "total_mean": (own_sum + int_sum) / max(1, n_sound), "sounding_steps": n_sound}
+    return steps, stats
+
+
+def _act_track(plan, beh):
+    return np.array([beh["act"][st["grain"]] if st["grain"] >= 0 else 0.0 for st in plan])
+
+
+def _voice_rng(seed, v, pass_no, salt):
+    return np.random.default_rng(np.random.SeedSequence([int(seed) & 0xFFFFFFFF, salt, int(v), int(pass_no)]))
+
+
+def plan_polyphonic_voices(ctx, mode, n_voices, s, D, seed, refine=True):
+    """Sequential conditioning + optional refinement sweep (see header)."""
+    tr = ctx["traj"]
+    window = int(math.ceil(2.0 / tr["slot_s"]))
+    plans, targets, stats, P = [], [], [], _poly_params(mode, s, D)
+    walk = [_voice_rng(seed, v, 0, POLY_SEED_SALT_WALK) for v in range(n_voices)]
+    walk_targets = {}
+    for v in range(n_voices):
+        others_act = [_act_track(pl, ctx["beh"]) for pl in plans]
+        if mode == "independent":
+            if v not in walk_targets:
+                walk_targets[v] = _poly_voice_targets(mode, v, tr, s, D, walk[v], [])
+            tg = walk_targets[v]
+        else:
+            tg = _poly_voice_targets(mode, v, tr, s, D, None, others_act)
+        others = _OtherVoices(plans, ctx["arrays"], ctx["beh"], D, window)
+        pl, st = _plan_voice(v, ctx, tg, others, P, _voice_rng(seed, v, 1, POLY_SEED_SALT_SELECT))
+        plans.append(pl)
+        targets.append(tg)
+        stats.append(dict(st, refined=False, pass1_total_mean=st["total_mean"]))
+    refine_log = []
+    if refine and n_voices > 1:
+        for v in range(n_voices):
+            rest = [plans[u] for u in range(n_voices) if u != v]
+            others = _OtherVoices(rest, ctx["arrays"], ctx["beh"], D, window)
+            if mode == "independent":
+                tg = walk_targets[v]
+            else:
+                tg = _poly_voice_targets(mode, v, tr, s, D, None, [_act_track(p, ctx["beh"]) for p in rest])
+            _, old = _plan_voice(v, ctx, tg, others, P, None, forced=plans[v])
+            new_pl, new = _plan_voice(v, ctx, tg, others, P, _voice_rng(seed, v, 2, POLY_SEED_SALT_SELECT))
+            accept = new["total_mean"] < old["total_mean"] - 1e-9
+            refine_log.append({"voice": v + 1, "old_total_mean": round(old["total_mean"], 5),
+                               "new_total_mean": round(new["total_mean"], 5), "accepted": bool(accept)})
+            if accept:
+                changed = sum(1 for a, b in zip(plans[v], new_pl) if a["grain"] != b["grain"])
+                refine_log[-1]["steps_changed"] = changed
+                plans[v] = new_pl
+                targets[v] = tg
+                stats[v] = dict(new, refined=True, pass1_total_mean=stats[v]["pass1_total_mean"])
+    return plans, targets, stats, P, refine_log
+
+
+def render_polyphonic_voice(plan, info, cache, n_c):
+    """Overlap-add on the corpus grid. Same Tukey geometry as continuation:
+    chronological neighbours reconstruct the corpus recording exactly; jumps
+    get the correlation-adaptive overlap correction; an entry after a rest
+    (or at sample 0) uses the rising taper as its soft entrance and gets NO
+    correction (there is nothing to cross-fade with)."""
+    geo = info["geometry"]
+    H, O, Le = geo["H"], geo["O"], geo["Le"]
+    out = np.zeros(n_c + Le + H, dtype=np.float64)
+    gain = np.ones_like(out)
+    w = _tukey(Le, O, rise=True)
+    m = (np.arange(O) + 0.5) / O
+    f_fall = np.cos(0.5 * np.pi * m) ** 2
+    f_rise = np.sin(0.5 * np.pi * m) ** 2
+    for st in plan:
+        if st["grain"] < 0:
+            continue
+        p = st["k"] * H
+        if p >= len(out):
+            break
+        g = cache(st["grain"])
+        seg = g[st["delta"]: st["delta"] + Le].astype(np.float64)
+        if len(seg) < Le:
+            seg = np.pad(seg, (0, Le - len(seg)))
+        end = min(len(out), p + Le)
+        out[p:end] += (seg * w)[:end - p]
+        if st["kind"] in ("graph", "fallback"):
+            rho = float(np.clip(st["rho"], 0.0, 1.0))
+            comp = 1.0 / np.sqrt(f_fall ** 2 + f_rise ** 2 + 2 * rho * f_fall * f_rise)
+            e2 = min(len(out), p + O)
+            gain[p:e2] *= comp[:e2 - p]
+    return (out * gain)[:n_c]
+
+
+def _sound_mask(plan, info, sr, n):
+    geo = info["geometry"]
+    H, Le, sr_c = geo["H"], geo["Le"], info["sample_rate"]
+    msk = np.zeros(n, bool)
+    for st in plan:
+        if st["grain"] >= 0:
+            a = int(st["k"] * H * sr / float(sr_c))
+            b = int(math.ceil((st["k"] * H + Le) * sr / float(sr_c)))
+            msk[max(0, a):min(n, b)] = True
+    return msk
+
+
+def _active_median_rms(y, msk, sr, floor_db=40.0):
+    """The SAME level measure as the source's active RMS: median RMS of the
+    10 ms frames that lie inside the sounding mask and within floor_db of
+    the loudest such frame."""
+    fn = max(1, _round_half_up(0.010 * sr))
+    nf = len(y) // fn
+    if nf == 0:
+        return 0.0
+    fr = np.sqrt(np.mean(y[:nf * fn].reshape(nf, fn) ** 2, axis=1))
+    fm = msk[:nf * fn].reshape(nf, fn).mean(axis=1) >= 0.5
+    v = fr[fm]
+    if v.size == 0 or v.max() <= 0:
+        return 0.0
+    v = v[v >= v.max() * 10 ** (-floor_db / 20.0)]
+    return float(np.median(v))
+
+
+def prepare_polyphonic_levels(y, msk, sr, phrase_rms, level_mode, voice_level_db, contour_db_steps, slot_s,
+                              keep=0.5):
+    """Voice level matching (distinct from final mix normalisation):
+      match  - constant gain so the voice's median active level equals the
+               source's active RMS + voice_level_db (bounded +-30 dB, so weak
+               corpus material is not left inaudible), then a slow masked
+               levelling that removes half of the grain-to-grain swings
+               (bounded +-9 dB, 100 ms smoothing, computed only where the
+               voice sounds so rests never pump), times the relationship's
+               behavioural contour (parallel: follows the source dynamics;
+               complementary: prominence in source pauses, recession in
+               dense passages).
+      corpus - corpus level kept, + voice_level_db and the contour only.
+    Then a ceiling: if the voice would exceed 0.98 it is scaled down as a
+    whole (recorded) - never per-voice peak normalisation upwards."""
+    from scipy.ndimage import uniform_filter1d
+    n = len(y)
+    info = {}
+    t = np.arange(n) / float(sr)
+    contour = np.interp(t, np.arange(len(contour_db_steps)) * slot_s + 0.5 * slot_s, contour_db_steps) \
+        if len(contour_db_steps) > 1 else np.zeros(n)
+    g_log = np.zeros(n)
+    if msk.any():
+        w = max(1, _round_half_up(0.200 * sr))
+        mf = msk.astype(np.float64)
+        pw = uniform_filter1d(y * y * mf, size=w, mode="nearest")
+        den = uniform_filter1d(mf, size=w, mode="nearest")
+        valid = den > 0.2
+        lvl = np.sqrt(np.maximum(pw / np.maximum(den, 1e-9), 1e-14))
+        ll = np.log(lvl)
+        med = float(np.median(ll[valid & msk])) if (valid & msk).any() else float(np.median(ll[msk]))
+        if level_mode == "match":
+            g0 = math.log(max(phrase_rms, 1e-7)) + voice_level_db / 20.0 * math.log(10.0) - med
+            g0 = float(np.clip(g0, -math.log(10 ** 1.5), math.log(10 ** 1.5)))
+            loc = (keep - 1.0) * (ll - med)
+            loc = np.where(valid, np.clip(loc, -math.log(10 ** (9 / 20.0)), math.log(10 ** (9 / 20.0))), 0.0)
+            idx = np.flatnonzero(valid)
+            if idx.size:
+                loc = np.interp(np.arange(n), idx, loc[idx])
+            loc = uniform_filter1d(loc, size=max(1, _round_half_up(0.100 * sr)), mode="nearest")
+            g_log = g0 + loc
+            info["match_gain_db"] = 20 * g0 / math.log(10)
+        else:
+            g_log = np.full(n, voice_level_db / 20.0 * math.log(10.0))
+            info["match_gain_db"] = voice_level_db
+    g_log = g_log + contour / 20.0 * math.log(10.0)
+    out = y * np.exp(g_log)
+    if level_mode == "match" and msk.any():
+        # one exact correction: the voice's active level (same measure as the
+        # source's) lands on target, whatever the levelling did to its shape
+        want = max(phrase_rms, 1e-7) * 10 ** (voice_level_db / 20.0)
+        got = _active_median_rms(out, msk, sr)
+        if got > 1e-9:
+            corr = float(np.clip(want / got, 10 ** (-12 / 20.0), 10 ** (12 / 20.0)))
+            out = out * corr
+            info["correction_db"] = 20 * math.log10(corr)
+    # technical fades only (no musical envelope): 5 ms at both ends
+    f = max(1, _round_half_up(0.005 * sr))
+    if n > 2 * f:
+        r = np.sin(0.5 * np.pi * (np.arange(f) + 0.5) / f) ** 2
+        out[:f] *= r
+        out[-f:] *= r[::-1]
+    pk = float(np.abs(out).max()) if n else 0.0
+    ceil_db = 0.0
+    if pk > 0.98:
+        out *= 0.98 / pk
+        ceil_db = 20 * math.log10(0.98 / pk)
+    out = np.nan_to_num(out)
+    info.update(ceiling_gain_db=ceil_db, peak=float(np.abs(out).max()) if n else 0.0,
+                active_rms=_active_median_rms(out, msk, sr),
+                target_rms=max(phrase_rms, 1e-7) * 10 ** (voice_level_db / 20.0) if level_mode == "match" else None,
+                contour_db_range=[float(contour.min()) if n else 0.0, float(contour.max()) if n else 0.0])
+    return out, info
+
+
+def _pan_gains(p100):
+    p = float(np.clip(p100, -100.0, 100.0)) / 100.0
+    return math.cos((p + 1.0) * math.pi / 4.0), math.sin((p + 1.0) * math.pi / 4.0)
+
+
+def _safe_stem_name(name):
+    s = "".join("_" if ch in '\\/:*?"<>|' or ord(ch) < 32 else ch for ch in name).strip().rstrip(".")
+    return s or "Sound"
+
+
+def _export_stems(export_dir, base, source, voices, mix, sr):
+    """Write a NEW stem set (never overwrite): if any target exists, the
+    whole set gets a _set2, _set3, ... suffix. Float32 WAV, original rate."""
+    import soundfile as sf
+    os.makedirs(export_dir, exist_ok=True)
+    base = _safe_stem_name(base)
+    for n in range(1, 1000):
+        stem = base if n == 1 else "%s_set%d" % (base, n)
+        names = ["%s_Source.wav" % stem] + ["%s_Voice_%d.wav" % (stem, v + 1) for v in range(len(voices))]
+        if mix is not None:
+            names.append("%s_Stereo_Mix.wav" % stem)
+        paths = [os.path.join(export_dir, nm) for nm in names]
+        if not any(os.path.exists(p) for p in paths):
+            break
+    else:
+        raise RuntimeError("could not find a free stem-set name in %s" % export_dir)
+    data = [source] + list(voices) + ([mix] if mix is not None else [])
+    tag = "%d_%d" % (os.getpid(), int(time.time() * 1000))
+    written = []
+    try:
+        for p, d in zip(paths, data):
+            tmp = p + ".part_" + tag + ".wav"
+            sf.write(tmp, np.asarray(d, dtype=np.float32), sr, subtype="FLOAT")
+            if os.path.exists(p):
+                os.remove(tmp)
+                raise RuntimeError("stem appeared during export, not overwriting: %s" % p)
+            os.replace(tmp, p)
+            written.append(p)
+    except Exception:
+        for p in written:
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+        raise
+    return stem, paths
+
+
+def _write_poly_textgrid(path, plans, tr, info, index, total_s):
+    H, sr_c = info["geometry"]["H"], info["sample_rate"]
+    code = {"start": "S", "chrono": "C", "graph": "J", "fallback": "F"}
+
+    def tier(ivs):
+        out, cur = [], 0.0
+        for a, b, lab in ivs:
+            a, b = max(a, cur), min(b, total_s)
+            if b <= a + 1e-9:
+                continue
+            if a > cur + 1e-9:
+                out.append((cur, a, ""))
+            if out and out[-1][2] == lab and lab in ("", "rest", "sustained", "active") and abs(out[-1][1] - a) < 1e-9:
+                out[-1] = (out[-1][0], b, lab)
+            else:
+                out.append((a, b, lab))
+            cur = b
+        if cur < total_s - 1e-9:
+            out.append((cur, total_s, ""))
+        return out
+    tiers = [("source analysis", tier([(k * H / float(sr_c), (k + 1) * H / float(sr_c), str(tr["segment"][k]))
+                                       for k in range(tr["K"])]))]
+    for v, pl in enumerate(plans):
+        ivs = []
+        for st in pl:
+            a, b = st["k"] * H / float(sr_c), (st["k"] + 1) * H / float(sr_c)
+            if st["grain"] < 0:
+                ivs.append((a, b, ""))
+            else:
+                gm = index["grains"][st["grain"]]
+                ivs.append((a, b, ("%s %s@%.3f" % (code.get(st["kind"], "?"), gm["source_file"],
+                                                   float(gm["start_s"]))).replace('"', "'")))
+        tiers.append(("poly voice %d" % (v + 1), tier(ivs)))
+    L = ['File type = "ooTextFile"', 'Object class = "TextGrid"', "", "xmin = 0",
+         "xmax = %.9f" % total_s, "tiers? <exists>", "size = %d" % len(tiers), "item []:"]
+    for n, (name, iv) in enumerate(tiers, 1):
+        L += ["    item [%d]:" % n, '        class = "IntervalTier"', '        name = "%s"' % name,
+              "        xmin = 0", "        xmax = %.9f" % total_s, "        intervals: size = %d" % len(iv)]
+        for m, (a, b, lab) in enumerate(iv, 1):
+            L += ["        intervals [%d]:" % m, "            xmin = %.9f" % a,
+                  "            xmax = %.9f" % b, '            text = "%s"' % lab]
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("\n".join(L) + "\n")
+
+
+def _poly_voice_stats(plan, beh, A, H, sr_c):
+    kinds = [st["kind"] for st in plan]
+    snd = [st for st in plan if st["grain"] >= 0]
+    dur = len(plan) * H / float(sr_c)
+    runs, r = [], 0
+    for st in plan[1:]:
+        if st["kind"] == "chrono":
+            r += 1
+        elif r:
+            runs.append(r)
+            r = 0
+    if r:
+        runs.append(r)
+    first = next((st["k"] for st in plan if st["grain"] >= 0), None)
+    last = next((st["k"] for st in reversed(plan) if st["grain"] >= 0), None)
+    return {"sounding_fraction": len(snd) / max(1, len(plan)),
+            "transitions": {k: kinds.count(k) for k in ("start", "chrono", "graph", "fallback", "rest")},
+            "jumps_per_s": (kinds.count("graph") + kinds.count("fallback")) / max(1e-9, dur),
+            "mean_chrono_run_s": (float(np.mean(runs)) * H / sr_c) if runs else 0.0,
+            "distinct_grains": len(set(st["grain"] for st in snd)),
+            "distinct_recordings": len(set(int(A["run_id"][st["grain"]]) for st in snd)),
+            "first_sound_s": None if first is None else first * H / float(sr_c),
+            "last_sound_end_s": None if last is None else (last + 1) * H / float(sr_c)}
+
+
+def polyphonic_layers(args):
+    """Wrapper: a failure is REPORTED (status error in the result file and on
+    stdout, exit 0) so the front-end can show the reason instead of a
+    generic 'no result'. The paths written are echoed on stdout."""
+    code = 0
+    try:
+        _polyphonic_layers_impl(args)
+    except SystemExit as e:
+        code = e.code if isinstance(e.code, int) else 1
+    except Exception:
+        sys.stderr.write("ERROR:\n" + traceback.format_exc() + "\n")
+        code = 1
+    if code:
+        if args.result:
+            try:
+                with open(args.result, "w", encoding="utf-8", newline="\n") as f:
+                    f.write("ccc_poly_result 1\nstatus error\nexit_code %d\n" % code)
+            except Exception:
+                pass
+        sys.stdout.write("CCC_POLY_STATUS error (code %d)\n" % code)
+    else:
+        sys.stdout.write("CCC_POLY_STATUS ok\n")
+    for label, p in (("result", args.result), ("log", getattr(args, "log", None))):
+        if p:
+            sys.stdout.write("CCC_POLY_FILE %s %s exists=%s\n" % (label, os.path.abspath(p), os.path.exists(p)))
+    for v in range(int(args.voices) if 1 <= int(args.voices) <= 3 else 0):
+        p = os.path.join(args.output_dir, "%s_voice_%d.wav" % (args.run_tag, v + 1))
+        sys.stdout.write("CCC_POLY_FILE voice%d %s exists=%s\n" % (v + 1, os.path.abspath(p), os.path.exists(p)))
+    sys.stdout.flush()
+
+
+def _polyphonic_layers_impl(args):
+    import soundfile as sf
+    nv = int(args.voices)
+    if not 1 <= nv <= POLY_MAX_VOICES:
+        _fail("--voices must be 1..3", 4)
+    mode = args.relationship
+    s = float(np.clip(args.relationship_strength / 100.0, 0.0, 1.0))
+    D = float(np.clip(args.inter_voice_diversity / 100.0, 0.0, 1.0))
+    index, _ = _load_corpus_index(args.index, mmap=True)
+    codec = make_codec(index["codec"])
+    try:
+        arrays, ginfo, built_now, why = load_or_build_graph(args.index, index, codec, rebuild=False)
+    except Exception as e:
+        _fail("could not load or build the transition graph: %s" % e)
+    try:
+        si = sf.info(args.input)
+    except Exception as e:
+        _fail("cannot read source WAV: %s" % e, 3)
+    if si.channels != 1:
+        _fail("source has %d channels; Polyphonic Layers v1 accepts mono only" % si.channels, 5)
+    x, sr = sf.read(args.input, dtype="float64", always_2d=True)
+    x = np.nan_to_num(x[:, 0])
+    N = len(x)
+    if N < 0.3 * sr:
+        _fail("source is shorter than 0.3 s", 3)
+    if float(np.abs(x).max()) < 1e-6:
+        _fail("source is silent", 3)
+    beh = corpus_behaviour(arrays)
+    if beh["foreground"].sum() < 2:
+        _fail("the corpus has fewer than 2 usable grains", 6)
+    t0 = time.time()
+    tr = analyze_source_trajectory(x, sr, codec, arrays, ginfo, beh)
+    if not tr["present"].any():
+        _fail("no active sound found in the source", 3)
+    cache = _GrainCache(args.index, index["grains"])
+    xc_src = resample_to(x.astype(np.float32), sr, int(ginfo["sample_rate"])).astype(np.float64)
+    beh["is_copy"] = find_source_copy_grains(xc_src, tr, arrays, ginfo, cache)
+    t_an = time.time() - t0
+    ctx = {"arrays": arrays, "beh": beh, "traj": tr, "info": ginfo, "cache": cache}
+    t0 = time.time()
+    plans, targets, vstats, P, refine_log = plan_polyphonic_voices(ctx, mode, nv, s, D, args.seed,
+                                                                   refine=bool(args.refine))
+    t_plan = time.time() - t0
+    sr_c = int(ginfo["sample_rate"])
+    H = ginfo["geometry"]["H"]
+    n_c = int(math.ceil(N * sr_c / float(sr))) + 2 * H
+    voices, linfo = [], []
+    t0 = time.time()
+    for v in range(nv):
+        raw_c = render_polyphonic_voice(plans[v], ginfo, cache, n_c)
+        y = resample_to(raw_c.astype(np.float32), sr_c, sr).astype(np.float64)
+        y = y[:N] if len(y) >= N else np.pad(y, (0, N - len(y)))
+        msk = _sound_mask(plans[v], ginfo, sr, N)
+        y, li = prepare_polyphonic_levels(y, msk, sr, tr["phrase_rms"], args.level_mode, args.voice_level_db,
+                                          targets[v]["contour_db"], tr["slot_s"])
+        voices.append(y.astype(np.float32))
+        linfo.append(li)
+    t_render = time.time() - t0
+    # ---- pans and the stereo mix (Praat performs the same arithmetic) ----
+    if args.pan_mode == "auto":
+        pans = list(POLY_AUTO_PANS[nv])
+    else:
+        pans = [float(np.clip(p, -100, 100)) for p in (args.pan_1, args.pan_2, args.pan_3)[:nv]]
+    gS = _pan_gains(0.0)
+    gV = [_pan_gains(p) for p in pans]
+    L = gS[0] * x
+    R = gS[1] * x
+    for v in range(nv):
+        L = L + gV[v][0] * voices[v].astype(np.float64)
+        R = R + gV[v][1] * voices[v].astype(np.float64)
+    mix_peak = float(max(np.abs(L).max(), np.abs(R).max()))
+    target = 10 ** (args.mix_target_db / 20.0)
+    mix_gain = (target / mix_peak) if (args.normalize_mix and mix_peak > 1e-9) else 1.0
+    # ---- write voices atomically ----
+    os.makedirs(args.output_dir, exist_ok=True)
+    vpaths = []
+    for v in range(nv):
+        p = os.path.join(args.output_dir, "%s_voice_%d.wav" % (args.run_tag, v + 1))
+        tmp = p + ".part.wav"
+        sf.write(tmp, voices[v], sr, subtype="FLOAT")
+        os.replace(tmp, p)
+        vpaths.append(p)
+    # ---- optional DAW stems ----
+    stem_set, stem_paths = None, []
+    src_exact = bool(np.array_equal(x.astype(np.float32).astype(np.float64), x))
+    if args.export_dir:
+        mix = None
+        if args.export_mix:
+            mix = np.stack([L * mix_gain, R * mix_gain], axis=1)
+        try:
+            stem_set, stem_paths = _export_stems(args.export_dir, args.export_name or "Sound", x, voices, mix, sr)
+        except Exception as e:
+            _fail("stem export failed (no files left behind): %s" % e, 7)
+    if args.result:
+        with open(args.result, "w", encoding="utf-8", newline="\n") as f:
+            f.write("ccc_poly_result 1\nstatus ok\n")
+            f.write("sample_rate %d\nsamples %d\nvoices %d\n" % (sr, N, nv))
+            f.write("source_gain_L %.17g\nsource_gain_R %.17g\n" % gS)
+            for v in range(nv):
+                f.write("pan_%d %.17g\ngain_L_%d %.17g\ngain_R_%d %.17g\n"
+                        % (v + 1, pans[v], v + 1, gV[v][0], v + 1, gV[v][1]))
+                f.write("voice_rms_%d %.9g\nvoice_peak_%d %.9g\n"
+                        % (v + 1, linfo[v]["active_rms"], v + 1, linfo[v]["peak"]))
+            f.write("mix_peak_before %.17g\nmix_gain %.17g\n" % (mix_peak, mix_gain))
+            f.write("source_active_rms %.9g\n" % tr["phrase_rms"])
+            f.write("source_stem_exact %d\n" % (1 if src_exact else 0))
+            f.write("graph_built_now %d\n" % (1 if built_now else 0))
+            if stem_set is not None:
+                f.write("export_count %d\n" % len(stem_paths))
+                f.write("export_set %s\n" % stem_set)
+    if args.metadata:
+        write_polyphonic_metadata(args, index, ginfo, tr, plans, targets, vstats, P, refine_log, pans, gS, gV,
+                                  linfo, mix_peak, mix_gain, N, sr, beh, arrays, why, built_now,
+                                  stem_paths, src_exact, {"analysis_s": t_an, "planning_s": t_plan,
+                                                          "render_s": t_render, "grain_loads": cache.loads})
+    if args.textgrid:
+        _write_poly_textgrid(args.textgrid, plans, tr, ginfo, index, N / float(sr))
+    parts = []
+    for v in range(nv):
+        vs = _poly_voice_stats(plans[v], beh, arrays, H, sr_c)
+        tc = vs["transitions"]
+        parts.append("v%d S%d C%d J%d F%d, %.0f%% sounding" % (v + 1, tc["start"], tc["chrono"], tc["graph"],
+                                                              tc["fallback"], 100 * vs["sounding_fraction"]))
+    summ = "; ".join(parts)
+    sys.stdout.write("Polyphonic layers done: %s, %d voice(s) [%s], graph %s\n"
+                     % (mode, nv, summ, "built" if built_now else "cached"))
+
+
+def write_polyphonic_metadata(args, index, ginfo, tr, plans, targets, vstats, P, refine_log, pans, gS, gV, linfo,
+                              mix_peak, mix_gain, N, sr, beh, A, why, built_now, stem_paths, src_exact, timing):
+    H, sr_c = ginfo["geometry"]["H"], ginfo["sample_rate"]
+    per_voice = []
+    for v, pl in enumerate(plans):
+        steps = []
+        for st in pl:
+            if st["grain"] < 0:
+                steps.append({"k": st["k"], "t_s": round(st["k"] * H / float(sr_c), 6), "transition": "rest"})
+                continue
+            gm = index["grains"][st["grain"]]
+            steps.append({"k": st["k"], "t_s": round(st["k"] * H / float(sr_c), 6), "grain_id": gm["id"],
+                          "corpus_file": gm["source_file"], "corpus_start_s": float(gm["start_s"]),
+                          "read_offset_samples": st["delta"], "transition": st["kind"],
+                          "own_cost": st["own"], "interaction_cost": st["inter"],
+                          "overlap_correlation": round(st["rho"], 4), "fallback": st["fallback"]})
+        per_voice.append({
+            "voice": v + 1, "pan": pans[v], "gain_L": gV[v][0], "gain_R": gV[v][1],
+            "levels": linfo[v], "planning": vstats[v],
+            "summary": _poly_voice_stats(pl, beh, A, H, sr_c), "steps": steps})
+    meta = {
+        "mode": "polyphonic-layers",
+        "decisions_vs_diagnostics": ("'voices[*].steps', pans, gains, mix_gain and 'parameters' are the "
+                                     "algorithm's actual decisions; 'source_analysis' and 'voices[*].summary' are "
+                                     "descriptive measurements. No harmonic/consonance claim is made."),
+        "source": {"input": os.path.basename(args.input), "name": args.export_name, "samples": N,
+                   "sample_rate": sr, "duration_s": N / float(sr), "active_rms": tr["phrase_rms"],
+                   "stem_exact_in_float32": src_exact,
+                   "corpus_grains_identified_as_this_source": int(beh["is_copy"].sum()),
+                   "note": "grains identified as copies of the source phrase are penalised in every voice"},
+        "corpus": {"codec": index["codec"], "index_json_sha256": ginfo.get("index_json_sha256"),
+                   "corpus_sample_rate": sr_c, "graph_schema": ginfo.get("graph_schema"),
+                   "graph_status": why, "graph_built_now": built_now,
+                   "descriptor": ginfo.get("descriptor", {}).get("mode")},
+        "parameters": {"relationship": args.relationship, "voices": len(plans),
+                       "relationship_strength": args.relationship_strength,
+                       "inter_voice_diversity": args.inter_voice_diversity, "seed": int(args.seed),
+                       "refine": bool(args.refine), "level_mode": args.level_mode,
+                       "voice_level_db": args.voice_level_db, "pan_mode": args.pan_mode,
+                       "normalize_mix": bool(args.normalize_mix), "mix_target_db": args.mix_target_db,
+                       "output_mode": args.output_mode, "weights": {k: (round(v, 4) if isinstance(v, float) else v)
+                                                                     for k, v in P.items()}},
+        "seeding": "per voice: numpy SeedSequence([seed, salt, voice, pass]) - independent of the voice count",
+        "refinement": refine_log,
+        "mix": {"source_gain_L": gS[0], "source_gain_R": gS[1], "peak_before_normalisation": mix_peak,
+                "normalisation_gain": mix_gain, "normalisation_gain_db": 20 * math.log10(mix_gain),
+                "applies_to": "stereo mix only - separate voice objects and stems keep their pre-mix level"},
+        "exported_files": stem_paths,
+        "timing": timing,
+        "voices": per_voice,
+        "source_analysis": {
+            "step_s": tr["slot_s"], "segment": [str(x) for x in tr["segment"]],
+            "present": [bool(x) for x in tr["present"]],
+            "activity": [round(float(x), 4) for x in tr["A_fast"]],
+            "rel_loudness_db": [round(float(x), 2) for x in tr["rel_db"]],
+            "brightness_hz": [round(float(math.exp(x)), 1) for x in tr["lncent"]],
+            "periodicity": [round(float(x), 3) for x in tr["conf"]],
+            "f0_hz": [round(float(x), 1) for x in tr["f0"]],
+            "onsets_s": [round(float(x), 4) for x in tr["onsets_s"]],
+        },
+    }
+    with open(args.metadata, "w") as f:
+        json.dump(meta, f, indent=1)
+
+
+# ============================================================
 # CLI
 # ============================================================
 
@@ -3888,6 +5164,31 @@ def _nonneg_float(x):
             "clamped to 0.\n" % v)
         v = 0.0
     return v
+
+
+def _expand_arg_files(argv):
+    out = [argv[0]] if argv else []
+    for a in argv[1:]:
+        if a.startswith("@") and len(a) > 1 and os.path.isfile(a[1:]):
+            raw = open(a[1:], "rb").read()
+            if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
+                txt = raw.decode("utf-16")
+            else:
+                try:
+                    txt = raw.decode("utf-8-sig")
+                except UnicodeDecodeError:
+                    txt = raw.decode("latin-1")
+            lines = txt.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+            if lines and lines[-1] == "":
+                lines = lines[:-1]
+            out.extend(lines)
+        else:
+            out.append(a)
+    return out
+
+
+_OPTIONAL_PATH_ARGS = ("textgrid", "metadata", "export_dir", "result", "contour_out", "log",
+                       "success_marker", "export_name")
 
 
 def main():
@@ -4069,14 +5370,74 @@ def main():
     ct.add_argument("--rebuild-graph", type=int, default=0)
     ct.set_defaults(func=continuation_tail)
 
+    pl = sub.add_parser("polyphonic-layers", parents=[common],
+                        help="generate 1-3 sample-aligned corpus voices that coexist with a phrase "
+                             "(voices written as float WAV; the stereo mix is built in Praat)")
+    pl.add_argument("--input", required=True, help="mono source WAV exported by Praat (32-bit PCM)")
+    pl.add_argument("--index", required=True, help="EXISTING corpus index prefix")
+    pl.add_argument("--output-dir", required=True, help="temporary working directory for the voice WAVs")
+    pl.add_argument("--run-tag", required=True, help="unique run identifier used in the voice file names")
+    pl.add_argument("--voices", type=int, default=2)
+    pl.add_argument("--relationship", choices=POLY_RELATIONSHIPS, default="parallel")
+    pl.add_argument("--relationship-strength", type=float, default=75.0, help="0..100")
+    pl.add_argument("--inter-voice-diversity", type=float, default=50.0, help="0..100")
+    pl.add_argument("--seed", type=int, default=1234)
+    pl.add_argument("--refine", type=int, default=1,
+                    help="1 = refinement sweep (each voice re-planned against all others, kept only if "
+                         "cheaper); 0 = strictly sequential, voice 1 independent of the voice count")
+    pl.add_argument("--level-mode", choices=("match", "corpus"), default="match",
+                    help="match = voices matched to the source's active RMS + --voice-level-db")
+    pl.add_argument("--voice-level-db", type=float, default=-6.0)
+    pl.add_argument("--pan-mode", choices=("auto", "manual"), default="auto")
+    pl.add_argument("--pan-1", type=float, default=-60.0)
+    pl.add_argument("--pan-2", type=float, default=60.0)
+    pl.add_argument("--pan-3", type=float, default=0.0)
+    pl.add_argument("--normalize-mix", type=int, default=1)
+    pl.add_argument("--mix-target-db", type=float, default=-1.0)
+    pl.add_argument("--output-mode", choices=("mix", "voices", "both"), default="both",
+                    help="recorded in metadata; Praat assembles the objects")
+    pl.add_argument("--export-dir", default=None, help="write aligned 32-bit float DAW stems here")
+    pl.add_argument("--export-name", default=None, help="base name of the stems (the Sound's name)")
+    pl.add_argument("--export-mix", type=int, default=1, help="also export the normalised stereo mix")
+    pl.add_argument("--metadata", default=None)
+    pl.add_argument("--textgrid", default=None)
+    pl.add_argument("--result", default=None, help="key/value result read by Praat")
+    pl.set_defaults(func=polyphonic_layers)
+
     cg = sub.add_parser("continuation-graph", parents=[common],
                         help="build/validate the continuation transition graph only")
     cg.add_argument("--index", required=True)
     cg.add_argument("--rebuild", type=int, default=0)
     cg.set_defaults(func=continuation_graph_cmd)
 
+    # v1.8.1: open the log BEFORE parsing, so a command-line error (e.g. an
+    # argument the caller's platform dropped) reaches the log Praat shows,
+    # instead of failing silently.
+    # Under GUI Praat on Windows a plain runSubprocess gives the child NO
+    # stdout (sys.stdout is None), so every final status print crashed with
+    # AttributeError after the real work. Give such streams a null sink.
+    if sys.stdout is None:
+        sys.stdout = open(os.devnull, "w")
+    if sys.stderr is None:
+        sys.stderr = open(os.devnull, "w")
+    # v1.8.3: "@file" arguments are expanded from a file with one argument per
+    # line. On a reported Windows machine the child received only the first
+    # 1024 characters of its command line, silently cutting --result/--log;
+    # an argument file keeps the command line short whatever the paths are.
+    sys.argv = _expand_arg_files(sys.argv)
+    log_pre = None
+    for i, a in enumerate(sys.argv):
+        if a == "--log" and i + 1 < len(sys.argv):
+            log_pre = sys.argv[i + 1]
+        elif a.startswith("--log="):
+            log_pre = a[6:]
+    _install_log_tee(log_pre if log_pre not in (None, "", "-") else None)
     args = p.parse_args()
-    _install_log_tee(getattr(args, "log", None))
+    # "-" = "no file" for optional paths. Praat sends "-" rather than an empty
+    # string, because Windows drops empty arguments from the command line.
+    for k in _OPTIONAL_PATH_ARGS:
+        if getattr(args, k, None) == "-":
+            setattr(args, k, None)
     args.func(args)
 
 

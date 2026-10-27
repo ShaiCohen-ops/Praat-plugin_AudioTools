@@ -3,6 +3,53 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
+# Version: 1.16.6 (2026) - Argument file for Polyphonic Layers
+#   v1.16.6: ROOT CAUSE of the Windows failure found - the backend received
+#   only the first 1024 characters of its command line (mode 6 needs ~1200),
+#   so --result was cut mid-path and --log lost. Mode 6 now writes its
+#   arguments to a temporary file and passes "@file". Needs backend 1.8.3.
+# Version: 1.16.5 (2026) - Single capturing backend call
+#   v1.16.5: Polyphonic Layers calls the backend ONCE with runSubprocess$
+#   (stdout captured) - on a reported Windows machine the plain call returned
+#   before any backend file existed while the capturing call completed. The
+#   backend (1.8.2) reports failures as "status error"; when the result is
+#   missing the Info window shows the backend's own file report next to the
+#   paths Praat expected and the ccc_* files Praat can see.
+# Version: 1.16.4 (2026) - Write-visibility probe
+#   v1.16.4: when the backend leaves no result and no log, a probe checks
+#   whether files written by this Python are visible to Praat (Microsoft Store
+#   Python redirects writes under AppData to a private copy), and the strict
+#   re-run captures the backend's console output into the Info window.
+# Version: 1.16.3 (2026) - Start-up failure diagnosis
+#   v1.16.3: if the Polyphonic Layers backend leaves neither a result nor a
+#   log (Python never reached its first line), the identical command is run
+#   once more WITHOUT nocheck, so Praat's own error dialog reports the exact
+#   reason instead of a generic "no result" message.
+# Version: 1.16.2 (2026) - Backend version check
+#   v1.16.2: at start-up the script checks that the corpus_concat_codec.py it
+#   found (plugin_AudioTools/py/ first) is 1.8.1 or later and stops with the
+#   exact path to replace if not - an older backend fails silently. If Python
+#   writes no log at all, the failure message names the Python and backend used.
+# Version: 1.16.1 (2026) - Windows argument fix
+#   v1.16.1: optional file arguments are sent as "-" instead of an empty
+#   string. Praat's runSubprocess on Windows drops empty arguments, which
+#   broke Polyphonic Layers whenever stem export was off ("the backend
+#   produced no result"), and would have broken Match, Gesture rhyme and
+#   Continuation tail whenever Import TextGrid was off. Needs backend 1.8.1.
+# Version: 1.16.0 (2026) - Corpus Polyphonic Layers (mode 6)
+#   v1.16.0 adds a sixth mode. The selected mono Sound is analysed over its
+#   WHOLE duration and gives rise to 1-3 additional voices built from the
+#   existing corpus along the cached transition graph (backend v1.8.0,
+#   subcommand polyphonic-layers), related to the phrase as Parallel,
+#   Complementary or Independent. Every voice is exactly as long as the
+#   source (identical sample count, rate and start time). Three short dialogs:
+#   behaviour, space + level, output. The stereo mix is assembled HERE from
+#   the untouched in-memory source plus the imported voices (equal-power
+#   pan, source centred), with one common normalisation gain on the mix only;
+#   the separate voice objects keep their pre-mix level. Optional DAW stems
+#   are written by the backend as 32-bit float from a lossless 32-bit PCM
+#   export of the source (Praat itself has no float WAV writer), never
+#   overwriting an existing set. Modes 1-5 are unchanged. Needs backend 1.8.0.
 # Version: 1.15.3 (2026) - Source-anchored loudness normalisation
 #   v1.15.3: "Loudness match tail to source, then peak" no longer rescales
 #   the whole result by its loudest sample (a peakier tail pushed the source
@@ -221,7 +268,7 @@
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 # ============================================================
 
-form Corpus Concatenative Synthesis (codec) v1.15.3
+form Corpus Concatenative Synthesis (codec) v1.16.6
     comment ── Mode ──
     optionmenu Mode: 1
         option Match (synthesise from corpus)
@@ -229,6 +276,7 @@ form Corpus Concatenative Synthesis (codec) v1.15.3
         option Draw (brightness contour -> corpus)
         option Gesture rhyme (hashed bigram kinetics)
         option Corpus continuation tail
+        option Corpus polyphonic layers
     comment ── Codec (only used when BUILDING the index; match reuses the corpus codec) ──
     optionmenu Codec: 1
         option dac
@@ -294,6 +342,25 @@ normalize = 3
 join_crossfade_ms = 50
 output_mode = 1
 keep_metadata = 0
+
+# Corpus polyphonic layers (mode 6) - own field names (no clash with mode 5)
+number_of_new_voices = 2
+polyphonic_relationship = 1
+relationship_strength = 75
+inter_voice_diversity = 50
+refine_voices_jointly = 1
+stereo_panning = 1
+voice_1_pan = -60
+voice_2_pan = 60
+voice_3_pan = 0
+voice_level_mode = 1
+generated_voice_level_dB = -6
+normalize_stereo_mix = 1
+mix_peak_target_dB = -1
+layer_output = 3
+export_aligned_WAV_stems = 0
+export_folder$ = ""
+keep_layer_metadata = 0
 
 if mode = 1
     # ---- MATCH MODE ----
@@ -411,6 +478,46 @@ elsif mode = 5
             option: "Peak, source and tail separately"
             option: "Loudness match tail to source, then peak"
         boolean: "Keep metadata", keep_metadata
+    endPause: "Continue", 1
+
+elsif mode = 6
+    # ---- CORPUS POLYPHONIC LAYERS ----
+    beginPause: "Polyphonic layers (1/3): behaviour"
+        natural: "Number of new voices", string$(number_of_new_voices)
+        optionMenu: "Polyphonic relationship", polyphonic_relationship
+            option: "Parallel (follow the phrase's behaviour)"
+            option: "Complementary (answer and contrast)"
+            option: "Independent (own trajectories)"
+        real: "Relationship strength", string$(relationship_strength)
+        real: "Inter voice diversity", string$(inter_voice_diversity)
+        integer: "Random seed", string$(random_seed)
+        boolean: "Refine voices jointly", refine_voices_jointly
+    endPause: "Continue", 1
+
+    beginPause: "Polyphonic layers (2/3): space + level"
+        optionMenu: "Stereo panning", stereo_panning
+            option: "Automatic stereo spread"
+            option: "Manual pan positions"
+        real: "Voice 1 pan", string$(voice_1_pan)
+        real: "Voice 2 pan", string$(voice_2_pan)
+        real: "Voice 3 pan", string$(voice_3_pan)
+        optionMenu: "Voice level mode", voice_level_mode
+            option: "Match source active RMS"
+            option: "Keep corpus level"
+        real: "Generated voice level dB", string$(generated_voice_level_dB)
+        boolean: "Normalize stereo mix", normalize_stereo_mix
+        real: "Mix peak target dB", string$(mix_peak_target_dB)
+    endPause: "Continue", 1
+
+    beginPause: "Polyphonic layers (3/3): output"
+        optionMenu: "Layer output", layer_output
+            option: "Stereo mix"
+            option: "Separate voices"
+            option: "Both"
+        boolean: "Export aligned WAV stems", export_aligned_WAV_stems
+        sentence: "Export folder", export_folder$
+        comment: "Leave the folder empty to choose it in a dialog."
+        boolean: "Keep layer metadata", keep_layer_metadata
     endPause: "Continue", 1
 endif
 
@@ -535,6 +642,17 @@ if not fileReadable(backend_script$)
     exitScript: "Cannot find corpus_concat_codec.py." + newline$
         ... + "Expected at: " + pluginDir$ + "py/  or next to this script."
 endif
+# v1.16.2: the front-end and the backend must be installed TOGETHER. An older
+# backend left in plugin_AudioTools/py/ fails silently (it rejects the new
+# command line before it can write a log), so check its version up front.
+backendText$ = readFile$(backend_script$)
+if index(backendText$, "_OPTIONAL_PATH_ARGS") = 0 or index(backendText$, "def _expand_arg_files(") = 0
+    exitScript: "The Python backend this script found is an OLDER version:" + newline$
+        ... + backend_script$ + newline$ + newline$
+        ... + "Corpus_Concatenative_Codec.praat 1.16.6 needs corpus_concat_codec.py 1.8.3 or later." + newline$
+        ... + "Replace THAT file with the new corpus_concat_codec.py and run again."
+endif
+backendText$ = ""
 
 # Internal corpus cache location. This is intentionally NOT exposed in the
 # form: the user chooses only the audio source. One successful Build replaces
@@ -588,6 +706,9 @@ probeMarker$ = tempDir$ + "ccc_probe_" + runTag$ + ".txt"
 tempBuildMarker$ = tempDir$ + "ccc_build_ok_" + runTag$ + ".txt"
 # Continuation Tail: key/value join description written by the backend.
 tempResult$ = tempDir$ + "ccc_result_" + runTag$ + ".txt"
+# Polyphonic Layers: the backend writes <tag>_voice_<v>.wav into tempDir$.
+polyTag$ = "ccc_poly_" + runTag$
+tempArgs$ = tempDir$ + "ccc_args_" + runTag$ + ".txt"
 # Persistent, normalized Draw trajectory actually used by this run. Unlike the
 # scratch drawn-gesture file (tempDrawn$), this is NOT deleted at cleanup: it is the reusable
 # compositional gesture / reproducibility record.
@@ -660,6 +781,18 @@ procedure cleanUpTempFiles
     if fileReadable(tempResult$)
         deleteFile: tempResult$
     endif
+    if fileReadable(tempArgs$)
+        deleteFile: tempArgs$
+    endif
+    for cleanV from 1 to 3
+        cleanVoice$ = tempDir$ + polyTag$ + "_voice_" + string$(cleanV) + ".wav"
+        if fileReadable(cleanVoice$)
+            deleteFile: cleanVoice$
+        endif
+        if fileReadable(cleanVoice$ + ".part.wav")
+            deleteFile: cleanVoice$ + ".part.wav"
+        endif
+    endfor
     if fileReadable(tempCrash$)
         deleteFile: tempCrash$
     endif
@@ -1805,7 +1938,7 @@ if mode = 4
         appendInfoLine: "Searching corpus for grains whose token-transition motion rhymes with the gesture..."
     endif
 
-    textgridArg$ = ""
+    textgridArg$ = "-"
     if import_textgrid
         textgridArg$ = tempTG$
     endif
@@ -1961,7 +2094,7 @@ if mode = 5
         safeSourceName$ = replace_regex$(sourceName$, "[\\/:*?""<>|]", "_", 0)
         metaPath$ = metaDir$ + safeSourceName$ + "_" + runTag$ + ".json"
     endif
-    textgridArg$ = ""
+    textgridArg$ = "-"
     if import_textgrid
         textgridArg$ = tempTG$
     endif
@@ -2226,6 +2359,382 @@ if mode = 5
 endif
 
 # ============================================================
+# CORPUS POLYPHONIC LAYERS MODE (v1.16.0)
+# The backend returns 1-3 mono voices of exactly N samples; the stereo mix
+# is assembled HERE from the untouched in-memory source.
+# ============================================================
+if mode = 6
+    if numberOfSelected("Sound") <> 1
+        exitScript: "Corpus Polyphonic Layers: please select exactly one Sound (the source phrase)."
+    endif
+    source = selected("Sound")
+    sourceName$ = selected$("Sound")
+    selectObject: source
+    srcChannels = Get number of channels
+    if srcChannels <> 1
+        exitScript: "Corpus Polyphonic Layers works on MONO Sounds only." + newline$
+            ... + "This Sound has " + string$(srcChannels) + " channels. Convert it to mono"
+            ... + " (or extract one channel) first - nothing was changed."
+    endif
+    srcSR = Get sampling frequency
+    srcN = Get number of samples
+    srcDur = Get total duration
+    srcXmin = Get start time
+    srcPeakIn = Get absolute extremum: 0, 0, "None"
+
+    if not fileReadable(corpusIndexPath$ + ".json")
+        exitScript: "No analysed corpus is available yet." + newline$
+            ... + "Run Build / replace corpus first. Polyphonic Layers uses the existing" + newline$
+            ... + "corpus and never builds or replaces it."
+    endif
+
+    # ---- validate the dialog values before calling Python ----
+    if number_of_new_voices < 1 or number_of_new_voices > 3
+        exitScript: "Number of new voices must be 1, 2 or 3 (got " + string$(number_of_new_voices) + ")."
+    endif
+    nVoices = number_of_new_voices
+    relationship_strength = max(0, min(100, relationship_strength))
+    inter_voice_diversity = max(0, min(100, inter_voice_diversity))
+    voice_1_pan = max(-100, min(100, voice_1_pan))
+    voice_2_pan = max(-100, min(100, voice_2_pan))
+    voice_3_pan = max(-100, min(100, voice_3_pan))
+    if random_seed < 0
+        random_seed = 0
+    endif
+    if generated_voice_level_dB < -40 or generated_voice_level_dB > 12
+        exitScript: "Generated voice level must be between -40 and +12 dB."
+    endif
+    if mix_peak_target_dB < -40 or mix_peak_target_dB > 0
+        exitScript: "Mix peak target must be between -40 and 0 dBFS."
+    endif
+    if polyphonic_relationship = 1
+        relArg$ = "parallel"
+    elsif polyphonic_relationship = 2
+        relArg$ = "complementary"
+    else
+        relArg$ = "independent"
+    endif
+    panArg$ = if stereo_panning = 1 then "auto" else "manual" fi
+    levelArg$ = if voice_level_mode = 1 then "match" else "corpus" fi
+    if layer_output = 1
+        layerArg$ = "mix"
+    elsif layer_output = 2
+        layerArg$ = "voices"
+    else
+        layerArg$ = "both"
+    endif
+    wantMix = layer_output = 1 or layer_output = 3
+    wantVoices = layer_output = 2 or layer_output = 3
+
+    # ---- optional DAW stem folder (asked for only when export is on) ----
+    exportDir$ = ""
+    if export_aligned_WAV_stems
+        exportDir$ = export_folder$
+        if exportDir$ = ""
+            exportDir$ = chooseFolder$ ("Choose a folder for the aligned WAV stems")
+        endif
+        if exportDir$ = ""
+            appendInfoLine: "Note: no export folder chosen - stems were not exported."
+        endif
+    endif
+
+    # Metadata is scratch unless the user asked to keep it.
+    metaPath$ = tempMeta$
+    if keep_layer_metadata
+        metaDir$ = corpusDir$ + "polyphonic_meta/"
+        createDirectory: metaDir$
+        safeSourceName$ = replace_regex$(sourceName$, "[\\/:*?""<>|]", "_", 0)
+        metaPath$ = metaDir$ + safeSourceName$ + "_" + runTag$ + ".json"
+    endif
+    textgridArg$ = "-"
+    if import_textgrid
+        textgridArg$ = tempTG$
+    endif
+    # Windows drops EMPTY arguments from runSubprocess: "-" means "no file"
+    exportArg$ = if exportDir$ = "" then "-" else exportDir$ fi
+
+    # 32-bit PCM is lossless for 16/24-bit material (Praat has no float WAV
+    # writer); the backend analyses it and, if asked, writes float32 stems.
+    selectObject: source
+    Save as 32-bit WAV file: tempInput$
+    if not fileReadable(tempInput$)
+        @cleanUpTempFiles
+        exitScript: "Could not export the selected Sound to a temp WAV."
+    endif
+
+    appendInfoLine: "=== Corpus Polyphonic Layers ==="
+    appendInfoLine: "Source: ", sourceName$, "  (", fixed$(srcDur, 3), " s, ", string$(srcN), " samples, ",
+        ... string$(srcSR), " Hz)"
+    appendInfoLine: "Relationship: ", relArg$, "   voices ", string$(nVoices), "   strength ",
+        ... string$(relationship_strength), "   diversity ", string$(inter_voice_diversity),
+        ... "   seed ", string$(random_seed)
+    if not fileReadable(corpusIndexPath$ + "_graph.json")
+        appendInfoLine: "No transition graph yet - it is built once now from the corpus grains."
+    endif
+    appendInfoLine: "Calling Python backend..."
+
+    # ONE call that captures stdout (v1.16.5). A plain runSubprocess gives the
+    # child no stdout under GUI Praat on Windows, and on a reported machine it
+    # returned before any backend file existed, while this capturing form ran
+    # the backend to completion. The backend now reports its own failures as
+    # "status error" and exits 0, so this call does not abort the script.
+    # Arguments go through a file (v1.16.6): on a reported Windows machine the
+    # child received only the first 1024 characters of its command line,
+    # silently cutting --result and --log. "@file" keeps the call short.
+    polyArgs$ = ""
+    polyArgs$ = polyArgs$ + "polyphonic-layers" + newline$
+    polyArgs$ = polyArgs$ + "--input" + newline$
+    polyArgs$ = polyArgs$ + tempInput$ + newline$
+    polyArgs$ = polyArgs$ + "--index" + newline$
+    polyArgs$ = polyArgs$ + corpusIndexPath$ + newline$
+    polyArgs$ = polyArgs$ + "--output-dir" + newline$
+    polyArgs$ = polyArgs$ + tempDir$ + newline$
+    polyArgs$ = polyArgs$ + "--run-tag" + newline$
+    polyArgs$ = polyArgs$ + polyTag$ + newline$
+    polyArgs$ = polyArgs$ + "--voices" + newline$
+    polyArgs$ = polyArgs$ + string$(nVoices) + newline$
+    polyArgs$ = polyArgs$ + "--relationship" + newline$
+    polyArgs$ = polyArgs$ + relArg$ + newline$
+    polyArgs$ = polyArgs$ + "--relationship-strength" + newline$
+    polyArgs$ = polyArgs$ + string$(relationship_strength) + newline$
+    polyArgs$ = polyArgs$ + "--inter-voice-diversity" + newline$
+    polyArgs$ = polyArgs$ + string$(inter_voice_diversity) + newline$
+    polyArgs$ = polyArgs$ + "--seed" + newline$
+    polyArgs$ = polyArgs$ + string$(random_seed) + newline$
+    polyArgs$ = polyArgs$ + "--refine" + newline$
+    polyArgs$ = polyArgs$ + string$(refine_voices_jointly) + newline$
+    polyArgs$ = polyArgs$ + "--level-mode" + newline$
+    polyArgs$ = polyArgs$ + levelArg$ + newline$
+    polyArgs$ = polyArgs$ + "--voice-level-db" + newline$
+    polyArgs$ = polyArgs$ + string$(generated_voice_level_dB) + newline$
+    polyArgs$ = polyArgs$ + "--pan-mode" + newline$
+    polyArgs$ = polyArgs$ + panArg$ + newline$
+    polyArgs$ = polyArgs$ + "--pan-1" + newline$
+    polyArgs$ = polyArgs$ + string$(voice_1_pan) + newline$
+    polyArgs$ = polyArgs$ + "--pan-2" + newline$
+    polyArgs$ = polyArgs$ + string$(voice_2_pan) + newline$
+    polyArgs$ = polyArgs$ + "--pan-3" + newline$
+    polyArgs$ = polyArgs$ + string$(voice_3_pan) + newline$
+    polyArgs$ = polyArgs$ + "--normalize-mix" + newline$
+    polyArgs$ = polyArgs$ + string$(normalize_stereo_mix) + newline$
+    polyArgs$ = polyArgs$ + "--mix-target-db" + newline$
+    polyArgs$ = polyArgs$ + string$(mix_peak_target_dB) + newline$
+    polyArgs$ = polyArgs$ + "--output-mode" + newline$
+    polyArgs$ = polyArgs$ + layerArg$ + newline$
+    polyArgs$ = polyArgs$ + "--export-dir" + newline$
+    polyArgs$ = polyArgs$ + exportArg$ + newline$
+    polyArgs$ = polyArgs$ + "--export-name" + newline$
+    polyArgs$ = polyArgs$ + sourceName$ + newline$
+    polyArgs$ = polyArgs$ + "--export-mix" + newline$
+    polyArgs$ = polyArgs$ + string$(wantMix) + newline$
+    polyArgs$ = polyArgs$ + "--metadata" + newline$
+    polyArgs$ = polyArgs$ + metaPath$ + newline$
+    polyArgs$ = polyArgs$ + "--textgrid" + newline$
+    polyArgs$ = polyArgs$ + textgridArg$ + newline$
+    polyArgs$ = polyArgs$ + "--result" + newline$
+    polyArgs$ = polyArgs$ + tempResult$ + newline$
+    polyArgs$ = polyArgs$ + "--log" + newline$
+    polyArgs$ = polyArgs$ + tempLog$ + newline$
+    writeFile: tempArgs$, polyArgs$
+    polyOut$ = runSubprocess$ (python_exe$, backend_script$, "@" + tempArgs$)
+    # Praat bug (6.4.63 / 7.0): an EMPTY runSubprocess$ result crashes index()
+    # and appendInfoLine; replace it by a literal before using it.
+    if length(polyOut$) = 0
+        polyOut$ = "(no console output)"
+    endif
+    if index(polyOut$, "CCC_POLY_STATUS") = 0
+        appendInfoLine: "Backend console output (no status line):"
+        appendInfoLine: polyOut$
+    endif
+
+    polyErr$ = ""
+    if not fileReadable(tempResult$)
+        polyErr$ = "the backend produced no result"
+    else
+        res$ = readFile$(tempResult$)
+        resSR = extractNumber(res$, "sample_rate ")
+        resN = extractNumber(res$, "samples ")
+        resV = extractNumber(res$, "voices ")
+        gSL = extractNumber(res$, "source_gain_L ")
+        gSR = extractNumber(res$, "source_gain_R ")
+        mixGain = extractNumber(res$, "mix_gain ")
+        mixPeakBefore = extractNumber(res$, "mix_peak_before ")
+        if index(res$, "status error") > 0
+            polyErr$ = "the backend reported an error (exit code "
+                ... + string$(extractNumber(res$, "exit_code ")) + ")"
+        elsif resSR = undefined or resN = undefined or resV = undefined or gSL = undefined or mixGain = undefined
+            polyErr$ = "the result file is incomplete"
+        elsif resSR <> srcSR or resN <> srcN or resV <> nVoices
+            polyErr$ = "result does not match the source (" + string$(resN) + " samples at "
+                ... + string$(resSR) + " Hz, " + string$(resV) + " voices)"
+        endif
+        for v from 1 to nVoices
+            gL'v' = extractNumber(res$, "gain_L_" + string$(v) + " ")
+            gR'v' = extractNumber(res$, "gain_R_" + string$(v) + " ")
+            pan'v' = extractNumber(res$, "pan_" + string$(v) + " ")
+            if polyErr$ = ""
+                if not fileReadable(tempDir$ + polyTag$ + "_voice_" + string$(v) + ".wav")
+                    polyErr$ = "voice " + string$(v) + " was not written"
+                elsif gL'v' = undefined or gR'v' = undefined
+                    polyErr$ = "pan gains missing for voice " + string$(v)
+                endif
+            endif
+        endfor
+    endif
+    if polyErr$ <> ""
+        @showPyLog
+        if not fileReadable(tempResult$)
+            # show both views: where the backend says it wrote, and where
+            # Praat looked
+            appendInfoLine: ""
+            appendInfoLine: "Backend report:"
+            appendInfoLine: polyOut$
+            appendInfoLine: "Praat expected the result at: ", tempResult$
+            appendInfoLine: "Praat expected the log at:    ", tempLog$
+            seen = Create Strings as file list: "ccc_seen", tempDir$ + "ccc_*"
+            nSeen = Get number of strings
+            appendInfoLine: "ccc_* files Praat sees in ", tempDir$, ": ", nSeen
+            for iSeen to min(nSeen, 12)
+                selectObject: seen
+                seenName$ = Get string: iSeen
+                appendInfoLine: "   ", seenName$
+            endfor
+            removeObject: seen
+            appendInfoLine: "Python:  ", python_exe$
+            appendInfoLine: "Backend: ", backend_script$
+        endif
+        @cleanUpTempFiles
+        exitScript: "Polyphonic Layers failed - " + polyErr$ + "." + newline$
+            ... + "The Python error (if any) is shown in the Info window above." + newline$
+            ... + "Nothing was created; the selected Sound is unchanged."
+    endif
+
+    # ---- import the voices (each must be mono, N samples, source rate) ----
+    for v from 1 to nVoices
+        Read from file: tempDir$ + polyTag$ + "_voice_" + string$(v) + ".wav"
+        voice'v' = selected("Sound")
+        vN = Get number of samples
+        vSR = Get sampling frequency
+        vCh = Get number of channels
+        if vN <> srcN or vSR <> srcSR or vCh <> 1
+            for u from 1 to v
+                removeObject: voice'u'
+            endfor
+            @cleanUpTempFiles
+            exitScript: "Polyphonic Layers: voice " + string$(v) + " has " + string$(vN) + " samples at "
+                ... + string$(vSR) + " Hz (" + string$(vCh) + " ch); expected " + string$(srcN)
+                ... + " at " + string$(srcSR) + " Hz mono."
+        endif
+        # same timeline origin as the source
+        Shift times to: "start time", srcXmin
+        Rename: sourceName$ + "_poly_voice_" + string$(v)
+    endfor
+
+    # ---- stereo mix: untouched source (centre) + voices, equal-power pan ----
+    mix = 0
+    if wantMix or play_result
+        selectObject: source
+        mix = Copy: sourceName$ + "_polyphonic_mix"
+        Convert to stereo
+        mixStereo = selected("Sound")
+        removeObject: mix
+        mix = mixStereo
+        Rename: sourceName$ + "_polyphonic_mix"
+        mixL$ = "self * gSL"
+        mixR$ = "self * gSR"
+        for v from 1 to nVoices
+            vid$ = string$(voice'v')
+            mixL$ = mixL$ + " + gL" + string$(v) + " * object[" + vid$ + ", 1, col]"
+            mixR$ = mixR$ + " + gR" + string$(v) + " * object[" + vid$ + ", 1, col]"
+        endfor
+        Formula: "if row = 1 then " + mixL$ + " else " + mixR$ + " fi"
+        # one COMMON gain for the whole mix (relative voice balance preserved)
+        if mixGain <> 1
+            Formula: "self * mixGain"
+        endif
+        mixPeak = Get absolute extremum: 0, 0, "None"
+        mixN = Get number of samples
+        if mixN <> srcN
+            appendInfoLine: "WARNING: mix has ", mixN, " samples, expected ", srcN, "."
+        endif
+    endif
+
+    # ---- separate source object (bit-exact copy; the original is untouched) ----
+    srcCopy = 0
+    if wantVoices
+        selectObject: source
+        srcCopy = Copy: sourceName$ + "_source"
+    endif
+
+    appendInfoLine: ""
+    for v from 1 to nVoices
+        vrms = extractNumber(res$, "voice_rms_" + string$(v) + " ")
+        appendInfoLine: "Voice ", v, ": pan ", fixed$(pan'v', 0), "   active RMS ",
+            ... fixed$(20 * log10(max(vrms, 1e-10)), 1), " dBFS"
+    endfor
+    srcRms = extractNumber(res$, "source_active_rms ")
+    appendInfoLine: "Source active RMS ", fixed$(20 * log10(max(srcRms, 1e-10)), 1), " dBFS (centre)"
+    if mix
+        appendInfoLine: "Stereo mix: peak before normalisation ", fixed$(20 * log10(max(mixPeakBefore, 1e-10)), 2),
+            ... " dBFS, common gain ", fixed$(20 * log10(mixGain), 2), " dB -> peak ",
+            ... fixed$(20 * log10(max(mixPeak, 1e-10)), 2), " dBFS"
+    endif
+    if srcPeakIn > 1
+        appendInfoLine: "Note: the source exceeds full scale (", fixed$(srcPeakIn, 3),
+            ... "); its 32-bit export (analysis and stems) is clipped."
+    endif
+    exportSet$ = extractLine$(res$, "export_set ")
+    if exportDir$ <> "" and exportSet$ <> ""
+        appendInfoLine: "Exported aligned 32-bit float stems: ", exportDir$, "/", exportSet$, "_*.wav"
+    endif
+
+    if import_textgrid and fileReadable(tempTG$)
+        Read from file: tempTG$
+        Shift times to: "start time", srcXmin
+        Rename: sourceName$ + "_poly_layers"
+        polyTG = selected("TextGrid")
+        appendInfoLine: "Imported TextGrid (tiers: source analysis + one per voice; S start, C chronological,"
+        appendInfoLine: "J graph jump, F fallback, empty = rest)."
+    else
+        polyTG = 0
+    endif
+    if keep_layer_metadata and fileReadable(metaPath$)
+        appendInfoLine: "Metadata kept: ", metaPath$
+    endif
+
+    @cleanUpTempFiles
+
+    if play_result
+        selectObject: mix
+        Play
+    endif
+    # objects the user did not ask for are removed
+    if not wantVoices
+        for v from 1 to nVoices
+            removeObject: voice'v'
+        endfor
+    endif
+    if not wantMix and mix
+        removeObject: mix
+        mix = 0
+    endif
+    if mix
+        selectObject: mix
+        if wantVoices
+            plusObject: srcCopy
+        endif
+    else
+        selectObject: srcCopy
+    endif
+    if wantVoices
+        for v from 1 to nVoices
+            plusObject: voice'v'
+        endfor
+    endif
+    goto END
+endif
+
+# ============================================================
 # MATCH MODE
 # ============================================================
 
@@ -2303,7 +2812,7 @@ appendInfoLine: "Preset: ", presetName$
 # Pass --textgrid as an empty string when not requested; the Python backend
 # already treats an empty/falsy value as "no TextGrid", so we don't need two
 # separate runSubprocess call variants for the optional argument.
-textgridArg$ = ""
+textgridArg$ = "-"
 if import_textgrid
     textgridArg$ = tempTG$
 endif
