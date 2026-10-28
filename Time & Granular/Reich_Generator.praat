@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.5.0 (2026)
+# Version: 0.7.1 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -11,6 +11,143 @@
 #   Reich Generator (Auto-Phasing Tool) -- extracts a loop from a
 #   source recording and phases it against a pitch/tempo-drifting
 #   copy (and an optional static anchor voice), Steve Reich style.
+#   Dual Locked Loops mode (v0.7.0) loops two user-locked regions of the
+#   same Sound as two independent single-voice units, one per stereo side;
+#   the phasing is the changing relationship between the two units.
+#
+# Changelog v0.7.1 (2026) - random region suggestions in Dual Locked Loops:
+#   - The Dual dialog now opens with a RANDOM pair of regions on every run
+#     instead of the fixed 25% / 70% suggestion. Lengths are drawn uniformly
+#     from the main form's Min_loop_sec .. Max_loop_sec (raw form values;
+#     Classic presets do not apply), each capped at 45% of the source; A is
+#     placed anywhere, B anywhere that does not overlap A; both must contain
+#     signal (Classic's RMS floor). Values are whole milliseconds.
+#   - Random_seed: 0 = new suggestion every run; any other value gives the
+#     same suggestion every run (as in Classic). The generator is seeded only
+#     for this draw and released to safe mode before the dialog opens.
+#   - Suggestions remain suggestions: the user edits / confirms them and they
+#     lock at Render. Rendering itself is unchanged and fully deterministic.
+#   - If 200 attempts find no non-silent pair (e.g. a mostly silent source),
+#     or the source is too short for random placement, the fixed suggestion
+#     is used and the dialog says so.
+#
+# Changelog v0.7.0 (2026) - Dual Locked Loops architecture corrected:
+#   v0.6.0 implemented Dual Locked Loops as TWO INDEPENDENT TWO-VOICE
+#   PHASING PAIRS (A1 static + A2 drifting copy of Region A, B1 + B2 of
+#   Region B): four voices, each region doubled against itself, so each side
+#   of the stereo image was a self-phasing / flanging effect. That was not
+#   the intended composition.
+#   v0.7.0 replaces it with TWO INDEPENDENT SINGLE-VOICE LOOPING UNITS:
+#     Unit A loops Region A, Unit B loops Region B -- one voice each,
+#     L(t) = gAL*A(t) + gBL*B(t), R(t) = gAR*A(t) + gBR*B(t). No second copy
+#     of either region exists anywhere in the Dual signal path.
+#   Phasing is now the changing relationship BETWEEN the two units: one
+#   relative loop phase frac(uB - uA), where u is each unit's position in
+#   its own loop (fraction of a loop). Loop frequencies f = rate / loop
+#   length; relative cycle = 1 / |fB - fA|; equal frequencies are reported
+#   as stationary (no drift is drawn or claimed).
+#   - Different region lengths are kept as they are (never stretched); at
+#     100% / 100% they phase naturally against each other.
+#   - New dialog fields: Dual_Timing (Independent Rates | Target Relative
+#     Cycle), Dual_A_Rate_percent, Dual_B_Rate_percent (50-200%, errors
+#     outside), Dual_Target_Cycle_min + Dual_Drift_Direction (B's rate is
+#     derived from A's so that fB - fA = +-1/target; a derived rate outside
+#     50-200% is an error, never clamped). Start offsets now mean the start
+#     position inside each unit's OWN loop. Dual_B_Level_dB replaces
+#     Dual_Pair_B_Level_dB.
+#   - Removed from Dual: Dual_A_Cycle_min, Dual_B_Cycle_min,
+#     Dual_Drift_Interval, Dual_Flutter_st (they described the drifting
+#     copies). Dual mode now uses no random numbers at all.
+#   - Rates are plain resampling: speed and pitch change together, like
+#     tape (stated in the dialog and the Info window). A unit at 100% reads
+#     its loop by index (exact); any other rate tiles the loop into one wall
+#     and resamples the WHOLE wall once (the v0.6.0 sub-sample method), so
+#     loop periods are exact with no rounding to whole samples.
+#   - Stereo: A at -s, B at +s, equal-power. Default separation is now 100%:
+#     left = Unit A only, right = Unit B only (gains below 1e-12 are set to
+#     exactly 0 and their terms left out of the mix).
+#   - Figure: ONE square wheel for the one relationship (angle = relative
+#     loop phase, radius = output time: a spiral, or a radial line when
+#     stationary), two lanes showing each unit's own loop position, the
+#     source with both regions, the relative-phase trajectory over the whole
+#     render, Summary. No unison / anti-phase labels: 0 deg means "same
+#     fraction of their own loops", not acoustic alignment.
+#   - Single (Classic) is unchanged: bit-identical seeded output and a
+#     pixel-identical figure against v0.5.0 / v0.6.0.
+#
+# Changelog v0.6.0 (2026) - Dual Locked Loops:
+#   NEW MODE. The form gains one selector at the top, Mode:
+#     Single (Classic)   -- the default; everything below behaves exactly as
+#                           in v0.5.0 (same presets, random loop pick, V2/V3
+#                           processing, offsets, make_wall, mix, naming,
+#                           seed policy and phase-wheel figure).
+#     Dual Locked Loops  -- opens a second dialog (pause form) with its own
+#                           settings, so the main form grows by one row only.
+#   API NOTE: Mode is the FIRST form field, so a caller that drives this
+#   script with positional runScript arguments must now prepend
+#   "Single (Classic)". No other public parameter changed.
+#
+#   Dual Locked Loops renders two independent two-voice phasing processes
+#   from two user-locked regions of the same Sound:
+#     A1 static / A2 drifting (Region A, left group)
+#     B1 static / B2 drifting (Region B, right group)
+#   - Regions: the dialog is pre-filled with two distinct, non-overlapping
+#     regions derived deterministically from the source length (A around
+#     25% of the source, B around 70%). They are suggestions; the user edits
+#     and confirms them with Render, and they are never replaced afterwards.
+#     Validation happens before any object is created: inside the Sound,
+#     end > start, at least 0.100 s long, no overlap (touching is allowed).
+#     Sources shorter than 0.200 s are refused. Cancel creates nothing.
+#   - Boundaries snap to a zero crossing only if one lies within 15 ms
+#     INSIDE the region, so snapping can never leave the source or make the
+#     regions overlap. Snapped bounds are recorded for the figure/Summary.
+#   - Same cancellation-safe mono analysis as Classic (strongest channel
+#     when the channel average nearly cancels).
+#   - Each drifting voice uses the Classic drift law on its OWN loop and
+#     cycle: r = 1 + loop / cycle (= Classic (n+1)/n), with the same PSOLA
+#     interval + multiplicative-semitone flutter and empty-PitchTier note.
+#   - SUB-SAMPLE DRIFT (review fix). The drifting voice is not a resampled
+#     loop repeated whole: that makes its length an integer number of
+#     samples, and the per-repeat shortening is only ~sr * L^2 / T samples
+#     (0.24 samples for a 0.095 s loop and a 5 min cycle at 8 kHz), so the
+#     rounding distorted short-loop / long-cycle settings by tens of percent
+#     or removed the drift entirely (equal lengths, undefined cycle).
+#     Instead the processed loop is tiled into a wall at the native rate and
+#     the rate change is applied ONCE to the whole wall (Override sampling
+#     frequency + sinc Resample, precision 50). The drifting period is then
+#     exactly loop / r, the realised cycle equals the requested cycle for
+#     any loop length, cycle and sample rate, and the start offset is exact
+#     to a sub-sample residue that is carried into the phase origin.
+#     A 50 ms pre-roll keeps the sinc filter's edge outside the render.
+#   - Every voice is read by sample index into one 2-channel buffer of
+#     exactly round(Total_Duration_min * 60 * sr) samples: static voices as
+#     object[loop, ((col - 1) mod n) + 1], drifting voices from their stream
+#     at col + p0. Offsets are applied inside the stream, so the render is
+#     never shortened. Classic keeps make_wall unchanged.
+#   - Equal-power panning (angle = (pan + 1) * pi / 4), summed directly into
+#     the stereo buffer in a single Formula; no Combine-to-stereo/averaging.
+#     Pan positions are static and follow a continuous, monotonic two-segment
+#     map of Stereo separation: 0% all at centre, 65% -85/-45 | +45/+85,
+#     100% -100/-60 | +60/+100. Groups never cross the centre line.
+#   - Pair B level (dB) scales B1 and B2 equally; voices are otherwise not
+#     normalised individually. One Scale peak 0.99 on the finished mix.
+#   - Seed policy as in Classic: seeded only while flutter draws happen,
+#     then returned to safe/unpredictable mode, also on every error path.
+#   - Output: <source>_ReichGen_Dual, 2 channels, left selected.
+#   - Figure: two square 3.30 x 3.30 in phase wheels side by side (explicit
+#     inner viewports), source waveform with both locked regions, both
+#     relative-phase trajectories on one time axis (gaps at wraps), Summary.
+#     Every phase value uses the loop lengths, rate ratios and offsets of
+#     the audio engine; wrap counts are computed analytically from them.
+#     The End label sits on the end dot's own radius (inside the path on
+#     its outer lobe, outside it near the centre), so it cannot lie on the
+#     path; the Summary drops repeated values to keep its lines short.
+#   - Removed the unreachable v0.4 Section 8 drawing block (it was guarded by
+#     "if create_polar_phase_wheel and 0"). No effect on Classic output,
+#     verified by bit-identical seeded renders against v0.5.0.
+#   - The Dual engine is a set of procedures between "DUAL ENGINE BEGIN/END"
+#     markers; the headless test harness includes exactly that block, so
+#     tests exercise the shipped rendering code, not a copy.
 #
 # Changelog v0.5.0 (2026) - measured proportion pass (visualization only):
 #   ROOT CAUSE of the layout that v0.4.5 - v0.4.8 kept failing to fix: the
@@ -225,6 +362,10 @@
 # ============================================================
 
 form Reich Generator
+    comment --- Mode [Dual Locked Loops opens its own settings dialog] ---
+    optionmenu Mode 1
+        option Single (Classic)
+        option Dual Locked Loops
     comment --- Presets ---
     optionmenu Preset 1
         option Classic Reich (Speech / Unison)
@@ -271,6 +412,102 @@ form Reich Generator
     comment --- Output ---
     boolean Play_result 1
 endform
+
+# ============================================
+# 0. MODE DISPATCH
+# ============================================
+# Dual Locked Loops runs entirely here and ends the script; Single (Classic)
+# falls through to the unchanged v0.5.0 code below. No object exists until
+# the Dual dialog has been confirmed, so Cancel (or the dialog's Stop)
+# leaves the object list exactly as it was.
+if mode$ = "Dual Locked Loops"
+    if numberOfSelected("Sound") <> 1
+        exitScript: "Select exactly one Sound object."
+    endif
+    dual_source = selected("Sound")
+    dual_dialogName$ = selected$("Sound")
+    dual_dialogDur = Get total duration
+    @dualConstants
+    if dual_dialogDur < dual_minSource
+        exitScript: "The source is " + fixed$(dual_dialogDur, 3) + " s long; Dual Locked Loops needs at least " + fixed$(dual_minSource, 3) + " s for two regions of " + fixed$(dual_minLoop, 3) + " s."
+    endif
+    # Random suggested regions (fresh each run; Random_seed <> 0 makes them
+    # reproducible). The generator is released again BEFORE the dialog, so
+    # Cancel, Stop or any later error leaves it in safe mode.
+    if random_seed <> 0
+        dual_seedResult = random_initializeWithSeedUnsafelyButPredictably (random_seed)
+    else
+        random_initializeSafelyAndUnpredictably ()
+    endif
+    dual_analysis = 0
+    @dualRandomRegions: dual_dialogDur, min_loop_sec, max_loop_sec
+    random_initializeSafelyAndUnpredictably ()
+    dual_sugNote$ = "random suggestion"
+    if random_seed <> 0
+        dual_sugNote$ = "random suggestion, seed " + string$(random_seed)
+    endif
+    if dual_sugRandom = 0
+        dual_sugNote$ = "no active random pair found; fixed suggestion"
+    endif
+
+    # Every dialog variable is initialised before the pause, so it is defined
+    # whether or not the Praat build assigns pause fields in batch mode.
+    dual_A_Start_sec = dual_sugA_start
+    dual_A_End_sec = dual_sugA_end
+    dual_B_Start_sec = dual_sugB_start
+    dual_B_End_sec = dual_sugB_end
+    dual_Timing = 1
+    dual_Timing$ = "Independent Rates"
+    dual_A_Rate_percent = 100
+    dual_B_Rate_percent = 100
+    dual_Target_Cycle_min = 1.0
+    dual_Drift_Direction = 1
+    dual_Drift_Direction$ = "B gains on A"
+    dual_A_Start_Offset_percent = 0
+    dual_B_Start_Offset_percent = 0
+    dual_Stereo_Separation_percent = 100
+    dual_B_Level_dB = 0
+
+    beginPause: "Reich Generator - Dual Locked Loops"
+        comment: "Source " + dual_dialogName$ + ": " + fixed$(dual_dialogDur, 3) + " s. Two units, one voice each: A loops Region A, B loops Region B."
+        comment: "--- Regions (s from the start of the Sound; " + dual_sugNote$ + "; edit, then Render to lock) ---"
+        real: "Dual_A_Start_sec", fixed$(dual_A_Start_sec, 3)
+        real: "Dual_A_End_sec", fixed$(dual_A_End_sec, 3)
+        real: "Dual_B_Start_sec", fixed$(dual_B_Start_sec, 3)
+        real: "Dual_B_End_sec", fixed$(dual_B_End_sec, 3)
+        comment: "--- Timing (rates 50-200%; speed and pitch change together) ---"
+        optionmenu: "Dual_Timing", 1
+            option: "Independent Rates"
+            option: "Target Relative Cycle"
+        real: "Dual_A_Rate_percent", "100"
+        real: "Dual_B_Rate_percent", "100"
+        comment: "Target Relative Cycle only (B rate is then derived from A):"
+        positive: "Dual_Target_Cycle_min", "1.0"
+        optionmenu: "Dual_Drift_Direction", 1
+            option: "B gains on A"
+            option: "B falls behind A"
+        real: "Dual_A_Start_Offset_percent", "0"
+        real: "Dual_B_Start_Offset_percent", "0"
+        comment: "--- Spatialization and balance (100% = A only left, B only right) ---"
+        real: "Dual_Stereo_Separation_percent", "100"
+        real: "Dual_B_Level_dB", "0.0"
+    dual_clicked = endPause: "Cancel", "Render", 2, 1
+    if dual_clicked = 1
+        exitScript ()
+    endif
+
+    dual_keep_intermediates = 0
+    @dualRender
+    if create_polar_phase_wheel
+        @dualDraw
+    endif
+    selectObject: dual_out
+    if play_result
+        Play
+    endif
+    selectObject: dual_out
+    exitScript ()
+endif
 
 # ============================================
 # 1. PRESET LOGIC
@@ -739,190 +976,9 @@ if has_v3
 endif
 
 # ============================================
-# 8. POLAR PHASE WHEEL (Visual)
+# 8. (v0.6.0: the unreachable v0.4 drawing block that stood here, guarded by
+#    "if create_polar_phase_wheel and 0", was removed. Section 8b draws.)
 # ============================================
-
-if create_polar_phase_wheel and 0
-
-    appendInfoLine: ""
-    appendInfoLine: "=== GENERATING PROCESS MONITOR ==="
-
-    # v0.4: the render is now always exactly total_sec, offset or not
-    # (see section 6/7 fix), so no separate "shortened" duration exists.
-    actual_duration = total_sec
-
-    num_samples = 1200
-    # v0.4.1 FIX: was actual_duration / num_samples, whose last sample
-    # (t at i=num_samples) lands one interval short of actual_duration.
-    # For a duration that's an exact multiple of the phase cycle, the
-    # drawn path approaches but never crosses the 360deg wrap point, so
-    # cycle_count could read one lower than the true number of cycles.
-    # Dividing by (num_samples - 1) makes the last sample land exactly
-    # at the end of the piece.
-    sample_interval = actual_duration / (num_samples - 1)
-    
-    # --- VIEWPORT ---
-    Erase all
-    Select outer viewport: 0, 7, 0, 7
-    # 6x6 area inside the viewport
-    Axes: 0, 100, 0, 100
-    
-    # 1. Background / Zones
-    Colour: {0.85, 0.85, 0.85}
-    Line width: 1
-    # Outer Ring
-    for i from 1 to 360
-        ang = i * pi / 180
-        x1 = 50 + 35 * sin(ang)
-        y1 = 50 + 35 * cos(ang)
-        x2 = 50 + 40 * sin(ang)
-        y2 = 50 + 40 * cos(ang)
-        Draw line: x1, y1, x2, y2
-    endfor
-    
-    # Inner Ring
-    Colour: {1.0, 0.3, 0.3}
-    for i from 1 to 360
-        ang = i * pi / 180
-        x1 = 50 + 2 * sin(ang)
-        y1 = 50 + 2 * cos(ang)
-        x2 = 50 + 9.5 * sin(ang)
-        y2 = 50 + 9.5 * cos(ang)
-        Draw line: x1, y1, x2, y2
-    endfor
-    
-    # 2. Grid & Labels
-    Colour: "Black"
-    Line width: 1
-    Dotted line
-    
-    Draw line: 50, 50, 50, 90   ; 0 deg
-    Draw line: 50, 50, 90, 50   ; 90 deg
-    Draw line: 50, 50, 50, 10   ; 180 deg
-    Draw line: 50, 50, 10, 50   ; 270 deg
-    
-    Solid line
-    Text special: 50, "centre", 94, "bottom", "Helvetica", 11, "0", "0° Unison"
-    Text special: 94, "left", 50, "half", "Helvetica", 8, "0", "90°"
-    Text special: 50, "centre", 6, "top", "Helvetica", 11, "0", "180° Anti"
-    Text special: 6, "right", 50, "half", "Helvetica", 8, "0", "270°"
-    
-    # 3. Draw Process Line
-    prev_x = 0
-    prev_y = 0
-    final_x = 0
-    final_y = 0
-    cycle_count = 0
-    prev_phase_norm = 0
-    
-    for i from 1 to num_samples
-        t = (i - 1) * sample_interval
-        
-        v1_loops = t / dur_base
-        v2_loops = t / dur_v2
-        phase_raw = v2_loops - v1_loops
-        phase_norm = phase_raw - floor(phase_raw)
-        
-        if offset_sec > 0
-             offset_ratio = offset_sec / dur_v2
-             phase_norm = phase_norm + offset_ratio
-             phase_norm = phase_norm - floor(phase_norm)
-        endif
-        
-        # Cycle check (v0.3: wrapped flag -- the marker block below
-        # used to re-test prev vs current AFTER this update, i.e.
-        # compare a value with itself: markers never drew)
-        wrapped = 0
-        if i > 1 and prev_phase_norm > 0.9 and phase_norm < 0.1
-            cycle_count = cycle_count + 1
-            wrapped = 1
-        endif
-        prev_phase_norm = phase_norm
-        
-        # Drawing
-        angle_rad = phase_norm * 2 * pi
-        beat_amp = 0.5 + 0.5 * cos(angle_rad)
-        
-        r = 5 + (beat_amp * 35)
-        x = 50 + r * sin(angle_rad)
-        y = 50 + r * cos(angle_rad)
-        
-        # Gradient
-        red_val = 1.0 - beat_amp
-        blue_val = beat_amp
-        Colour: {red_val, 0, blue_val}
-        Line width: 2
-        
-        if i > 1
-             dist = sqrt((x-prev_x)^2 + (y-prev_y)^2)
-             if dist < 20
-                 Draw line: prev_x, prev_y, x, y
-             endif
-        endif
-        
-        # Time markers
-        if t mod 30 < sample_interval and t > 0
-            Colour: "Black"
-            Paint circle (mm): "Black", x, y, 0.8
-            time_label$ = fixed$(t, 0) + "s"
-            Text special: x+2, "left", y, "half", "Helvetica", 7, "0", time_label$
-            Colour: {red_val, 0, blue_val}
-        endif
-        
-        # Cycle markers
-        if wrapped
-            Colour: "Black"
-            Paint circle (mm): "White", x, y, 1.2
-            Draw circle (mm): x, y, 1.2
-            cycle_label$ = "C" + string$(cycle_count)
-            Text special: x, "centre", y-3, "top", "Helvetica", 8, "0", cycle_label$
-            Colour: {red_val, 0, blue_val}
-        endif
-        
-        prev_x = x
-        prev_y = y
-        
-        if i = num_samples
-            final_x = x
-            final_y = y
-        endif
-    endfor
-    
-    # 4. End State
-    Paint circle (mm): "Red", final_x, final_y, 2
-    Draw circle (mm): final_x, final_y, 2
-    
-    # End Label
-    t_final_val = actual_duration
-    v1_calc_final = t_final_val / dur_base
-    v2_calc_final = t_final_val / dur_v2
-    
-    phase_final = v2_calc_final - v1_calc_final
-    phase_norm_final = phase_final - floor(phase_final)
-    if offset_sec > 0
-        phase_norm_final = phase_norm_final + offset_sec / dur_v2
-        phase_norm_final = phase_norm_final - floor(phase_norm_final)
-    endif
-    
-    final_degrees = phase_norm_final * 360
-    final_label$ = "End: " + fixed$(final_degrees, 0) + "°"
-    Text special: final_x-3, "right", final_y-3, "top", "Helvetica", 9, "0", final_label$
-    
-    # 5. Bottom Legend
-    Colour: "Black"
-    Text special: 50, "centre", 0, "bottom", "Helvetica", 10, "0", "Total Cycles: " + string$(cycle_count) + " | Duration: " + fixed$(actual_duration/60, 1) + " min"
-    
-    Colour: "Blue"
-    Draw line: 2, 96, 8, 96
-    Colour: "Black"
-    Text special: 10, "left", 96, "half", "Helvetica", 8, "0", "= Unison"
-    
-    Colour: "Red"
-    Draw line: 2, 92, 8, 92
-    Colour: "Black"
-    Text special: 10, "left", 92, "half", "Helvetica", 8, "0", "= Anti-Phase"
-
-endif
 
 # ============================================
 # 9. MIXING & CLEANUP
@@ -1351,3 +1407,995 @@ if play_result
     Play
 endif
 selectObject: final_id
+
+# ============================================================
+# >>> DUAL ENGINE BEGIN
+# Dual Locked Loops engine (v0.7.0): TWO independent single-voice looping
+# units. Procedures only: nothing in this block executes unless called. The
+# main script calls them after its dialog; the headless test harness
+# includes exactly this block and calls the same procedures with the same
+# global parameter names, so tests exercise the shipped code.
+#
+#   Unit A: Region A -> one continuous loop stream A(t), rate vA, offset oA
+#   Unit B: Region B -> one continuous loop stream B(t), rate vB, offset oB
+#   L(t) = gAL * A(t) + gBL * B(t)
+#   R(t) = gAR * A(t) + gBR * B(t)
+# There is no second (static or drifting) copy of either region anywhere.
+#
+# Inputs (globals): dual_source, total_Duration_min,
+#   dual_A_Start_sec, dual_A_End_sec, dual_B_Start_sec, dual_B_End_sec,
+#   dual_Timing$ ("Independent Rates" | "Target Relative Cycle"),
+#   dual_A_Rate_percent, dual_B_Rate_percent,
+#   dual_Target_Cycle_min, dual_Drift_Direction$
+#     ("B gains on A" | "B falls behind A"),
+#   dual_A_Start_Offset_percent, dual_B_Start_Offset_percent,
+#   dual_Stereo_Separation_percent, dual_B_Level_dB,
+#   dual_keep_intermediates (0 in normal use; 1 lets a test inspect units)
+# Output: dual_out (stereo Sound, selected) + measurement globals.
+# Rendering draws no random numbers. Only dualRandomRegions (the suggested
+# regions shown in the dialog) uses the generator, seeded by the caller.
+# ============================================================
+
+procedure dualConstants
+    # Minimum region length (s). After inward zero-crossing snapping a loop
+    # is at least 0.070 s long.
+    dual_minLoop = 0.100
+    dual_minSource = 2 * dual_minLoop
+    # Snap a boundary only to a zero crossing within this distance INSIDE
+    # the region; otherwise keep the user's boundary exactly.
+    dual_snapWindow = 0.015
+    # Supported playback-rate range (percent), for typed and derived rates.
+    dual_rateMin = 50
+    dual_rateMax = 200
+    dualA_colour$ = "{0.10, 0.52, 0.50}"
+    dualB_colour$ = "{0.80, 0.46, 0.10}"
+    dualA_tint$ = "{0.87, 0.95, 0.94}"
+    dualB_tint$ = "{1.00, 0.93, 0.84}"
+    dualRel_colour$ = "{0.36, 0.28, 0.72}"
+endproc
+
+# Suggested starting regions, derived deterministically from the source
+# length: A sits around 25% of the source, B around 70%, each confined to
+# its own half, so they can never overlap. Lengths 30% / 38% of the source,
+# capped at 0.90 s / 1.15 s, never below dual_minLoop. Integer milliseconds.
+procedure dualSuggestRegions: .dur
+    @dualConstants
+    .dms = floor(.dur * 1000)
+    .half = floor(.dms / 2)
+    .minMs = round(dual_minLoop * 1000)
+    .la = min(900, max(.minMs, round(0.30 * .dms)))
+    .la = min(.la, .half)
+    .lb = min(1150, max(.minMs, round(0.38 * .dms)))
+    .lb = min(.lb, .half)
+    .sa = round(0.25 * .dms - .la / 2)
+    .sa = max(0, min(.sa, .half - .la))
+    .sb = round(0.70 * .dms - .lb / 2)
+    .sb = max(.half, min(.sb, .dms - .lb))
+    dual_sugA_start = .sa / 1000
+    dual_sugA_end = (.sa + .la) / 1000
+    dual_sugB_start = .sb / 1000
+    dual_sugB_end = (.sb + .lb) / 1000
+endproc
+
+# Random suggested regions (v0.7.1), drawn fresh on each run before the
+# dialog opens; the user still edits and confirms them, and they lock at
+# Render. Lengths: uniform in [Min_loop_sec, Max_loop_sec] of the main form
+# (each capped at 45% of the source, never below dual_minLoop). Region A:
+# uniform over the source. Region B: uniform over every start that does NOT
+# overlap A (either side). Both must contain signal (the Classic loop
+# search's RMS floor). All in integer milliseconds, so the dialog shows
+# exactly the values that will be validated. Up to 200 attempts; otherwise
+# the fixed 25% / 70% suggestion is kept (dual_sugRandom = 0).
+# Uses the random generator; the CALLER seeds it and releases it.
+procedure dualRandomRegions: .dur, .lo, .hi
+    @dualSuggestRegions: .dur
+    dual_sugRandom = 0
+    dual_sugAttempts = 0
+    .dms = floor(.dur * 1000)
+    .minMs = round(dual_minLoop * 1000)
+    .capMs = floor(0.45 * .dms)
+    if .capMs >= .minMs
+        .loMs = max(.minMs, min(round(min(.lo, .hi) * 1000), .capMs))
+        .hiMs = max(.loMs, min(round(max(.lo, .hi) * 1000), .capMs))
+        @dualMonoAnalysis
+        selectObject: dual_analysis
+        .srcRms = Get root-mean-square: 0, 0
+        .floor = max(1e-12, min(0.001, .srcRms * 0.05))
+        while dual_sugRandom = 0 and dual_sugAttempts < 200
+            dual_sugAttempts = dual_sugAttempts + 1
+            .la = randomInteger(.loMs, .hiMs)
+            .lb = randomInteger(.loMs, .hiMs)
+            .sa = randomInteger(0, .dms - .la)
+            # B starts that do not overlap A: 0 .. sa - lb, and sa + la .. dms - lb
+            .n1 = max(0, .sa - .lb + 1)
+            .n2 = max(0, .dms - .lb - (.sa + .la) + 1)
+            if .n1 + .n2 > 0
+                .k = randomInteger(1, .n1 + .n2)
+                if .k <= .n1
+                    .sb = .k - 1
+                else
+                    .sb = .sa + .la + (.k - .n1 - 1)
+                endif
+                selectObject: dual_analysis
+                .pa = Extract part: .sa / 1000, (.sa + .la) / 1000, "rectangular", 1, "no"
+                .ra = Get root-mean-square: 0, 0
+                selectObject: dual_analysis
+                .pb = Extract part: .sb / 1000, (.sb + .lb) / 1000, "rectangular", 1, "no"
+                .rb = Get root-mean-square: 0, 0
+                removeObject: .pa, .pb
+                if .ra > .floor and .rb > .floor
+                    dual_sugA_start = .sa / 1000
+                    dual_sugA_end = (.sa + .la) / 1000
+                    dual_sugB_start = .sb / 1000
+                    dual_sugB_end = (.sb + .lb) / 1000
+                    dual_sugRandom = 1
+                endif
+            endif
+        endwhile
+        removeObject: dual_analysis
+        dual_analysis = 0
+    endif
+endproc
+
+procedure dualCheck: .bad, .msg$
+    if dual_error$ = "" and .bad
+        dual_error$ = .msg$
+    endif
+endproc
+
+# Cancellation-safe mono analysis copy -- the same strategy as Classic
+# Section 2 (zero-based private copy; channel average unless it nearly
+# cancels, then the strongest-RMS channel).
+procedure dualMonoAnalysis
+    selectObject: dual_source
+    .xmin = Get start time
+    .xmax = Get end time
+    .work = Extract part: .xmin, .xmax, "rectangular", 1, "no"
+    Rename: "ReichDual_Source_Work"
+    .nch = Get number of channels
+    dual_strongestChannel = 1
+    .strongestRms = -1
+    if .nch > 1
+        for .ch from 1 to .nch
+            selectObject: .work
+            .tmp = Extract one channel: .ch
+            .r = Get root-mean-square: 0, 0
+            if .r > .strongestRms
+                .strongestRms = .r
+                dual_strongestChannel = .ch
+            endif
+            removeObject: .tmp
+        endfor
+    else
+        .strongestRms = Get root-mean-square: 0, 0
+    endif
+    selectObject: .work
+    .avg = Convert to mono
+    .avgRms = Get root-mean-square: 0, 0
+    dual_usedStrongest = 0
+    if .nch > 1 and .strongestRms > 1e-12 and .avgRms < 0.10 * .strongestRms
+        dual_usedStrongest = 1
+    endif
+    if dual_usedStrongest
+        removeObject: .avg
+        selectObject: .work
+        dual_analysis = Extract one channel: dual_strongestChannel
+    else
+        dual_analysis = .avg
+    endif
+    selectObject: dual_analysis
+    Rename: "ReichDual_Source_Analysis"
+    removeObject: .work
+    dual_sourceChannels = .nch
+endproc
+
+# Extract one locked region from the analysis copy and snap its boundaries
+# INWARD to a zero crossing within dual_snapWindow. Inward-only snapping keeps
+# the loop inside the user's region, so it can neither leave the source nor
+# overlap the other region.
+procedure dualPrepareRegion: .start, .end, .tag$
+    dualOut_loop = 0
+    selectObject: dual_analysis
+    .cut = Extract part: .start, .end, "rectangular", 1, "no"
+    .rms = Get root-mean-square: 0, 0
+    if .rms <= 1e-12
+        removeObject: .cut
+        dual_error$ = "Region " + .tag$ + " (" + fixed$(.start, 3) + "-" + fixed$(.end, 3) + " s) is digitally silent. Choose a region that contains signal."
+    else
+        .cd = Get total duration
+        .z1 = Get nearest zero crossing: 1, 0.003
+        if .z1 = undefined
+            .z1 = 0
+        endif
+        if .z1 > dual_snapWindow
+            .z1 = 0
+        endif
+        .z2 = Get nearest zero crossing: 1, .cd - 0.003
+        if .z2 = undefined
+            .z2 = .cd
+        endif
+        if .z2 < .cd - dual_snapWindow
+            .z2 = .cd
+        endif
+        selectObject: .cut
+        dualOut_loop = Extract part: .z1, .z2, "rectangular", 1, "no"
+        Rename: "ReichDual_Loop_" + .tag$
+        removeObject: .cut
+        dualOut_snapStart = .start + .z1
+        dualOut_snapEnd = .start + .z2
+    endif
+endproc
+
+# Validation of every Dual parameter. Runs before any object is created.
+procedure dualValidate: .dur
+    dual_error$ = ""
+    .tol = 1e-9
+    .durTxt$ = fixed$(.dur, 3)
+    .range$ = string$(dual_rateMin) + "-" + string$(dual_rateMax) + "%"
+    @dualCheck: .dur < dual_minSource - .tol, "The source is " + .durTxt$ + " s long; Dual Locked Loops needs at least " + fixed$(dual_minSource, 3) + " s for two regions of " + fixed$(dual_minLoop, 3) + " s."
+    @dualCheck: dual_A_Start_sec < 0, "Region A starts before the beginning of the Sound (start must be >= 0 s)."
+    @dualCheck: dual_A_End_sec <= dual_A_Start_sec, "Region A: end must be later than start."
+    @dualCheck: dual_A_End_sec > .dur + .tol, "Region A ends at " + fixed$(dual_A_End_sec, 3) + " s, after the end of the Sound (" + .durTxt$ + " s)."
+    @dualCheck: dual_A_End_sec - dual_A_Start_sec < dual_minLoop - .tol, "Region A is " + fixed$(dual_A_End_sec - dual_A_Start_sec, 3) + " s long; the minimum is " + fixed$(dual_minLoop, 3) + " s."
+    @dualCheck: dual_B_Start_sec < 0, "Region B starts before the beginning of the Sound (start must be >= 0 s)."
+    @dualCheck: dual_B_End_sec <= dual_B_Start_sec, "Region B: end must be later than start."
+    @dualCheck: dual_B_End_sec > .dur + .tol, "Region B ends at " + fixed$(dual_B_End_sec, 3) + " s, after the end of the Sound (" + .durTxt$ + " s)."
+    @dualCheck: dual_B_End_sec - dual_B_Start_sec < dual_minLoop - .tol, "Region B is " + fixed$(dual_B_End_sec - dual_B_Start_sec, 3) + " s long; the minimum is " + fixed$(dual_minLoop, 3) + " s."
+    .overlap = dual_A_End_sec > dual_B_Start_sec + .tol and dual_B_End_sec > dual_A_Start_sec + .tol
+    @dualCheck: .overlap, "Regions A (" + fixed$(dual_A_Start_sec, 3) + "-" + fixed$(dual_A_End_sec, 3) + " s) and B (" + fixed$(dual_B_Start_sec, 3) + "-" + fixed$(dual_B_End_sec, 3) + " s) overlap; they must be distinct (touching is allowed)."
+    .knownTiming = dual_Timing$ = "Independent Rates" or dual_Timing$ = "Target Relative Cycle"
+    @dualCheck: not .knownTiming, "Unknown Dual_Timing: " + dual_Timing$
+    @dualCheck: dual_A_Rate_percent < dual_rateMin or dual_A_Rate_percent > dual_rateMax, "Dual_A_Rate_percent is " + fixed$(dual_A_Rate_percent, 3) + "; the supported range is " + .range$ + "."
+    if dual_Timing$ = "Independent Rates"
+        @dualCheck: dual_B_Rate_percent < dual_rateMin or dual_B_Rate_percent > dual_rateMax, "Dual_B_Rate_percent is " + fixed$(dual_B_Rate_percent, 3) + "; the supported range is " + .range$ + "."
+    else
+        @dualCheck: dual_Target_Cycle_min <= 0, "Dual_Target_Cycle_min must be > 0."
+        .knownDir = dual_Drift_Direction$ = "B gains on A" or dual_Drift_Direction$ = "B falls behind A"
+        @dualCheck: not .knownDir, "Unknown Dual_Drift_Direction: " + dual_Drift_Direction$
+    endif
+    @dualCheck: dual_A_Start_Offset_percent < 0 or dual_A_Start_Offset_percent > 100, "Dual_A_Start_Offset_percent must be between 0 and 100."
+    @dualCheck: dual_B_Start_Offset_percent < 0 or dual_B_Start_Offset_percent > 100, "Dual_B_Start_Offset_percent must be between 0 and 100."
+    @dualCheck: dual_Stereo_Separation_percent < 0 or dual_Stereo_Separation_percent > 100, "Dual_Stereo_Separation_percent must be between 0 and 100."
+    @dualCheck: total_Duration_min <= 0, "Total_Duration_min must be > 0."
+endproc
+
+# Static, symmetric pan positions (-100..+100): A at -s, B at +s.
+procedure dualPanPositions: .s
+    dual_panA = 0 - .s
+    dual_panB = .s
+endproc
+
+# Equal-power law: angle = (p + 1) * pi / 4, L = cos, R = sin (p in -1..1).
+# Gains below 1e-12 are set to exactly 0, so at 100% separation each
+# channel holds only its own unit (cos(pi/2) would otherwise be 6e-17).
+procedure dualEqualPower: .pan
+    .angle = (.pan / 100 + 1) * pi / 4
+    dualOut_gL = cos(.angle)
+    dualOut_gR = sin(.angle)
+    if abs(dualOut_gL) < 1e-12
+        dualOut_gL = 0
+    endif
+    if abs(dualOut_gR) < 1e-12
+        dualOut_gR = 0
+    endif
+endproc
+
+# One looping unit: its locked loop played continuously at rate v from a
+# start position inside its own loop. Sets dualOut_read$, the Formula term
+# that yields the unit's signal at output sample col (1-based).
+#
+# v = 1  : no resampling. The term reads the loop itself by index,
+#          object[loop, ((col - 1 + offS) mod n) + 1] -- exact.
+# v <> 1 : the loop is tiled into one continuous wall at the native rate and
+#          the rate change is applied ONCE to the whole wall (Override
+#          sampling frequency + sinc Resample), never per loop. The loop
+#          period is therefore exactly n / (v * sr) with no rounding to whole
+#          samples (the v0.6.0 review finding). A 50 ms pre-roll keeps the
+#          sinc filter's edge outside the render; the stream is read from
+#          sample p0 = ceiling(pre / v) on.
+#          Speed and pitch change TOGETHER (plain resampling, like tape):
+#          v = 1.25 is also +3.86 semitones. Not a time stretch.
+#
+# Timing law, shared with the figure (t = (col - 1) / sr):
+#   loop position u(t) = (offS + eps + v * sr * t) / n      [loops]
+#   with eps = 0 for v = 1, else eps = (p0 * v - pre) + 0.5 * (v - 1),
+#   the sub-sample residue of the pre-roll plus Praat's half-sample
+#   convention when the rate is overridden (0 <= eps < 2.5 samples).
+procedure dualMakeUnit: .loop, .ratePct, .offPct, .tag$
+    selectObject: .loop
+    .sr = Get sampling frequency
+    .n = Get number of samples
+    .v = .ratePct / 100
+    dualOut_n = .n
+    dualOut_v = .v
+    dualOut_offS = round(.offPct / 100 * .n) mod .n
+    dualOut_stream = 0
+    dualOut_p0 = 0
+    dualOut_eps = 0
+    dualOut_nStream = 0
+    if .v = 1
+        dualOut_read$ = "object[" + string$(.loop) + ", 1, ((col - 1 + " + string$(dualOut_offS) + ") mod " + string$(.n) + ") + 1]"
+    else
+        .pre = round(0.05 * .sr)
+        dualOut_p0 = ceiling(.pre / .v)
+        dualOut_eps = (dualOut_p0 * .v - .pre) + 0.5 * (.v - 1)
+        .nWall = ceiling((dual_nTotal + dualOut_p0) * .v) + 2 * .pre
+        .shift = dualOut_offS - .pre + .n * ceiling(.pre / .n)
+        .wall = Create Sound from formula: "ReichDual_Wall_" + .tag$, 1, 0, .nWall / .sr, .sr, "object[" + string$(.loop) + ", 1, ((col - 1 + " + string$(.shift) + ") mod " + string$(.n) + ") + 1]"
+        Override sampling frequency: .sr * .v
+        dualOut_stream = Resample: .sr, 50
+        Rename: "ReichDual_Unit_" + .tag$
+        dualOut_nStream = Get number of samples
+        removeObject: .wall
+        dualOut_read$ = "object[" + string$(dualOut_stream) + ", 1, col + " + string$(dualOut_p0) + "]"
+    endif
+endproc
+
+procedure dualRemoveIntermediates
+    if dual_analysis > 0
+        removeObject: dual_analysis
+        dual_analysis = 0
+    endif
+    if dualA_loop > 0
+        removeObject: dualA_loop
+        dualA_loop = 0
+    endif
+    if dualB_loop > 0
+        removeObject: dualB_loop
+        dualB_loop = 0
+    endif
+    if dualA_stream > 0
+        removeObject: dualA_stream
+        dualA_stream = 0
+    endif
+    if dualB_stream > 0
+        removeObject: dualB_stream
+        dualB_stream = 0
+    endif
+endproc
+
+# Error exit: nothing this run created survives, and the original Sound and
+# all unrelated objects are untouched.
+procedure dualAbort
+    @dualRemoveIntermediates
+    if dual_out > 0
+        removeObject: dual_out
+        dual_out = 0
+    endif
+    selectObject: dual_source
+    exitScript: dual_error$
+endproc
+
+# Loop positions and their relationship at output time t (seconds).
+#   uA, uB          unwrapped loop positions (loops), from the timing law
+#   dualOut_rel     uB - uA, unwrapped
+#   dualOut_phase   frac(uB - uA): relative loop phase, 0..1
+procedure dualRel: .t
+    dualOut_uA = dualA_u0 + dualA_f * .t
+    dualOut_uB = dualB_u0 + dualB_f * .t
+    dualOut_rel = dualOut_uB - dualOut_uA
+    dualOut_phase = dualOut_rel - floor(dualOut_rel)
+endproc
+
+procedure dualSemitones: .v
+    dualOut_st = 12 * log2(.v)
+endproc
+
+procedure dualRender
+    @dualConstants
+    dual_out = 0
+    dual_analysis = 0
+    dualA_loop = 0
+    dualB_loop = 0
+    dualA_stream = 0
+    dualB_stream = 0
+
+    selectObject: dual_source
+    dual_sourceName$ = selected$("Sound")
+    dual_srcXmin = Get start time
+    dual_srcXmax = Get end time
+    dual_srcDur = Get total duration
+
+    # 1. Validate everything before allocating anything.
+    @dualValidate: dual_srcDur
+    if dual_error$ <> ""
+        selectObject: dual_source
+        exitScript: dual_error$
+    endif
+
+    writeInfoLine: "Reich Generator v0.7.0 -- mode: Dual Locked Loops (two units, one voice each)"
+    appendInfoLine: "(Classic Preset, V2/V3 and Start_Offset are not used; Min/Max_loop_sec and Random_seed only shape the suggested regions.)"
+
+    # 2. Mono analysis copy and the two locked regions.
+    @dualMonoAnalysis
+    if dual_usedStrongest
+        appendInfoLine: "Mono analysis: channel average nearly cancelled; using strongest channel " + string$(dual_strongestChannel) + "."
+    endif
+
+    @dualPrepareRegion: dual_A_Start_sec, dual_A_End_sec, "A"
+    dualA_loop = dualOut_loop
+    if dual_error$ <> ""
+        @dualAbort
+    endif
+    dualA_snapStart = dualOut_snapStart
+    dualA_snapEnd = dualOut_snapEnd
+
+    @dualPrepareRegion: dual_B_Start_sec, dual_B_End_sec, "B"
+    dualB_loop = dualOut_loop
+    if dual_error$ <> ""
+        @dualAbort
+    endif
+    dualB_snapStart = dualOut_snapStart
+    dualB_snapEnd = dualOut_snapEnd
+
+    removeObject: dual_analysis
+    dual_analysis = 0
+
+    selectObject: dualA_loop
+    dual_sr = Get sampling frequency
+    dualA_n = Get number of samples
+    selectObject: dualB_loop
+    dualB_n = Get number of samples
+    dual_nTotal = round(total_Duration_min * 60 * dual_sr)
+
+    # 3. Rates. Independent Rates: both typed. Target Relative Cycle: A typed,
+    #    B derived from the measured (snapped) loop lengths so that
+    #    fB - fA = +-1 / target, with f = v * sr / n loops per second.
+    dualA_ratePct = dual_A_Rate_percent
+    if dual_Timing$ = "Target Relative Cycle"
+        .dir = 1
+        if dual_Drift_Direction$ = "B falls behind A"
+            .dir = -1
+        endif
+        .fA = (dualA_ratePct / 100) * dual_sr / dualA_n
+        .fB = .fA + .dir / (dual_Target_Cycle_min * 60)
+        dualB_ratePct = 100 * .fB * dualB_n / dual_sr
+        if dualB_ratePct < dual_rateMin or dualB_ratePct > dual_rateMax
+            @dualSemitones: max(dualB_ratePct, 1e-6) / 100
+            dual_error$ = "Target Relative Cycle: a " + fixed$(dual_Target_Cycle_min, 3) + " min cycle (" + dual_Drift_Direction$ + ") with Unit A at " + fixed$(dualA_ratePct, 2) + "% needs Unit B at " + fixed$(dualB_ratePct, 2) + "% (" + fixed$(dualOut_st, 2) + " semitones), outside the supported " + string$(dual_rateMin) + "-" + string$(dual_rateMax) + "%. The loops are " + fixed$(dualA_n / dual_sr, 4) + " s and " + fixed$(dualB_n / dual_sr, 4) + " s, so B must run at about " + fixed$(100 * dualA_ratePct / 100 * dualB_n / dualA_n, 1) + "% just to keep pace with A. Choose regions of more similar length, another A rate, or a longer cycle."
+            @dualAbort
+        endif
+    else
+        dualB_ratePct = dual_B_Rate_percent
+    endif
+
+    # 4. The two units.
+    @dualMakeUnit: dualA_loop, dualA_ratePct, dual_A_Start_Offset_percent, "A"
+    dualA_stream = dualOut_stream
+    dualA_v = dualOut_v
+    dualA_offS = dualOut_offS
+    dualA_p0 = dualOut_p0
+    dualA_eps = dualOut_eps
+    dualA_nStream = dualOut_nStream
+    dualA_read$ = dualOut_read$
+    @dualMakeUnit: dualB_loop, dualB_ratePct, dual_B_Start_Offset_percent, "B"
+    dualB_stream = dualOut_stream
+    dualB_v = dualOut_v
+    dualB_offS = dualOut_offS
+    dualB_p0 = dualOut_p0
+    dualB_eps = dualOut_eps
+    dualB_nStream = dualOut_nStream
+    dualB_read$ = dualOut_read$
+    .shortA = dualA_stream > 0 and dualA_nStream < dual_nTotal + dualA_p0
+    .shortB = dualB_stream > 0 and dualB_nStream < dual_nTotal + dualB_p0
+    if .shortA or .shortB
+        dual_error$ = "Internal error: a unit stream is shorter than the render (A " + string$(dualA_nStream) + ", B " + string$(dualB_nStream) + " samples for " + string$(dual_nTotal) + ")."
+        @dualAbort
+    endif
+
+    # 5. Pans and gains (B level folded into B's gains).
+    @dualPanPositions: dual_Stereo_Separation_percent
+    dual_levelB = 10 ^ (dual_B_Level_dB / 20)
+    @dualEqualPower: dual_panA
+    dual_gLA = dualOut_gL
+    dual_gRA = dualOut_gR
+    @dualEqualPower: dual_panB
+    dual_gLB = dualOut_gL * dual_levelB
+    dual_gRB = dualOut_gR * dual_levelB
+
+    # 6. Sample-exact two-voice stereo mix: one buffer of exactly nTotal
+    #    samples; each channel is a weighted sum of A(col) and B(col) and
+    #    nothing else. A term whose gain is exactly 0 is left out entirely.
+    dual_out = Create Sound from formula: "ReichDual_Mix", 2, 0, dual_nTotal / dual_sr, dual_sr, "0"
+    dual_nCheck = Get number of samples
+    if dual_nCheck <> dual_nTotal
+        dual_error$ = "Internal error: mix buffer has " + string$(dual_nCheck) + " samples, expected " + string$(dual_nTotal) + "."
+        @dualAbort
+    endif
+    .left$ = ""
+    if dual_gLA <> 0
+        .left$ = string$(dual_gLA) + " * " + dualA_read$
+    endif
+    if dual_gLB <> 0
+        if .left$ <> ""
+            .left$ = .left$ + " + "
+        endif
+        .left$ = .left$ + string$(dual_gLB) + " * " + dualB_read$
+    endif
+    if .left$ = ""
+        .left$ = "0"
+    endif
+    .right$ = ""
+    if dual_gRA <> 0
+        .right$ = string$(dual_gRA) + " * " + dualA_read$
+    endif
+    if dual_gRB <> 0
+        if .right$ <> ""
+            .right$ = .right$ + " + "
+        endif
+        .right$ = .right$ + string$(dual_gRB) + " * " + dualB_read$
+    endif
+    if .right$ = ""
+        .right$ = "0"
+    endif
+    dual_formula$ = "if row = 1 then " + .left$ + " else " + .right$ + " fi"
+    selectObject: dual_out
+    Formula: dual_formula$
+
+    # Mono fold-down check before normalisation: RMS of (L+R)/2 against the
+    # mean channel RMS.
+    selectObject: dual_out
+    dual_rmsStereo = Get root-mean-square: 0, 0
+    .monoTmp = Convert to mono
+    dual_rmsMono = Get root-mean-square: 0, 0
+    removeObject: .monoTmp
+    dual_monoFoldDb = undefined
+    if dual_rmsStereo > 0 and dual_rmsMono > 0
+        dual_monoFoldDb = 20 * log10(dual_rmsMono / dual_rmsStereo)
+    endif
+
+    selectObject: dual_out
+    dual_peakRaw = Get absolute extremum: 0, 0, "None"
+    if dual_peakRaw > 0
+        Scale peak: 0.99
+    endif
+    Rename: dual_sourceName$ + "_ReichGen_Dual"
+
+    # 7. Timing measurements shared by the Info window, Summary and figure.
+    dual_T = dual_nTotal / dual_sr
+    dualA_L = dualA_n / dual_sr
+    dualB_L = dualB_n / dual_sr
+    dualA_f = dualA_v * dual_sr / dualA_n
+    dualB_f = dualB_v * dual_sr / dualB_n
+    dualA_u0 = (dualA_offS + dualA_eps) / dualA_n
+    dualB_u0 = (dualB_offS + dualB_eps) / dualB_n
+    dual_df = dualB_f - dualA_f
+    # Stationary when the relative phase moves by less than a millionth of
+    # a cycle over the whole render: no drift is reported or drawn.
+    dual_stationary = abs(dual_df) * dual_T < 1e-6
+    dual_relCycle = undefined
+    if not dual_stationary
+        dual_relCycle = 1 / abs(dual_df)
+    endif
+    # Cycles traversed = |fB - fA| * T (exact, may be fractional); "full"
+    # is its integer part. Counting wraps instead would count a spurious
+    # one at t = 0 whenever the relationship starts exactly at 0 deg and
+    # B falls behind. Displayed degrees within 0.005 of 360 read as 0.
+    @dualRel: 0
+    dual_relStartDeg = 360 * dualOut_phase
+    if dual_relStartDeg > 359.995
+        dual_relStartDeg = 0
+    endif
+    @dualRel: dual_T
+    dual_relEndDeg = 360 * dualOut_phase
+    if dual_relEndDeg > 359.995
+        dual_relEndDeg = 0
+    endif
+    dual_relCyclesExact = abs(dual_df) * dual_T
+    dual_relCycles = floor(dual_relCyclesExact + 1e-9)
+    if dual_stationary
+        dual_relCyclesExact = 0
+        dual_relCycles = 0
+        dual_direction$ = "stationary"
+    elsif dual_df > 0
+        dual_direction$ = "B gains on A"
+    else
+        dual_direction$ = "B falls behind A"
+    endif
+
+    # 8. Cleanup (loops and streams survive only for a test that asks).
+    if dual_keep_intermediates = 0
+        @dualRemoveIntermediates
+    endif
+
+    # 9. Info window.
+    appendInfoLine: "Source: ", dual_sourceName$, "  (", fixed$(dual_srcDur, 3), " s, ", dual_sourceChannels, " ch, ", dual_sr, " Hz)"
+    @dualSemitones: dualA_v
+    appendInfoLine: "Unit A: Region ", fixed$(dualA_snapStart, 4), "-", fixed$(dualA_snapEnd, 4), " s (requested ", fixed$(dual_A_Start_sec, 3), "-", fixed$(dual_A_End_sec, 3), "), loop ", fixed$(dualA_L, 4), " s (", dualA_n, " samples) | rate ", fixed$(dualA_ratePct, 3), "% (", fixed$(dualOut_st, 2), " st) | period ", fixed$(1 / dualA_f, 4), " s | start ", fixed$(dual_A_Start_Offset_percent, 1), "% of loop (sample ", dualA_offS, ")"
+    @dualSemitones: dualB_v
+    .derived$ = ""
+    if dual_Timing$ = "Target Relative Cycle"
+        .derived$ = ", derived"
+    endif
+    appendInfoLine: "Unit B: Region ", fixed$(dualB_snapStart, 4), "-", fixed$(dualB_snapEnd, 4), " s (requested ", fixed$(dual_B_Start_sec, 3), "-", fixed$(dual_B_End_sec, 3), "), loop ", fixed$(dualB_L, 4), " s (", dualB_n, " samples) | rate ", fixed$(dualB_ratePct, 3), "%", .derived$, " (", fixed$(dualOut_st, 2), " st) | period ", fixed$(1 / dualB_f, 4), " s | start ", fixed$(dual_B_Start_Offset_percent, 1), "% of loop (sample ", dualB_offS, ")"
+    appendInfoLine: "Rates are plain resampling: speed and pitch change together (not a time stretch)."
+    if dual_Timing$ = "Target Relative Cycle"
+        appendInfoLine: "Timing: Target Relative Cycle ", fixed$(dual_Target_Cycle_min, 3), " min, ", dual_Drift_Direction$, " (Unit B's typed rate is not used)."
+    else
+        appendInfoLine: "Timing: Independent Rates."
+    endif
+    if dual_stationary
+        appendInfoLine: "Relative loop phase (B - A): STATIONARY -- equal loop frequencies, no relative drift; it stays at ", fixed$(dual_relStartDeg, 2), " deg."
+    else
+        appendInfoLine: "Relative loop phase (B - A): cycle ", fixed$(dual_relCycle, 4), " s = 1 / |fB - fA| (fA ", fixed$(dualA_f, 6), ", fB ", fixed$(dualB_f, 6), " loops/s) | ", dual_direction$, " | ", fixed$(dual_relCyclesExact, 2), " relative cycles in this render | start ", fixed$(dual_relStartDeg, 2), " deg, end ", fixed$(dual_relEndDeg, 2), " deg"
+        if dual_relCycle > dual_T
+            appendInfoLine: "  (the relative cycle is longer than the render: less than one full cycle is heard)"
+        endif
+    endif
+    appendInfoLine: "Stereo separation ", fixed$(dual_Stereo_Separation_percent, 1), "% -> pans A ", fixed$(dual_panA, 1), ", B ", fixed$(dual_panB, 1), " (equal-power; gains L/R A ", fixed$(dual_gLA, 4), "/", fixed$(dual_gRA, 4), ", B ", fixed$(dual_gLB, 4), "/", fixed$(dual_gRB, 4), ")"
+    if dual_gRA = 0 and dual_gLB = 0
+        appendInfoLine: "  Full isolation: left channel = Unit A only, right channel = Unit B only."
+    endif
+    appendInfoLine: "Unit B level: ", fixed$(dual_B_Level_dB, 2), " dB relative to Unit A (x", fixed$(dual_levelB, 4), ")"
+    if dual_monoFoldDb <> undefined
+        appendInfoLine: "Mono fold-down: (L+R)/2 RMS is ", fixed$(dual_monoFoldDb, 2), " dB relative to the stereo channel RMS."
+    endif
+    appendInfoLine: "Output: ", dual_nTotal, " samples x 2 channels = ", fixed$(dual_T, 6), " s (", fixed$(total_Duration_min, 3), " min requested); peak-normalised to 0.99"
+    selectObject: dual_out
+endproc
+
+# ------------------------------------------------------------
+# Dual visualization
+# ------------------------------------------------------------
+
+# Text in a strip of its own. Font size is set BEFORE the viewport (Praat
+# derives viewport margins from the current font size), and the viewport is
+# re-selected for every call because Text leaves the drawing frame on the
+# outer viewport.
+procedure dualStripText: .x1, .x2, .y1, .y2, .fs, .x, .align$, .col$, .text$
+    Font size: .fs
+    Select inner viewport: .x1, .x2, .y1, .y2
+    Axes: 0, 1, 0, 1
+    Colour: .col$
+    Text: .x, .align$, 0.5, "half", .text$
+endproc
+
+procedure dualFrame: .x1, .x2, .y1, .y2, .ax1, .ax2, .ay1, .ay2
+    Select inner viewport: .x1, .x2, .y1, .y2
+    Axes: .ax1, .ax2, .ay1, .ay2
+endproc
+
+procedure dualNiceStep: .span, .target
+    .raw = .span / .target
+    .mag = 10 ^ floor(log10(.raw))
+    .r = .raw / .mag
+    if .r < 1.5
+        dualOut_step = .mag
+    elsif .r < 3.5
+        dualOut_step = 2 * .mag
+    elsif .r < 7.5
+        dualOut_step = 5 * .mag
+    else
+        dualOut_step = 10 * .mag
+    endif
+endproc
+
+# One wheel for the ONE inter-unit relationship (square inner viewport, as
+# in the Classic wheel). Angle = relative loop phase frac(uB - uA); radius =
+# output time (centre = start, rim = end), so the path is a spiral whose
+# turns are the relative cycles, and a stationary relationship is a single
+# radial line. Colour runs light -> dark along time. No unison / anti-phase
+# semantics: 0 deg means both units are at the same fraction of their own
+# loops, which is not acoustic alignment of two different sounds.
+procedure dualRelWheel: .x1, .x2, .y1, .y2
+    .tTotal = dual_T
+    Font size: 10
+    @dualFrame: .x1, .x2, .y1, .y2, 0, 100, 0, 100
+    Paint rectangle: "{0.985, 0.985, 0.985}", 0, 100, 0, 100
+
+    Colour: "{0.80, 0.80, 0.80}"
+    Line width: 0.8
+    Draw circle: 50, 50, 45
+    Colour: "{0.55, 0.55, 0.55}"
+    Line width: 0.55
+    Dotted line
+    Draw line: 50, 50, 50, 95
+    Draw line: 50, 50, 95, 50
+    Draw line: 50, 50, 50, 5
+    Draw line: 50, 50, 5, 50
+    Solid line
+    Line width: 1
+
+    .rIn = 6
+    .rOut = 42
+    .turns = abs(dual_df) * .tTotal
+    .samples = min(40000, max(900, round(90 * (.turns + 1))))
+    .dt = .tTotal / (.samples - 1)
+    .lw = 1.3
+    if .turns > 12
+        .lw = 0.8
+    endif
+    Line width: .lw
+    .prevX = 0
+    .prevY = 0
+    for .i from 1 to .samples
+        .t = (.i - 1) * .dt
+        @dualRel: .t
+        .ang = dualOut_phase * 2 * pi
+        .c = .t / .tTotal
+        .r = .rIn + (.rOut - .rIn) * .c
+        .x = 50 + .r * sin(.ang)
+        .y = 50 + .r * cos(.ang)
+        Colour: {0.78 - 0.50 * .c, 0.76 - 0.58 * .c, 0.92 - 0.36 * .c}
+        if .i > 1
+            Draw line: .prevX, .prevY, .x, .y
+        endif
+        .prevX = .x
+        .prevY = .y
+    endfor
+    Line width: 1
+    @dualRel: 0
+    .sx = 50 + .rIn * sin(dualOut_phase * 2 * pi)
+    .sy = 50 + .rIn * cos(dualOut_phase * 2 * pi)
+    Colour: "Black"
+    Paint circle (mm): "White", .sx, .sy, 1.1
+    Draw circle (mm): .sx, .sy, 1.1
+    Paint circle (mm): dualRel_colour$, .prevX, .prevY, 1.5
+    Draw circle (mm): .prevX, .prevY, 1.5
+
+    # Labels last, each after a fresh frame (Text special moves the frame).
+    @dualFrame: .x1, .x2, .y1, .y2, 0, 100, 0, 100
+    Colour: "{0.20, 0.20, 0.20}"
+    Text special: 50, "centre", 99, "top", "Helvetica", 8, "0", "0° aligned"
+    @dualFrame: .x1, .x2, .y1, .y2, 0, 100, 0, 100
+    Text special: 98, "right", 50, "half", "Helvetica", 7, "0", "90°"
+    @dualFrame: .x1, .x2, .y1, .y2, 0, 100, 0, 100
+    Text special: 50, "centre", 1, "bottom", "Helvetica", 8, "0", "180° opposite"
+    @dualFrame: .x1, .x2, .y1, .y2, 0, 100, 0, 100
+    Text special: 2, "left", 50, "half", "Helvetica", 7, "0", "270°"
+    # Corner notes (outside the r = 45 ring, so never on the path).
+    if dual_stationary
+        .tl$ = "stationary: no relative drift"
+        .tr$ = "equal loop frequencies"
+    else
+        .tl$ = "relative cycles: " + fixed$(dual_relCyclesExact, 1)
+        .tr$ = "cycle " + fixed$(dual_relCycle, 2) + " s"
+    endif
+    @dualFrame: .x1, .x2, .y1, .y2, 0, 100, 0, 100
+    Colour: "{0.35, 0.35, 0.35}"
+    Text special: 3, "left", 97, "top", "Helvetica", 6, "0", .tl$
+    @dualFrame: .x1, .x2, .y1, .y2, 0, 100, 0, 100
+    Text special: 97, "right", 97, "top", "Helvetica", 6, "0", .tr$
+    @dualFrame: .x1, .x2, .y1, .y2, 0, 100, 0, 100
+    Text special: 3, "left", 3, "bottom", "Helvetica", 6, "0", "radius = output time"
+    @dualFrame: .x1, .x2, .y1, .y2, 0, 100, 0, 100
+    Text special: 97, "right", 3, "bottom", "Helvetica", 6, "0", "start " + fixed$(dual_relStartDeg, 0) + "°  end " + fixed$(dual_relEndDeg, 0) + "°"
+
+    @dualFrame: .x1, .x2, .y1, .y2, 0, 100, 0, 100
+    Colour: "Black"
+    Draw inner box
+endproc
+
+# One lane: a unit's own loop position (0..100% of its loop) over the first
+# .w seconds -- a sawtooth whose drops are the unit's loop restarts.
+procedure dualLane: .x1, .x2, .y1, .y2, .w, .unit, .col$, .numbers
+    Font size: 6
+    @dualFrame: .x1, .x2, .y1, .y2, 0, .w, -0.08, 1.08
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, .w, -0.08, 1.08
+    Colour: "{0.86, 0.86, 0.86}"
+    Line width: 0.6
+    Draw line: 0, 0.5, .w, 0.5
+    Colour: "{0.70, 0.70, 0.70}"
+    Draw line: 0, 0, .w, 0
+    Draw line: 0, 1, .w, 1
+    .samples = 1600
+    .dt = .w / (.samples - 1)
+    Colour: .col$
+    Line width: 1.3
+    .prevT = 0
+    .prevP = 0
+    for .i from 1 to .samples
+        .t = (.i - 1) * .dt
+        @dualRel: .t
+        if .unit = 1
+            .u = dualOut_uA
+        else
+            .u = dualOut_uB
+        endif
+        .p = .u - floor(.u)
+        if .i > 1 and .p >= .prevP
+            Draw line: .prevT, .prevP, .t, .p
+        endif
+        .prevT = .t
+        .prevP = .p
+    endfor
+    Line width: 1
+    @dualFrame: .x1, .x2, .y1, .y2, 0, .w, -0.08, 1.08
+    Colour: "Black"
+    Draw inner box
+    @dualNiceStep: .w, 6
+    @dualFrame: .x1, .x2, .y1, .y2, 0, .w, -0.08, 1.08
+    if .numbers
+        Marks bottom every: 1, dualOut_step, "yes", "yes", "no"
+        @dualFrame: .x1, .x2, .y1, .y2, 0, .w, -0.08, 1.08
+        Text bottom: "yes", "Output time (s)"
+    else
+        Marks bottom every: 1, dualOut_step, "no", "yes", "no"
+    endif
+    @dualFrame: .x1, .x2, .y1, .y2, 0, .w, -0.08, 1.08
+    One mark left: 0, "no", "yes", "no", "0"
+    @dualFrame: .x1, .x2, .y1, .y2, 0, .w, -0.08, 1.08
+    One mark left: 0.5, "no", "yes", "no", "50\% "
+    @dualFrame: .x1, .x2, .y1, .y2, 0, .w, -0.08, 1.08
+    One mark left: 1, "no", "yes", "no", "100\% "
+endproc
+
+procedure dualDraw
+    .tTotal = dual_T
+    .disp$ = replace$(dual_sourceName$, "_", " ", 0)
+    .xmin = dual_srcXmin
+    .xmax = dual_srcXmax
+
+    Erase all
+    Colour: "Black"
+    Line width: 1
+    Solid line
+
+    # ------------------------------------------------------------
+    # LAYOUT (inches, 8.00 x 7.58 canvas -- the library standard page):
+    #   Title                                   0.02 - 0.28
+    #   Headers                                 0.32 - 0.48
+    #   Relative-phase wheel, 3.30 x 3.30 sq.   0.52 - 3.82  (x 0.55 - 3.85)
+    #   Unit lanes A / B (right column)         0.52 - 3.46  (x 4.45 - 7.75)
+    #   Region labels                           3.98 - 4.10
+    #   Source waveform                         4.12 - 4.70
+    #   Trajectory header + key                 4.80 - 4.96
+    #   Relative phase trajectory               5.00 - 6.05  (+ axis)
+    #   Summary                                 6.64 - 7.54
+    # ------------------------------------------------------------
+    @dualStripText: 0, 8, 0.02, 0.28, 12, 0.5, "centre", "Black", "##Reich Generator — Dual Locked Loops##"
+
+    .longest = max(1 / dualA_f, 1 / dualB_f)
+    .w = min(.tTotal, 6 * .longest)
+    @dualStripText: 0.55, 3.85, 0.32, 0.48, 9, 0.5, "centre", dualRel_colour$, "##Relative loop phase##  (B − A)"
+    @dualStripText: 4.45, 7.75, 0.32, 0.48, 9, 0.5, "centre", "Black", "##Two units##  (loop position, first " + fixed$(.w, 1) + " s)"
+
+    @dualRelWheel: 0.55, 3.85, 0.52, 3.82
+
+    @dualStripText: 4.45, 7.75, 0.52, 0.66, 7, 0, "left", dualA_colour$, "##Unit A##  Region A, rate " + fixed$(dualA_ratePct, 2) + "\% , period " + fixed$(1 / dualA_f, 3) + " s"
+    @dualLane: 4.45, 7.75, 0.70, 1.95, .w, 1, dualA_colour$, 0
+    @dualStripText: 4.45, 7.75, 2.03, 2.17, 7, 0, "left", dualB_colour$, "##Unit B##  Region B, rate " + fixed$(dualB_ratePct, 2) + "\% , period " + fixed$(1 / dualB_f, 3) + " s"
+    @dualLane: 4.45, 7.75, 2.21, 3.46, .w, 2, dualB_colour$, 1
+
+    # SOURCE with both locked regions.
+    selectObject: dual_source
+    .srcPeak = Get absolute extremum: 0, 0, "None"
+    .waveY = .srcPeak * 1.15
+    if .waveY <= 0
+        .waveY = 1
+    endif
+    .aS = .xmin + dualA_snapStart
+    .aE = .xmin + dualA_snapEnd
+    .bS = .xmin + dualB_snapStart
+    .bE = .xmin + dualB_snapEnd
+
+    Font size: 10
+    @dualFrame: 0.55, 7.75, 3.98, 4.10, .xmin, .xmax, 0, 1
+    Colour: dualA_colour$
+    Text special: (.aS + .aE) / 2, "centre", 0.5, "half", "Helvetica", 7, "0", "##A##"
+    @dualFrame: 0.55, 7.75, 3.98, 4.10, .xmin, .xmax, 0, 1
+    Colour: dualB_colour$
+    Text special: (.bS + .bE) / 2, "centre", 0.5, "half", "Helvetica", 7, "0", "##B##"
+
+    @dualFrame: 0.55, 7.75, 4.12, 4.70, .xmin, .xmax, -.waveY, .waveY
+    Paint rectangle: "{0.97, 0.97, 0.97}", .xmin, .xmax, -.waveY, .waveY
+    Paint rectangle: dualA_tint$, .aS, .aE, -.waveY, .waveY
+    Paint rectangle: dualB_tint$, .bS, .bE, -.waveY, .waveY
+    selectObject: dual_source
+    Colour: "{0.52, 0.52, 0.52}"
+    Draw: .xmin, .xmax, -.waveY, .waveY, "no", "Curve"
+    @dualFrame: 0.55, 7.75, 4.12, 4.70, .xmin, .xmax, -.waveY, .waveY
+    Colour: "{0.84, 0.84, 0.84}"
+    Draw line: .xmin, 0, .xmax, 0
+    Line width: 1.3
+    Colour: dualA_colour$
+    Draw line: .aS, -.waveY, .aS, .waveY
+    Draw line: .aE, -.waveY, .aE, .waveY
+    Colour: dualB_colour$
+    Draw line: .bS, -.waveY, .bS, .waveY
+    Draw line: .bE, -.waveY, .bE, .waveY
+    Line width: 1
+    @dualFrame: 0.55, 7.75, 4.12, 4.70, .xmin, .xmax, -.waveY, .waveY
+    Colour: "Black"
+    Draw inner box
+    Font size: 10
+    @dualFrame: 0.55, 7.75, 4.12, 4.70, .xmin, .xmax, -.waveY, .waveY
+    Colour: "{0.45, 0.45, 0.45}"
+    .srcLabelX = .xmin - 0.04920 * (.xmax - .xmin)
+    Text special: .srcLabelX, "centre", 0, "half", "Times", 6, "90", "Source"
+
+    # RELATIVE PHASE TRAJECTORY -- the one relationship, over the whole render.
+    @dualStripText: 0.55, 7.75, 4.80, 4.96, 8, 0, "left", "Black", "##Relative loop phase over time##  (B − A, fraction of each unit's own loop)"
+    @dualStripText: 0.55, 7.75, 4.80, 4.96, 6, 1, "right", "{0.45, 0.45, 0.45}", "open dot = start  |  filled dot = end  |  gap = wrap"
+
+    .yLo = -25
+    .yHi = 385
+    Font size: 6
+    @dualFrame: 0.55, 7.75, 5.00, 6.05, 0, .tTotal, .yLo, .yHi
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, .tTotal, .yLo, .yHi
+    Colour: "{0.86, 0.86, 0.86}"
+    Line width: 0.6
+    Draw line: 0, 90, .tTotal, 90
+    Draw line: 0, 180, .tTotal, 180
+    Draw line: 0, 270, .tTotal, 270
+    Colour: "{0.45, 0.45, 0.45}"
+    Line width: 1.0
+    Draw line: 0, 0, .tTotal, 0
+    Draw line: 0, 360, .tTotal, 360
+
+    .turns = abs(dual_df) * .tTotal
+    .samples = min(40000, max(1201, round(60 * (.turns + 1))))
+    .dt = .tTotal / (.samples - 1)
+    .prevDeg = 0
+    .prevT = 0
+    Colour: dualRel_colour$
+    Line width: 1.2
+    for .i from 1 to .samples
+        .t = (.i - 1) * .dt
+        @dualRel: .t
+        .deg = 360 * dualOut_phase
+        if .i > 1
+            if abs(.deg - .prevDeg) < 180
+                Draw line: .prevT, .prevDeg, .t, .deg
+            endif
+        endif
+        .prevT = .t
+        .prevDeg = .deg
+    endfor
+    Line width: 1
+    Colour: dualRel_colour$
+    Paint circle (mm): "White", 0, dual_relStartDeg, 1.1
+    Draw circle (mm): 0, dual_relStartDeg, 1.1
+    Paint circle (mm): dualRel_colour$, .tTotal, .prevDeg, 1.2
+
+    @dualFrame: 0.55, 7.75, 5.00, 6.05, 0, .tTotal, .yLo, .yHi
+    Colour: "Black"
+    Draw inner box
+    @dualNiceStep: .tTotal, 6
+    @dualFrame: 0.55, 7.75, 5.00, 6.05, 0, .tTotal, .yLo, .yHi
+    Marks bottom every: 1, dualOut_step, "yes", "yes", "no"
+    @dualFrame: 0.55, 7.75, 5.00, 6.05, 0, .tTotal, .yLo, .yHi
+    Text bottom: "yes", "Output time (s)"
+    @dualFrame: 0.55, 7.75, 5.00, 6.05, 0, .tTotal, .yLo, .yHi
+    Text left: "yes", "B − A (deg)"
+    for .k from 0 to 4
+        @dualFrame: 0.55, 7.75, 5.00, 6.05, 0, .tTotal, .yLo, .yHi
+        One mark left: .k * 90, "no", "yes", "no", string$(.k * 90) + "°"
+    endfor
+
+    # SUMMARY.
+    Font size: 6
+    @dualFrame: 0.30, 7.80, 6.64, 7.54, 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    Colour: "{0.48, 0.48, 0.48}"
+    Draw rectangle: 0, 1, 0, 1
+
+    .timing$ = "independent rates"
+    if dual_Timing$ = "Target Relative Cycle"
+        .timing$ = "target relative cycle " + fixed$(dual_Target_Cycle_min, 2) + " min (B rate derived)"
+    endif
+    .line1$ = .disp$ + "  |  duration " + fixed$(.tTotal / 60, 2) + " min  |  " + .timing$ + "  |  stereo separation " + fixed$(dual_Stereo_Separation_percent, 0) + "\%  |  Unit B level " + fixed$(dual_B_Level_dB, 1) + " dB"
+    .lineA$ = "Unit A  " + fixed$(dualA_snapStart, 3) + "-" + fixed$(dualA_snapEnd, 3) + " s  |  loop " + fixed$(dualA_L, 3) + " s  |  rate " + fixed$(dualA_ratePct, 2) + "\%  |  start " + fixed$(dual_A_Start_Offset_percent, 0) + "\%  of loop  |  pan " + fixed$(dual_panA, 0)
+    .lineB$ = "Unit B  " + fixed$(dualB_snapStart, 3) + "-" + fixed$(dualB_snapEnd, 3) + " s  |  loop " + fixed$(dualB_L, 3) + " s  |  rate " + fixed$(dualB_ratePct, 2) + "\%  |  start " + fixed$(dual_B_Start_Offset_percent, 0) + "\%  of loop  |  pan " + fixed$(dual_panB, 0)
+    if dual_stationary
+        .line4$ = "Relative loop phase B − A: stationary (equal loop frequencies), fixed at " + fixed$(dual_relStartDeg, 1) + "°"
+    else
+        .line4$ = "Relative loop phase B − A: cycle " + fixed$(dual_relCycle, 3) + " s  |  " + dual_direction$ + "  |  " + fixed$(dual_relCyclesExact, 2) + " cycles in the render  |  start " + fixed$(dual_relStartDeg, 1) + "°, end " + fixed$(dual_relEndDeg, 1) + "°"
+    endif
+
+    @dualStripText: 0.30, 7.80, 6.66, 6.82, 7, 0.02, "left", "Black", "##Summary##"
+    @dualStripText: 0.30, 7.80, 6.84, 6.98, 6, 0.02, "left", "{0.28, 0.28, 0.28}", .line1$
+    @dualStripText: 0.30, 7.80, 7.00, 7.14, 6, 0.02, "left", dualA_colour$, .lineA$
+    @dualStripText: 0.30, 7.80, 7.16, 7.30, 6, 0.02, "left", dualB_colour$, .lineB$
+    @dualStripText: 0.30, 7.80, 7.32, 7.46, 6, 0.02, "left", dualRel_colour$, .line4$
+
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    # Leave the whole page selected so Save/Copy from the Picture window
+    # exports the full figure rather than the last panel.
+    Select outer viewport: 0, 8, 0, 7.58
+endproc
+
+# <<< DUAL ENGINE END
+# ============================================================
