@@ -57,6 +57,9 @@
 #     numbers (report and figure).
 #   - Play: choose which output is played; Auto prefers Stereo Source
 #     Islands, then Orbit, the quad stereo preview, then mono.
+#   - Python discovery no longer stops when the per-user folder
+#     %LOCALAPPDATA%\Programs\Python does not exist (machines with a
+#     system-wide or Microsoft Store Python).
 #
 # Changelog v1.0 (2026):
 #   - First release. Consolidates three approved Python experiments
@@ -283,19 +286,27 @@ if not gsc_configured
         gsc_lad$ = environment$ ("LOCALAPPDATA")
         if gsc_lad$ <> ""
             gsc_pyroot$ = gsc_lad$ + "/Programs/Python"
-            gsc_list = Create Strings as folder list: "pyfolders", gsc_pyroot$ + "/Python3*"
-            gsc_np = Get number of strings
-            if gsc_np > 0
-                Sort
+            # This folder exists only for per-user python.org installs; on a
+            # machine without one (e.g. Microsoft Store or system-wide Python)
+            # the listing fails, which must not stop the script.
+            selectObject: gsc_source
+            nocheck Create Strings as folder list: "pyfolders", gsc_pyroot$ + "/Python3*"
+            if numberOfSelected ("Strings") = 1
+                gsc_list = selected ("Strings")
+                gsc_np = Get number of strings
+                if gsc_np > 0
+                    Sort
+                endif
+                for gsc_i from 1 to gsc_np
+                    selectObject: gsc_list
+                    gsc_f$ = Get string: gsc_np + 1 - gsc_i
+                    gsc_nc = gsc_nc + 1
+                    gsc_exe$[gsc_nc] = gsc_pyroot$ + "/" + gsc_f$ + "/python.exe"
+                    gsc_arg$[gsc_nc] = ""
+                endfor
+                removeObject: gsc_list
             endif
-            for gsc_i from 1 to gsc_np
-                selectObject: gsc_list
-                gsc_f$ = Get string: gsc_np + 1 - gsc_i
-                gsc_nc = gsc_nc + 1
-                gsc_exe$[gsc_nc] = gsc_pyroot$ + "/" + gsc_f$ + "/python.exe"
-                gsc_arg$[gsc_nc] = ""
-            endfor
-            removeObject: gsc_list
+            selectObject: gsc_source
         endif
     else
         gsc_nc = gsc_nc + 1
