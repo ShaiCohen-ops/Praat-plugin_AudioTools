@@ -1,0 +1,72 @@
+CDP NOTICE - CDP category of Praat AudioTools
+=============================================
+
+The scripts in this folder (CDP_Process_Explorer.praat, internal/cdp_engine.praat,
+CDP_Processes.tsv, CDP_Parameters.tsv) are part of Praat AudioTools and
+are released under its MIT licence.
+
+The 19 programs in engine\windows are NOT covered by the MIT licence.
+They are unmodified programs of the Composers Desktop Project (CDP):
+
+  blur.exe  caltrain.exe  distort.exe  envel.exe  extend.exe  filter.exe
+  focus.exe  glisten.exe  grain.exe  hilite.exe  modify.exe  pitch.exe
+  pvoc.exe  spec.exe  specfnu.exe  specfold.exe  strange.exe  stretch.exe
+  superaccu.exe
+
+Licence    : GNU Lesser General Public License, version 2.1 or (at your
+             option) any later version. Full text: LGPL-2.1.txt
+Copyright  : Composers Desktop Project Ltd and the CDP authors
+             (Trevor Wishart, Richard Orton, Martin Atkins, Richard Dobson,
+             Archer Endrich and others).
+             [TO VERIFY before public release: copy the exact copyright line
+             from the header of the CDP8 source files.]
+Upstream   : https://www.composersdesktop.com
+Source code: https://github.com/ComposersDesktop/CDP8
+Use        : run as separate programs (Praat runSubprocess). They are not
+             linked into Praat or into these scripts, and can be replaced
+             by other builds of the same programs (LGPL-2.1, section 6).
+             They need only Windows system libraries; no DLLs are bundled.
+
+Exact provenance of the bundled binaries
+----------------------------------------
+Distribution      : CDP Release 8 PC program set ("_cdprogs"), as installed
+                    by the CDP Release 8 PC installer. Its !proglist.txt
+                    describes it as "the latest (March 2023) CDP program
+                    set for PC, including the new CDP Release 8 programs".
+Bundled programs (bytes, SHA-256, self-reported --version; all dated 15/03/2023):
+  blur.exe         453,873  82a8344b026842a63ec510a00a3ce3f93ec0f28d7590e5a638fcb628a194aa7e  ?
+  caltrain.exe     429,385  f24b201c01dd07ebb736482452a079dfcf05581254947257a60d8d25854d175c  ?
+  distort.exe      535,774  3da3502ae398864846c07375a4e66ce100f1dbf80a71dc39344edb3cbbee2343  ?
+  envel.exe        520,233  c9b54ae1ff0324eda318249984323a8a0dcb540583cc6ca48afdafc0170eb527  ?
+  extend.exe       522,611  802b711f587dc26a93b49294777d07579dc74d6a37d775fbadc5bcceca9794e2  ?
+  filter.exe       491,588  f4d158db556665900b2a57f91b564bdd83ae424972299ae60a04cf515b7d13c9  ?
+  focus.exe        452,006  d3642473da81b160942fa895151e19013b677114b700a8b2cc12e8cd5f5e985f  ?
+  glisten.exe      434,212  8e6f1906e7be2166b9ad5b7f642ea6ee044341433b43c34093bc678a6044953c  ?
+  grain.exe        514,410  6f5d6a2bdaabc185ecff4a4f6ae80dd663da2401dd0c86719abf4bd66e19e5c7  ?
+  hilite.exe       465,186  5efc89c5c46d6093729931dff46af60146d9ae0786871dc567c68a23f72155ad  ?
+  modify.exe       608,865  2c2c1ce7122ccb6d6a5a2ad896af341569a1cebdd570e457a200be611ff91445  ?
+  pitch.exe        447,724  aa0e6ea874e4db2f5359cbb415932361ad8166c84704a760dc160468bc110fcf  ?
+  pvoc.exe         448,078  656c6bab41c28dbadce231330fd73d8f5bec2e56d00bcad4186cd20692533ab1  ?
+  spec.exe         436,680  ad51721ca166eb581efb7376ff5994b2d985396785594615f691e6bf4dcb281f  ?
+  specfnu.exe      544,540  f93e8602aa445e54b96d7404adca55fa9f01fedbad3e8b5b8842cff5ff84a975  8.0.1
+  specfold.exe     430,357  91dd8efbf3c27e41957be3fc84c7a3f5b9f32973b092a46d3f3b17a1400f60db  ?
+  strange.exe      451,921  eda2dddc19865f30db5ce9d4bd0d4d3bba415bbf0edc61606ad98bee7a103f44  ?
+  stretch.exe      438,418  2d8c644a6855e7f5d47750a77aff10aaac962b832a7d92b9f4393093114fc1f9  ?
+  superaccu.exe    434,570  70b0a47ad5b2b9374472866d3c8f150ca042f1ccd5a56df6364290ed49d3984d  ?
+Architecture      : 32-bit x86 Windows executables (run on 64-bit Windows).
+
+Note: these programs are part of the Release 8 set; their own version
+strings (7.0.0, 7.1.0, 8.0.x) are listed above. Many Release 8 programs were carried over
+unchanged from Release 7.1. The Explorer reports the self-reported
+version after every run.
+
+OPEN ITEM BEFORE PUBLIC RELEASE
+-------------------------------
+LGPL-2.1 section 6 requires the source that corresponds to the shipped
+binaries. The CDP8 repository is the published source of Release 8, but
+the exact commit/tag matching these March 2023 builds has not been
+identified yet. Before public distribution, either
+  (a) confirm with the CDP maintainers which CDP8 tag/commit these builds
+      come from and record it here, or
+  (b) ship binaries rebuilt from a recorded CDP8 commit instead.
+Until then, this package is suitable for development and testing.

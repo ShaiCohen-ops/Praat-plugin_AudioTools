@@ -1,0 +1,642 @@
+process_id	order	param_id	label	type	default	min	max	decimals	switch	cdp_index	help
+speed_change	1	speed_ratio	Speed ratio	real	0.5	0.00383	256	2	-	1	1 = unchanged, 0.5 = octave down and twice as long
+speed_semitones	1	semitones	Semitones	real	-7	-96	96	1	-	1	12 = octave up (half as long), -12 = octave down
+accelerate	1	accel	Accel	real	2	0.0001	1000	2	-	1	speed ratio reached at Goal time (below 1 = slow down)
+accelerate	2	goaltime	Goal time	real	1.5	0.01	-	-	-	2	time in the output (s) where Accel is reached
+accelerate	3	starttime	Start time	real	0	0	-	-	-	3	time (s) where the acceleration begins
+vibrato	1	rate	Rate	real	6	0	120	1	-	1	vibrato rate in Hz
+vibrato	2	depth	Depth	real	0.5	0	96	-	-	2	vibrato depth in semitones
+scrub	1	dur	Duration	real	4	-	-	-	-	1	minimum output duration (s)
+scrub	2	down	Lowest transposition	real	-12	-96	96	-	-	3	semitones
+scrub	3	up	Highest transposition	real	4	-96	96	-	-	2	semitones
+scrub	4	forwards	Single forward scrub	boolean	0	-	-	-	-f	-	one forward scrub only (ignores Duration)
+shred	1	repeats	Repeats	integer	3	1	10000	-	-	1	number of shredding passes
+shred	2	chunklen	Chunk length	real	0.1	0.017415	-	-	-	2	average chunk length (s)
+shred	3	scatter	Scatter	real	1	0	8	-	-	3	randomisation of cuts; 0 = reorder without shredding
+shred	4	smooth	Smoother output	boolean	0	-	-	-	-n	-	-
+lose_resolution	1	bits	Bit resolution	integer	8	1	16	-	-	1	1 to 16
+lose_resolution	2	srdiv	Sample rate division	integer	4	1	256	-	-	2	rounded to a power of 2; 1 = unchanged
+ring_modulate	1	freq	Modulating frequency	real	150	0.1	-	0	-	1	Hz
+quantise	1	bits	Bit resolution	integer	4	1	16	-	-	1	-
+gain	1	gain	Gain	real	0.5	0	-	2	-	1	-
+gain_db	1	db	Gain dB	real	-6	-96	96	1	-	1	-
+normalise	1	level	Peak level	real	0.95	0.000031	1	-	-	1	-
+attack_1	1	gate	Gate	real	0.3	0	1	-	-	1	level at which the attack is recognised (0 to 1)
+attack_1	2	gain	Attack gain	real	1.2	1	-	-	-	2	amplification of the attack point
+attack_1	3	onset	Onset ms	real	10	5	-	-	-	3	attack onset duration (ms)
+attack_1	4	decay	Decay ms	real	100	5	-	-	-	4	attack decay duration (ms)
+attack_1	5	envtype	Exponential	integer	1	0	1	-	-	5	1 = exponential, 0 = linear
+attack_2	1	time	Approx time	real	0.5	0	-	-	-	1	attack at max level within 200 ms of this time (s)
+attack_2	2	gain	Attack gain	real	1.2	1	-	-	-	2	amplification of the attack point
+attack_2	3	onset	Onset ms	real	10	5	-	-	-	3	attack onset duration (ms)
+attack_2	4	decay	Decay ms	real	100	5	-	-	-	4	attack decay duration (ms)
+attack_2	5	envtype	Exponential	integer	1	0	1	-	-	5	1 = exponential, 0 = linear
+attack_3	1	time	Exact time	real	0.5	0	-	-	-	1	time of the attack point (s)
+attack_3	2	gain	Attack gain	real	1.2	1	-	-	-	2	amplification of the attack point
+attack_3	3	onset	Onset ms	real	10	5	-	-	-	3	attack onset duration (ms)
+attack_3	4	decay	Decay ms	real	100	5	-	-	-	4	attack decay duration (ms)
+attack_3	5	envtype	Exponential	integer	1	0	1	-	-	5	1 = exponential, 0 = linear
+attack_4	1	gain	Attack gain	real	1.2	1	-	-	-	1	amplification of the attack point
+attack_4	2	onset	Onset ms	real	10	5	-	-	-	2	attack onset duration (ms)
+attack_4	3	decay	Decay ms	real	100	5	-	-	-	3	attack decay duration (ms)
+attack_4	4	envtype	Exponential	integer	1	0	1	-	-	4	1 = exponential, 0 = linear
+curtail_1	1	fstart	Fade start	real	0.5	-	-	-	-	-	s
+curtail_1	2	fend	Fade end	real	1	-	-	-	-	-	s
+curtail_1	3	envtype	Exponential	integer	1	0	1	-	-	-	1 = exponential, 0 = linear
+curtail_2	1	fstart	Fade start	real	0.5	-	-	-	-	-	s
+curtail_2	2	fdur	Fade duration	real	0.5	-	-	-	-	-	s
+curtail_2	3	envtype	Exponential	integer	1	0	1	-	-	-	1 = exponential, 0 = linear
+curtail_4	1	fstart	Fade start	real	0.5	-	-	-	-	-	s
+curtail_4	2	fend	Fade end	real	1	-	-	-	-	-	s
+dovetail_1	1	indur	Fade in	real	0.05	-	-	-	-	-	s
+dovetail_1	2	outdur	Fade out	real	0.2	-	-	-	-	-	s
+dovetail_1	3	intype	Exponential in	integer	1	0	1	-	-	-	1 = exponential, 0 = linear
+dovetail_1	4	outtype	Exponential out	integer	1	0	1	-	-	-	1 = exponential, 0 = linear
+dovetail_2	1	indur	Fade in	real	0.05	-	-	-	-	-	s
+dovetail_2	2	outdur	Fade out	real	0.2	-	-	-	-	-	s
+swell	1	peaktime	Peak time	real	0.5	0.005	-	-	-	1	s
+swell	2	peaktype	Exponential	integer	1	0	1	-	-	2	1 = exponential, 0 = linear
+tremolo	1	frq	Frequency	real	6	0	500	1	-	1	Hz
+tremolo	2	depth	Depth	real	0.5	0	1	-	-	2	0 to 1
+tremolo	3	gain	Gain	real	1	0	1	-	-	3	0 to 1
+reform_8	1	exag	Exaggeration	real	2	0.000002	40	1	-	1	-
+ws_average	1	cyclecnt	Cycles	integer	4	2	-	-	-	1	wavesets averaged together (more than 1)
+ws_average	2	maxwl	Max wavelength	real	0.5	0.000363	1	-	-	2	s
+ws_average	3	skip	Skip cycles	integer	0	0	-	-	-	3	wavesets skipped at the start
+ws_delete_1	1	cyclecnt	Cycles	integer	2	2	-	-	-	1	N
+ws_delete_1	2	skip	Skip cycles	integer	0	0	-	-	-	2	-
+ws_delete_2	1	cyclecnt	Cycles	integer	2	2	-	-	-	1	N
+ws_delete_2	2	skip	Skip cycles	integer	0	0	-	-	-	2	-
+ws_delete_3	1	cyclecnt	Cycles	integer	2	2	-	-	-	1	N
+ws_delete_3	2	skip	Skip cycles	integer	0	0	-	-	-	2	-
+ws_divide	1	n	Divider	integer	2	2	16	-	-	1	2 to 16
+ws_divide	2	interp	Interpolate	boolean	0	-	-	-	-i	-	slower but cleaner
+ws_multiply	1	n	Multiplier	integer	2	2	16	-	-	1	2 to 16
+ws_multiply	2	smooth	Smoothing	boolean	0	-	-	-	-s	-	try if glitches appear
+ws_envel_1	1	cyclecnt	Cycles	integer	4	1	1000	-	-	1	wavesets under one envelope
+ws_envel_1	2	trough	Troughing	real	0	0	1	-	-	2	0 to 1
+ws_envel_1	3	exponent	Exponent	real	1	0.02	50	-	-	3	1 = linear
+ws_envel_2	1	cyclecnt	Cycles	integer	4	1	1000	-	-	1	wavesets under one envelope
+ws_envel_2	2	trough	Troughing	real	0	0	1	-	-	2	0 to 1
+ws_envel_2	3	exponent	Exponent	real	1	0.02	50	-	-	3	1 = linear
+ws_envel_3	1	cyclecnt	Cycles	integer	4	1	1000	-	-	1	-
+ws_envel_3	2	trough	Troughing	real	0.5	0	1	-	-	2	0 to 1
+ws_envel_3	3	exponent	Exponent	real	1	0.02	50	-	-	3	1 = linear
+ws_filter_1	1	freq	Frequency	real	300	10	-	0	-	1	Hz
+ws_filter_1	2	skip	Skip cycles	integer	0	0	-	-	-	2	-
+ws_filter_2	1	freq	Frequency	real	1000	10	-	0	-	1	Hz
+ws_filter_2	2	skip	Skip cycles	integer	0	0	-	-	-	2	-
+ws_filter_3	1	freq1	Low frequency	real	200	10	-	-	-	1	Hz
+ws_filter_3	2	freq2	High frequency	real	1000	10	-	-	-	2	Hz
+ws_filter_3	3	skip	Skip cycles	integer	0	0	-	-	-	3	-
+ws_fractal	1	scaling	Scaling	integer	4	2	-	-	-	1	division of the waveset scale
+ws_fractal	2	loudness	Loudness	real	0.5	0.000031	-	-	-	2	of the scaled copy, relative to 1
+ws_fractal	3	preatt	Pre attenuation	real	1	0.000031	-	-	-	3	applied to the input
+ws_interpolate	1	mult	Multiplier	integer	2	2	-	-	-	1	times each waveset repeats
+ws_interpolate	2	skip	Skip cycles	integer	0	0	-	-	-	2	-
+ws_omit	1	a	Omit	integer	1	1	-	-	-	1	A, less than B
+ws_omit	2	b	Out of	integer	3	2	-	-	-	2	B
+ws_overload_1	1	clip	Clip level	real	0.3	0	1	-	-	1	0 to 1
+ws_overload_1	2	depth	Depth	real	0.5	0	1	-	-	2	0 to 1
+ws_overload_2	1	gate	Clip level	real	0.3	0	1	-	-	1	0 to 1
+ws_overload_2	2	depth	Depth	real	0.5	0	1	-	-	2	0 to 1
+ws_overload_2	3	freq	Frequency	real	400	0.01	-	-	-	3	Hz
+ws_pitch	1	octvary	Octave range	real	0.5	0.000002	8	-	-	1	maximum transposition up or down, in octaves
+ws_pitch	2	cyclelen	Max cycles	integer	64	2	-	-	-	2	max wavesets between new transposition values
+ws_pitch	3	skip	Skip cycles	integer	0	0	-	-	-	3	-
+ws_repeat	1	mult	Multiplier	integer	2	2	-	-	-	1	times each group repeats
+ws_repeat	2	cyclecnt	Group size	integer	1	1	-	-	-	2	wavesets per group
+ws_repeat	3	skip	Skip cycles	integer	0	0	-	-	-	3	-
+ws_repeat2	1	mult	Multiplier	integer	2	2	-	-	-	1	-
+ws_repeat2	2	cyclecnt	Group size	integer	1	1	-	-	-	2	-
+ws_repeat2	3	skip	Skip cycles	integer	0	0	-	-	-	3	-
+ws_replim	1	mult	Multiplier	integer	2	2	-	-	-	1	-
+ws_replim	2	cyclecnt	Group size	integer	1	1	-	-	-	2	-
+ws_replim	3	skip	Skip cycles	integer	0	0	-	-	-	3	-
+ws_replim	4	hilim	Frequency limit	real	500	440	-	-	-	4	Hz; only wavesets below it count
+ws_replace	1	cyclecnt	Cycles	integer	4	2	-	-	-	1	-
+ws_replace	2	skip	Skip cycles	integer	0	0	-	-	-	2	-
+ws_reverse	1	cyclecnt	Cycles	integer	4	1	-	-	-	1	-
+ws_telescope	1	cyclecnt	Cycles	integer	4	2	-	-	-	1	-
+ws_telescope	2	skip	Skip cycles	integer	0	0	-	-	-	2	-
+ws_telescope	3	avg	Average length	boolean	0	-	-	-	-a	-	telescope to average length (default: longest)
+baktobak	1	jtime	Join time	real	0.5	0	-	-	-	1	s, where the join is cut
+baktobak	2	splice	Splice ms	real	20	0.01	-	-	-	2	-
+doublets	1	segdur	Segment duration	real	0.2	0.01	-	-	-	1	s
+doublets	2	repets	Repeats	integer	2	2	32	-	-	2	-
+doublets	3	sync	Stay in sync	boolean	0	-	-	-	-s	-	-
+drunk	1	outdur	Output duration	real	8	0	-	-	-	1	s
+drunk	2	locus	Locus	real	0.5	0	-	-	-	2	s
+drunk	3	ambitus	Ambitus	real	0.4	0	-	-	-	3	s
+drunk	4	step	Step	real	0.1	0	-	-	-	4	s
+drunk	5	clock	Clock	real	0.15	0.03	-	-	-	5	s
+drunk	6	splice	Splice ms	real	15	1	-	-	-	6	-
+drunk	7	clokrand	Clock randomness	real	0	0	1	-	-	7	0 to 1
+drunk	8	overlap	Overlap	real	0	0	0.99	-	-	8	0 to 0.99
+drunk	9	seed	Seed	integer	0	0	-	-	-	9	0 = different each time
+freeze	1	outdur	Output duration	real	6	2.5	-	-	-	1	s
+freeze	2	delay	Delay	real	0.05	0.000002	100	-	-	2	s between iterations (not longer than the segment)
+freeze	3	rand	Delay randomness	real	0.2	0	1	-	-	3	0 to 1
+freeze	4	pshift	Pitch shift	real	0.5	0	12	-	-	4	max random shift, semitones
+freeze	5	ampcut	Amp cut	real	0.2	0	1	-	-	5	max random level reduction, 0 to 1
+freeze	6	fstart	Segment start	real	0.2	0	-	-	-	6	s
+freeze	7	fend	Segment end	real	0.4	0	-	-	-	7	s
+freeze	8	gain	Gain	real	1	0.25	4	-	-	8	0.25 to 4
+freeze	9	seed	Seed	integer	0	0	-	-	-	9	0 = different each time
+iterate_1	1	outdur	Output duration	real	8	2.5	-	-	-	1	s
+iterate_1	2	delay	Delay	real	0.3	0.000002	100	-	-	2	s between iterations
+iterate_1	3	rand	Delay randomness	real	0.2	0	1	-	-	3	0 to 1
+iterate_1	4	pshift	Pitch shift	real	1	0	12	-	-	4	max random shift, semitones
+iterate_1	5	ampcut	Amp cut	real	0.2	0	1	-	-	5	0 to 1
+iterate_1	6	fade	Fade	real	0	0	1	-	-	6	average fade between iterations, 0 to 1
+iterate_1	7	gain	Gain	real	0	0	1	-	-	7	0 = automatic
+iterate_1	8	seed	Seed	integer	0	0	-	-	-	8	0 = different each time
+iterate_2	1	reps	Repetitions	integer	8	1	-	-	-	1	-
+iterate_2	2	delay	Delay	real	0.3	0.000002	100	-	-	2	s between iterations
+iterate_2	3	rand	Delay randomness	real	0.2	0	1	-	-	3	0 to 1
+iterate_2	4	pshift	Pitch shift	real	1	0	12	-	-	4	max random shift, semitones
+iterate_2	5	ampcut	Amp cut	real	0.2	0	1	-	-	5	0 to 1
+iterate_2	6	fade	Fade	real	0	0	1	-	-	6	average fade between iterations, 0 to 1
+iterate_2	7	gain	Gain	real	0	0	1	-	-	7	0 = automatic
+iterate_2	8	seed	Seed	integer	0	0	-	-	-	8	0 = different each time
+loop_1	1	start	Start	real	0	0	-	-	-	1	s
+loop_1	2	len	Loop length ms	real	200	-	-	-	-	2	-
+loop_1	3	step	Step ms	real	50	-	-	-	-	3	advance per loop, more than 0
+loop_1	4	splen	Splice ms	real	25	1	5000	-	-	4	-
+loop_1	5	scat	Scatter	real	0	0	-	-	-	5	irregular advance
+loop_1	6	fromstart	Play from start	boolean	0	-	-	-	-b	-	-
+loop_2	1	dur	Output duration	real	6	0	-	-	-	1	s
+loop_2	2	start	Start	real	0	0	-	-	-	2	s
+loop_2	3	len	Loop length ms	real	200	-	-	-	-	3	-
+loop_2	4	step	Step ms	real	0	0	-	-	-	4	advance per loop
+loop_2	5	splen	Splice ms	real	25	1	5000	-	-	5	-
+loop_2	6	scat	Scatter	real	0	0	-	-	-	6	-
+loop_2	7	fromstart	Play from start	boolean	0	-	-	-	-b	-	-
+loop_3	1	cnt	Repeats	integer	10	1	-	-	-	1	-
+loop_3	2	start	Start	real	0	0	-	-	-	2	s
+loop_3	3	len	Loop length ms	real	200	-	-	-	-	3	-
+loop_3	4	step	Step ms	real	0	0	-	-	-	4	-
+loop_3	5	splen	Splice ms	real	25	1	5000	-	-	5	-
+loop_3	6	scat	Scatter	real	0	0	-	-	-	6	-
+loop_3	7	fromstart	Play from start	boolean	0	-	-	-	-b	-	-
+scramble_1	1	minlen	Min chunk	real	0.05	0.031	-	-	-	1	s
+scramble_1	2	maxlen	Max chunk	real	0.3	0.031	-	-	-	2	s
+scramble_1	3	outdur	Output duration	real	6	0.031	-	-	-	3	s
+scramble_1	4	splen	Splice ms	real	25	1	5000	-	-	4	-
+scramble_1	5	seed	Seed	integer	0	0	-	-	-	5	-
+scramble_1	6	keepstart	Start at beginning	boolean	0	-	-	-	-b	-	-
+scramble_1	7	keepend	End at end	boolean	0	-	-	-	-e	-	-
+zigzag	1	zstart	Zone start	real	0.2	0	-	-	-	1	s
+zigzag	2	zend	Zone end	real	1.2	0.031	-	-	-	2	s
+zigzag	3	dur	Output duration	real	6	2.500002	-	-	-	3	s
+zigzag	4	minzig	Min zig	real	0.1	0.031	-	-	-	4	s between turning points
+zigzag	5	splice	Splice ms	real	25	1	5000	-	-	5	-
+zigzag	6	seed	Seed	integer	0	0	-	-	-	7	-
+eq_1	1	gain	Boost or cut dB	real	-12	-96	36	-	-	1	-
+eq_1	2	freq	Frequency	real	500	0.1	-	-	-	2	Hz
+eq_1	3	tail	Tail	real	0	0	20	-	-	3	s
+eq_1	4	prescale	Prescale	real	1	0.005	200	-	-	4	input gain
+eq_2	1	gain	Boost or cut dB	real	-12	-96	36	-	-	1	-
+eq_2	2	freq	Frequency	real	500	0.1	-	-	-	2	Hz
+eq_2	3	tail	Tail	real	0	0	20	-	-	3	s
+eq_2	4	prescale	Prescale	real	1	0.005	200	-	-	4	input gain
+eq_3	1	bw	Bandwidth	real	200	0.001	-	-	-	1	Hz
+eq_3	2	gain	Boost or cut dB	real	12	-96	36	-	-	2	-
+eq_3	3	freq	Frequency	real	1000	0.1	-	-	-	3	Hz
+eq_3	4	tail	Tail	real	0	0	20	-	-	4	s
+eq_3	5	prescale	Prescale	real	0.5	0.005	200	-	-	5	input gain
+lohi_1	1	atten	Attenuation dB	real	-60	-96	0	-	-	1	0 to -96
+lohi_1	2	pass	Pass band	real	1000	0.1	-	-	-	2	Hz
+lohi_1	3	stop	Stop band	real	1500	0.1	-	-	-	3	Hz
+lohi_1	4	tail	Tail	real	0	0	20	-	-	4	s
+lohi_1	5	prescale	Prescale	real	1	0.005	200	-	-	5	-
+lohi_2	1	atten	Attenuation dB	real	-60	-96	0	-	-	1	-
+lohi_2	2	pass	Pass band	real	72	-76.239452	127	-	-	2	MIDI
+lohi_2	3	stop	Stop band	real	76	-76.239452	127	-	-	3	MIDI
+lohi_2	4	tail	Tail	real	0	0	20	-	-	4	s
+lohi_2	5	prescale	Prescale	real	1	0.005	200	-	-	5	-
+variable_1	1	acuity	Acuity	real	0.05	0.0001	1	-	-	1	smaller = tighter
+variable_1	2	gain	Gain	real	1	0.001	10000	-	-	2	-
+variable_1	3	frq	Frequency	real	1000	0.1	-	-	-	3	Hz
+variable_1	4	tail	Tail	real	0	0	20	-	-	4	s
+variable_2	1	acuity	Acuity	real	0.05	0.0001	1	-	-	1	smaller = tighter
+variable_2	2	gain	Gain	real	1	0.001	10000	-	-	2	-
+variable_2	3	frq	Frequency	real	1000	0.1	-	-	-	3	Hz
+variable_2	4	tail	Tail	real	0	0	20	-	-	4	s
+variable_3	1	acuity	Acuity	real	0.05	0.0001	1	-	-	1	smaller = tighter
+variable_3	2	gain	Gain	real	1	0.001	10000	-	-	2	-
+variable_3	3	frq	Frequency	real	1000	0.1	-	-	-	3	Hz
+variable_3	4	tail	Tail	real	0	0	20	-	-	4	s
+variable_4	1	acuity	Acuity	real	0.05	0.0001	1	-	-	1	smaller = tighter
+variable_4	2	gain	Gain	real	1	0.001	10000	-	-	2	-
+variable_4	3	frq	Frequency	real	1000	0.1	-	-	-	3	Hz
+variable_4	4	tail	Tail	real	0	0	20	-	-	4	s
+bank_1	1	q	Q	real	20	0.001	10000	-	-	1	-
+bank_1	2	gain	Gain	real	1	0.001	10000	-	-	2	-
+bank_1	3	lof	Low frequency	real	110	0.1	-	-	-	3	Hz
+bank_1	4	hif	High frequency	real	4000	0.1	-	-	-	4	Hz
+bank_1	5	tail	Tail	real	0	0	20	-	-	5	s
+bank_1	6	scat	Scatter	real	0	0	1	-	-	6	0 to 1
+bank_1	7	double	Double filtering	boolean	0	-	-	-	-d	-	-
+bank_2	1	q	Q	real	20	0.001	10000	-	-	1	-
+bank_2	2	gain	Gain	real	1	0.001	10000	-	-	2	-
+bank_2	3	lof	Low frequency	real	110	0.1	-	-	-	3	Hz
+bank_2	4	hif	High frequency	real	4000	0.1	-	-	-	4	Hz
+bank_2	5	tail	Tail	real	0	0	20	-	-	5	s
+bank_2	6	scat	Scatter	real	0	0	1	-	-	6	0 to 1
+bank_2	7	double	Double filtering	boolean	0	-	-	-	-d	-	-
+bank_3	1	q	Q	real	20	0.001	10000	-	-	1	-
+bank_3	2	gain	Gain	real	1	0.001	10000	-	-	2	-
+bank_3	3	lof	Low frequency	real	110	0.1	-	-	-	3	Hz
+bank_3	4	hif	High frequency	real	4000	0.1	-	-	-	4	Hz
+bank_3	5	tail	Tail	real	0	0	20	-	-	5	s
+bank_3	6	scat	Scatter	real	0	0	1	-	-	6	0 to 1
+bank_3	7	double	Double filtering	boolean	0	-	-	-	-d	-	-
+bank_4	1	q	Q	real	20	0.001	10000	-	-	1	-
+bank_4	2	gain	Gain	real	1	0.001	10000	-	-	2	-
+bank_4	3	lof	Low frequency	real	110	0.1	-	-	-	3	Hz
+bank_4	4	hif	High frequency	real	4000	0.1	-	-	-	4	Hz
+bank_4	5	param	Offset Hz	real	50	-22050	-	-	-	5	-
+bank_4	6	tail	Tail	real	0	0	20	-	-	6	s
+bank_4	7	scat	Scatter	real	0	0	1	-	-	7	-
+bank_4	8	double	Double filtering	boolean	0	-	-	-	-d	-	-
+bank_5	1	q	Q	real	20	0.001	10000	-	-	1	-
+bank_5	2	gain	Gain	real	1	0.001	10000	-	-	2	-
+bank_5	3	lof	Low frequency	real	110	0.1	-	-	-	3	Hz
+bank_5	4	hif	High frequency	real	4000	0.1	-	-	-	4	Hz
+bank_5	5	param	Number of filters	real	8	1	2000	-	-	5	-
+bank_5	6	tail	Tail	real	0	0	20	-	-	6	s
+bank_5	7	scat	Scatter	real	0	0	1	-	-	7	-
+bank_5	8	double	Double filtering	boolean	0	-	-	-	-d	-	-
+bank_6	1	q	Q	real	20	0.001	10000	-	-	1	-
+bank_6	2	gain	Gain	real	1	0.001	10000	-	-	2	-
+bank_6	3	lof	Low frequency	real	110	0.1	-	-	-	3	Hz
+bank_6	4	hif	High frequency	real	4000	0.1	-	-	-	4	Hz
+bank_6	5	param	Interval	real	3	0.25	96	-	-	5	semitones
+bank_6	6	tail	Tail	real	0	0	20	-	-	6	s
+bank_6	7	scat	Scatter	real	0	0	1	-	-	7	-
+bank_6	8	double	Double filtering	boolean	0	-	-	-	-d	-	-
+sweep_1	1	acuity	Acuity	real	0.05	0.0001	1	-	-	1	smaller = tighter
+sweep_1	2	gain	Gain	real	1	0.001	10000	-	-	2	-
+sweep_1	3	lofrq	Low frequency	real	200	0.1	-	-	-	3	Hz
+sweep_1	4	hifrq	High frequency	real	4000	0.1	-	-	-	4	Hz
+sweep_1	5	sweepfrq	Sweep rate	real	0.5	0	200	-	-	5	Hz
+sweep_1	6	tail	Tail	real	0	0	20	-	-	6	s
+sweep_1	7	phase	Start phase	real	0.25	0	1	-	-	7	0 = low rising, 0.5 = high falling
+sweep_2	1	acuity	Acuity	real	0.05	0.0001	1	-	-	1	smaller = tighter
+sweep_2	2	gain	Gain	real	1	0.001	10000	-	-	2	-
+sweep_2	3	lofrq	Low frequency	real	200	0.1	-	-	-	3	Hz
+sweep_2	4	hifrq	High frequency	real	4000	0.1	-	-	-	4	Hz
+sweep_2	5	sweepfrq	Sweep rate	real	0.5	0	200	-	-	5	Hz
+sweep_2	6	tail	Tail	real	0	0	20	-	-	6	s
+sweep_2	7	phase	Start phase	real	0.25	0	1	-	-	7	0 = low rising, 0.5 = high falling
+sweep_3	1	acuity	Acuity	real	0.05	0.0001	1	-	-	1	smaller = tighter
+sweep_3	2	gain	Gain	real	1	0.001	10000	-	-	2	-
+sweep_3	3	lofrq	Low frequency	real	200	0.1	-	-	-	3	Hz
+sweep_3	4	hifrq	High frequency	real	4000	0.1	-	-	-	4	Hz
+sweep_3	5	sweepfrq	Sweep rate	real	0.5	0	200	-	-	5	Hz
+sweep_3	6	tail	Tail	real	0	0	20	-	-	6	s
+sweep_3	7	phase	Start phase	real	0.25	0	1	-	-	7	0 = low rising, 0.5 = high falling
+sweep_4	1	acuity	Acuity	real	0.05	0.0001	1	-	-	1	smaller = tighter
+sweep_4	2	gain	Gain	real	1	0.001	10000	-	-	2	-
+sweep_4	3	lofrq	Low frequency	real	200	0.1	-	-	-	3	Hz
+sweep_4	4	hifrq	High frequency	real	4000	0.1	-	-	-	4	Hz
+sweep_4	5	sweepfrq	Sweep rate	real	0.5	0	200	-	-	5	Hz
+sweep_4	6	tail	Tail	real	0	0	20	-	-	6	s
+sweep_4	7	phase	Start phase	real	0.25	0	1	-	-	7	0 = low rising, 0.5 = high falling
+phasing_1	1	gain	Gain	real	0.5	-1	1	-	-	1	-1 to 1
+phasing_1	2	delay	Delay ms	real	5	-	-	-	-	2	-
+phasing_1	3	tail	Tail	real	0	0	20	-	-	3	s
+phasing_1	4	prescale	Prescale	real	1	-1	1	-	-	4	-
+phasing_1	5	linear	Linear interpolation	boolean	0	-	-	-	-l	-	-
+phasing_2	1	gain	Gain	real	0.5	-1	1	-	-	1	-1 to 1
+phasing_2	2	delay	Delay ms	real	5	-	-	-	-	2	-
+phasing_2	3	tail	Tail	real	0	0	20	-	-	3	s
+phasing_2	4	prescale	Prescale	real	1	-1	1	-	-	4	-
+phasing_2	5	linear	Linear interpolation	boolean	0	-	-	-	-l	-	-
+echo	1	delay	Delay ms	real	250	-	10000	-	-	1	-
+echo	2	mix	Mix	real	0.5	0	1	-	-	2	0 = dry
+echo	3	feedback	Feedback	real	0.4	-1	1	-	-	3	-
+echo	4	tail	Tail	real	2	0	30	-	-	4	s
+echo	5	prescale	Prescale	real	0.7	0.000031	1	-	-	5	-
+echo	6	invert	Invert dry	boolean	0	-	-	-	-i	-	-
+echo_lfo	1	delay	Delay ms	real	20	-	10000	-	-	1	-
+echo_lfo	2	mix	Mix	real	0.5	0	1	-	-	2	-
+echo_lfo	3	feedback	Feedback	real	0.3	-1	1	-	-	3	-
+echo_lfo	4	lfomod	LFO depth	real	0.5	0	1	-	-	4	-
+echo_lfo	5	lfofreq	LFO rate	real	0.5	-50	50	-	-	5	Hz; negative = random
+echo_lfo	6	lfophase	LFO phase	real	0	0	1	-	-	6	-
+echo_lfo	7	lfodelay	LFO delay	real	0	0	-	-	-	7	s
+echo_lfo	8	tail	Tail	real	1	0	30	-	-	8	s
+echo_lfo	9	prescale	Prescale	real	0.7	0.000031	1	-	-	9	-
+echo_lfo	10	seed	Seed	integer	0	0	256	-	-	10	-
+stadium	1	gain	Gain	real	0.645654	0.000031	1	-	-	1	-
+stadium	2	rolloff	Roll off	real	1	0.000031	1	-	-	2	-
+stadium	3	size	Size	real	1	0.000005	100	-	-	3	multiplies the echo spacing
+stadium	4	count	Echoes	integer	40	2	1000	-	-	4	-
+stadium	5	norm	Normalise	boolean	1	-	-	-	-n	-	-
+stack	1	transp	Transposition	real	3	-60	60	-	-	-	semitones between copies
+stack	2	count	Copies	integer	4	2	32	-	-	2	-
+stack	3	lean	Lean	real	0.5	0.01	100	-	-	3	level of top copy relative to bottom
+stack	4	atk	Attack time	real	0	0	-	-	-	4	s
+stack	5	gain	Gain	real	1	0.1	10	-	-	5	-
+stack	6	dur	Proportion	real	1	0	1	-	-	6	how much of the output to make, 0 to 1
+stack	7	norm	Normalise	boolean	1	-	-	-	-n	-	-
+grain_omit	1	keep	Keep	integer	1	1	63	-	-	1	-
+grain_omit	2	outof	Out of	integer	2	2	64	-	-	2	-
+grain_omit	3	gate	Gate	real	0.3	0	1	-	-	4	signal level for a grain to be seen, 0 to 1
+grain_omit	4	minhole	Min gap	real	0.032	0.032	-	-	-	5	s
+grain_omit	5	nolast	Ignore last grain	boolean	0	-	-	-	-x	-	-
+grain_duplicate	1	n	Repetitions	integer	2	1	-	-	-	1	-
+grain_duplicate	2	gate	Gate	real	0.3	0	1	-	-	3	signal level for a grain to be seen, 0 to 1
+grain_duplicate	3	minhole	Min gap	real	0.032	0.032	-	-	-	4	s, minimum gap between grains
+grain_duplicate	4	nolast	Ignore last grain	boolean	0	-	-	-	-x	-	-
+grain_reverse	1	gate	Gate	real	0.3	0	1	-	-	2	signal level for a grain to be seen, 0 to 1
+grain_reverse	2	minhole	Min gap	real	0.032	0.032	-	-	-	3	s, minimum gap between grains
+grain_reverse	3	nolast	Ignore last grain	boolean	0	-	-	-	-x	-	-
+grain_timewarp	1	ratio	Stretch	real	2	0.001	1000	2	-	1	0.001 to 1000
+grain_timewarp	2	gate	Gate	real	0.3	0	1	-	-	3	signal level for a grain to be seen, 0 to 1
+grain_timewarp	3	minhole	Min gap	real	0.032	0.032	-	-	-	4	s, minimum gap between grains
+grain_timewarp	4	nolast	Ignore last grain	boolean	0	-	-	-	-x	-	-
+grev_1	1	wsiz	Window ms	real	50	-	-	-	-	1	sets the grain size to find
+grev_1	2	trof	Trough	real	0.5	0.000002	0.999998	-	-	2	trough height relative to peaks, 0 to 1
+grev_1	3	gpcnt	Group size	integer	1	1	100	-	-	3	grains treated as one unit
+grev_2	1	wsiz	Window ms	real	50	-	-	-	-	1	sets the grain size to find
+grev_2	2	trof	Trough	real	0.5	0.000002	0.999998	-	-	2	trough height relative to peaks, 0 to 1
+grev_2	3	gpcnt	Group size	integer	1	1	100	-	-	3	grains treated as one unit
+grev_2	4	repets	Repetitions	integer	2	1	100	-	-	4	-
+grev_3	1	wsiz	Window ms	real	50	-	-	-	-	1	sets the grain size to find
+grev_3	2	trof	Trough	real	0.5	0.000002	0.999998	-	-	2	trough height relative to peaks, 0 to 1
+grev_3	3	gpcnt	Group size	integer	1	1	100	-	-	3	grains treated as one unit
+grev_3	4	keep	Keep	integer	2	1	255	-	-	4	-
+grev_3	5	outof	Out of	integer	3	2	256	-	-	5	-
+grev_4	1	wsiz	Window ms	real	50	-	-	-	-	1	sets the grain size to find
+grev_4	2	trof	Trough	real	0.5	0.000002	0.999998	-	-	2	trough height relative to peaks, 0 to 1
+grev_4	3	gpcnt	Group size	integer	1	1	100	-	-	3	grains treated as one unit
+grev_4	4	keep	Keep	integer	2	1	255	-	-	4	-
+grev_4	5	outof	Out of	integer	3	2	256	-	-	5	-
+grev_5	1	wsiz	Window ms	real	50	-	-	-	-	1	sets the grain size to find
+grev_5	2	trof	Trough	real	0.5	0.000002	0.999998	-	-	2	trough height relative to peaks, 0 to 1
+grev_5	3	gpcnt	Group size	integer	1	1	100	-	-	3	grains treated as one unit
+grev_5	4	tstretch	Stretch	real	2	0.01	100	-	-	4	0.01 to 100
+noise_extend	1	dur	Noise duration	real	3	0.01	-	-	-	1	s
+noise_extend	2	minfrq	Min frequency	real	2000	1000	-	-	-	2	Hz
+noise_extend	3	mindur	Min duration ms	real	20	0	50	-	-	3	-
+noise_extend	4	maxdur	Max duration	real	1	0	-	-	-	4	s
+noise_extend	5	only	Keep only noise	boolean	0	-	-	-	-x	-	-
+spectral_blur	1	blurring	Blurring windows	integer	50	1	-	-	-	1	3 ms each
+sp_avrg	1	n	Channels	integer	9	2	513	-	-	1	odd number
+sp_suppress	1	n	Partials	integer	4	1	513	-	-	1	-
+sp_chorus_1	1	aspread	Amp scatter	real	5	1	1028	-	-	1	-
+sp_chorus_2	1	fspread	Frq scatter	real	1.5	1	4	-	-	1	-
+sp_chorus_3	1	fspread	Frq scatter	real	1.5	1	4	-	-	1	-
+sp_chorus_4	1	fspread	Frq scatter	real	1.5	1	4	-	-	1	-
+sp_chorus_5	1	aspread	Amp scatter	real	5	1	1028	-	-	1	-
+sp_chorus_5	2	fspread	Frq scatter	real	1.5	1	4	-	-	2	-
+sp_chorus_6	1	aspread	Amp scatter	real	5	1	1028	-	-	1	-
+sp_chorus_6	2	fspread	Frq scatter	real	1.5	1	4	-	-	2	-
+sp_chorus_7	1	aspread	Amp scatter	real	5	1	1028	-	-	1	-
+sp_chorus_7	2	fspread	Frq scatter	real	1.5	1	4	-	-	2	-
+sp_drunk	1	range	Max step	integer	10	1	-	-	-	1	windows
+sp_drunk	2	start	Start time	real	0	0	-	-	-	2	s
+sp_drunk	3	dur	Output duration	real	4	0.002902	-	-	-	3	s
+sp_drunk	4	nozero	No repeats	boolean	0	-	-	-	-z	-	no zero steps
+sp_noise	1	noise	Noise	real	0.3	0	1	-	-	1	-
+sp_scatter	1	keep	Blocks kept	integer	20	1	513	-	-	1	per window
+sp_scatter	2	rand	Random count	boolean	0	-	-	-	-r	-	-
+sp_scatter	3	nonorm	No normalisation	boolean	0	-	-	-	-n	-	-
+sp_spread	1	envpts	Envelope points	integer	1	-	-	-	-	-	channels per envelope point
+sp_spread	2	spread	Spread	real	1	0	1	-	-	1	-
+sp_accu	1	decay	Decay	real	0.5	0.001	1	-	-	1	per second
+sp_accu	2	glis	Glissando	real	0	-21.533204	21.533204	-	-	2	octaves per s
+sp_exag	1	exag	Exaggeration	real	2	0.001	1000	-	-	1	-
+sp_focus	1	envpts	Envelope points	integer	1	-	-	-	-	-	channels per envelope point
+sp_focus	2	pk	Peaks	integer	4	1	16	-	-	1	-
+sp_focus	3	bw	Bandwidth	real	0.2	0.083333	10	-	-	2	octaves
+sp_focus	4	stable	Stability	integer	9	2	4097	-	-	5	windows
+sp_fold	1	lofrq	Low frequency	real	200	5	-	-	-	1	Hz
+sp_fold	2	hifrq	High frequency	real	800	5	-	-	-	2	Hz
+sp_fold	3	fuller	Fuller spectrum	boolean	0	-	-	-	-x	-	-
+sp_step	1	timestep	Step	real	0.1	0.005805	-	-	-	1	s
+sp_superaccu_1	1	decay	Decay	real	0.05	0.00001	0.9	-	-	1	per second
+sp_superaccu_1	2	glis	Glissando	real	0	-21.533204	21.533204	-	-	2	octaves per s
+sp_superaccu_1	3	reassign	Reassign gliss	boolean	0	-	-	-	-r	-	-
+sp_superaccu_2	1	decay	Decay	real	0.05	0.00001	0.9	-	-	1	per second
+sp_superaccu_2	2	glis	Glissando	real	0	-21.533204	21.533204	-	-	2	octaves per s
+sp_superaccu_2	3	reassign	Reassign gliss	boolean	0	-	-	-	-r	-	-
+sp_glisten	1	grpdiv	Sets	integer	4	2	512	-	-	1	divides the channel count
+sp_glisten	2	setdur	Set windows	integer	10	1	1024	-	-	2	-
+sp_glisten	3	pshift	Pitch shift	real	0	0	12	-	-	3	semitones
+sp_glisten	4	durrand	Duration rand	real	0	0	1	-	-	4	-
+sp_glisten	5	divrand	Set size rand	real	0	0	1	-	-	5	-
+sp_caltrain	1	blurfact	Blur time	real	0.2	0.002902	-	-	-	1	s
+sp_caltrain	2	blurabov	Above frequency	real	1000	0	-	-	-	2	Hz
+sp_filter_1	1	frq1	Cutoff	real	1000	10	-	-	-	1	Hz
+sp_filter_1	2	q	Skirt	real	100	1	-	-	-	2	Hz
+sp_filter_2	1	frq1	Cutoff	real	1000	10	-	-	-	1	Hz
+sp_filter_2	2	q	Skirt	real	100	1	-	-	-	2	Hz
+sp_filter_3	1	frq1	Cutoff	real	1000	10	-	-	-	1	Hz
+sp_filter_3	2	q	Skirt	real	100	1	-	-	-	2	Hz
+sp_filter_4	1	frq1	Cutoff	real	1000	10	-	-	-	1	Hz
+sp_filter_4	2	q	Skirt	real	100	1	-	-	-	2	Hz
+sp_filter_5	1	frq1	Cutoff	real	1000	10	-	-	-	1	Hz
+sp_filter_5	2	q	Skirt	real	100	1	-	-	-	2	Hz
+sp_filter_5	3	gain	Gain	real	1	0	10000	-	-	3	-
+sp_filter_6	1	frq1	Cutoff	real	1000	10	-	-	-	1	Hz
+sp_filter_6	2	q	Skirt	real	100	1	-	-	-	2	Hz
+sp_filter_6	3	gain	Gain	real	1	0	10000	-	-	3	-
+sp_filter_7	1	frq1	Low frequency	real	500	10	-	-	-	1	Hz
+sp_filter_7	2	frq2	High frequency	real	2000	10	-	-	-	2	Hz
+sp_filter_7	3	q	Skirt	real	100	1	-	-	-	3	Hz
+sp_filter_8	1	frq1	Low frequency	real	500	10	-	-	-	1	Hz
+sp_filter_8	2	frq2	High frequency	real	2000	10	-	-	-	2	Hz
+sp_filter_8	3	q	Skirt	real	100	1	-	-	-	3	Hz
+sp_filter_9	1	frq1	Low frequency	real	500	10	-	-	-	1	Hz
+sp_filter_9	2	frq2	High frequency	real	2000	10	-	-	-	2	Hz
+sp_filter_9	3	q	Skirt	real	100	1	-	-	-	3	Hz
+sp_filter_10	1	frq1	Low frequency	real	500	10	-	-	-	1	Hz
+sp_filter_10	2	frq2	High frequency	real	2000	10	-	-	-	2	Hz
+sp_filter_10	3	q	Skirt	real	100	1	-	-	-	3	Hz
+sp_filter_11	1	frq1	Low frequency	real	500	10	-	-	-	1	Hz
+sp_filter_11	2	frq2	High frequency	real	2000	10	-	-	-	2	Hz
+sp_filter_11	3	q	Skirt	real	100	1	-	-	-	3	Hz
+sp_filter_11	4	gain	Gain	real	1	0	10000	-	-	4	-
+sp_filter_12	1	frq1	Low frequency	real	500	10	-	-	-	1	Hz
+sp_filter_12	2	frq2	High frequency	real	2000	10	-	-	-	2	Hz
+sp_filter_12	3	q	Skirt	real	100	1	-	-	-	3	Hz
+sp_filter_12	4	gain	Gain	real	1	0	10000	-	-	4	-
+sp_trace_1	1	n	Partials	integer	10	1	513	-	-	1	-
+sp_trace_2	1	n	Partials	integer	10	1	513	-	-	1	-
+sp_trace_2	2	lofrq	Low frequency	real	300	5	-	-	-	2	Hz
+sp_trace_2	3	outside	Retain outside	boolean	0	-	-	-	-r	-	-
+sp_trace_3	1	n	Partials	integer	10	1	513	-	-	1	-
+sp_trace_3	2	hifrq	High frequency	real	2000	5	-	-	-	2	Hz
+sp_trace_3	3	outside	Retain outside	boolean	0	-	-	-	-r	-	-
+sp_trace_4	1	n	Partials	integer	10	1	513	-	-	1	-
+sp_trace_4	2	lofrq	Low frequency	real	300	5	-	-	-	2	Hz
+sp_trace_4	3	hifrq	High frequency	real	2000	5	-	-	-	3	Hz
+sp_trace_4	4	outside	Retain outside	boolean	0	-	-	-	-r	-	-
+sp_bltr	1	blurring	Blurring windows	integer	10	1	-	-	-	1	-
+sp_bltr	2	tracing	Channels kept	integer	20	1	513	-	-	2	-
+sp_pluck	1	gain	Gain	real	2	0	1000	-	-	1	-
+sp_arpeg_1	1	wave	Wave	integer	2	1	4	-	-	1	1 down, 2 sin, 3 saw, 4 up
+sp_arpeg_1	2	rate	Sweeps per s	real	2	0	344.53125	-	-	2	-
+sp_arpeg_1	3	amp	Amplification	real	10	0	10000	-	-	7	-
+sp_arpeg_2	1	wave	Wave	integer	2	1	4	-	-	1	1 down, 2 sin, 3 saw, 4 up
+sp_arpeg_2	2	rate	Sweeps per s	real	2	0	344.53125	-	-	2	-
+sp_arpeg_2	3	amp	Amplification	real	10	0	10000	-	-	7	-
+sp_arpeg_3	1	wave	Wave	integer	2	2	4	-	-	1	1 down, 2 sin, 3 saw, 4 up
+sp_arpeg_3	2	rate	Sweeps per s	real	2	0	344.53125	-	-	2	-
+sp_arpeg_3	3	amp	Amplification	real	10	0	10000	-	-	7	-
+sp_arpeg_4	1	wave	Wave	integer	2	1	3	-	-	1	1 down, 2 sin, 3 saw, 4 up
+sp_arpeg_4	2	rate	Sweeps per s	real	2	0	344.53125	-	-	2	-
+sp_arpeg_4	3	amp	Amplification	real	10	0	10000	-	-	7	-
+sp_arpeg_5	1	wave	Wave	integer	2	1	4	-	-	1	1 down, 2 sin, 3 saw, 4 up
+sp_arpeg_5	2	rate	Sweeps per s	real	2	0	344.53125	-	-	2	-
+sp_arpeg_5	3	amp	Amplification	real	10	0	10000	-	-	6	-
+sp_arpeg_6	1	wave	Wave	integer	2	1	4	-	-	1	1 down, 2 sin, 3 saw, 4 up
+sp_arpeg_6	2	rate	Sweeps per s	real	2	0	344.53125	-	-	2	-
+sp_arpeg_6	3	amp	Amplification	real	10	0	10000	-	-	6	-
+sp_arpeg_7	1	wave	Wave	integer	2	2	4	-	-	1	1 down, 2 sin, 3 saw, 4 up
+sp_arpeg_7	2	rate	Sweeps per s	real	2	0	344.53125	-	-	2	-
+sp_arpeg_7	3	amp	Amplification	real	10	0	10000	-	-	7	-
+sp_arpeg_8	1	wave	Wave	integer	2	1	3	-	-	1	1 down, 2 sin, 3 saw, 4 up
+sp_arpeg_8	2	rate	Sweeps per s	real	2	0	344.53125	-	-	2	-
+sp_arpeg_8	3	amp	Amplification	real	10	0	10000	-	-	7	-
+sp_shift_1	1	shift	Shift	real	100	-22050	-	-	-	1	Hz
+sp_shift_1	2	logi	Log interpolation	boolean	0	-	-	-	-l	-	-
+sp_shift_2	1	shift	Shift	real	100	-22050	-	-	-	1	Hz
+sp_shift_2	2	split	Split frequency	real	1000	10.766602	22039.233398	-	-	2	Hz
+sp_shift_2	3	logi	Log interpolation	boolean	0	-	-	-	-l	-	-
+sp_shift_3	1	shift	Shift	real	100	-22050	-	-	-	1	Hz
+sp_shift_3	2	split	Split frequency	real	1000	10.766602	22039.233398	-	-	2	Hz
+sp_shift_3	3	logi	Log interpolation	boolean	0	-	-	-	-l	-	-
+sp_shift_4	1	shift	Shift	real	100	-22050	-	-	-	1	Hz
+sp_shift_4	2	lo	Low frequency	real	500	10.766602	22039.233398	-	-	2	Hz
+sp_shift_4	3	hi	High frequency	real	2000	10.766602	22039.233398	-	-	3	Hz
+sp_shift_4	4	logi	Log interpolation	boolean	0	-	-	-	-l	-	-
+sp_shift_5	1	shift	Shift	real	100	-22050	-	-	-	1	Hz
+sp_shift_5	2	lo	Low frequency	real	500	10.766602	22039.233398	-	-	2	Hz
+sp_shift_5	3	hi	High frequency	real	2000	10.766602	22039.233398	-	-	3	Hz
+sp_shift_5	4	logi	Log interpolation	boolean	0	-	-	-	-l	-	-
+sp_glis_1	1	envpts	Envelope points	integer	1	-	-	-	-	-	channels per envelope point
+sp_glis_1	2	rate	Glide rate	real	6	-2756.250051	2756.250051	-	-	1	semitones per s
+sp_glis_3	1	envpts	Envelope points	integer	1	-	-	-	-	-	channels per envelope point
+sp_glis_3	2	rate	Glide rate	real	6	-2756.250051	2756.250051	-	-	1	semitones per s
+sp_glis_2	1	envpts	Envelope points	integer	1	-	-	-	-	-	channels per envelope point
+sp_glis_2	2	rate	Glide rate	real	6	-2756.250051	2756.250051	-	-	1	semitones per s
+sp_glis_2	3	hzstep	Partial spacing	real	200	43.066406	-	-	-	2	Hz
+sp_waver_1	1	vib	Oscillation	real	2	0.396013	-	-	-	1	Hz
+sp_waver_1	2	stretch	Stretch	real	1.5	1	2205	-	-	2	-
+sp_waver_1	3	bot	Above frequency	real	200	5	-	-	-	3	Hz
+sp_waver_2	1	vib	Oscillation	real	2	0.396013	-	-	-	1	Hz
+sp_waver_2	2	stretch	Stretch	real	1.5	1	2205	-	-	2	-
+sp_waver_2	3	bot	Above frequency	real	200	5	-	-	-	3	Hz
+sp_waver_2	4	expon	Exponent	real	1	0.02	50	-	-	4	-
+sp_stretch_1	1	split	Split frequency	real	500	5	-	-	-	1	Hz
+sp_stretch_1	2	maxstr	Max stretch	real	1.5	0.000454	2205	-	-	2	ratio at the top
+sp_stretch_1	3	expon	Exponent	real	1	0.02	50	-	-	3	-
+sp_stretch_1	4	depth	Depth	real	1	0	1	-	-	4	-
+sp_stretch_2	1	split	Split frequency	real	500	5	-	-	-	1	Hz
+sp_stretch_2	2	maxstr	Max stretch	real	1.5	0.000454	2205	-	-	2	ratio at the top
+sp_stretch_2	3	expon	Exponent	real	1	0.02	50	-	-	3	-
+sp_stretch_2	4	depth	Depth	real	1	0	1	-	-	4	-
+sp_timestretch	1	ts	Stretch	real	2	0.0001	10000	2	-	1	-
+sp_transp_1	1	split	Split frequency	real	500	5	-	-	-	1	Hz
+sp_transp_1	2	depth	Depth	real	1	0	1	-	-	2	-
+sp_transp_2	1	split	Split frequency	real	500	5	-	-	-	1	Hz
+sp_transp_2	2	depth	Depth	real	1	0	1	-	-	2	-
+sp_transp_3	1	split	Split frequency	real	500	5	-	-	-	1	Hz
+sp_transp_3	2	depth	Depth	real	1	0	1	-	-	2	-
+sp_transp_4	1	split	Split frequency	real	500	5	-	-	-	1	Hz
+sp_transp_4	2	st	Semitones	real	7	-133.278752	133.278752	-	-	2	-
+sp_transp_4	3	depth	Depth	real	1	0	1	-	-	3	-
+sp_transp_5	1	split	Split frequency	real	500	5	-	-	-	1	Hz
+sp_transp_5	2	st	Semitones	real	7	-133.278752	133.278752	-	-	2	-
+sp_transp_5	3	depth	Depth	real	1	0	1	-	-	3	-
+sp_transp_6	1	split	Split frequency	real	500	5	-	-	-	1	Hz
+sp_transp_6	2	st1	Semitones above	real	7	-133.278752	133.278752	-	-	2	-
+sp_transp_6	3	st2	Semitones below	real	-5	-133.278752	133.278752	-	-	3	-
+sp_transp_6	4	depth	Depth	real	1	0	1	-	-	4	-
+sp_pick_1	1	fund	Fundamental	real	220	10	-	-	-	1	Hz
+sp_pick_1	2	clarity	Clarity	real	1	0	1	-	-	2	-
+sp_pick_2	1	fund	Fundamental	real	220	10	-	-	-	1	Hz
+sp_pick_2	2	clarity	Clarity	real	1	0	1	-	-	2	-
+sp_pick_3	1	fund	Fundamental	real	220	10	-	-	-	1	Hz
+sp_pick_3	2	clarity	Clarity	real	1	0	1	-	-	2	-
+sp_pick_4	1	fund	Fundamental	real	220	10	-	-	-	1	Hz
+sp_pick_4	2	step	Frequency step	real	50	10	-	-	-	2	Hz
+sp_pick_4	3	clarity	Clarity	real	1	0	1	-	-	3	-
+sp_pick_5	1	fund	Fundamental	real	220	10	-	-	-	1	Hz
+sp_pick_5	2	step	Frequency step	real	50	-22050	-	-	-	2	Hz
+sp_pick_5	3	clarity	Clarity	real	1	0	1	-	-	3	-
+sp_tune_1	1	pitch	Pitch	real	220	-	-	-	-	-	Hz
+sp_tune_1	2	focus	Focus	real	1	0	1	-	-	2	-
+sp_tune_1	3	clarity	Clarity	real	0	0	1	-	-	3	-
+sp_tune_2	1	pitch	MIDI pitch	real	57	-	-	-	-	-	-
+sp_tune_2	2	focus	Focus	real	1	0	1	-	-	2	-
+sp_tune_2	3	clarity	Clarity	real	0	0	1	-	-	3	-
+sp_gain	1	gain	Gain	real	0.5	0	10000	-	-	1	-
+sp_gate	1	thr	Threshold	real	0.01	0	1	-	-	1	-
+sp_cut	1	start	Start time	real	0.2	0	-	-	-	1	s
+sp_cut	2	end	End time	real	1	0.002902	-	-	-	2	s
+sp_magnify	1	time	Time	real	0.5	0	-	-	-	1	s
+sp_magnify	2	dur	Duration	real	3	0.005805	-	-	-	2	s
+sp_specfold_1	1	stt	Lowest channel	integer	10	1	509	-	-	1	-
+sp_specfold_1	2	len	Channels	integer	64	4	513	-	-	2	even for fold
+sp_specfold_1	3	cnt	Folds	integer	2	1	513	-	-	3	-
+sp_specfold_1	4	amp	Amplitudes only	boolean	0	-	-	-	-a	-	-
+sp_specfold_2	1	stt	Lowest channel	integer	10	1	509	-	-	1	-
+sp_specfold_2	2	len	Channels	integer	64	4	513	-	-	2	even for fold
+sp_specfold_2	3	amp	Amplitudes only	boolean	0	-	-	-	-a	-	-
+sp_specfold_3	1	stt	Lowest channel	integer	10	1	509	-	-	1	-
+sp_specfold_3	2	len	Channels	integer	64	4	513	-	-	2	even for fold
+sp_specfold_3	3	seed	Seed	integer	1	1	64	-	-	3	-
+sp_specfold_3	4	amp	Amplitudes only	boolean	0	-	-	-	-a	-	-
+sp_fnu_1	1	narrow	Narrowing	real	4	1	1000	-	-	1	-
+sp_fnu_1	2	gain	Gain	real	1	0.01	10	-	-	2	-
+sp_fnu_2	1	squeeze	Squeeze	real	2	1	10	-	-	1	-
+sp_fnu_2	2	centre	Formant	integer	1	1	4	-	-	2	1 to 4
+sp_fnu_2	3	trough	Around trough	boolean	0	-	-	-	-t	-	-
+sp_fnu_2	4	gain	Gain	real	1	0.01	10	-	-	3	-
+sp_fnu_3	1	vibrate	Alternation rate	real	0	0	300	-	-	1	Hz, 0 = off
+sp_fnu_3	2	gain	Gain	real	1	0.01	10	-	-	2	-
+sp_fnu_4	1	rspeed	Rotations	real	1	-300	300	-	-	1	per second
+sp_fnu_4	2	gain	Gain	real	1	0.01	10	-	-	2	-
+sp_fnu_5	1	flat	Flat	boolean	0	-	-	-	-f	-	no re-envelope
+sp_fnu_5	2	gain	Gain	real	1	0.01	10	-	-	1	-
+sp_fnu_8	1	mov1	Formant 1	real	200	-8000	8000	-	-	1	Hz
+sp_fnu_8	2	mov2	Formant 2	real	0	-8000	8000	-	-	2	Hz
+sp_fnu_8	3	mov3	Formant 3	real	0	-8000	8000	-	-	3	Hz
+sp_fnu_8	4	mov4	Formant 4	real	0	-8000	8000	-	-	4	Hz
+sp_fnu_8	5	gain	Gain	real	1	0.01	10	-	-	5	-
+sp_fnu_9	1	frq1	Formant 1	real	300	10	8000	-	-	1	Hz
+sp_fnu_9	2	frq2	Formant 2	real	900	10	8000	-	-	2	Hz
+sp_fnu_9	3	frq3	Formant 3	real	2200	10	8000	-	-	3	Hz
+sp_fnu_9	4	frq4	Formant 4	real	3500	10	8000	-	-	4	Hz
+sp_fnu_9	5	gain	Gain	real	1	0.01	10	-	-	5	-
+sp_fnu_10	1	arprate	Rate	real	4	-50	50	-	-	1	Hz
+sp_fnu_10	2	updown	Up and down	boolean	0	-	-	-	-c	-	-
+sp_fnu_10	3	gain	Gain	real	0.5	0.01	10	-	-	2	-
+sp_fnu_11	1	octshift	Octaves	real	1	-4	4	-	-	1	-
+sp_fnu_11	2	fill	Fill top	boolean	0	-	-	-	-f	-	when lower
+sp_fnu_11	3	gain	Gain	real	0.5	0.01	10	-	-	2	-
+sp_fnu_12	1	transpos	Semitones	real	5	-48	48	-	-	1	-
+sp_fnu_12	2	fill	Fill top	boolean	0	-	-	-	-f	-	when lower
+sp_fnu_12	3	gain	Gain	real	0.5	0.01	10	-	-	2	-
+sp_fnu_13	1	frqshift	Shift	real	100	-1000	1000	-	-	1	Hz
+sp_fnu_13	2	gain	Gain	real	0.5	0.01	10	-	-	2	-
+sp_fnu_14	1	respace	Spacing	real	100	1	1000	-	-	1	Hz
+sp_fnu_14	2	gain	Gain	real	1	0.01	10	-	-	2	-
+sp_fnu_15	1	about	About pitch	real	0	0	127	-	-	2	MIDI, 0 = mean
+sp_fnu_15	2	gain	Gain	real	0.5	0.01	10	-	-	3	-
+sp_fnu_16	1	about	About pitch	real	0	0	127	-	-	1	MIDI, 0 = mean
+sp_fnu_16	2	rang	Range	real	0.5	0	128	-	-	2	-
+sp_fnu_16	3	gain	Gain	real	1	0.01	10	-	-	3	-
+sp_fnu_18	1	range	Range	real	2	0	96	-	-	2	semitones
+sp_fnu_18	2	slew	Slew	real	1	0.1	10	-	-	3	up vs down
+sp_fnu_18	3	gain	Gain	real	1	0.01	10	-	-	4	-
+sp_fnu_19	1	rand	Randomness	real	0.5	0	1	-	-	1	-
+sp_fnu_19	2	gain	Gain	real	1	0.01	10	-	-	2	-
+sp_fnu_23	1	sining	Sine degree	real	1	0	1	-	-	2	-
+sp_fnu_23	2	gain	Gain	real	1	0.01	10	-	-	3	-
