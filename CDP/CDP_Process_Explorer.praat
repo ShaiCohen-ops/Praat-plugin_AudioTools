@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.5.0 (2026)
+# Version: 0.6.0 (2026)
 # License: MIT License (scripts). Bundled CDP programs: LGPL-2.1-or-later.
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -17,6 +17,14 @@
 #   never modified. Processes are defined in CDP_Processes.tsv and
 #   CDP_Parameters.tsv; the engine is internal/cdp_engine.praat. No Python.
 #   Requires Praat 6.4 or newer. Windows binaries only.
+#
+# Changelog v0.6.0 (2026):
+#   - Presets: processes listed in CDP_Presets.tsv get a Preset menu. Load
+#     fills the fields (the first item, "Standard (defaults)", replaces the
+#     Standards button there); Apply/OK with a newly chosen preset loads and
+#     runs it at once. 183 presets for 61 processes, in every category.
+#   - Fix: SPECFNU on/off flags (Fill top, Around trough, Flat, Up and down)
+#     failed when ticked; CDP needs them after the gain switch.
 #
 # Changelog v0.5.0 (2026):
 #   - New category Spectral Formants: 17 formant-aware SPECFNU modes
@@ -201,6 +209,12 @@ procedure parameterDialog
         .row = parRow [.k]
         curValue [.k] = number (cdpx_t2_default$ [.row])
     endfor
+    @cdpx_presetsFor: pid$
+    nPre = cdpx_presetsFor.n
+    for .i to nPre
+        preRow [.i] = cdpx_presetRow [.i]
+    endfor
+    presetChoice = 1
     stage2Msg$ = ""
     .back = 0
     while not .back and not finished
@@ -208,6 +222,16 @@ procedure parameterDialog
             comment: categoryName$ + "  >  " + displayName$
             if notes$ <> ""
                 comment: notes$
+            endif
+            if nPre > 0
+                optionMenu: "Preset", presetChoice
+                    option: "Standard (defaults)"
+                    for .i to nPre
+                        option: cdpx_t3_preset$ [preRow [.i]]
+                    endfor
+                if presetChoice > 1
+                    comment: "      " + cdpx_t3_description$ [preRow [presetChoice - 1]]
+                endif
             endif
             for .k to nPar
                 .row = parRow [.k]
@@ -285,35 +309,78 @@ procedure parameterDialog
             if stage2Msg$ <> ""
                 comment: stage2Msg$
             endif
-        # Buttons: Standards | Close | Back | Apply | OK  (default Apply)
-        clicked = endPause: "Standards", "Close", "Back", "Apply", "OK", 4, 2
-        if clicked = 1
+        # Buttons: Standards (or Load) | Close | Back | Apply | OK  (default Apply)
+        # Praat fits five buttons, so with presets the first button is Load and
+        # Standards is the first Preset menu item, "Standard (defaults)".
+        # action: 1 Standards, 2 Load, 3 Close, 4 Back, 5 Apply, 6 OK
+        if nPre > 0
+            clicked = endPause: "Load", "Close", "Back", "Apply", "OK", 4, 2
+            action = clicked + 1
+        else
+            clicked = endPause: "Standards", "Close", "Back", "Apply", "OK", 4, 2
+            action = clicked + (clicked > 1)
+        endif
+        .presetMsg$ = ""
+        # 'preset' exists only when the Preset menu was shown (nested on purpose:
+        # Praat resolves every variable of a condition before evaluating it).
+        .doLoad = 0
+        if nPre > 0
+            if action = 2
+                .doLoad = 1
+            elsif action = 5 or action = 6
+                if preset <> presetChoice
+                    .doLoad = 1
+                endif
+            endif
+        endif
+        if action = 1
             # Standards: back to the registry defaults (and Play result on)
             for .k to nPar
                 .row = parRow [.k]
                 curValue [.k] = number (cdpx_t2_default$ [.row])
             endfor
             playResult = 1
+            presetChoice = 1
             stage2Msg$ = "Standard settings restored."
-        elsif clicked = 2
+        elsif action = 3
             @finish
-        elsif clicked = 3
+        elsif action = 4
             .back = 1
-        else
-            # Read the dialog values back by their derived variable names.
+        elsif .doLoad
+            # Load the chosen preset into the fields. Apply/OK with a newly
+            # chosen (not yet loaded) preset loads it and runs it at once.
+            presetChoice = preset
+            @loadPreset
+            playResult = play_result
+            .presetMsg$ = "Preset: " + preset$
+            stage2Msg$ = .presetMsg$ + "  -  values loaded."
+            if presetChoice = 1 and action = 2
+                playResult = 1
+                stage2Msg$ = "Standard settings restored."
+            endif
+        endif
+        if action = 5 or action = 6
+            if .presetMsg$ = ""
+                # Read the dialog values back by their derived variable names.
+                for .k to nPar
+                    .row = parRow [.k]
+                    .label$ = cdpx_t2_label$ [.row]
+                    @cdpx_labelToVar: .label$
+                    .var$ = cdpx_labelToVar.var$
+                    curValue [.k] = '.var$'
+                endfor
+                playResult = play_result
+            endif
             for .k to nPar
-                .row = parRow [.k]
-                .label$ = cdpx_t2_label$ [.row]
-                @cdpx_labelToVar: .label$
-                .var$ = cdpx_labelToVar.var$
-                curValue [.k] = '.var$'
                 cdpx_value [.k] = curValue [.k]
             endfor
-            playResult = play_result
             @runOnce
             if cdpx_error$ = ""
                 stage2Msg$ = "Last result: " + cdpx_resultName$ + "  (" + fixed$ (cdpx_outDur, 3) + " s)   -   " + string$ (nResults) + " new Sound(s) so far"
-                if clicked = 5
+                if .presetMsg$ <> ""
+                    stage2Msg$ = .presetMsg$ + "  -  " + stage2Msg$
+                endif
+                if action = 6
                     @finish
                 endif
             else
@@ -321,6 +388,22 @@ procedure parameterDialog
             endif
         endif
     endwhile
+endproc
+
+# Preset menu item presetChoice (1 = Standard) -> curValue [1..nPar]
+procedure loadPreset
+    if presetChoice = 1
+        for .k to nPar
+            .row = parRow [.k]
+            curValue [.k] = number (cdpx_t2_default$ [.row])
+        endfor
+    else
+        @cdpx_collectParams: pid$
+        @cdpx_applyPreset: preRow [presetChoice - 1]
+        for .k to nPar
+            curValue [.k] = cdpx_presetValue [.k]
+        endfor
+    endif
 endproc
 
 # One CDP run on the ORIGINAL Sound. Errors found before CDP starts are

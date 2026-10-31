@@ -1,0 +1,184 @@
+process_id	preset	values	description
+shred	Light cut-up	repeats=1 chunklen=0.25 scatter=0.5	Long chunks, one pass: the source stays recognisable.
+shred	Smooth shuffle	repeats=4 chunklen=0.15 scatter=1 smooth=1	Reordered phrases with softened joins.
+shred	Confetti	repeats=12 chunklen=0.04 scatter=2	Many passes over tiny chunks: a granular spray.
+freeze	Held breath	outdur=6 delay=0.04 rand=0.05 pshift=0 ampcut=0.1	A still, near-continuous hold of the segment.
+freeze	Shimmer	outdur=8 delay=0.03 rand=0.5 pshift=1.5 ampcut=0.3	Unsteady repetitions with a little pitch flutter.
+freeze	Rubble	outdur=8 delay=0.12 rand=0.9 pshift=7 ampcut=0.7	Irregular, widely re-pitched fragments.
+iterate_1	Echo trail	outdur=6 delay=0.4 rand=0.1 pshift=0 ampcut=0.1 fade=0.3	Regular repetitions that slowly fade.
+iterate_1	Cloud	outdur=10 delay=0.08 rand=0.6 pshift=2 ampcut=0.4	Dense overlapping copies, slightly detuned.
+iterate_1	Scattered	outdur=10 delay=0.6 rand=1 pshift=12 ampcut=0.8	Sparse, unpredictable, widely re-pitched.
+drunk	Stagger	outdur=8 ambitus=0.2 step=0.05 clock=0.2 clokrand=0.1	Small steps around the locus: hesitant continuity.
+drunk	Wander	outdur=12 ambitus=1 step=0.2 clock=0.12 clokrand=0.4 overlap=0.3	A long walk across a wide region, overlapping.
+drunk	Stutter	outdur=6 ambitus=0.1 step=0.02 clock=0.04 clokrand=0	Fast, regular clock on tiny steps: a machine stutter.
+ws_repeat	Doubled	mult=2 cyclecnt=4	Each small group of wavesets twice: a soft stretch.
+ws_repeat	Grain smear	mult=4 cyclecnt=16	Longer groups, four times: audible granular plateaus.
+ws_repeat	Waveset drone	mult=6 cyclecnt=1	Single cycles repeated: pitched buzz (output about 6x longer).
+bank_1	Warm body	q=8 lof=110 hif=3000 tail=1	Broad resonances on the harmonics of A2, a short ring.
+bank_1	Glass harmonics	q=200 gain=4 lof=440 hif=8000	Narrow, ringing bands on the harmonics of A4.
+bank_1	Low drone	q=100 gain=2 lof=55 hif=1500 tail=2	Dense low harmonic series with a resonant tail.
+echo	Slapback	delay=90 mix=0.35 feedback=0.1 tail=0.5	One short, close repeat.
+echo	Dub space	delay=375 mix=0.5 feedback=0.65 tail=6	Long, regenerating echoes.
+echo	Flutter	delay=28 mix=0.5 feedback=0.75 tail=2	Very short feedback: metallic, comb-like ringing.
+stack	Fifths	transp=7 count=3 lean=0.5	Three copies a fifth apart.
+stack	Octave tower	transp=12 count=4 lean=0.3	Four octaves, the upper ones softer.
+stack	Microtonal smear	transp=0.3 count=8 lean=1	Eight copies a few cents apart: chorus-like beating.
+spectral_blur	Haze	blurring=8	Light time-smearing of the spectrum.
+spectral_blur	Wash	blurring=80	Attacks dissolve; the spectrum flows.
+spectral_blur	Fog	blurring=300	Only the slowly changing colour remains.
+sp_superaccu_1	Short halo	decay=0.005	Bands ring on only briefly: a light halo.
+sp_superaccu_1	Rising glow	decay=0.1 glis=0.5	Sustained bands that slowly glide upward.
+sp_superaccu_1	Sinking glow	decay=0.1 glis=-0.4	Sustained bands that slowly glide downward.
+sp_timestretch	Slightly slower	ts=1.3	A gentle stretch, same pitch.
+sp_timestretch	Slow motion	ts=6	Six times as long: inner details become audible.
+sp_timestretch	Compress	ts=0.5	Half as long, same pitch.
+sp_shift_1	Metallic	shift=60	Small shift: harmonics become inharmonic.
+sp_shift_1	Bell	shift=350	Larger shift: bright, bell-like partials.
+sp_shift_1	Undertone	shift=-150	Downward shift: hollow, darker partials.
+sp_glis_1	Slow spiral	rate=1.5	A slow, endless (Shepard) rise.
+sp_glis_1	Fast spiral	rate=12	A quick endless rise.
+sp_glis_1	Falling spiral	rate=-4	An endless fall.
+sp_trace_1	Skeleton	n=3	Only the three loudest partials.
+sp_trace_1	Sparse	n=12	A thinned, transparent spectrum.
+sp_trace_1	Cleaned	n=60	Removes low-level noise, keeps the body.
+sp_fnu_12	Fifth up	transpos=7	Up a fifth; the vowel colour stays.
+sp_fnu_12	Octave down	transpos=-12 fill=1	Down an octave, top filled with extra harmonics.
+sp_fnu_12	Giant	transpos=-19 fill=1 gain=0.7	Very low pitch, same formants.
+sp_fnu_23	Half sine	sining=0.5	Halfway between the voice and sine tones.
+sp_fnu_23	Faint sines	sining=0.25	A trace of sine tones under the voice.
+sp_fnu_23	Bright sines	sining=1 gain=2	Sine speech, louder.
+speed_semitones	Octave down	semitones=-12	An octave lower and twice as long.
+speed_semitones	Fifth up	semitones=7	A fifth higher and shorter.
+speed_semitones	Deep slow	semitones=-24	Two octaves down: four times as long.
+accelerate	Gentle push	accel=1.5 goaltime=2	Speeds up slightly towards the end.
+accelerate	Rush	accel=4 goaltime=1	A fast acceleration, rising in pitch.
+accelerate	Wind-down	accel=0.25 goaltime=2	Slows down like a stopping turntable.
+vibrato	Gentle	rate=5 depth=0.2	A light, vocal vibrato.
+vibrato	Wide	rate=4 depth=1.5	Slow and wide: the pitch swims.
+vibrato	Warble	rate=14 depth=0.6	Fast, nervous pitch flutter.
+scrub	Tape wobble	dur=4 down=-3 up=3	Small back-and-forth movements around the original pitch.
+scrub	Deep scrub	dur=5 down=-24 up=-5	Slow, low hand-winding.
+scrub	Squeal	dur=4 down=0 up=12	Fast winding, up to an octave higher.
+lose_resolution	Retro	bits=12 srdiv=2	Early-sampler grain.
+lose_resolution	Crunch	bits=6 srdiv=4	Audibly reduced, gritty.
+lose_resolution	Ruin	bits=3 srdiv=16	Heavily degraded, aliasing everywhere.
+ring_modulate	Tremble	freq=25	A low ring frequency: rough amplitude flutter.
+ring_modulate	Metallic	freq=700	Inharmonic sidebands: metallic colour.
+ring_modulate	Glassy	freq=2500	High sidebands: thin and glassy.
+tremolo	Gentle	frq=4 depth=0.3	A soft pulsation.
+tremolo	Chop	frq=8 depth=1	Full on/off gating.
+tremolo	Flutter	frq=25 depth=0.7	Fast amplitude flutter, almost a buzz.
+attack_4	Accent	gain=1.5 onset=10 decay=200	A clearer main attack.
+attack_4	Punch	gain=2 onset=5 decay=80	A strong, short emphasis.
+attack_4	Snap	gain=3 onset=5 decay=30	A sharp click on the attack.
+ws_omit	Pitted	a=1 b=4	Every fourth waveset silenced: a light rasp.
+ws_omit	Half holes	a=1 b=2	Every other waveset silenced: buzzy and thin.
+ws_omit	Dust	a=7 b=8	Only one waveset in eight remains.
+ws_pitch	Wobble	octvary=0.1 cyclelen=128	Slight, slow pitch instability.
+ws_pitch	Unstable	octvary=0.5 cyclelen=32	Clearly wandering pitch.
+ws_pitch	Chaos	octvary=2 cyclelen=8	Rapid jumps over two octaves.
+reform_8	Edge	exag=1.5	A little more bite.
+reform_8	Gritty	exag=4	Rough and distorted.
+reform_8	Fuzz	exag=12	Heavy waveset distortion.
+ws_overload_2	Soft buzz	gate=0.5 depth=0.3 freq=200	Peaks replaced by a low buzz.
+ws_overload_2	Fuzz	gate=0.2 depth=0.7 freq=800	Strong clipping filled with a tone.
+ws_overload_2	Whistle	gate=0.1 depth=1 freq=1500	Almost everything becomes a high tone.
+scramble_1	Phrase shuffle	minlen=0.2 maxlen=0.6 outdur=6	Longer chunks: recognisable fragments.
+scramble_1	Cut-up	minlen=0.05 maxlen=0.2 outdur=6	Short chunks: a busy collage.
+scramble_1	Micro	minlen=0.031 maxlen=0.06 outdur=5 splen=5	Tiny chunks: a granular texture.
+doublets	Stutter	segdur=0.1 repets=2	Each short segment twice.
+doublets	Echo pairs	segdur=0.25 repets=3	Longer segments, three times.
+doublets	Machine gun	segdur=0.04 repets=6	Tiny segments, many repeats.
+loop_2	Buzz loop	dur=4 len=50 splen=5	A 50 ms loop with tiny splices: a pitched buzz.
+loop_2	Phrase loop	dur=6 len=500	A half-second loop.
+loop_2	Creeping	dur=6 len=150 step=20	A short loop that moves slowly through the sound.
+sweep_2	Slow wah	acuity=0.05 gain=0.5 lofrq=200 hifrq=3000 sweepfrq=0.25	A slow band-pass sweep.
+sweep_2	Fast wah	acuity=0.05 gain=0.5 lofrq=300 hifrq=2500 sweepfrq=4	A quick, rhythmic sweep.
+sweep_2	Whistle sweep	acuity=0.005 gain=0.3 lofrq=400 hifrq=4000 sweepfrq=0.2	A very narrow band: a sweeping whistle.
+bank_6	Whole-tone cloud	q=40 lof=110 hif=4000 param=2	Resonances a whole tone apart.
+bank_6	Minor thirds	q=80 lof=110 hif=4000 param=3	Narrow resonances a minor third apart.
+bank_6	Quarter-tone haze	q=30 lof=200 hif=3000 param=0.5	Dense quarter-tone resonances.
+lohi_1	Muffled	pass=500 stop=800	Low-pass: as if through a wall.
+lohi_1	Dark	pass=1500 stop=2500	Low-pass: softened top.
+lohi_1	Thin	pass=2000 stop=1500	High-pass: only the upper range.
+phasing_2	Soft phase	gain=0.3 delay=3	A light phasing colour.
+phasing_2	Deep phase	gain=0.7 delay=8	Strong, hollow phasing.
+phasing_2	Hollow	gain=-0.6 delay=2	Negative gain: a thinner, nasal colour.
+echo_lfo	Chorus	delay=20 mix=0.5 feedback=0 lfomod=0.3 lfofreq=0.8	A gently moving double.
+echo_lfo	Flanger	delay=3 mix=0.5 feedback=0.7 lfomod=0.8 lfofreq=0.25	A sweeping jet-like comb.
+echo_lfo	Wobble echo	delay=150 mix=0.5 feedback=0.5 lfomod=0.2 lfofreq=2 tail=2	Echoes with unsteady timing.
+stadium	Small hall	size=0.3 count=15	Short, close echoes.
+stadium	Arena	size=2 count=80	Wide, long echo field.
+stadium	Canyon	size=4 count=60	Distant, widely spaced echoes.
+grain_timewarp	Breathing	ratio=1.5	A little more space between grains.
+grain_timewarp	Sparse	ratio=4	Grains far apart.
+grain_timewarp	Rushed	ratio=0.5	Grains pushed together.
+grain_duplicate	Triple	n=3	Each grain three times.
+grain_duplicate	Stammer	n=6	Each grain six times.
+grain_duplicate	Loud grains only	n=4 gate=0.6	Only the strongest grains, four times each.
+grev_5	Gentle stretch	tstretch=1.5	A little longer, units intact.
+grev_5	Slow	tstretch=4	Four times as long, units intact.
+grev_5	Faster	tstretch=0.5	Half as long, units intact.
+sp_chorus_5	Shimmer	aspread=2 fspread=1.1	Subtle movement in the partials.
+sp_chorus_5	Choir	aspread=8 fspread=1.3	Many slightly different voices.
+sp_chorus_5	Chaos	aspread=50 fspread=3	Strongly scrambled partials.
+sp_drunk	Hesitant	range=3 dur=4	Small steps: a trembling, smeared sound.
+sp_drunk	Wanderer	range=30 dur=6	Wider steps through the sound.
+sp_drunk	Lurch	range=100 dur=6 nozero=1	Large jumps, never standing still.
+sp_accu	Brief ring	decay=0.1	Bands sustain briefly.
+sp_accu	Rising ring	decay=0.15 glis=0.3	Sustained bands glide upward.
+sp_accu	Falling ring	decay=0.15 glis=-0.3	Sustained bands glide downward.
+sp_focus	Two peaks	pk=2 bw=0.1	Energy concentrated on two narrow peaks.
+sp_focus	Vowel focus	pk=4 bw=0.5 stable=20	Four broad, stable peaks.
+sp_focus	Many peaks	pk=12 bw=0.15	Twelve narrow peaks.
+sp_glisten	Glitter	grpdiv=8 setdur=4	Quick flickering sets of partials.
+sp_glisten	Slow flicker	grpdiv=2 setdur=40	Large sets, changing slowly.
+sp_glisten	Pitched sparks	grpdiv=4 setdur=10 pshift=7 durrand=0.5	Flickering sets with random transposition.
+sp_fold	Bass fold	lofrq=80 hifrq=320	Everything folded into two low octaves.
+sp_fold	Narrow octave	lofrq=300 hifrq=600	Everything folded into one octave.
+sp_fold	Bright fold	lofrq=1000 hifrq=4000 fuller=1	Folded high, with a fuller spectrum.
+sp_step	Strobe	timestep=0.05	Fast frozen frames.
+sp_step	Slideshow	timestep=0.25	Clear frozen frames.
+sp_step	Tableaux	timestep=0.6	Long, held images.
+sp_bltr	Soft trace	blurring=5 tracing=40	Lightly smoothed and cleaned.
+sp_bltr	Ghost	blurring=30 tracing=8	Blurred, few partials.
+sp_bltr	Thread	blurring=100 tracing=3	A slow thread of three partials.
+sp_transp_6	Octave spread	split=500 st1=12 st2=-12	High part up an octave, low part down.
+sp_transp_6	Fourths	split=500 st1=5 st2=-7	A milder pull apart.
+sp_transp_6	Cluster	split=500 st1=1 st2=-1	Slight detuning around the split.
+sp_waver_1	Gentle waver	vib=1 stretch=1.2	Slight harmonic/inharmonic movement.
+sp_waver_1	Seasick	vib=0.5 stretch=2	Slow, strong movement.
+sp_waver_1	Fast shimmer	vib=6 stretch=1.3	Fast inharmonic shimmer.
+sp_tune_2	Low C	pitch=36 focus=1 clarity=0.3	Retuned to the harmonics of C2.
+sp_tune_2	Middle C	pitch=60 focus=1 clarity=0.5	Retuned to the harmonics of C4.
+sp_tune_2	High A	pitch=69 focus=1 clarity=1	Clearly retuned to A4.
+sp_pick_1	A1 series	fund=55 clarity=1	Only partials on the A1 harmonic series.
+sp_pick_1	A2 series	fund=110 clarity=1	Only partials on the A2 harmonic series.
+sp_pick_1	E4 series	fund=330 clarity=0.5	A sparse, high harmonic sieve.
+sp_stretch_1	Slight inharmonic	split=500 maxstr=1.2	Upper partials slightly stretched.
+sp_stretch_1	Bell stretch	split=300 maxstr=2	Strongly stretched: bell-like.
+sp_stretch_1	Compressed	split=500 maxstr=0.7	Upper partials squeezed together.
+sp_specfold_3	Low shuffle	stt=2 len=32 seed=3	Randomises the lowest channels.
+sp_specfold_3	Mid shuffle	stt=40 len=128 seed=7	Randomises the middle range.
+sp_specfold_3	Wide shuffle	stt=4 len=400 seed=21	Randomises most of the spectrum.
+sp_gate	Clean	thr=0.005	Removes faint spectral noise.
+sp_gate	Sparse	thr=0.05	Only the stronger components remain.
+sp_gate	Skeleton	thr=0.2	Only the strongest peaks remain.
+sp_fnu_1	Focused	narrow=2	Slightly sharper formants.
+sp_fnu_1	Sharp	narrow=10	Clearly narrowed formants.
+sp_fnu_1	Whistle	narrow=50	Formants reduced to whistling peaks.
+sp_fnu_4	Slow turn	rspeed=0.25	Formants slowly move through the spectrum.
+sp_fnu_4	Wheel	rspeed=3	Several rotations per second.
+sp_fnu_4	Blur	rspeed=40	Very fast rotation: formants smear.
+sp_fnu_8	Brighter	mov1=150 mov2=300 mov3=300 mov4=0	Formants raised: a smaller, brighter voice.
+sp_fnu_8	Darker	mov1=-100 mov2=-300 mov3=-300 mov4=0	Formants lowered: a larger, darker voice.
+sp_fnu_8	Shifted F2	mov1=0 mov2=600 mov3=0 mov4=0	Only the second formant moves: a vowel change.
+sp_fnu_18	Unsteady	range=1	Slight pitch instability.
+sp_fnu_18	Wild	range=7	Large random pitch movement.
+sp_fnu_18	Rising bias	range=4 slew=3	Random pitch, mostly upward.
+sp_fnu_19	Rough	rand=0.2	A slightly rough spectrum.
+sp_fnu_19	Diffuse	rand=0.6	Partials clearly scattered.
+sp_fnu_19	Noise-like	rand=1	Fully randomised partials under the formants.
+sp_fnu_14	Dense	respace=40	Partials packed closely under the formants.
+sp_fnu_14	Open	respace=250	Widely spaced partials, same vowel colour.
+sp_fnu_14	Sparse	respace=600	Very few partials: a skeletal voice.

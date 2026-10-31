@@ -4,8 +4,12 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.5.0 (2026)
+# Version: 0.6.0 (2026)
 # License: MIT License
+#
+# Changelog v0.6.0 (2026):
+#   - Optional CDP_Presets.tsv (process_id, preset, values, description),
+#     validated at start-up against the parameter registry.
 #
 # Changelog v0.3.0 (2026):
 #   - input_type 'spectral': the process runs on a PVOC analysis file.
@@ -48,7 +52,7 @@
 # Requires Praat 6.4 or newer (runSubprocess$, Windows argument quoting).
 # ------------------------------------------------------------------------
 
-cdpx_engineVersion$ = "0.5.0"
+cdpx_engineVersion$ = "0.6.0"
 cdpx_maxArgs = 16
 
 # ------------------------------------------------------------------------
@@ -113,7 +117,102 @@ procedure cdpx_loadRegistry
         if cdpx_error$ = ""
             @cdpx_validateRegistry
         endif
+        if cdpx_error$ = ""
+            @cdpx_loadPresets
+        endif
     endif
+endproc
+
+# ---- Presets (optional CDP_Presets.tsv) -----------------------------------
+# One row per preset: process_id, preset, values ("param_id=value ..."),
+# description. Parameters not listed keep their registry default. Without
+# the file there are simply no presets.
+procedure cdpx_loadPresets
+    cdpx_presetTable = 3
+    cdpx_nRows [cdpx_presetTable] = 0
+    .file$ = cdpx_baseDir$ + cdpx_sep$ + "CDP_Presets.tsv"
+    if fileReadable (.file$)
+        .t = Read Table from tab-separated file: .file$
+        @cdpx_requireColumns: .t, "CDP_Presets.tsv", "process_id preset values description"
+        if cdpx_error$ = ""
+            @cdpx_cacheTable: .t, cdpx_presetTable
+        endif
+        removeObject: .t
+    endif
+    .n = cdpx_nRows [cdpx_presetTable]
+    for .r to .n
+        if cdpx_error$ = ""
+            .pid$ = cdpx_t3_process_id$ [.r]
+            .name$ = cdpx_t3_preset$ [.r]
+            .w$ = "CDP_Presets.tsv row " + string$ (.r + 1) + " (" + .pid$ + ", " + .name$ + "): "
+            @cdpx_findProcess: .pid$
+            if cdpx_findProcess.row = 0
+                cdpx_error$ = .w$ + "unknown process_id."
+            elsif .name$ = "" or .name$ = "-" or index (.name$, "Standard") = 1
+                cdpx_error$ = .w$ + "preset name is empty or starts with 'Standard' (reserved)."
+            endif
+            for .i to .r - 1
+                if cdpx_error$ = "" and cdpx_t3_process_id$ [.i] = .pid$ and cdpx_t3_preset$ [.i] = .name$
+                    cdpx_error$ = .w$ + "duplicate preset name."
+                endif
+            endfor
+            if cdpx_error$ = ""
+                @cdpx_collectParams: .pid$
+                @cdpx_applyPreset: .r
+                if cdpx_applyPreset.msg$ <> ""
+                    cdpx_error$ = .w$ + cdpx_applyPreset.msg$
+                endif
+            endif
+        endif
+    endfor
+endproc
+
+# Preset rows of one process -> cdpx_presetRow [1..n]
+procedure cdpx_presetsFor: .pid$
+    .n = 0
+    for .r to cdpx_nRows [cdpx_presetTable]
+        if cdpx_t3_process_id$ [.r] = .pid$
+            .n += 1
+            cdpx_presetRow [.n] = .r
+        endif
+    endfor
+endproc
+
+# Values of preset row .r for the params last collected (cdpx_collectParams)
+# -> cdpx_presetValue [1..n]; .msg$ is "" when every value is valid.
+procedure cdpx_applyPreset: .r
+    .msg$ = ""
+    for .k to cdpx_collectParams.n
+        .row = cdpx_paramRow [.k]
+        cdpx_presetValue [.k] = number (cdpx_t2_default$ [.row])
+    endfor
+    @cdpx_tokenize: cdpx_t3_values$ [.r]
+    .nt = cdpx_tokenize.n
+    for .i to .nt
+        .tok$ [.i] = cdpx_tok$ [.i]
+    endfor
+    for .i to .nt
+        if .msg$ = ""
+            .eq = index (.tok$ [.i], "=")
+            if .eq < 2
+                .msg$ = "'" + .tok$ [.i] + "' is not of the form param_id=value."
+            else
+                .id$ = left$ (.tok$ [.i], .eq - 1)
+                .x = number (mid$ (.tok$ [.i], .eq + 1, 1000))
+                @cdpx_paramIndex: .id$
+                if cdpx_paramIndex.k = 0
+                    .msg$ = "unknown parameter '" + .id$ + "'."
+                else
+                    @cdpx_checkValue: cdpx_paramRow [cdpx_paramIndex.k], .x
+                    if cdpx_checkValue.msg$ <> ""
+                        .msg$ = .id$ + ": " + cdpx_checkValue.msg$
+                    else
+                        cdpx_presetValue [cdpx_paramIndex.k] = .x
+                    endif
+                endif
+            endif
+        endif
+    endfor
 endproc
 
 # Table object -> variables cdpx_t<handle>_<column>$ [row], cdpx_nRows [handle]
@@ -242,7 +341,7 @@ endproc
 
 procedure cdpx_validateParameters: .pid$, .where$
     @cdpx_collectParams: .pid$
-    .reserved$ = " e pi undefined windows macintosh unix praatVersion newline tab multichannel_input play_result process category "
+    .reserved$ = " e pi undefined windows macintosh unix praatVersion newline tab multichannel_input play_result process category preset "
     for .k to cdpx_collectParams.n
         if cdpx_error$ = ""
             .row = cdpx_paramRow [.k]
