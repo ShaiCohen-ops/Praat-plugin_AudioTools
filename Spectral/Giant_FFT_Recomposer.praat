@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3.0 (2026)
+# Version: 0.4.0 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -14,6 +14,39 @@
 #   frequency through artistic presets such as phase dissolution,
 #   spectral sparsification, drift, reflection, folding and magnitude
 #   mutation. Processing is implemented entirely in native Praat.
+#
+# Changelog v0.4.0 (2026):
+#   - WET FADE-IN. New Wet_fade_in_duration_s (default 1.0 s). After the inverse
+#     FFT the wet signal emerges from the dry one along a half-cosine
+#         progress = clamp (t / fade, 0, 1)
+#         effectiveWet = Dry_wet_mix * (0.5 - 0.5*cos (pi*progress))
+#         out = (1 - effectiveWet)*dry + effectiveWet*wet
+#     The first output sample is exactly the dry sample; the envelope has zero
+#     slope at both ends; both channels use the identical envelope. 0 s gives
+#     the previous constant mix. The fade is clamped to the SOURCE duration:
+#     past it the dry signal is silence, so continuing the "crossfade" there
+#     would only be an amplitude ramp on the tail, not a dry/wet transition.
+#     Wet fade-in (body) and tail fade-out (appended tail) can never overlap.
+#   - GAIN STAGING. Preserve_RMS now level-matches the WET signal to the source
+#     BEFORE mixing (one scalar for both channels, measured over the body), so
+#     the dry component always stays at unity and Dry/wet = 0 returns the
+#     original sample for sample. Previously the gain was taken from the
+#     mixture, which rescaled the dry signal too. The make-up gain is capped
+#     at +24 dB so a near-empty wet signal is not pulled up into noise.
+#   - PEAK SAFETY no longer attenuates a mix that peaks no higher than the
+#     source itself, and a tail that peaks higher than the body is attenuated
+#     ON ITS OWN (50 ms half-cosine gain ramp ending at the body/tail
+#     boundary) instead of pulling the whole file down.
+#   - DEPTH CONSISTENCY. Global Freeze applied 45% phase randomisation at
+#     depth 0 (phaseAmt = 0.45 + 0.55*depth). Now depth*(1.55 - 0.55*depth):
+#     0 at depth 0, 1 at depth 1, within 0.005 of the old value at the preset's
+#     0.90. All other modes were checked and already reach identity at depth 0.
+#   - PRESETS NO LONGER OVERRIDE Transformation_depth. Each preset keeps its
+#     own characteristic depth, now reached at the 0.60 calibration point (the
+#     form default), so default output is unchanged. Below 0.60 the preset is
+#     scaled toward identity, above it toward full depth 1.0 (piecewise linear).
+#     Custom still uses the entered depth directly. The Info window lists
+#     which other form fields the chosen preset overrides.
 #
 # Changelog v0.3.0 (2026):
 #   - PERFORMANCE. Magnitude and phase are precomputed once per channel into
@@ -72,7 +105,7 @@
 #   - The original selected Sound is never modified.
 # ============================================================
 
-versionStr$ = "0.3.0"
+versionStr$ = "0.4.0"
 
 if numberOfSelected("Sound") <> 1
     exitScript: "Please select exactly one Sound object before running Giant FFT Recomposer."
@@ -122,7 +155,7 @@ form Giant FFT Recomposer
     real Frequency_drift 200
     real Fold_depth 0.50
     real Dry_wet_mix 1.00
-    comment === Spectral Tail ===
+    real Wet_fade_in_duration_s 1.00
     real Tail_duration_s 1.50
     real Fadeout_duration_s 1.00
     boolean Decorrelate_channels 0
@@ -161,6 +194,9 @@ endif
 if dry_wet_mix < 0 or dry_wet_mix > 1
     exitScript: "Dry/wet mix must be between 0 and 1."
 endif
+if wet_fade_in_duration_s < 0
+    exitScript: "Wet fade-in duration cannot be negative."
+endif
 if tail_duration_s < 0
     exitScript: "Tail duration cannot be negative."
 endif
@@ -177,7 +213,19 @@ presetLabel$ = preset$
 # ------------------------------------------------------------------------------
 # PRESET RESOLUTION
 # ------------------------------------------------------------------------------
-depth = transformation_depth
+# v0.4.0: a named preset no longer OVERWRITES Transformation_depth. Each preset
+# keeps a characteristic depth (presetDepth, the value v0.3.0 forced) and the
+# user's depth scales it through a piecewise-linear map anchored at 0.60, the
+# form default:
+#     user 0.00  ->  depth 0            (identity for every mode)
+#     user 0.60  ->  depth presetDepth  (exactly the v0.3.0 preset sound)
+#     user 1.00  ->  depth 1            (full transformation)
+# So default output is unchanged while the control is never silently ignored.
+# Custom uses the entered depth directly, as before. Other preset-specific
+# values (disorder, density, drift ...) remain part of each preset's identity;
+# they are listed in the Info window so the override is visible, not silent.
+userDepth = transformation_depth
+presetCalibration = 0.60
 amtPhase = phase_disorder
 phaseStatesN = phase_states
 phaseScaleFactor = phase_scale
@@ -191,54 +239,87 @@ gravityAmt = 0.70
 reflectionAmt = 0.80
 constellationContrast = 1.40
 
+presetDepth = userDepth
+overrides$ = "none"
+usesFields$ = ""
+
 if presetCode = 1
-    depth = 0
+    presetDepth = 0
     amtPhase = 0
+    overrides$ = "all transformation fields (identity)"
 elif presetCode = 2
-    depth = 0.55
+    presetDepth = 0.55
     amtPhase = 0.55
+    overrides$ = "Phase_disorder = 0.55"
 elif presetCode = 3
-    depth = 1.00
+    presetDepth = 1.00
     amtPhase = 1.00
+    overrides$ = "Phase_disorder = 1.00"
 elif presetCode = 4
-    depth = 0.75
+    presetDepth = 0.75
     amtPhase = 0.90
     phaseStatesN = 8
+    overrides$ = "Phase_disorder = 0.90, Phase_states = 8"
 elif presetCode = 5
-    depth = 0.80
+    presetDepth = 0.80
     gravityAmt = 0.90
+    overrides$ = "internal gravity 0.90"
 elif presetCode = 6
-    depth = 0.90
+    presetDepth = 0.90
     densityAmt = 0.18
+    overrides$ = "Bin_density = 0.18"
 elif presetCode = 7
-    depth = 0.90
+    presetDepth = 0.90
     densityAmt = 0.10
     constellationContrast = 1.80
+    overrides$ = "Bin_density = 0.10, internal contrast 1.80"
 elif presetCode = 8
-    depth = 0.80
+    presetDepth = 0.80
     driftHz = 300
+    overrides$ = "Frequency_drift = 300"
 elif presetCode = 9
-    depth = 0.90
+    presetDepth = 0.90
     reflectionAmt = 0.95
+    overrides$ = "internal reflection 0.95"
+    usesFields$ = "Pivot_frequency"
 elif presetCode = 10
-    depth = 0.90
+    presetDepth = 0.90
     foldDepthAmt = 0.95
+    overrides$ = "Fold_depth = 0.95"
+    usesFields$ = "Pivot_frequency"
 elif presetCode = 11
-    depth = 0.85
+    presetDepth = 0.85
     magAmount = 0.90
+    overrides$ = "Magnitude_amount = 0.90"
 elif presetCode = 12
-    depth = 0.90
+    presetDepth = 0.90
     amtPhase = 0.90
+    overrides$ = "none (internal smoothing + random phase)"
 elif presetCode = 13
-    depth = 0.95
+    presetDepth = 0.95
     gravityAmt = 0.95
     densityAmt = 0.15
+    overrides$ = "Bin_density = 0.15, internal gravity 0.95"
 elif presetCode = 14
-    depth = 0.90
+    presetDepth = 0.90
     phaseScaleFactor = 2.20
     driftHz = 280
     densityAmt = 0.20
+    overrides$ = "Phase_scale = 2.20, Frequency_drift = 280, Bin_density = 0.20"
 endif
+
+if presetCode = 1
+    depth = 0
+elsif presetCode = 15
+    depth = userDepth
+elsif userDepth <= presetCalibration
+    depth = presetDepth * userDepth / presetCalibration
+else
+    depth = presetDepth + (1 - presetDepth) * (userDepth - presetCalibration) / (1 - presetCalibration)
+endif
+
+# Wet fade-in, clamped to the source body (see changelog v0.4.0).
+effectiveWetFadeIn = min (wet_fade_in_duration_s, sourceDuration)
 
 # ------------------------------------------------------------------------------
 # EXTENDED PROCESSING SOURCE
@@ -489,7 +570,10 @@ procedure modeFreeze
     @ensureRandomPhase
     smoothMagID = Create simple Matrix: "GiantFFT_smoothMagnitude", 1, nBins,
         ... ~ if col = 1 or col = ncol then object [magID,1,col] else (object [magID,1,col-1] + 2*object [magID,1,col] + object [magID,1,col+1])/4 fi
-    phaseAmt = min (1, 0.45 + 0.55*depth)
+    # v0.4.0: was min (1, 0.45 + 0.55*depth), i.e. 45% phase randomisation at
+    # depth 0. depth*(1.55 - 0.55*depth) is 0 at 0, 1 at 1, monotonic, smooth,
+    # and 0.9495 at the preset's 0.90 (old 0.945).
+    phaseAmt = depth * (1.55 - 0.55*depth)
     newMagID = Create simple Matrix: "GiantFFT_newMag", 1, nBins,
         ... ~ (1-depth)*object [magID,1,col] + depth*object [smoothMagID,1,col]
     newPhID = Create simple Matrix: "GiantFFT_newPhase", 1, nBins,
@@ -720,14 +804,64 @@ endif
 
 resultID = wetID
 
-# True dry/wet mix by sample index. The fast-FFT output has already been trimmed
-# to the extended processing sample count, so no temporary dry Sound is required.
-if dry_wet_mix < 0.999999
+# ==============================================================================
+# GAIN STAGING, DRY/WET TRANSITION, TAIL FADE, PEAK SAFETY  (v0.4.0)
+# Order:  wet level match -> dry/wet crossfade with wet fade-in -> tail fade-out
+#         -> peak safety (body and tail separately).
+# The dry component is never rescaled by the RMS stage, so Dry/wet = 0 returns
+# the source sample for sample (plus the silent appended tail).
+# ==============================================================================
+
+# 1. Preserve_RMS: level-match the WET signal to the source over the body, before
+#    mixing. One scalar for both channels, so inter-channel balance is untouched.
+#    Measured on the body only, so energy pushed into the tail does not cause a
+#    boost. Capped so a nearly empty wet signal is not pulled up into noise.
+selectObject: sourceID
+origRMS = Get root-mean-square: 0, 0
+wetGain = 1
+wetGainCapped = 0
+wetBodyRMS = 0
+maxWetGainDb = 24
+if preserve_RMS = 1
+    selectObject: resultID
+    wetBodyRMS = Get root-mean-square: 0, sourceDuration
+    if origRMS > 0 and wetBodyRMS > 0
+        wetGain = origRMS / wetBodyRMS
+        if wetGain > 10^(maxWetGainDb/20)
+            wetGain = 10^(maxWetGainDb/20)
+            wetGainCapped = 1
+        endif
+    endif
+endif
+if wetGain <> 1
+    selectObject: resultID
+    Formula: ~ self * wetGain
+endif
+
+# 2. Dry/wet with wet fade-in. Time is taken from the sample index, so the first
+#    sample is t = 0 exactly (output = dry) regardless of the Sound's xmin.
+#        progress     = clamp (t / fade, 0, 1)
+#        effectiveWet = Dry_wet_mix * (0.5 - 0.5*cos (pi*progress))
+#        out          = (1 - effectiveWet)*dry + effectiveWet*wet
+#    The envelope is applied identically to every channel (no dependence on
+#    row). Dry and wet share one sample grid: the IFFT output was trimmed to
+#    processingSamples.
+selectObject: resultID
+resultSamples = Get number of samples
+if resultSamples <> processingSamples
+    exitScript: "Internal error: wet signal has " + string$ (resultSamples) + " samples, dry has " + string$ (processingSamples) + "."
+endif
+if effectiveWetFadeIn > 0
+    fadeInSamples = effectiveWetFadeIn * sourceFs
+    selectObject: resultID
+    Formula: ~ object [processingSourceID,row,col] + dry_wet_mix * (if col - 1 >= fadeInSamples then 1 else 0.5 - 0.5 * cos (pi * (col - 1) / fadeInSamples) fi) * (self - object [processingSourceID,row,col])
+elsif dry_wet_mix < 0.999999
     selectObject: resultID
     Formula: ~ self*dry_wet_mix + object [processingSourceID,row,col]*(1-dry_wet_mix)
 endif
 
-# Tail-only half-cosine fade. The fade is constrained to the appended region.
+# 3. Tail-only half-cosine fade. The fade is constrained to the appended region,
+#    and the wet fade-in to the source body, so the two never overlap.
 if tail_duration_s > 0 and effectiveFadeoutDuration > 0
     fadeStart = processingDuration - effectiveFadeoutDuration
     selectObject: resultID
@@ -736,24 +870,36 @@ else
     fadeStart = processingDuration
 endif
 
-# Preserve the level of the ORIGINAL-DURATION body, not the appended tail.
-# This prevents a long quiet tail from causing an unintended global gain boost.
-if preserve_RMS = 1
-    selectObject: sourceID
-    origRMS = Get root-mean-square: 0, 0
-    selectObject: resultID
-    bodyRMS = Get root-mean-square: 0, sourceDuration
-    if bodyRMS > 0
-        rmsGain = origRMS / bodyRMS
-        Formula: ~ self*rmsGain
+# 4. Peak safety. The ceiling is 0.999, or the source's own peak if that is
+#    higher, so a mix that peaks no higher than the input is never attenuated
+#    (Dry/wet = 0 stays bit-exact even on a full-scale source). Body and tail
+#    are handled separately: a strong tail is attenuated on its own, with a
+#    50 ms half-cosine gain ramp that ENDS at the body/tail boundary (so the
+#    whole tail sits at its reduced gain), instead of pulling the body down.
+selectObject: sourceID
+sourcePeakAbs = Get absolute extremum: 0, 0, "none"
+peakCeiling = max (0.999, sourcePeakAbs)
+selectObject: resultID
+bodyPeak = Get absolute extremum: 0, sourceDuration, "none"
+bodySafetyGain = 1
+if bodyPeak > peakCeiling
+    bodySafetyGain = peakCeiling / bodyPeak
+endif
+tailSafetyGain = 1
+tailPeak = 0
+if tail_duration_s > 0
+    tailPeak = Get absolute extremum: sourceDuration, processingDuration, "none"
+    if tailPeak * bodySafetyGain > peakCeiling
+        tailSafetyGain = peakCeiling / (tailPeak * bodySafetyGain)
     endif
 endif
-
-selectObject: resultID
-peakVal = Get absolute extremum: 0, 0, "none"
-if peakVal > 0.999
-    safetyGain = 0.999 / peakVal
-    Formula: ~ self*safetyGain
+if bodySafetyGain < 1
+    Formula: ~ self * bodySafetyGain
+endif
+if tailSafetyGain < 1
+    tailRampDuration = min (0.05, sourceDuration)
+    tailRampStart = sourceDuration - tailRampDuration
+    Formula: ~ if x <= tailRampStart then self else if x >= sourceDuration then self * tailSafetyGain else self * (1 - (1 - tailSafetyGain) * (0.5 - 0.5*cos (pi*(x - tailRampStart)/tailRampDuration))) fi fi
 endif
 
 presetTag$ = replace$ (presetLabel$, " ", "", 0)
@@ -783,7 +929,30 @@ elapsedSeconds = stopwatch
 
 writeInfoLine: "Giant FFT Recomposer v", versionStr$
 appendInfoLine: "Preset: ", presetLabel$
-appendInfoLine: "Transformation depth: ", fixed$(depth, 3)
+if presetCode = 15
+    appendInfoLine: "Transformation depth: ", fixed$(depth, 3), " (Custom: entered value used directly)"
+elsif presetCode = 1
+    appendInfoLine: "Transformation depth: 0 (Original Structure is the identity)"
+else
+    appendInfoLine: "Transformation depth: entered ", fixed$(userDepth, 3), " -> effective ", fixed$(depth, 3), " (preset character ", fixed$(presetDepth, 2), " at ", fixed$(presetCalibration, 2), ")"
+endif
+if presetCode <> 15
+    appendInfoLine: "Preset overrides: ", overrides$
+    if usesFields$ <> ""
+        appendInfoLine: "Preset uses form field: ", usesFields$
+    endif
+endif
+appendInfoLine: "Dry/wet: ", fixed$(dry_wet_mix, 3), " | wet fade-in: ", fixed$(effectiveWetFadeIn, 3), " s", if effectiveWetFadeIn < wet_fade_in_duration_s then " (requested " + fixed$(wet_fade_in_duration_s, 3) + " s, clamped to source duration)" else "" fi
+if preserve_RMS = 1
+    if wetGain <> 1
+        appendInfoLine: "Wet level match (Preserve_RMS): ", fixed$(20*log10(wetGain), 2), " dB", if wetGainCapped = 1 then " (CAPPED at +" + fixed$(maxWetGainDb, 0) + " dB - wet body is very quiet)" else "" fi
+    else
+        appendInfoLine: "Wet level match (Preserve_RMS): none (silent source or silent wet signal)"
+    endif
+else
+    appendInfoLine: "Wet level match: off (raw inverse-FFT level)"
+endif
+appendInfoLine: "Peak safety: body ", if bodySafetyGain < 1 then fixed$(20*log10(bodySafetyGain), 2) + " dB" else "none" fi, " | tail ", if tailSafetyGain < 1 then fixed$(20*log10(tailSafetyGain), 2) + " dB (tail only)" else "none" fi
 appendInfoLine: "FFT mode: ", if fast_FFT = 1 then "fast (zero-padded internally, trimmed after IFFT)" else "exact-length" fi
 appendInfoLine: "Spectrum diagnostic channel: ", if numChannels = 2 then "1 (left)" else "mono" fi
 appendInfoLine: "Original spectral centroid (Hz): ", fixed$(origCentroid, 1)
@@ -937,9 +1106,16 @@ if create_visualization = 1
 
     selectObject: resultID
     # House palette: transformed body = mauve, appended spectral tail = rust.
+    # v0.4.0: Sound Draw maps its OWN time range onto the whole current viewport,
+    # so drawing body and tail into the full panel stretched each across the
+    # entire width (the tail overprinted the body). Each part now gets an inner
+    # sub-viewport whose width is proportional to its duration.
+    bodyRight = 0.60 + 7.10 * sourceDuration / resultDuration
+    Select inner viewport: 0.60, bodyRight, 2.27, 3.09
     Colour: "{0.60, 0.50, 0.60}"
     Draw: 0, sourceDuration, -wavePeak, wavePeak, "no", "Curve"
     if tail_duration_s > 0
+        Select inner viewport: bodyRight, 7.70, 2.27, 3.09
         Colour: "{0.80, 0.35, 0.20}"
         Draw: sourceDuration, resultDuration, -wavePeak, wavePeak, "no", "Curve"
     endif
@@ -948,6 +1124,32 @@ if create_visualization = 1
     Axes: 0, resultDuration, -wavePeak, wavePeak
     Colour: "{0.82, 0.82, 0.82}"
     Draw line: 0, 0, resultDuration, 0
+
+    # Effective wet share over time (0 at the centre line, Dry/wet at the top),
+    # drawn on top of the waveform so the emergence of the wet signal is visible.
+    if effectiveWetFadeIn > 0 or dry_wet_mix < 0.999999
+        Colour: "{0.15, 0.55, 0.50}"
+        Line width: 1.5
+        envSteps = 120
+        prevT = 0
+        prevW = 0
+        if effectiveWetFadeIn = 0
+            prevW = dry_wet_mix
+        endif
+        for k from 1 to envSteps
+            envT = sourceDuration * k / envSteps
+            if effectiveWetFadeIn > 0
+                envP = min (1, envT / effectiveWetFadeIn)
+                envW = dry_wet_mix * (0.5 - 0.5 * cos (pi * envP))
+            else
+                envW = dry_wet_mix
+            endif
+            Draw line: prevT, prevW * wavePeak, envT, envW * wavePeak
+            prevT = envT
+            prevW = envW
+        endfor
+        Line width: 1
+    endif
     if tail_duration_s > 0
         Dashed line
         Colour: "{0.68, 0.60, 0.56}"
@@ -965,9 +1167,9 @@ if create_visualization = 1
     Text left: "no", "Amp"
     Text bottom: "no", "Time (s)"
     if tail_duration_s > 0
-        Text top: "no", "Transformed Output | mauve = body, rust = spectral tail | fade begins at " + fixed$ (fadeStart, 2) + " s"
+        Text top: "no", "Output | mauve = body, rust = spectral tail, teal = wet share | tail fade at " + fixed$ (fadeStart, 2) + " s"
     else
-        Text top: "no", "Transformed Output | mauve = transformed body"
+        Text top: "no", "Output | mauve = body, teal = wet share"
     endif
 
     # === C: global magnitude spectrum, source + wet on one scale ===
@@ -1081,7 +1283,7 @@ if create_visualization = 1
 
     Font size: 6
     Colour: "{0.25, 0.25, 0.35}"
-    summary1$ = "##Transform##  " + presetLabel$ + " | depth " + fixed$ (depth, 2) + " | " + fftMode$ + " | dry/wet " + fixed$ (dry_wet_mix, 2) + " | tail " + fixed$ (tail_duration_s, 2) + " s / fade " + fixed$ (effectiveFadeoutDuration, 2) + " s"
+    summary1$ = "##Transform##  " + presetLabel$ + " | depth " + fixed$ (depth, 2) + " | " + fftMode$ + " | dry/wet " + fixed$ (dry_wet_mix, 2) + " (fade-in " + fixed$ (effectiveWetFadeIn, 2) + " s) | tail " + fixed$ (tail_duration_s, 2) + " s / fade " + fixed$ (effectiveFadeoutDuration, 2) + " s"
     if phaseProfile = 1
         profileLabel$ = "wrapped phase displacement"
     else
