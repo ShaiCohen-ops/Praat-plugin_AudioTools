@@ -2,7 +2,7 @@
 # Praat AudioTools - Audio_Quantizer.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
-# Version: 1.4 (2026) - Learned Groove Transfer
+# Version: 1.4.1 (2026) - Consistency and reliability fixes
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -11,9 +11,9 @@
 #   recordings (voice, flute and other single-line instruments).
 #   Detected note onsets are moved toward a user-defined BPM grid by
 #   ONE continuous, monotonic time deformation of the whole recording,
-#   realised with a DurationTier and Praat's pitch-preserving PSOLA
-#   (Manipulation -> overlap-add). Notes are never cut apart and
-#   re-joined.
+#   realised with a DurationTier and native WSOLA (default) or Praat's
+#   pitch-preserving PSOLA (Manipulation -> overlap-add). Notes are
+#   never cut apart and re-joined.
 #
 #   Pipeline:
 #     Mono Sound -> onset analysis (intensity slope / vibrato-suppressed
@@ -26,6 +26,30 @@
 #   Fully native Praat. No files are read or written, no Python, no
 #   shell. Only the quantized Sound (and, on request, a diagnostic
 #   TextGrid) is left in the Objects list.
+#
+# Changelog v1.4.1 - consistency and reliability fixes:
+#   - One voicing analysis: the stretch weights now use the same
+#     60-2500 Hz pitch range as onset validation (was 60-1500 Hz, so
+#     flute notes above 1500 Hz were classed unvoiced and could stretch
+#     only 0.80-1.25). The target's pitch track from detection is reused;
+#     with TextGrid onsets (no detection pass on the target) it is
+#     computed separately, never taken over from the groove reference.
+#   - Percussive reference (learned-groove dialog): note validation is
+#     switched off for the reference pass only, so unpitched hits (ghost
+#     notes, hi-hats) are not rejected and their slots are observed.
+#   - Auto maximum shift follows the groove grid: half of the LARGEST gap
+#     between consecutive groove points (was half the straight interval,
+#     so e.g. 2:1 swing at 120 BPM allowed 126 ms where up to 167 ms is
+#     needed). Every onset can again reach its nearest grid point.
+#   - Grid origin = First detected onset now pins that onset under a
+#     groove: the grid is anchored so the first onset lies exactly on its
+#     (groove-shifted) slot. Straight-grid results are unchanged.
+#   - PSOLA-only parameter checks (pitch floor / ceiling / Nyquist) run
+#     only when PSOLA is selected; the unreachable PSOLA duration check
+#     was removed.
+#   - Stale text fixed: PSOLA wording where WSOLA is the default, the
+#     v1.0 mono message, and the onset backtracking comment (50 %, not
+#     30 %); the unused onsetBias variable was removed.
 #
 # Changelog v1.4 - Learned Groove Transfer:
 #   - Grid type: Straight grid / Learned groove from a reference Sound /
@@ -130,7 +154,7 @@
 #   AI & Adaptive/Neural_Phonetic_Speed_Mapper.praat - PSOLA tail, peak guard
 # ============================================================
 
-form Audio Quantizer v1.4
+form Audio Quantizer v1.4.1
     comment Musical grid (BPM = quarter-note tempo)
     positive Tempo_BPM 120
     optionmenu Grid_division 2
@@ -287,6 +311,7 @@ pattern_length_bars = 1
 groove_strength_percent = 100
 click_follows = 1
 keep_groove_Table = 0
+percussive_reference = 0
 if grid_type = 2
     reference_sound = refChoice
     beginPause: "Audio Quantizer - learned groove"
@@ -302,6 +327,7 @@ if grid_type = 2
         natural: "Beats per bar", string$(beats_per_bar)
         natural: "Pattern length bars", string$(pattern_length_bars)
         real: "Groove strength percent", string$(groove_strength_percent)
+        boolean: "Percussive reference", percussive_reference
         optionmenu: "Click follows", click_follows
             option: "Groove grid"
             option: "Straight grid"
@@ -361,7 +387,7 @@ sr = Get sampling frequency
 nCh = Get number of channels
 
 if nCh <> 1
-    exitScript: "The Sound has " + string$(nCh) + " channels. Audio Quantizer v1.0 needs a mono Sound" + newline$ +
+    exitScript: "The Sound has " + string$(nCh) + " channels. Audio Quantizer needs a mono Sound" + newline$ +
     ... "(use Convert to mono or Extract one channel first)."
 endif
 if sDur < 0.5
@@ -385,17 +411,19 @@ endif
 if maximum_onset_shift_ms < 0
     exitScript: "Maximum onset shift cannot be negative."
 endif
-if pitch_floor_Hz < 30
-    exitScript: "Pitch floor must be at least 30 Hz."
-endif
-if pitch_ceiling_Hz <= pitch_floor_Hz * 1.5
-    exitScript: "Pitch ceiling must be well above the pitch floor (at least 1.5x)."
-endif
-if pitch_ceiling_Hz >= sr / 2
-    exitScript: "Pitch ceiling must be below the Nyquist frequency (" + fixed$(sr / 2, 0) + " Hz)."
-endif
-if sDur < 3 / pitch_floor_Hz + 0.05
-    exitScript: "The Sound is too short for PSOLA at pitch floor " + fixed$(pitch_floor_Hz, 0) + " Hz."
+# PSOLA pitch range: checked only when PSOLA is the engine (WSOLA does
+# no pitch analysis). The old PSOLA duration check is gone: with
+# floor >= 30 Hz and duration >= 0.5 s it could never trigger.
+if resynthesis = 2
+    if pitch_floor_Hz < 30
+        exitScript: "Pitch floor must be at least 30 Hz."
+    endif
+    if pitch_ceiling_Hz <= pitch_floor_Hz * 1.5
+        exitScript: "Pitch ceiling must be well above the pitch floor (at least 1.5x)."
+    endif
+    if pitch_ceiling_Hz >= sr / 2
+        exitScript: "Pitch ceiling must be below the Nyquist frequency (" + fixed$(sr / 2, 0) + " Hz)."
+    endif
 endif
 if minimum_local_time_ratio < 0.2 or minimum_local_time_ratio > 1
     exitScript: "Minimum local time ratio must lie between 0.2 and 1."
@@ -444,6 +472,8 @@ endif
 strength = quantization_strength_percent / 100
 if maximum_onset_shift_ms = 0
     # Auto: the nearest grid point is at most T/2 away (+0.5 ms margin).
+    # With a groove the grid is uneven; maxShift is widened after the
+    # groove template is known (section 1b).
     maxShift = gridT / 2 + 0.0005
     shiftLabel$ = "auto " + fixed$(maxShift * 1000, 1) + " ms"
 else
@@ -940,11 +970,10 @@ procedure detectOnsets
 
     # Peak picking: above threshold, local maximum within +-15 ms,
     # loudness gate, boundary protection; then backtrack to the start
-    # of the rise (ODF falls below 30 % of the peak, at most 30 ms).
+    # of the rise (ODF falls below 50 % of the peak, at most 30 ms).
     nbr = max(1, round(0.015 / odfDt))
     maxBack = max(1, round(0.030 / odfDt))
     backFrac = 0.5
-    onsetBias = 0
     candT# = zero#(nF)
     candS# = zero#(nF)
     nCand = 0
@@ -978,9 +1007,9 @@ procedure detectOnsets
                         going = 0
                     endif
                 endwhile
-                # Frame k of a two-hop difference describes the change
-                # between frames k-2 and k: its rise begins one hop earlier.
-                tOn = odfT1 + (kb - 1) * odfDt + onsetBias
+                # No extra bias is added: the measured output check uses
+                # the same detector, so a constant timing bias cancels.
+                tOn = odfT1 + (kb - 1) * odfDt
                 if tOn > sTmin + 0.005 and tOn < sTmax - 0.05
                     nCand += 1
                     candT#[nCand] = tOn
@@ -1007,7 +1036,9 @@ procedure detectOnsets
     # Rules (c) and (e) apply with or without a pitch, so attacks are not
     # rejected merely because no stable pitch was found. The pitch track
     # uses a wide 60-2500 Hz range (flute top octave included),
-    # independent of the PSOLA range. Off (Advanced settings): every
+    # independent of the PSOLA range; on the target the same track also
+    # feeds the stretch weights (section 9b). Off (Advanced settings, or
+    # Percussive reference for the groove reference pass): every
     # thresholded candidate is accepted, as in v1.1.
     selectObject: detSound
     pitchDet = To Pitch: 0.01, 60, 2500
@@ -1023,7 +1054,13 @@ procedure detectOnsets
             f0#[k] = fv
         endif
     endfor
-    removeObject: pitchDet
+    # keepPitch = 1 (target pass only): the Pitch is handed to the stretch
+    # weights in section 9b instead of being analysed a second time.
+    if keepPitch
+        targetPitch = pitchDet
+    else
+        removeObject: pitchDet
+    endif
     nRejected = 0
     vT# = zero#(max(nCand, 1))
     vS# = zero#(max(nCand, 1))
@@ -1196,6 +1233,8 @@ endproc
 #   g = groove strength. Everything downstream (collisions, solver,
 #   DurationTier, WSOLA) is unchanged.
 # ============================================================
+keepPitch = 0
+targetPitch = 0
 grooveP = 1
 grooveOff# = {0}
 grooveN# = {0}
@@ -1224,7 +1263,14 @@ if grid_type = 2
     else
         detMethod = onset_detection
     endif
+    # Percussive reference: unpitched hits fail the pitch-based rules, so
+    # validation is off for this pass only (restored right after).
+    saveValidation = note_validation
+    if percussive_reference
+        note_validation = 0
+    endif
     @detectOnsets
+    note_validation = saveValidation
     nRef = nOn
     refOn# = zero#(max(nRef, 1))
     for i to nRef
@@ -1384,6 +1430,23 @@ elsif grid_type = 3
     tName$ = selected$("Table")
     grooveSrc$ = "Table """ + tName$ + """"
 endif
+# Auto maximum shift under a groove: groove points are unevenly spaced,
+# so the nearest one can be more than T/2 away. The worst case is half
+# the LARGEST gap between consecutive groove points (pattern wrapped):
+#   gap(s) = T * (1 + g * (offset[s+1] - offset[s]))
+if maximum_onset_shift_ms = 0 and grid_type > 1 and gStr > 0
+    maxGap = gridT
+    for sl to grooveP
+        slN = sl + 1
+        if slN > grooveP
+            slN = 1
+        endif
+        gap = gridT * (1 + gStr * (grooveOff#[slN] - grooveOff#[sl]))
+        maxGap = max(maxGap, gap)
+    endfor
+    maxShift = maxGap / 2 + 0.0005
+    shiftLabel$ = "auto " + fixed$(maxShift * 1000, 1) + " ms (groove)"
+endif
 if grid_type > 1 and gStr > 0
     gridLabel$ = divLabel$ + "+groove"
 else
@@ -1489,7 +1552,9 @@ else
     # ---------------- Automatic detection ----------------
     detSound = sound
     detMethod = onset_detection
+    keepPitch = 1
     @detectOnsets
+    keepPitch = 0
 
     odfShow# = odf#
     thrShow# = thr#
@@ -1518,6 +1583,9 @@ if nOn > 0
 endif
 
 if nOn = 0
+    if targetPitch
+        removeObject: targetPitch
+    endif
     if useTextGrid
         exitScript: "No usable onset points were found in tier """ + tgName$ + """ of the selected TextGrid. No output was created."
     else
@@ -1531,8 +1599,16 @@ endif
 #    q(t) = G + round((t - G) / T) * T   (halves round up: floor(x+0.5))
 # ============================================================
 if grid_origin = 1
-    gridG = onsets#[1]
+    # Anchored so the first onset lies exactly on grid index 0, groove
+    # offset included: q(0) = G + g * offset[1] * T = onset 1. With a
+    # straight grid (offset 0) this is simply G = onset 1, as before.
+    gridG = onsets#[1] - gStr * grooveOff#[1] * gridT
     originLabel$ = "first detected onset"
+    pinShift = gStr * grooveOff#[1] * gridT
+    if abs(pinShift) >= 0.00005
+        @msStr: 0 - pinShift
+        originLabel$ = "first detected onset (pinned; straight grid " + msStr.result$ + " ms from it)"
+    endif
 elsif grid_origin = 2
     gridG = sTmin
     originLabel$ = "beginning of Sound"
@@ -1711,8 +1787,17 @@ wDt = 0.010
 nW = floor(sDur / wDt) + 1
 selectObject: sound
 wInt = To Intensity: 100, 0.005, "no"
-selectObject: sound
-wPit = To Pitch: 0.01, 60, 1500
+# Voicing: the SAME 60-2500 Hz Pitch as onset validation (v1.4.1; was
+# 60-1500 Hz). Reused from the target's detection pass; with TextGrid
+# onsets there was no such pass (and the f0 vectors may still hold the
+# groove reference), so the target is analysed here with the same range.
+if targetPitch
+    wPit = targetPitch
+    targetPitch = 0
+else
+    selectObject: sound
+    wPit = To Pitch: 0.01, 60, 2500
+endif
 wDB# = zero#(nW)
 wV# = zero#(nW)
 for k to nW
@@ -2179,7 +2264,8 @@ durDiffSamp = nOutSamp - nInSamp
 #   nearest attack found within +-40 ms. Comparing re-detected output
 #   attacks with targets derived from detected input attacks makes
 #   the detector's own timing bias largely cancel. This measures where
-#   the attacks really are after PSOLA, not the DurationTier arithmetic.
+#   the attacks really are after resynthesis (WSOLA or PSOLA), not the
+#   DurationTier arithmetic.
 # ============================================================
 chkDone = 0
 chkMatched = 0
@@ -2399,7 +2485,7 @@ else
 endif
 
 if show_analysis_report
-    writeInfoLine: "=== Audio Quantizer v1.4 ==="
+    writeInfoLine: "=== Audio Quantizer v1.4.1 ==="
     appendInfoLine: ""
     appendInfoLine: "AUDIO"
     appendInfoLine: "  Input:          ", soundName$
@@ -2482,6 +2568,9 @@ if show_analysis_report
                 appendInfoLine: "  Reference: ", nRef, " onsets; tempo given ", fixed$(refGivenBPM, 2), " BPM, fitted ", fixed$(refFitBPM, 2), " BPM (least squares)"
             else
                 appendInfoLine: "  Reference: ", nRef, " onsets; tempo ", fixed$(refGivenBPM, 2), " BPM (fit rejected: more than 8 % away)"
+            endif
+            if percussive_reference
+                appendInfoLine: "  Reference treated as percussive: note validation off for the reference pass"
             endif
             if reference_downbeat = 1
                 appendInfoLine: "  Reference downbeat: first detected onset (assumed to be a downbeat)"
@@ -2600,7 +2689,7 @@ if show_analysis_report
     endif
     appendInfoLine: ""
     appendInfoLine: "Note: 'target' is the DurationTier mapping (exact by construction). Where the"
-    appendInfoLine: "attacks really sit after PSOLA is the MEASURED OUTPUT CHECK above (5 ms frames)."
+    appendInfoLine: "attacks really sit after resynthesis is the MEASURED OUTPUT CHECK above (5 ms frames)."
 endif
 
 # ============================================================
@@ -2648,7 +2737,7 @@ if draw_visualization
     Select inner viewport: 0.6, 7.7, 0.10, 0.45
     Axes: 0, 1, 0, 1
     @picText: soundName$
-    ttl$ = "##Audio Quantizer v1.4##   " + picText.result$
+    ttl$ = "##Audio Quantizer v1.4.1##   " + picText.result$
     Text: 0.5, "centre", 0.5, "half", ttl$
     Font size: 7
     Select inner viewport: 0.6, 7.7, 0.45, 0.70
