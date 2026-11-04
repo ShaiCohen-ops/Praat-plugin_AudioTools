@@ -3,94 +3,70 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.5.1 (2026)
+# Version: 2.0 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   GRM-STYLE (not the GRM algorithm): evokes the tuned resonant-bank
-#   textures of GRM Tools, implemented offline as a bank of Hann
-#   band-passes each driven through a delay-line resonator.
-#   "GRM-style" = aesthetic lineage, not a reimplementation.
+#   GRM-STYLE (not the GRM algorithm): an independently developed bank
+#   of up to 64 parallel ringing resonators, inspired by the classic
+#   INA-GRM Reson. "GRM-style" = aesthetic lineage, not a
+#   reimplementation of proprietary software.
 #
-#   Delay tuning: the delays are FREQUENCY-TUNED INTEGER DELAY LINES,
-#   not pitch tracking. Nothing analyses the input's pitch. The delay
-#   is round(sampleRate / fc), so tuning is quantised to whole samples
-#   and drifts at high frequencies - at 44.1 kHz a 3770 Hz band tunes
-#   to 3675 Hz (44 cents flat); at 16 kHz it lands on 4000 Hz (103
-#   cents sharp). The per-band tuning error is reported. Exact tuning
-#   would need fractional-delay interpolation.
+#   Each resonator is a complex one-pole resonator
+#       z[n] = r e^(j w[n]) z[n-1] + x[n],      y[n] = g Re(z[n])
+#   whose real output is exactly the two-pole/one-zero system
+#       H(z) = (1 - r cos(w) z^-1) / (1 - 2 r cos(w) z^-1 + r^2 z^-2)
+#   i.e. poles at r e^(+-jw). Its impulse response is g r^n cos(w n):
+#   a decaying sinusoid at exactly the requested frequency, which
+#   keeps ringing after the excitation ends.
 #
-# Changelog v1.5.1 (2026):
-#   - Single feedback comb now depends only on ringDecay, as intended;
-#     ringIterations remains specific to the finite echo-train model.
+#   It is computed by heterodyning: v[n] = r v[n-1] + x[n] e^(-j th[n])
+#   with th[n] the running phase, then y = g Re(v e^(j th)). Each
+#   recursion holds ONE real state, so Praat can run it as a single
+#   compiled in-place Formula pass instead of an interpreted sample loop.
+#   The envelope |v| decays by exactly r per sample whatever w[n] does,
+#   so frequency modulation can never destabilise the bank or change
+#   its decay, and the state is continuous through every retuning.
 #
-# Changelog v1.5 (2026):
-#   - VISUALIZATION STANDARDIZATION ONLY; audio processing, analysis,
-#     synthesis, object-management and output behavior are unchanged.
-#   - Adopted the Praat AudioTools 8-inch page convention, standard
-#     title/subtitle, suite typography, neutral diagnostic panels,
-#     summary strip and full-page Picture export.
+#   Relationships (fs = sample rate, f = frequency, T60 in seconds):
+#     r   = 10^(-3 / (T60 fs))           60 dB amplitude decay in T60
+#     B   = ln(1000) / (pi T60)          -3 dB bandwidth = 2.199 / T60 Hz
+#     Q   = f / B = f T60 / 2.199
+#   Decay is set in seconds and is independent of frequency. For a
+#   single second-order resonator bandwidth and decay are the same
+#   physical quantity: Q is reported, not set separately.
 #
-# Changelog v1.4:
-#   - Natural level is now truly natural: removed the internal wet-bus
-#     peak=4 guard. Safety is handled only by Output_level_mode.
-#   - Stereo wet processing no longer throws away one channel. Each input
-#     channel is band-filtered and resonated independently; no loudest-
-#     channel source selection is used. Mono still fans out to the panner.
-#   - dryWet=0 is a true output bypass: original channel count and samples
-#     are preserved and the output-level stage is skipped.
-#
-# Changelog v1.3 - reviewed by running the script under Parselmouth,
-# so the figures below are measurements.
-#   - THE RESONATOR WAS AN UNBOUNDED CASCADE. v1.2 applied a RECURSIVE
-#     comb Formula once per iteration, each on the previous result, so
-#     the transfer function was a product of 1/(1 - a^i z^-iD) rather
-#     than a set of echoes. At a shared resonance the gains multiply:
-#     for decay 0.95 over 40 iterations that is 6.1e11, about 235.7 dB.
-#     Measured natural wet peak from a 0.2-peak noise input: Formant-ish
-#     0.161, Inharmonic metallic 0.868, Harmonic Organ 56.6, Sparse
-#     Bells 2.7 BILLION. Scale peak hid it; it did not make the filter
-#     stable. Resonator_mode now offers two bounded models, and both
-#     were checked before shipping on the same noise: finite echoes
-#     gives 0.89 / 1.22 / 1.64 / 2.65 and the single feedback comb
-#     0.91 / 1.21 / 1.64 / 2.69 for those four presets.
-#   - THE WET NORMALIZATION CANCELLED gainDB. Scale peak: 0.9 on the
-#     wet bus, then Scale peak: finalPeak at the end, meant gainDB of
-#     -30, 0, +6 and +30 all produced sample-identical output, and a
-#     0.2-peak and a 0.02-peak sine both came out at 0.99. Both are
-#     replaced by attenuate-only ceilings, so a quiet input stays quiet
-#     and gainDB does what it says.
-#   - That also fixes the spectral-residue problem: a 440 Hz sine with
-#     a single 3000 Hz resonator had a natural peak of 0.000665 and was
-#     amplified to 0.99, turning filter residue and edge transients
-#     into a loud ring at 3.09 kHz. Nothing is lifted now.
-#   - Multichannel: the wet bus is a two-channel panner by design, so
-#     more than two channels is refused with an explanation instead of
-#     being silently mangled - v1.2 put the wet only in channels 1-2
-#     and left 3 and up with dry alone. The band source is the loudest
-#     channel, not a mono fold, so anti-phase stereo no longer
-#     cancels to silence at 100% wet.
-#   - xmin survives at every mix setting. The wet bus was created over
-#     0..duration, so at 100% wet a Sound at 5.137-6.137 s came back at
-#     0-1 s, while partial mixes kept the domain from the dry copy.
-#   - Spectral tilt follows FREQUENCY, not list order. v1.2 tilted by
-#     index, so an unsorted list could damp a low band and boost a high
-#     one - the opposite of the setting's name.
-#   - Band-edge smoothing follows the bandwidth. It was fixed at
-#     100 Hz, so the Bells preset's 35 Hz bands had transition regions
-#     nearly three times wider than the band itself.
-#   - Optional Tail_ms so a resonance at the end of the file is not
-#     cut off with it.
-#   - Random panning takes a seed.
-#   - Validation on band count, frequencies against Nyquist, decay,
-#     iterations, mix and peak. ringIterations = 0 used to fail because
-#     delSamples was printed before it existed, and an empty frequency
-#     list crashed on bandIDs[1].
-#   - Visualization: a single band no longer collapses the axes ("Top
-#     and bottom should not be equal"), band centres draw as visible
-#     markers, transition regions are shown, input and output share a
-#     scale, and "All Center" is described as dual-mono.
+# Changelog v2.0 (2026):
+#   - NEW RESONANT ARCHITECTURE. The Hann band-pass + integer-delay comb
+#     bank is gone. Its decay was a tap/feedback coefficient, so a short
+#     impulse produced at most a short comb buzz and no sustained tone.
+#     v2.0 uses the parallel second-order resonators described above.
+#   - Decay in seconds (Resonance_decay_s), frequency-independent, with
+#     a per-bank Decay_tilt and an optional per-resonator decay list.
+#   - Exact tuning: continuous pole angle, no sample rounding. v1.5
+#     tuned 3770 Hz to 3675 Hz at 44.1 kHz (-44 cents); v2.0 rings at
+#     the requested frequency to within measurement precision.
+#   - Up to 64 resonators; layouts Manual, Harmonic, Inharmonic ratios,
+#     Equal logarithmic; static dispersion; spread and shift in the
+#     advanced block.
+#   - Excitation scaling chooses what is held constant per resonator
+#     (noise power / steady-state peak / impulse amplitude); the bank is
+#     divided by sqrt(N), which keeps relative balance between resonators.
+#   - Transient_focus: 0 = whole input excites, 1 = attacks only.
+#   - Automatic resonant tail from the longest T60; fixed tail option;
+#     a 20 ms fade only when a tail has to be cut short.
+#   - Frequency modulation of the bank itself: Sine LFO, Smooth random
+#     drift, Sample-and-hold - phase- and state-continuous.
+#   - New presets built on distinct resonant behaviour.
+#   - Visualization redrawn for the new bank: output with tail, output
+#     spectrogram with the actual coefficient trajectories overlaid,
+#     measured spectrum against intended frequencies, configured against
+#     measured decay, configured gain against measured output level.
+#   - Removed: ringIterations, ringDecay, bandwidthHz, Resonator_mode,
+#     delay tuning. Dry/Wet, Output_level_mode, panning, xmin
+#     preservation, the >2-channel refusal and the 8-inch page convention
+#     are kept from v1.5.1.
 #
 # Usage:
 #   Select a Sound object in Praat and run this script.
@@ -100,33 +76,34 @@
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 # ============================================================
 
-form GRM-Style Resonator v1.5.1
+form GRM-Style Resonator v2.0
     optionmenu Preset: 1
         option Custom
-        option Harmonic (organ-like)
-        option Inharmonic metallic
-        option Formant-ish (voice coloring)
-        option Sparse bells
-    integer numBands 6
-    optionmenu tuningMode: 1
-        option Manual list
+        option Harmonic Organ
+        option Metallic Resonance
+        option Resonant Cloud
+        option Moving Resonance
+        option Percussive Resonance
+        option Deep Resonance
+    integer Number_of_resonators 8
+    optionmenu Frequency_layout: 2
+        option Manual list (Hz)
         option Harmonic series
         option Inharmonic ratios
-    sentence manualFrequencies 300 520 890 1440 2330 3770
-    real baseFreqHz 110
-    sentence ratioList 1 1.41 1.89 2.37 2.98 3.56
-    real bandwidthHz 80
-    optionmenu Resonator_mode: 1
-        option Finite echoes (N taps, bounded)
-        option Single feedback comb (decay only)
-    integer ringIterations 3
-    real ringDecay 0.6
-    real gainDB 6
-    optionmenu Gain_Profile: 2
-        option Flat (Equal)
-        option Dampen Highs (Tilt Down)
-        option Boost Highs (Tilt Up)
-    optionmenu Stereo_Panning: 3
+        option Equal logarithmic
+    real Base_frequency_Hz 110
+    real Top_frequency_Hz 1760
+    sentence Frequencies_or_ratios 1 1.41 1.89 2.37 2.98 3.56
+    real Dispersion_cents 0
+    real Resonance_decay_s 3.0
+    real Decay_tilt 0.7
+    optionmenu Excitation_scaling: 1
+        option Balanced (constant noise power)
+        option Unity peak (filter-like)
+        option Unity impulse (strike)
+    real Transient_focus 0
+    real Resonance_gain_dB 0
+    optionmenu Stereo_panning: 2
         option All Center (dual mono)
         option Stereo Spread (Alternate)
         option Wide Spread (Hard L/R)
@@ -134,7 +111,18 @@ form GRM-Style Resonator v1.5.1
         option Right Heavy
         option V Shape (Outside In)
         option Random
-    real dryWet 0.6
+    optionmenu Modulation: 1
+        option None
+        option Sine LFO
+        option Smooth random drift
+        option Sample-and-hold
+    real Modulation_depth_cents 50
+    real Modulation_rate_Hz 0.2
+    real Dry_wet 1.0
+    optionmenu Tail_mode: 1
+        option Automatic (longest T60)
+        option Fixed (tail_s below)
+        option None (truncate)
     optionmenu Output_level_mode: 2
         option Natural level
         option Safety ceiling (attenuate only)
@@ -146,77 +134,136 @@ endform
 # ============================================================
 # ADVANCED SETTINGS - edit here, not in the form
 # ============================================================
-# Praat forms do not scroll, so the settings you would fix once for a
-# rig rather than change per file live here. The names are the same
-# ones the body uses, so moving any line back into the form needs no
+# Praat forms do not scroll, so rig-level settings live here. The names
+# are the ones the body uses, so moving a line into the form needs no
 # other edit.
 
-# Delay tuning. 1 = derive the delay from the band frequency,
-# 0 = use Manual_Ring_Delay_Ms for every band.
-tune_Delay_To_Pitch = 1
-manual_Ring_Delay_Ms = 8
+# Gain profile across the bank, by frequency: 1 Flat, 2 Dampen highs,
+# 3 Boost highs.
+gain_Profile = 2
 
-# Silence added before processing so a resonance at the end of the file
-# is not cut off with it. The output is longer by this amount.
-tail_ms = 0
+# Per-resonator decay times in seconds, lowest-listed resonator first.
+# Empty = use Resonance_decay_s with Decay_tilt. Fewer values than
+# resonators: the last value repeats.
+decay_list$ = ""
 
-# 0 = unseeded; any other value makes Random panning reproducible.
+# Static spread and shift of the whole bank. Spread scales every
+# interval above the lowest resonator (1 = unchanged, 2 = intervals
+# doubled); shift transposes the bank.
+freq_spread = 1
+freq_shift_cents = 0
+
+# Fixed tail used by Tail_mode 2, and the cap for the automatic tail.
+tail_s = 5
+max_auto_tail_s = 30
+
+# 0 = unseeded; any other value makes dispersion, random drift,
+# sample-and-hold and Random panning reproducible.
 random_seed = 0
 
 # Ceiling used by Output_level_mode 2 and 3.
 finalPeak = 0.99
 
-# Keep the per-band Sounds in the object list after mixing.
-keep_individual_bands = 0
+# Transient detector time constants (Transient_focus > 0).
+transient_attack_s = 0.05
+transient_release_s = 0.15
 
 # --- 1. PRESETS ---
 if preset = 2
-    tuningMode = 2
-    baseFreqHz = 110
-    numBands = 8
-    bandwidthHz = 100
-    tune_Delay_To_Pitch = 1
-    ringIterations = 20
-    ringDecay = 0.85
+    number_of_resonators = 12
+    frequency_layout = 2
+    base_frequency_Hz = 110
+    dispersion_cents = 0
+    resonance_decay_s = 4.0
+    decay_tilt = 0.5
+    excitation_scaling = 1
+    transient_focus = 0
+    resonance_gain_dB = 0
     gain_Profile = 2
-    stereo_Panning = 2
+    stereo_panning = 2
+    modulation = 1
     presetName$ = "HarmonicOrgan"
 elsif preset = 3
-    tuningMode = 3
-    baseFreqHz = 200
-    ratioList$ = "1 1.59 2.14 2.76 3.41 4.07"
-    numBands = 6
-    bandwidthHz = 40
-    tune_Delay_To_Pitch = 1
-    ringIterations = 10
-    ringDecay = 0.7
+    number_of_resonators = 6
+    frequency_layout = 3
+    base_frequency_Hz = 220
+    frequencies_or_ratios$ = "1 2.756 5.404 8.933 13.344 18.64"
+    dispersion_cents = 0
+    resonance_decay_s = 6.0
+    decay_tilt = 0.4
+    excitation_scaling = 3
+    transient_focus = 0.5
+    resonance_gain_dB = -6
     gain_Profile = 1
-    stereo_Panning = 3
-    presetName$ = "Metallic"
+    stereo_panning = 3
+    modulation = 1
+    presetName$ = "MetallicResonance"
 elsif preset = 4
-    tuningMode = 1
-    manualFrequencies$ = "500 1500 2500 3500 4500"
-    numBands = 5
-    bandwidthHz = 200
-    tune_Delay_To_Pitch = 0
-    manual_Ring_Delay_Ms = 6
-    ringIterations = 2
-    ringDecay = 0.4
+    number_of_resonators = 32
+    frequency_layout = 4
+    base_frequency_Hz = 300
+    top_frequency_Hz = 2400
+    dispersion_cents = 40
+    resonance_decay_s = 2.5
+    decay_tilt = 1
+    excitation_scaling = 1
+    transient_focus = 0
+    resonance_gain_dB = 0
     gain_Profile = 2
-    stereo_Panning = 6
-    presetName$ = "Formant"
+    stereo_panning = 7
+    modulation = 3
+    modulation_depth_cents = 8
+    modulation_rate_Hz = 0.3
+    presetName$ = "ResonantCloud"
 elsif preset = 5
-    tuningMode = 1
-    manualFrequencies$ = "287 645 1203 2156"
-    numBands = 4
-    bandwidthHz = 35
-    tune_Delay_To_Pitch = 1
-    ringIterations = 40
-    ringDecay = 0.95
+    number_of_resonators = 10
+    frequency_layout = 3
+    base_frequency_Hz = 180
+    frequencies_or_ratios$ = "1 1.41 1.89 2.37 2.98 3.56 4.21 4.87 5.62 6.30"
+    dispersion_cents = 0
+    resonance_decay_s = 3.0
+    decay_tilt = 0.8
+    excitation_scaling = 1
+    transient_focus = 0
+    resonance_gain_dB = 0
     gain_Profile = 2
-    gainDB = 12
-    stereo_Panning = 7
-    presetName$ = "Bells"
+    stereo_panning = 6
+    modulation = 3
+    modulation_depth_cents = 300
+    modulation_rate_Hz = 0.15
+    presetName$ = "MovingResonance"
+elsif preset = 6
+    number_of_resonators = 8
+    frequency_layout = 3
+    base_frequency_Hz = 330
+    frequencies_or_ratios$ = "1 1.594 2.136 2.296 2.653 2.918 3.156 3.501"
+    dispersion_cents = 0
+    resonance_decay_s = 1.2
+    decay_tilt = 0.6
+    excitation_scaling = 3
+    transient_focus = 1
+    resonance_gain_dB = -6
+    gain_Profile = 1
+    stereo_panning = 3
+    modulation = 1
+    presetName$ = "PercussiveResonance"
+elsif preset = 7
+    number_of_resonators = 8
+    frequency_layout = 4
+    base_frequency_Hz = 40
+    top_frequency_Hz = 320
+    dispersion_cents = 0
+    resonance_decay_s = 12
+    decay_tilt = 0.5
+    excitation_scaling = 1
+    transient_focus = 0.3
+    resonance_gain_dB = 0
+    gain_Profile = 1
+    stereo_panning = 2
+    modulation = 2
+    modulation_depth_cents = 15
+    modulation_rate_Hz = 0.07
+    presetName$ = "DeepResonance"
 else
     presetName$ = "Custom"
 endif
@@ -232,366 +279,331 @@ selectObject: original
 samplingRate = Get sampling frequency
 inputDuration = Get total duration
 originalXmin = Get start time
+srcSamples = Get number of samples
 nyquist = samplingRate / 2
 numChannels = Get number of channels
 inputPeak = Get absolute extremum: 0, 0, "None"
 
-# The wet bus pans bands across TWO channels; there is no defined
-# placement for a third. v1.2 mixed the wet into channels 1-2 only and
-# left channels 3 and up carrying dry alone.
 if numChannels > 2
     exitScript: "This Sound has " + string$(numChannels) + " channels. The resonator bank " +
-    ... "pans its bands across a stereo field, so the wet signal is inherently two-channel " +
-    ... "and there is no defined placement for further channels. Use a mono or stereo " +
-    ... "Sound, or process the channel pairs separately."
+    ... "pans its resonators across a stereo field, so the wet signal is two-channel and " +
+    ... "there is no defined placement for further channels. Use a mono or stereo Sound, " +
+    ... "or process the channel pairs separately."
 endif
 
 # --- Validation ---
-if ringDecay < 0 or ringDecay >= 1
-    exitScript: "ringDecay must be at least 0 and below 1 (got " + fixed$(ringDecay, 3) +
-    ... "). At 1 or above the resonator does not decay and the output grows without bound."
+if number_of_resonators < 1 or number_of_resonators > 64
+    exitScript: "Number_of_resonators must be between 1 and 64."
 endif
-if ringIterations < 0
-    exitScript: "ringIterations cannot be negative."
+if resonance_decay_s < 0.01 or resonance_decay_s > 60
+    exitScript: "Resonance_decay_s must be between 0.01 and 60 s."
 endif
-if ringIterations > 200
-    exitScript: "ringIterations above 200 is beyond any useful decay length."
+if decay_tilt <= 0
+    exitScript: "Decay_tilt must be greater than 0 (1 = every resonator has the same decay)."
 endif
-if dryWet < 0 or dryWet > 1
-    exitScript: "dryWet must be between 0 and 1 (got " + fixed$(dryWet, 3) + ")."
+if base_frequency_Hz <= 0
+    exitScript: "Base_frequency_Hz must be greater than 0."
+endif
+if frequency_layout = 4 and top_frequency_Hz <= base_frequency_Hz and number_of_resonators > 1
+    exitScript: "Equal logarithmic spacing needs Top_frequency_Hz above Base_frequency_Hz."
+endif
+if transient_focus < 0 or transient_focus > 1
+    exitScript: "Transient_focus must be between 0 and 1."
+endif
+if dry_wet < 0 or dry_wet > 1
+    exitScript: "Dry_wet must be between 0 and 1 (got " + fixed$(dry_wet, 3) + ")."
+endif
+if modulation > 1
+    if modulation_rate_Hz <= 0 or modulation_rate_Hz > 20
+        exitScript: "Modulation_rate_Hz must be above 0 and at most 20 Hz."
+    endif
+    if modulation_depth_cents < 0 or modulation_depth_cents > 2400
+        exitScript: "Modulation_depth_cents must be between 0 and 2400."
+    endif
+endif
+if dispersion_cents < 0
+    dispersion_cents = 0
 endif
 if finalPeak <= 0 or finalPeak > 1
     exitScript: "finalPeak must be greater than 0 and at most 1."
 endif
-if bandwidthHz <= 0
-    exitScript: "bandwidthHz must be greater than 0."
+if freq_spread <= 0
+    exitScript: "freq_spread must be greater than 0."
 endif
-if tail_ms < 0
-    tail_ms = 0
+if tail_s < 0
+    tail_s = 0
 endif
 
 if random_seed <> 0
     random_initializeWithSeedUnsafelyButPredictably: random_seed
 endif
 
-# --- 3. PARSE FREQUENCIES ---
-if tuningMode = 1
-    str$ = manualFrequencies$
-    count = 0
-    repeat
-        space = index(str$, " ")
-        if space > 0
-            token$ = left$(str$, space - 1)
-            str$ = mid$(str$, space + 1, 10000)
-        else
-            token$ = str$
-            str$ = ""
+# --- 3. FREQUENCIES ---
+# Tokenise the list field (Hz for Manual, ratios for Inharmonic).
+# Three-argument mid$ only: two-argument mid$ returns ONE character.
+nTok = 0
+str$ = frequencies_or_ratios$ + " "
+while length(str$) > 0
+    sp = index(str$, " ")
+    tok$ = left$(str$, sp - 1)
+    str$ = mid$(str$, sp + 1, length(str$) - sp)
+    if tok$ <> ""
+        val = number(tok$)
+        if val <> undefined and val > 0
+            nTok = nTok + 1
+            tokVal[nTok] = val
         endif
-        token$ = replace$(token$, " ", "", 0)
-        if token$ <> ""
-            count = count + 1
-            freqs[count] = number(token$)
-        endif
-    until str$ = ""
-    actualNumBands = count
-    tuningStr$ = "Manual List"
-elsif tuningMode = 2
-    actualNumBands = numBands
-    for i from 1 to actualNumBands
-        freqs[i] = baseFreqHz * i
-    endfor
-    tuningStr$ = "Harmonic (" + string$(baseFreqHz) + " Hz)"
+    endif
+endwhile
+
+if frequency_layout = 1 or frequency_layout = 3
+    nReq = min(nTok, number_of_resonators)
+    if nReq < 1
+        exitScript: "No usable values in Frequencies_or_ratios."
+    endif
 else
-    str$ = ratioList$
-    count = 0
-    repeat
-        space = index(str$, " ")
-        if space > 0
-            token$ = left$(str$, space - 1)
-            str$ = mid$(str$, space + 1, 10000)
+    nReq = number_of_resonators
+endif
+
+for k from 1 to nReq
+    if frequency_layout = 1
+        fRaw[k] = tokVal[k]
+    elsif frequency_layout = 2
+        fRaw[k] = base_frequency_Hz * k
+    elsif frequency_layout = 3
+        fRaw[k] = base_frequency_Hz * tokVal[k]
+    else
+        if nReq > 1
+            fRaw[k] = base_frequency_Hz * (top_frequency_Hz / base_frequency_Hz) ^ ((k - 1) / (nReq - 1))
         else
-            token$ = str$
-            str$ = ""
+            fRaw[k] = base_frequency_Hz
         endif
-        token$ = replace$(token$, " ", "", 0)
-        if token$ <> ""
-            count = count + 1
-            freqs[count] = baseFreqHz * number(token$)
-        endif
-    until str$ = ""
-    actualNumBands = count
-    tuningStr$ = "Inharmonic (" + string$(baseFreqHz) + " Hz)"
-endif
-
-if actualNumBands > numBands
-    actualNumBands = numBands
-endif
-# v1.2 went straight on to bandIDs[1] with no bands at all.
-if actualNumBands < 1
-    exitScript: "No usable band frequencies were found. Check the frequency list, the " +
-    ... "ratio list, or numBands."
-endif
-
-# Every centre must be inside the usable spectrum
-minFreqSeen = freqs[1]
-maxFreqSeen = freqs[1]
-for i from 1 to actualNumBands
-    if freqs[i] <= 20 or freqs[i] >= nyquist - 20
-        exitScript: "Band " + string$(i) + " is at " + fixed$(freqs[i], 1) + " Hz, outside " +
-        ... "the usable range 20 to " + fixed$(nyquist - 20, 1) + " Hz for this sample rate."
-    endif
-    if freqs[i] < minFreqSeen
-        minFreqSeen = freqs[i]
-    endif
-    if freqs[i] > maxFreqSeen
-        maxFreqSeen = freqs[i]
     endif
 endfor
+if frequency_layout = 1
+    layoutStr$ = "Manual list"
+elsif frequency_layout = 2
+    layoutStr$ = "Harmonic, " + fixed$(base_frequency_Hz, 1) + " Hz"
+elsif frequency_layout = 3
+    layoutStr$ = "Inharmonic, " + fixed$(base_frequency_Hz, 1) + " Hz"
+else
+    layoutStr$ = "Equal log " + fixed$(base_frequency_Hz, 0) + "-" + fixed$(top_frequency_Hz, 0) + " Hz"
+endif
 
-# --- 4. GAIN PROFILE (BY FREQUENCY, NOT BY INDEX) ---
-# v1.2 tilted by list position, so an unsorted list could damp a low
-# band and boost a high one - the reverse of what the setting says.
-baseGainLin = 10 ^ (gainDB / 20)
-logMin = ln(minFreqSeen)
-logMax = ln(maxFreqSeen)
-for i from 1 to actualNumBands
-    if logMax > logMin
-        fpos = (ln(freqs[i]) - logMin) / (logMax - logMin)
-    else
-        fpos = 0
+# Spread (around the lowest), shift, dispersion
+fLowRaw = fRaw[1]
+for k from 1 to nReq
+    if fRaw[k] < fLowRaw
+        fLowRaw = fRaw[k]
     endif
+endfor
+for k from 1 to nReq
+    ff = fLowRaw * (fRaw[k] / fLowRaw) ^ freq_spread
+    ff = ff * 2 ^ (freq_shift_cents / 1200)
+    if dispersion_cents > 0
+        dispC[k] = randomUniform(-dispersion_cents, dispersion_cents)
+    else
+        dispC[k] = 0
+    endif
+    fRaw[k] = ff * 2 ^ (dispC[k] / 1200)
+endfor
+
+# Keep only resonators inside 20 Hz .. Nyquist - 20 Hz
+nRes = 0
+nDropped = 0
+for k from 1 to nReq
+    if fRaw[k] > 20 and fRaw[k] < nyquist - 20
+        nRes = nRes + 1
+        freq[nRes] = fRaw[k]
+    else
+        nDropped = nDropped + 1
+    endif
+endfor
+if nRes < 1
+    exitScript: "Every resonator frequency falls outside 20 Hz to " + fixed$(nyquist - 20, 0) +
+    ... " Hz at this sample rate."
+endif
+
+minF = freq[1]
+maxF = freq[1]
+for k from 1 to nRes
+    minF = min(minF, freq[k])
+    maxF = max(maxF, freq[k])
+endfor
+logMin = ln(minF)
+logMax = ln(maxF)
+
+# --- 4. PER-RESONATOR DECAY, GAIN, COEFFICIENTS ---
+# Optional decay list
+nDec = 0
+if decay_list$ <> ""
+    str$ = decay_list$ + " "
+    while length(str$) > 0
+        sp = index(str$, " ")
+        tok$ = left$(str$, sp - 1)
+        str$ = mid$(str$, sp + 1, length(str$) - sp)
+        if tok$ <> ""
+            val = number(tok$)
+            if val <> undefined and val > 0
+                nDec = nDec + 1
+                decVal[nDec] = val
+            endif
+        endif
+    endwhile
+endif
+
+baseGainLin = 10 ^ (resonance_gain_dB / 20)
+bankNorm = 1 / sqrt(nRes)
+maxT60 = 0
+for k from 1 to nRes
+    if logMax > logMin
+        fpos[k] = (ln(freq[k]) - logMin) / (logMax - logMin)
+    else
+        fpos[k] = 0
+    endif
+
+    if nDec > 0
+        t60[k] = decVal[min(k, nDec)]
+    else
+        t60[k] = resonance_decay_s * decay_tilt ^ fpos[k]
+    endif
+    t60[k] = max(0.01, min(60, t60[k]))
+    maxT60 = max(maxT60, t60[k])
+
+    # Pole radius: amplitude falls 60 dB (factor 1000) in t60 seconds
+    rad[k] = 10 ^ (-3 / (t60[k] * samplingRate))
+    bwHz[k] = ln(1000) / (pi * t60[k])
+    qFac[k] = freq[k] / bwHz[k]
+
+    # Excitation scaling of one resonator (real output y = g Re(z))
+    if excitation_scaling = 1
+        # unit white-noise power gain: E|z|^2 = 1/(1-r^2), Re carries half
+        gNorm[k] = sqrt(2 * (1 - rad[k] ^ 2))
+    elsif excitation_scaling = 2
+        # unit steady-state gain at the resonance: |H| = 1/(2(1-r)) there
+        gNorm[k] = 2 * (1 - rad[k])
+    else
+        # impulse rings at amplitude 1
+        gNorm[k] = 1
+    endif
+
     if gain_Profile = 1
-        bandGain[i] = baseGainLin
+        prof[k] = 1
         gainProfileStr$ = "Flat"
     elsif gain_Profile = 2
-        bandGain[i] = baseGainLin * (1.0 - 0.8 * fpos)
-        gainProfileStr$ = "Dampen Highs"
+        prof[k] = 1 - 0.8 * fpos[k]
+        gainProfileStr$ = "Dampen highs"
     else
-        bandGain[i] = baseGainLin * (0.2 + 0.8 * fpos)
-        gainProfileStr$ = "Boost Highs"
+        prof[k] = 0.2 + 0.8 * fpos[k]
+        gainProfileStr$ = "Boost highs"
     endif
+
+    gTot[k] = gNorm[k] * prof[k] * baseGainLin * bankNorm
 endfor
 
-if resonator_mode = 1
-    resStr$ = "Finite echoes (" + string$(ringIterations) + " taps)"
-else
-    resStr$ = "Single feedback comb"
-endif
-
-clearinfo
-writeInfoLine: "=== GRM-Style Resonator v1.5.1 ==="
-appendInfoLine: "Input: ", originalName$, " (", fixed$(inputDuration, 3), " s, ",
-    ... numChannels, " ch, ", samplingRate, " Hz)"
-appendInfoLine: "Preset: ", presetName$, " | Bands: ", actualNumBands, " | ", resStr$
-if resonator_mode = 1
-    appendInfoLine: "  Peak resonance gain <= ",
-        ... fixed$((1 - ringDecay ^ (ringIterations + 1)) / (1 - ringDecay), 2), "x"
-else
-    appendInfoLine: "  Peak resonance gain <= ", fixed$(1 / (1 - ringDecay), 2),
-        ... "x (ringIterations is not used by this mode)"
-endif
-appendInfoLine: ""
-
-# ============================================================
-# Work copy at time 0, plus optional tail
-# ============================================================
-# The wet bus is created over 0..duration, so at 100% wet a Sound
-# living at 5.137-6.137 s came back at 0-1 s in v1.2.
-selectObject: original
-workSound = Copy: "grm_work"
-Shift times to: "start time", 0
-
-if tail_ms > 0
-    tailSec = tail_ms / 1000
-    Create Sound from formula: "grm_tail", numChannels, 0, tailSec, samplingRate, "0"
-    tailPad = selected("Sound")
-    selectObject: workSound
-    plusObject: tailPad
-    Concatenate
-    extended = selected("Sound")
-    removeObject: workSound, tailPad
-    workSound = extended
-    appendInfoLine: "Tail: ", fixed$(tail_ms, 0), " ms added so the resonance can decay"
-endif
-
-selectObject: workSound
-duration = Get total duration
-totalSamples = Get number of samples
-
-# Band source: preserve the input channels. v1.3 selected only the
-# loudest channel for the entire wet bank, so material unique to the
-# other side disappeared at 100% wet. The filters and resonators now
-# operate on every input channel independently. No L+R fold is used,
-# so anti-phase stereo cannot cancel at the analysis/source stage.
-selectObject: workSound
-bandSource = Copy: "grm_bandsrc"
-if numChannels = 1
-    srcStr$ = "mono (fanned to stereo panner)"
-else
-    srcStr$ = "stereo, channels processed independently"
-endif
-appendInfoLine: "Band source: ", srcStr$
-
-# --- 5. GENERATION LOOP ---
-appendInfoLine: "Generating ", actualNumBands, " bands..."
-
-for i from 1 to actualNumBands
-    fc = freqs[i]
-    low = fc - bandwidthHz / 2
-    high = fc + bandwidthHz / 2
-    if low < 20
-        low = 20
-    endif
-    if high > nyquist - 20
-        high = nyquist - 20
-    endif
-    if low >= high
-        low = max(20, fc - 10)
-        high = min(nyquist - 20, fc + 10)
-    endif
-    bandLow[i] = low
-    bandHigh[i] = high
-
-    # Edge smoothing follows the band. Fixed at 100 Hz it made the
-    # Bells preset's 35 Hz bands into transitions three times wider
-    # than the band itself.
-    smoothHz = max(10, min(100, (high - low) / 2))
-    bandSmooth[i] = smoothHz
-
-    selectObject: bandSource
-    bandSound = Filter (pass Hann band): low, high, smoothHz
-
-    selectObject: bandSound
-    Formula: "self * " + string$(bandGain[i])
-
-    # --- Delay ---
-    if tune_Delay_To_Pitch
-        delSamples = round(samplingRate / fc)
-    else
-        if manual_Ring_Delay_Ms > 0
-            delSamples = round(manual_Ring_Delay_Ms * samplingRate / 1000.0)
-        else
-            delSamples = 1
-        endif
-    endif
-    if delSamples < 1
-        delSamples = 1
-    endif
-    bandDelay[i] = delSamples
-    tunedTo[i] = samplingRate / delSamples
-    if tune_Delay_To_Pitch
-        centsErr[i] = 1200 * log2(tunedTo[i] / fc)
-    else
-        centsErr[i] = 0
-    endif
-
-    # --- Resonator ---
-    # Finite echo train uses ringIterations; the single feedback comb does not.
-    if ringDecay > 0
-        if resonator_mode = 1
-            if ringIterations > 0
-                # Finite echoes: every tap reads the ORIGINAL band, so the
-                # result is x + a x[n-D] + a^2 x[n-2D] + ... and the gain is
-                # bounded by (1 - a^(N+1)) / (1 - a). v1.2 applied a
-                # recursive comb once per iteration ON THE PREVIOUS RESULT,
-                # cascading them: 6.1e11 at decay 0.95 over 40 iterations.
-                selectObject: bandSound
-                dryBand = Copy: "band_dry"
-                dryBand$ = string$(dryBand)
-                for it from 1 to ringIterations
-                    a = ringDecay ^ it
-                    d = delSamples * it
-                    if d < totalSamples - 1
-                        selectObject: bandSound
-                        Formula (part): (d + 0.25) / samplingRate, duration, 1, numChannels,
-                            ... "self + " + string$(a) + " * object[" + dryBand$ +
-                            ... ", row, col - " + string$(d) + "]"
-                    endif
-                endfor
-                removeObject: dryBand
+# Magnitude-response peak of each resonator. The RINGING frequency is the
+# pole angle and is exact; the steady-state |H| peak sits slightly off it
+# for very broad resonances (the image pole). Reported, not hidden.
+for k from 1 to nRes
+    w0 = 2 * pi * freq[k] / samplingRate
+    rr = rad[k]
+    rc = rr * cos(w0)
+    bRad = -ln(rr)
+    lo = max(0.000001, w0 - 8 * bRad)
+    hi = min(pi - 0.000001, w0 + 8 * bRad)
+    # coarse grid, then a fine grid around the best cell, then a
+    # parabolic fit in log magnitude
+    for ipass from 1 to 2
+        bestW = w0
+        bestM = -1
+        for it from 0 to 400
+            om = lo + (hi - lo) * it / 400
+            @resMag2: rr, rc, om
+            if resMag2.m > bestM
+                bestM = resMag2.m
+                bestW = om
             endif
-        else
-            # Single feedback comb: y[n] = x[n] + a y[n-D]. Bounded by
-            # 1 / (1 - a) at resonance. ringIterations is intentionally ignored.
-            selectObject: bandSound
-            Formula: "if col > " + string$(delSamples) + " then self + " + string$(ringDecay) +
-                ... " * self[col-" + string$(delSamples) + "] else self fi"
-        endif
+        endfor
+        stepW = (hi - lo) / 400
+        lo = max(0.000001, bestW - 2 * stepW)
+        hi = min(pi - 0.000001, bestW + 2 * stepW)
+    endfor
+    stepW = (hi - lo) / 400
+    @resMag2: rr, rc, bestW - stepW
+    ma = ln(resMag2.m)
+    @resMag2: rr, rc, bestW
+    mb = ln(resMag2.m)
+    @resMag2: rr, rc, bestW + stepW
+    mc = ln(resMag2.m)
+    den = ma - 2 * mb + mc
+    if den < 0
+        bestW = bestW + stepW * 0.5 * (ma - mc) / den
     endif
-
-    selectObject: bandSound
-    Rename: "band" + string$(i)
-    bandIDs[i] = selected("Sound")
-
-    if tune_Delay_To_Pitch
-        appendInfoLine: "  Band ", i, ": ", fixed$(fc, 1), " Hz -> delay ", delSamples,
-            ... " spl = ", fixed$(tunedTo[i], 1), " Hz (", fixed$(centsErr[i], 1), " cents)"
-    else
-        appendInfoLine: "  Band ", i, ": ", fixed$(fc, 1), " Hz, delay ", delSamples, " spl"
-    endif
+    peakHz[k] = bestW * samplingRate / (2 * pi)
+    peakCents[k] = 1200 * log2(peakHz[k] / freq[k])
 endfor
 
-# --- 6. PANS ---
-for i from 1 to actualNumBands
-    if stereo_Panning = 1
-        pL[i] = 1.0
-        pR[i] = 1.0
+# --- 5. PANS ---
+for k from 1 to nRes
+    if stereo_panning = 1
+        pL[k] = 1.0
+        pR[k] = 1.0
         if numChannels = 1
             panningStr$ = "Dual mono"
         else
             panningStr$ = "Stereo preserved"
         endif
-    elsif stereo_Panning = 2
-        if (i mod 2) = 1
-            pL[i] = 1.0
-            pR[i] = 0.3
+    elsif stereo_panning = 2
+        if (k mod 2) = 1
+            pL[k] = 1.0
+            pR[k] = 0.3
         else
-            pL[i] = 0.3
-            pR[i] = 1.0
+            pL[k] = 0.3
+            pR[k] = 1.0
         endif
         panningStr$ = "Stereo Alternate"
-    elsif stereo_Panning = 3
-        if (i mod 2) = 1
-            pL[i] = 1.0
-            pR[i] = 0.0
+    elsif stereo_panning = 3
+        if (k mod 2) = 1
+            pL[k] = 1.0
+            pR[k] = 0.0
         else
-            pL[i] = 0.0
-            pR[i] = 1.0
+            pL[k] = 0.0
+            pR[k] = 1.0
         endif
         panningStr$ = "Hard L/R"
-    elsif stereo_Panning = 4
-        pL[i] = 1.0
-        pR[i] = 0.3
+    elsif stereo_panning = 4
+        pL[k] = 1.0
+        pR[k] = 0.3
         panningStr$ = "Left Heavy"
-    elsif stereo_Panning = 5
-        pL[i] = 0.3
-        pR[i] = 1.0
+    elsif stereo_panning = 5
+        pL[k] = 0.3
+        pR[k] = 1.0
         panningStr$ = "Right Heavy"
-    elsif stereo_Panning = 6
-        mid = (actualNumBands + 1) / 2
-        if i <= mid
-            if mid > 1
-                prog = (i - 1) / (mid - 1)
+    elsif stereo_panning = 6
+        midK = (nRes + 1) / 2
+        if k <= midK
+            if midK > 1
+                prog = (k - 1) / (midK - 1)
             else
                 prog = 0
             endif
-            pL[i] = 1.0 - prog * 0.7
-            pR[i] = 0.3 + prog * 0.7
+            pL[k] = 1.0 - prog * 0.7
+            pR[k] = 0.3 + prog * 0.7
         else
-            rem = actualNumBands - mid
-            if rem > 0
-                prog = (i - mid) / rem
+            remK = nRes - midK
+            if remK > 0
+                prog = (k - midK) / remK
             else
                 prog = 0
             endif
-            pL[i] = 0.3 + prog * 0.7
-            pR[i] = 1.0 - prog * 0.7
+            pL[k] = 0.3 + prog * 0.7
+            pR[k] = 1.0 - prog * 0.7
         endif
         panningStr$ = "V-Shape"
     else
-        rr = randomUniform(0, 1)
-        pL[i] = 1.0 - rr
-        pR[i] = rr
+        rp = randomUniform(0, 1)
+        pL[k] = 1.0 - rp
+        pR[k] = rp
         if random_seed <> 0
             panningStr$ = "Random (seed " + string$(random_seed) + ")"
         else
@@ -600,103 +612,360 @@ for i from 1 to actualNumBands
     endif
 endfor
 
-# --- 7. STEREO MIX ---
-appendInfoLine: ""
-appendInfoLine: "Mixing..."
+# --- 6. TAIL ---
+if tail_mode = 1
+    tailLen = min(maxT60, max_auto_tail_s)
+    tailStr$ = "Automatic"
+elsif tail_mode = 2
+    tailLen = tail_s
+    tailStr$ = "Fixed"
+else
+    tailLen = 0
+    tailStr$ = "None"
+endif
+tailSamples = round(tailLen * samplingRate)
+tailLen = tailSamples / samplingRate
+# Cut short = the longest resonance is still above -60 dB at the end
+tailTruncated = tailLen < maxT60 - 0.0005
 
+if modulation = 1
+    modStr$ = "None"
+elsif modulation = 2
+    modStr$ = "Sine LFO"
+elsif modulation = 3
+    modStr$ = "Smooth drift"
+else
+    modStr$ = "Sample-and-hold"
+endif
+if excitation_scaling = 1
+    scaleStr$ = "Balanced"
+elsif excitation_scaling = 2
+    scaleStr$ = "Unity peak"
+else
+    scaleStr$ = "Unity impulse"
+endif
+
+clearinfo
+writeInfoLine: "=== GRM-Style Resonator v2.0 ==="
+appendInfoLine: "Input: ", originalName$, " (", fixed$(inputDuration, 3), " s, ",
+    ... numChannels, " ch, ", samplingRate, " Hz)"
+appendInfoLine: "Preset: ", presetName$, " | ", nRes, " resonators | ", layoutStr$
+if nDropped > 0
+    appendInfoLine: "  NOTE: ", nDropped, " resonator(s) outside 20 Hz..Nyquist-20 Hz were dropped"
+endif
+appendInfoLine: "Excitation scaling: ", scaleStr$, " | Transient focus: ", fixed$(transient_focus, 2),
+    ... " | Bank norm 1/sqrt(", nRes, ")"
+appendInfoLine: "Modulation: ", modStr$
+if modulation > 1
+    appendInfoLine: "  depth ", fixed$(modulation_depth_cents, 1), " cents, rate ",
+        ... fixed$(modulation_rate_Hz, 3), " Hz"
+endif
+appendInfoLine: "Tail: ", tailStr$, " ", fixed$(tailLen, 3), " s (longest T60 ", fixed$(maxT60, 3), " s)"
+if tailTruncated
+    appendInfoLine: "  Tail shorter than the longest T60: 20 ms fade applied to the wet end"
+endif
+appendInfoLine: ""
+
+# ============================================================
+# Work copy at time 0, padded with the tail
+# ============================================================
+selectObject: original
+workSound = Copy: "grm_work"
+Shift times to: "start time", 0
+if tailSamples > 0
+    Create Sound from formula: "grm_tail", numChannels, 0, tailLen, samplingRate, "0"
+    tailPad = selected("Sound")
+    selectObject: workSound
+    plusObject: tailPad
+    Concatenate
+    extended = selected("Sound")
+    removeObject: workSound, tailPad
+    workSound = extended
+endif
+selectObject: workSound
+duration = Get total duration
+totalSamples = Get number of samples
+work$ = string$(workSound)
+fs$ = string$(samplingRate)
+
+# ============================================================
+# Excitation
+# ============================================================
+# Transient_focus mixes the input with a transient-gated copy. The
+# detector compares an instant-attack peak follower with a slow-rising
+# copy of that same envelope: equal on steady material, far apart at an
+# onset. gate = clamp(fast / slow - 1, 0, 1).
+# The gate is linked across channels so the stereo image is not skewed.
+selectObject: workSound
+excitation = Copy: "grm_exc"
+exc$ = string$(excitation)
+if transient_focus > 0
+    if numChannels = 2
+        Create Sound from formula: "grm_abs", 1, 0, duration, samplingRate,
+            ... "max(abs(object[" + work$ + ", 1, col]), abs(object[" + work$ + ", 2, col]))"
+    else
+        Create Sound from formula: "grm_abs", 1, 0, duration, samplingRate,
+            ... "abs(object[" + work$ + ", 1, col])"
+    endif
+    envAbs = selected("Sound")
+    kRelF = exp(-1 / (transient_release_s * samplingRate))
+    kAtt = 1 - exp(-1 / (transient_attack_s * samplingRate))
+    envFast = Copy: "grm_envf"
+    Formula: "if self > self[col-1] * " + string$(kRelF) + " then self else self[col-1] * " +
+        ... string$(kRelF) + " fi"
+    # Slow envelope follows the FAST PEAK envelope, rising with a slow
+    # attack and falling with it instantly: on any steady signal the two
+    # converge (measured gate 0.004 on a steady sine), at an onset the
+    # fast one leads by up to ~transient_attack_s.
+    selectObject: envFast
+    envSlow = Copy: "grm_envs"
+    Formula: "if self > self[col-1] then self[col-1] + " + string$(kAtt) +
+        ... " * (self - self[col-1]) else self fi"
+    selectObject: excitation
+    gateExpr$ = "min(1, max(0, object[" + string$(envFast) + ", 1, col] / (object[" +
+        ... string$(envSlow) + ", 1, col] + 1e-12) - 1))"
+    Formula: "self * (" + string$(1 - transient_focus) + " + " + string$(transient_focus) +
+        ... " * " + gateExpr$ + ")"
+    removeObject: envAbs, envFast, envSlow
+endif
+
+# ============================================================
+# Modulation control (one row per resonator)
+# ============================================================
+if modulation = 3 or modulation = 4
+    ctlDur = duration + 4 / modulation_rate_Hz
+    Create Sound from formula: "grm_ctl", nRes, 0, ctlDur, modulation_rate_Hz,
+        ... "randomUniform(-1, 1)"
+    ctl = selected("Sound")
+    ctl$ = string$(ctl)
+endif
+rate$ = string$(modulation_rate_Hz)
+depth$ = string$(modulation_depth_cents)
+nyqLim$ = string$(nyquist - 20)
+
+# ============================================================
+# 7. RESONATOR BANK
+# ============================================================
+appendInfoLine: "Running ", nRes, " resonators..."
 Create Sound from formula: "Wet_Mix", 2, 0, duration, samplingRate, "0"
 wetSum = selected("Sound")
 
-for i from 1 to actualNumBands
-    theBand = bandIDs[i]
-    selectObject: wetSum
-    if numChannels = 1
-        # Mono source: traditional pan of each resonant band.
-        Formula (part): 0, duration, 1, 1,
-            ... "self + object[" + string$(theBand) + ", 1, col] * " + string$(pL[i])
-        Formula (part): 0, duration, 2, 2,
-            ... "self + object[" + string$(theBand) + ", 1, col] * " + string$(pR[i])
+nTraj = 160
+if numChannels = 2
+    srcRow$ = "row"
+else
+    srcRow$ = "1"
+endif
+measN1 = srcSamples + round(0.02 * samplingRate)
+
+for k from 1 to nRes
+    fk$ = string$(freq[k])
+    # --- running phase th[n] (the coefficient trajectory) ---
+    if modulation = 1
+        Create Sound from formula: "grm_ph", 1, 0, duration, samplingRate,
+            ... "2 * pi * " + fk$ + " * (col - 1) / " + fs$
     else
-        # Stereo source: preserve both channels. Panning coefficients act
-        # as per-band side gains rather than collapsing L/R to one source.
-        Formula (part): 0, duration, 1, 1,
-            ... "self + object[" + string$(theBand) + ", 1, col] * " + string$(pL[i])
-        Formula (part): 0, duration, 2, 2,
-            ... "self + object[" + string$(theBand) + ", 2, col] * " + string$(pR[i])
+        if modulation = 2
+            phiK = 2 * pi * (k - 1) / nRes
+            modX$ = "sin(2 * pi * " + rate$ + " * x + " + string$(phiK) + ")"
+        elsif modulation = 3
+            pp$ = "(x * " + rate$ + " + 1.5)"
+            modX$ = "(object[" + ctl$ + ", " + string$(k) + ", floor(" + pp$ + ")] + " +
+                ... "(object[" + ctl$ + ", " + string$(k) + ", floor(" + pp$ + ") + 1] - " +
+                ... "object[" + ctl$ + ", " + string$(k) + ", floor(" + pp$ + ")]) * " +
+                ... "(1 - cos(pi * (" + pp$ + " - floor(" + pp$ + ")))) / 2)"
+        else
+            modX$ = "object[" + ctl$ + ", " + string$(k) + ", floor(x * " + rate$ + " + 1.5)]"
+        endif
+        fexpr$ = "min(max(" + fk$ + " * 2 ^ (" + depth$ + " * " + modX$ + " / 1200), 20), " +
+            ... nyqLim$ + ")"
+        Create Sound from formula: "grm_ph", 1, 0, duration, samplingRate, "0"
+        Formula: "self[col-1] + 2 * pi * " + fexpr$ + " / " + fs$
     endif
+    ph = selected("Sound")
+    ph$ = string$(ph)
+
+    # --- recursion: one real state per row (re/im per channel) ---
+    Create Sound from formula: "grm_state", 2 * numChannels, 0, duration, samplingRate, "0"
+    st = selected("Sound")
+    st$ = string$(st)
+    Formula: "object[" + exc$ + ", (row + 1) div 2, col] * (if row mod 2 = 1 then cos(object[" +
+        ... ph$ + ", 1, col]) else -sin(object[" + ph$ + ", 1, col]) fi) + " +
+        ... string$(rad[k]) + " * self[col-1]"
+
+    # --- decay measured on the actual state envelope |v| after the source ---
+    t60Meas[k] = undefined
+    measN2 = measN1 + round(min(0.5 * t60[k], tailLen - 0.04) * samplingRate)
+    if measN2 - measN1 >= round(0.05 * samplingRate) and measN2 <= totalSamples
+        bestA1 = 0
+        bestA2 = 0
+        for c from 1 to numChannels
+            re1 = Get value at sample number: 2 * c - 1, measN1
+            im1 = Get value at sample number: 2 * c, measN1
+            re2 = Get value at sample number: 2 * c - 1, measN2
+            im2 = Get value at sample number: 2 * c, measN2
+            a1 = sqrt(re1 ^ 2 + im1 ^ 2)
+            if a1 > bestA1
+                bestA1 = a1
+                bestA2 = sqrt(re2 ^ 2 + im2 ^ 2)
+            endif
+        endfor
+        if bestA1 > 1e-12 and bestA2 > 0 and bestA2 < bestA1
+            t60Meas[k] = 3 * ((measN2 - measN1) / samplingRate) / log10(bestA1 / bestA2)
+        endif
+    endif
+
+    # --- real output of this resonator ---
+    Create Sound from formula: "grm_y", numChannels, 0, duration, samplingRate,
+        ... string$(gTot[k]) + " * (object[" + st$ + ", 2 * row - 1, col] * cos(object[" + ph$ +
+        ... ", 1, col]) - object[" + st$ + ", 2 * row, col] * sin(object[" + ph$ + ", 1, col]))"
+    yk = selected("Sound")
+    rmsOut[k] = Get root-mean-square: 0, 0
+    if rmsOut[k] > 0
+        rmsDB[k] = 20 * log10(rmsOut[k])
+    else
+        rmsDB[k] = -300
+    endif
+
+    # --- coefficient trajectory, read back from the phase actually used ---
+    selectObject: ph
+    for j from 1 to nTraj
+        nj = 1 + round((j - 1) / (nTraj - 1) * (totalSamples - 2))
+        th1 = Get value at sample number: 1, nj
+        th2 = Get value at sample number: 1, nj + 1
+        trajT[j] = (nj - 0.5) / samplingRate
+        traj[k, j] = (th2 - th1) * samplingRate / (2 * pi)
+    endfor
+
+    # --- pan into the stereo wet bus ---
+    selectObject: wetSum
+    Formula: "self + (if row = 1 then " + string$(pL[k]) + " else " + string$(pR[k]) +
+        ... " fi) * object[" + string$(yk) + ", " + srcRow$ + ", col]"
+    removeObject: ph, st, yk
 endfor
+
+if modulation = 3 or modulation = 4
+    removeObject: ctl
+endif
+removeObject: excitation
+
+# Safety fade only where a still-audible tail is cut short
+if tailTruncated
+    fadeLen = min(0.02, duration / 4)
+    selectObject: wetSum
+    Formula (part): duration - fadeLen, duration, 1, 2,
+        ... "self * (0.5 + 0.5 * cos(pi * (x - " + string$(duration - fadeLen) + ") / " +
+        ... string$(fadeLen) + "))"
+endif
 
 selectObject: wetSum
 wetNaturalPeak = Get absolute extremum: 0, 0, "None"
+wetSrcRMS = Get root-mean-square: 0, inputDuration
+if tailSamples > round(0.5 * samplingRate)
+    wetTailRMS = Get root-mean-square: inputDuration, inputDuration + 0.5
+else
+    wetTailRMS = undefined
+endif
 appendInfoLine: "  Natural wet peak: ", fixed$(wetNaturalPeak, 6)
 
-# No internal wet normalization or ceiling. In Natural level, gainDB must
-# remain linear even for peaks above 4. Safety is applied only once, in
-# the explicit Output_level_mode below.
-wetGuard = 1
-if wetNaturalPeak > 4
-    appendInfoLine: "  NOTE: natural wet peak exceeds 4.0; no internal attenuation applied"
+# --- Measured spectrum of the wet bus (for the figure) ---
+if draw_visualization
+    selectObject: wetSum
+    wetMono = Convert to mono
+    wetSpec = To Spectrum: "yes"
+    specLo = max(10, minF / 2)
+    specHi = min(nyquist * 0.98, maxF * 2)
+    if specHi <= specLo * 1.5
+        specHi = specLo * 1.5
+    endif
+    nSpecB = 180
+    specRes = 2 / duration
+    specMax = -1000
+    for b from 1 to nSpecB
+        fa = specLo * (specHi / specLo) ^ ((b - 1) / nSpecB)
+        fb = specLo * (specHi / specLo) ^ (b / nSpecB)
+        if fb - fa < specRes
+            fcen = sqrt(fa * fb)
+            fa = max(0, fcen - specRes / 2)
+            fb = fcen + specRes / 2
+        endif
+        dens = Get band density: fa, fb
+        specF[b] = sqrt(fa * fb)
+        if dens > 0
+            specDB[b] = 10 * log10(dens)
+        else
+            specDB[b] = -300
+        endif
+        specMax = max(specMax, specDB[b])
+    endfor
+    removeObject: wetSpec
 endif
 
 # --- 8. DRY/WET ---
-# dryWet=0 is a true bypass: preserve samples, time domain and channel
-# count, and do not force a mono source into a two-channel object.
-if dryWet = 0
-    selectObject: workSound
+# Dry_wet = 0 is a true bypass: the original samples, domain and channel
+# count, no tail.
+if dry_wet = 0
+    selectObject: original
     output = Copy: "grm_bypass"
+    Shift times to: "start time", 0
     bypassed = 1
-    selectObject: wetSum
-    Remove
 else
     bypassed = 0
     selectObject: workSound
     dry = Copy: "dry_temp"
-    selectObject: dry
-    dryCh = Get number of channels
-    if dryCh = 1
+    if numChannels = 1
+        selectObject: dry
         Convert to stereo
         stereoDry = selected("Sound")
         removeObject: dry
         dry = stereoDry
     endif
-
     selectObject: dry
-    Formula: "self * " + string$(1 - dryWet) + " + object[" + string$(wetSum) +
-        ... ", row, col] * " + string$(dryWet)
+    Formula: "self * " + string$(1 - dry_wet) + " + object[" + string$(wetSum) +
+        ... ", row, col] * " + string$(dry_wet)
     output = dry
-    selectObject: wetSum
-    Remove
 endif
 
 # --- 9. OUTPUT LEVEL ---
 selectObject: output
 preLevelPeak = Get absolute extremum: 0, 0, "None"
-levelGain = 1
 levelAction$ = "natural level"
-
 if bypassed
-    levelAction$ = "skipped - Dry/Wet is 0 (true bypass)"
+    levelAction$ = "skipped (Dry/Wet 0 = bypass)"
 else
     if output_level_mode = 2
-        if preLevelPeak > finalPeak and preLevelPeak > 0
+        if preLevelPeak > finalPeak
             Scale peak: finalPeak
-            levelGain = finalPeak / preLevelPeak
-            levelAction$ = "ceiling applied"
+            levelAction$ = "ceiling applied (" + fixed$(20 * log10(finalPeak / preLevelPeak), 1) + " dB)"
         else
             levelAction$ = "ceiling not needed"
         endif
     elsif output_level_mode = 3
         if preLevelPeak > 0
             Scale peak: finalPeak
-            levelGain = finalPeak / preLevelPeak
             levelAction$ = "peak normalized"
         endif
     endif
 endif
-
 selectObject: output
 outPeak = Get absolute extremum: 0, 0, "None"
 outDuration = Get total duration
+
+# --- Per-resonator report ---
+appendInfoLine: ""
+appendInfoLine: "  #     f (Hz)   T60 set  T60 meas   r              Q      BW (Hz)  |H| peak (cents)  out RMS (dB)"
+for k from 1 to nRes
+    if t60Meas[k] = undefined
+        tm$ = "   --   "
+    else
+        tm$ = fixed$(t60Meas[k], 3)
+    endif
+    appendInfoLine: "  ", k, "   ", fixed$(freq[k], 2), "   ", fixed$(t60[k], 3), "   ", tm$, "   ",
+        ... fixed$(rad[k], 9), "   ", fixed$(qFac[k], 0), "   ", fixed$(bwHz[k], 3), "   ",
+        ... fixed$(round(peakCents[k] * 1000) / 1000, 3), "   ", fixed$(rmsDB[k], 1)
+endfor
+appendInfoLine: "  Ringing frequency = pole angle, exact by construction. 'T60 meas' is read from"
+appendInfoLine: "  the resonator state envelope after the source ends (needs a tail)."
 
 # ============================================================
 # VISUALIZATION (drawn at t = 0, before the domain is restored)
@@ -704,203 +973,250 @@ outDuration = Get total duration
 if draw_visualization
     appendInfoLine: "Drawing visualization..."
     Erase all
-    pageHeight = 8.00
+    pageHeight = 8.20
     Select outer viewport: 0, 8, 0, pageHeight
 
-    selectObject: workSound
-    vizInPeak = Get absolute extremum: 0, 0, "None"
-    vizAmp = max(vizInPeak, outPeak)
-    if vizAmp < 0.001
-        vizAmp = 0.001
-    endif
-    vizAmp = vizAmp * 1.1
-
-    if tune_Delay_To_Pitch
-        tunedStr$ = "Yes"
-    else
-        tunedStr$ = "No"
-    endif
+    # Output panel uses the output's own scale: an impulse input would
+    # otherwise set the range and hide a quiet resonant tail.
+    vizAmp = max(outPeak, 0.000001) * 1.1
+    suiteVizName$ = replace$(originalName$, "_", "\_ ", 0)
 
     # --- TITLE ---
-    suiteVizName$ = replace$(originalName$, "_", "\_ ", 0)
-    Select outer viewport: 0, 8, 0, 0.52
+    Font size: 12
     Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
-    Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##GRM-Style Resonator v1.5.1##"
+    Text: 0.5, "centre", 0.68, "half", "##GRM-Style Resonator v2.0##"
     Font size: 7
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
+    Axes: 0, 1, 0, 1
     Colour: "{0.35, 0.35, 0.50}"
-    Text: 0.5, "centre", 0.22, "half", suiteVizName$ + " | " + presetName$
+    Text: 0.5, "centre", 0.22, "half", suiteVizName$ + " | " + presetName$ + " | " +
+        ... string$(nRes) + " resonators | " + modStr$
 
-    Select outer viewport: 0, 4, 0.7, 2.0
-    Select inner viewport: 0.6, 3.75, 0.8, 1.9
-    selectObject: workSound
-    Colour: "{0.60, 0.60, 0.60}"
-    Draw: 0, duration, -vizAmp, vizAmp, "no", "Curve"
-    Colour: "Black"
-    Draw inner box
+    # --- 1. OUTPUT WITH TAIL ---
     Font size: 7
-    Text left: "yes", "Input"
-    Text top: "no", "Input (shared scale with output)"
-
-    # --- 2. BAND ARCHITECTURE ---
-    Select outer viewport: 4, 8, 0.7, 2.0
-    Select inner viewport: 4.55, 7.7, 0.8, 1.9
-
-    plotMinFreq = bandLow[1] - bandSmooth[1]
-    plotMaxFreq = bandHigh[1] + bandSmooth[1]
-    for i from 1 to actualNumBands
-        if bandLow[i] - bandSmooth[i] < plotMinFreq
-            plotMinFreq = bandLow[i] - bandSmooth[i]
-        endif
-        if bandHigh[i] + bandSmooth[i] > plotMaxFreq
-            plotMaxFreq = bandHigh[i] + bandSmooth[i]
-        endif
-    endfor
-    # A single band gave identical top and bottom, and Praat refused
-    # the axes with "Top and bottom should not be equal".
-    freqSpan = plotMaxFreq - plotMinFreq
-    if freqSpan < 1
-        freqSpan = max(1, plotMaxFreq * 0.1)
+    Select inner viewport: 0.60, 7.70, 0.75, 1.85
+    Axes: 0, duration, -vizAmp, vizAmp
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, duration, -vizAmp, vizAmp
+    if tailLen > 0
+        Paint rectangle: "{0.93, 0.95, 0.98}", inputDuration, duration, -vizAmp, vizAmp
     endif
-    plotMinFreq = max(0, plotMinFreq - freqSpan * 0.1)
-    plotMaxFreq = plotMaxFreq + freqSpan * 0.1
-    if plotMaxFreq <= plotMinFreq
-        plotMaxFreq = plotMinFreq + 1
-    endif
-
-    Axes: 0, actualNumBands + 1, plotMinFreq, plotMaxFreq
-    Paint rectangle: "{0.97, 0.97, 0.97}", 0, actualNumBands + 1, plotMinFreq, plotMaxFreq
-
-    for i from 1 to actualNumBands
-        if gain_Profile = 1
-            bandColor$ = "{0.30, 0.50, 0.80}"
-        else
-            shade = bandGain[i] / max(baseGainLin, 0.000001)
-            bandColor$ = "{" + fixed$(0.15 + shade * 0.25, 2) + ", " +
-                ... fixed$(0.30 + shade * 0.30, 2) + ", " + fixed$(0.55 + shade * 0.30, 2) + "}"
-        endif
-        # Transition regions, which v1.2 never drew
-        Paint rectangle: "{0.88, 0.90, 0.94}", i - 0.35, i + 0.35,
-            ... bandLow[i] - bandSmooth[i], bandHigh[i] + bandSmooth[i]
-        Paint rectangle: bandColor$, i - 0.3, i + 0.3, bandLow[i], bandHigh[i]
-
-        # A visible centre marker. v1.2 drew a line from a point to
-        # itself, which renders as nothing.
-        Colour: "{0.80, 0.30, 0.30}"
-        Line width: 2
-        Draw line: i - 0.3, freqs[i], i + 0.3, freqs[i]
-        Line width: 1
-    endfor
-
-    Colour: "Black"
-    Draw inner box
-    Font size: 7
-    Text left: "yes", "Frequency (Hz)"
-    Text top: "no", "Bands: pass (dark) + Hann transition (pale)"
-    Text bottom: "yes", "Band number"
-
-    # --- 3. PANNING ---
-    Select outer viewport: 0, 8, 2.1, 3.5
-    Select inner viewport: 0.6, 7.7, 2.2, 3.4
-    Axes: 0, actualNumBands + 1, 0, 1
-    Paint rectangle: "{0.97, 0.97, 0.97}", 0, actualNumBands + 1, 0, 1
-    for i from 1 to actualNumBands
-        Paint rectangle: "{0.90, 0.70, 0.30}", i - 0.35, i, 0.5, 0.5 + pL[i] * 0.45
-        Paint rectangle: "{0.30, 0.60, 0.80}", i, i + 0.35, 0.5, 0.5 - pR[i] * 0.45
-    endfor
-    Colour: "{0.50, 0.50, 0.50}"
-    Line width: 1.5
-    Draw line: 0, 0.5, actualNumBands + 1, 0.5
-    Line width: 1
-    Colour: "Black"
-    Draw inner box
-    Font size: 7
-    Text left: "yes", "Pan"
-    Text top: "no", "Panning: " + panningStr$ + "  (up = left, down = right)"
-    Text bottom: "yes", "Band number"
-
-    # --- 4. OUTPUT ---
-    Select outer viewport: 0, 8, 3.6, 4.9
-    Select inner viewport: 0.6, 7.7, 3.7, 4.8
     selectObject: output
     Colour: "{0.20, 0.60, 0.50}"
     Draw: 0, duration, -vizAmp, vizAmp, "no", "Curve"
+    Select inner viewport: 0.60, 7.70, 0.75, 1.85
+    Axes: 0, duration, -vizAmp, vizAmp
+    Colour: "{0.80, 0.30, 0.30}"
+    Dotted line
+    Draw line: inputDuration, -vizAmp, inputDuration, vizAmp
+    Solid line
     Colour: "Black"
     Draw inner box
-    Font size: 7
-    Text left: "yes", "Output"
-    Text top: "no", "Output (same scale as input)"
-    Text bottom: "yes", "Time (s)"
+    @niceStep: duration / 6
+    Marks bottom every: 1, niceStep.step, "yes", "yes", "no"
+    Text top: "no", "Output L/R, peak " + fixed$(outPeak, 4) + "; pale area = resonant tail after the source ends (dotted line)"
+    Text left: "yes", "Amplitude"
 
-    # --- 5. GAIN PROFILE ---
-    Select outer viewport: 0, 4, 5.0, 6.2
-    Select inner viewport: 0.6, 3.75, 5.1, 6.1
-    gainTop = baseGainLin * 1.2
-    if gainTop <= 0
-        gainTop = 1
-    endif
-    Axes: 0, actualNumBands + 1, 0, gainTop
-    Paint rectangle: "{0.97, 0.97, 0.97}", 0, actualNumBands + 1, 0, gainTop
-    Colour: "{0.70, 0.30, 0.70}"
-    Line width: 3
-    for i from 1 to actualNumBands - 1
-        Draw line: i, bandGain[i], i + 1, bandGain[i + 1]
+    # --- 2. SPECTROGRAM + COEFFICIENT TRAJECTORIES ---
+    trajMax = maxF
+    for k from 1 to nRes
+        for j from 1 to nTraj
+            trajMax = max(trajMax, traj[k, j])
+        endfor
+    endfor
+    sgTop = min(nyquist, trajMax * 1.25)
+    minSpacing = sgTop
+    for k from 1 to nRes - 1
+        for m from k + 1 to nRes
+            minSpacing = min(minSpacing, abs(freq[k] - freq[m]))
+        endfor
+    endfor
+    sgWin = max(0.02, min(0.12, 2.5 / max(minSpacing, 1)))
+    selectObject: output
+    outMono = Convert to mono
+    sgTimeStep = max(0.002, duration / 800)
+    sg = To Spectrogram: sgWin, sgTop, sgTimeStep, sgTop / 400, "Gaussian"
+    Select inner viewport: 0.60, 7.70, 2.45, 4.05
+    Paint: 0, duration, 0, sgTop, 100, "yes", 60, 6, 0, "no"
+    Select inner viewport: 0.60, 7.70, 2.45, 4.05
+    Axes: 0, duration, 0, sgTop
+    Colour: "{0.85, 0.25, 0.20}"
+    Line width: 1
+    for k from 1 to nRes
+        for j from 1 to nTraj - 1
+            Draw line: trajT[j], traj[k, j], trajT[j + 1], traj[k, j + 1]
+        endfor
+    endfor
+    Colour: "{0.30, 0.40, 0.80}"
+    Dotted line
+    Draw line: inputDuration, 0, inputDuration, sgTop
+    Solid line
+    Colour: "Black"
+    Select inner viewport: 0.60, 7.70, 2.45, 4.05
+    Axes: 0, duration, 0, sgTop
+    Draw inner box
+    @niceStep: duration / 6
+    Marks bottom every: 1, niceStep.step, "yes", "yes", "no"
+    @niceStep: sgTop / 4
+    Marks left every: 1, niceStep.step, "yes", "yes", "no"
+    Text top: "no", "Measured output spectrogram (grey) with the resonator frequencies actually used (red)"
+    Text left: "yes", "Frequency (Hz)"
+    Text bottom: "yes", "Time (s)"
+    removeObject: sg, outMono
+
+    # --- 3a. MEASURED SPECTRUM vs INTENDED FREQUENCIES ---
+    specFloor = specMax - 70
+    Select inner viewport: 0.60, 3.75, 4.65, 5.85
+    Axes: log10(specLo), log10(specHi), specFloor, specMax + 5
+    Paint rectangle: "{0.97, 0.97, 0.97}", log10(specLo), log10(specHi), specFloor, specMax + 5
+    Colour: "{0.85, 0.55, 0.55}"
+    Dotted line
+    for k from 1 to nRes
+        Draw line: log10(freq[k]), specFloor, log10(freq[k]), specMax + 5
+    endfor
+    Solid line
+    Colour: "{0.20, 0.40, 0.80}"
+    Line width: 1.5
+    for b from 1 to nSpecB - 1
+        y1 = max(specFloor, specDB[b])
+        y2 = max(specFloor, specDB[b + 1])
+        Draw line: log10(specF[b]), y1, log10(specF[b + 1]), y2
     endfor
     Line width: 1
-    for i from 1 to actualNumBands
-        Paint circle: "{0.50, 0.20, 0.50}", i, bandGain[i], 0.12
+    Colour: "Black"
+    Select inner viewport: 0.60, 3.75, 4.65, 5.85
+    Axes: log10(specLo), log10(specHi), specFloor, specMax + 5
+    Draw inner box
+    tickList$ = "20 50 100 200 500 1000 2000 5000 10000 20000"
+    str$ = tickList$ + " "
+    while length(str$) > 0
+        sp = index(str$, " ")
+        tv = number(left$(str$, sp - 1))
+        str$ = mid$(str$, sp + 1, length(str$) - sp)
+        if tv >= specLo and tv <= specHi
+            if tv >= 1000
+                tl$ = fixed$(tv / 1000, 0) + "k"
+            else
+                tl$ = fixed$(tv, 0)
+            endif
+            One mark bottom: log10(tv), "no", "yes", "no", tl$
+        endif
+    endwhile
+    Marks left every: 1, 20, "yes", "yes", "no"
+    Text top: "no", "Wet spectrum, measured (blue) vs intended frequencies (red)"
+    Text left: "yes", "dB"
+    Text bottom: "yes", "Frequency (Hz, log)"
+
+    # --- 3b. DECAY: CONFIGURED vs MEASURED ---
+    decTop = maxT60 * 1.2
+    Select inner viewport: 4.55, 7.70, 4.65, 5.85
+    Axes: 0, nRes + 1, 0, decTop
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, nRes + 1, 0, decTop
+    bw = min(0.35, 0.4)
+    for k from 1 to nRes
+        Paint rectangle: "{0.70, 0.78, 0.90}", k - bw, k + bw, 0, t60[k]
+    endfor
+    Select inner viewport: 4.55, 7.70, 4.65, 5.85
+    Axes: 0, nRes + 1, 0, decTop
+    nMeasured = 0
+    for k from 1 to nRes
+        if t60Meas[k] <> undefined
+            nMeasured = nMeasured + 1
+            Paint circle (mm): "{0.80, 0.30, 0.30}", k, min(t60Meas[k], decTop), 0.8
+        endif
     endfor
     Colour: "Black"
+    Select inner viewport: 4.55, 7.70, 4.65, 5.85
+    Axes: 0, nRes + 1, 0, decTop
     Draw inner box
-    Font size: 7
-    Text left: "yes", "Gain (linear)"
-    Text top: "no", "Tilt by frequency: " + gainProfileStr$
-    Text bottom: "yes", "Band number"
+    @niceStep: decTop / 3
+    Marks left every: 1, niceStep.step, "yes", "yes", "no"
+    if nMeasured > 0
+        Text top: "no", "T60: set (bars) vs measured on the state (dots)"
+    else
+        Text top: "no", "T60 set (bars); not measurable here: no tail"
+    endif
+    Text left: "yes", "T60 (s)"
+    Text bottom: "yes", "Resonator"
 
-    # --- 6. SUMMARY STRIP ---
-    Select outer viewport: 4, 8, 5.0, 6.2
-    Select inner viewport: 4.55, 7.7, 5.1, 6.1
+    # --- 4a. LEVEL: CONFIGURED GAIN vs MEASURED OUTPUT ---
+    # Both relative to their own maximum, so the profile shape and the
+    # measured balance can be compared directly.
+    gMaxDB = -1000
+    mMaxDB = -1000
+    for k from 1 to nRes
+        cfgDB[k] = 20 * log10(max(gTot[k], 1e-15))
+        gMaxDB = max(gMaxDB, cfgDB[k])
+        mMaxDB = max(mMaxDB, rmsDB[k])
+    endfor
+    lvlFloor = -48
+    Select inner viewport: 0.60, 3.75, 6.45, 7.65
+    Axes: 0, nRes + 1, lvlFloor, 3
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, nRes + 1, lvlFloor, 3
+    for k from 1 to nRes
+        mv = max(lvlFloor, rmsDB[k] - mMaxDB)
+        Paint rectangle: "{0.55, 0.75, 0.65}", k - 0.35, k + 0.35, lvlFloor, mv
+    endfor
+    Select inner viewport: 0.60, 3.75, 6.45, 7.65
+    Axes: 0, nRes + 1, lvlFloor, 3
+    Colour: "{0.50, 0.20, 0.50}"
+    Line width: 2
+    for k from 1 to nRes - 1
+        Draw line: k, max(lvlFloor, cfgDB[k] - gMaxDB), k + 1, max(lvlFloor, cfgDB[k + 1] - gMaxDB)
+    endfor
+    Line width: 1
+    for k from 1 to nRes
+        Paint circle (mm): "{0.50, 0.20, 0.50}", k, max(lvlFloor, cfgDB[k] - gMaxDB), 0.6
+    endfor
+    Colour: "Black"
+    Select inner viewport: 0.60, 3.75, 6.45, 7.65
+    Axes: 0, nRes + 1, lvlFloor, 3
+    Draw inner box
+    Marks left every: 1, 12, "yes", "yes", "no"
+    Text top: "no", "Level re max: configured gain (line) vs measured output RMS (bars)"
+    Text left: "yes", "dB"
+    Text bottom: "yes", "Resonator"
+
+    # --- 4b. SUMMARY STRIP ---
+    Font size: 7
+    Select inner viewport: 4.55, 7.70, 6.45, 7.65
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
-    Font size: 7
     Colour: "Black"
-    Text: 0.05, "left", 0.90, "half", "##Summary##"
+    Text: 0.04, "left", 0.91, "half", "##Summary##"
     Font size: 6
+    Select inner viewport: 4.55, 7.70, 6.45, 7.65
+    Axes: 0, 1, 0, 1
     Colour: "{0.28, 0.28, 0.28}"
-    Text: 0.05, "left", 0.76, "half", "Bands: " + string$(actualNumBands) + "  |  " + tuningStr$
-    Text: 0.05, "left", 0.64, "half", "Bandwidth: " + fixed$(bandwidthHz, 0) + " Hz"
-    Text: 0.05, "left", 0.52, "half", resStr$ + ", decay " + fixed$(ringDecay, 2)
-    Text: 0.05, "left", 0.40, "half", "Tuned delay: " + tunedStr$
-    Text: 0.05, "left", 0.28, "half", "Gain: " + fixed$(gainDB, 1) + " dB, " + gainProfileStr$
-    Text: 0.05, "left", 0.16, "half", "Dry/Wet: " + fixed$(dryWet * 100, 0) + "% wet"
-    Text: 0.55, "left", 0.76, "half", "Wet peak: " + fixed$(wetNaturalPeak, 4)
-    Text: 0.55, "left", 0.64, "half", "Out peak: " + fixed$(outPeak, 4)
-    Text: 0.55, "left", 0.52, "half", "Level: " + levelAction$
-    Text: 0.55, "left", 0.40, "half", "Duration: " + fixed$(outDuration, 2) + " s"
-    Text: 0.55, "left", 0.28, "half", "Source: " + srcStr$
-    Text: 0.55, "left", 0.16, "half", "Seed: " + string$(random_seed)
+    Text: 0.04, "left", 0.77, "half", "Resonators: " + string$(nRes) + " | " + layoutStr$
+    Text: 0.04, "left", 0.65, "half", "Freq: " + fixed$(minF, 1) + "-" + fixed$(maxF, 1) + " Hz"
+    Text: 0.04, "left", 0.53, "half", "T60: " + fixed$(t60[1], 2) + " s (res 1), max " + fixed$(maxT60, 2) + " s"
+    Text: 0.04, "left", 0.41, "half", "Scaling: " + scaleStr$ + ", focus " + fixed$(transient_focus, 2)
+    Text: 0.04, "left", 0.29, "half", "Gain: " + fixed$(resonance_gain_dB, 1) + " dB, " + gainProfileStr$
+    Text: 0.04, "left", 0.17, "half", "Mod: " + modStr$ + " | Pan: " + panningStr$
+    Text: 0.54, "left", 0.77, "half", "Dry/Wet: " + fixed$(dry_wet * 100, 0) + "\%  wet"
+    Text: 0.54, "left", 0.65, "half", "Wet peak: " + fixed$(wetNaturalPeak, 4)
+    Text: 0.54, "left", 0.53, "half", "Out peak: " + fixed$(outPeak, 4)
+    Text: 0.54, "left", 0.41, "half", "Level: " + levelAction$
+    Text: 0.54, "left", 0.29, "half", "Tail: " + tailStr$ + " " + fixed$(tailLen, 2) + " s"
+    Text: 0.54, "left", 0.17, "half", "Duration: " + fixed$(outDuration, 2) + " s | seed " + string$(random_seed)
+    Select inner viewport: 4.55, 7.70, 6.45, 7.65
+    Axes: 0, 1, 0, 1
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
+
+    removeObject: wetMono
+    # Restore complete page for Picture export / clipboard.
     Font size: 10
-# Restore complete page for Picture export / clipboard.
-Select outer viewport: 0, 8, 0, pageHeight
-Font size: 10
-Colour: "Black"
-Line width: 1
-Solid line
+    Select outer viewport: 0, 8, 0, pageHeight
+    Colour: "Black"
+    Line width: 1
+    Solid line
 endif
 
 # --- CLEANUP AND FINISH ---
-if keep_individual_bands = 0
-    selectObject: bandIDs[1]
-    for i from 2 to actualNumBands
-        plusObject: bandIDs[i]
-    endfor
-    Remove
-endif
-removeObject: bandSource, workSound
+removeObject: wetSum, workSound
 
 selectObject: output
 if originalXmin <> 0
@@ -913,8 +1229,11 @@ appendInfoLine: ""
 appendInfoLine: "=== Complete ==="
 appendInfoLine: "Output: ", finalName$
 appendInfoLine: "  Duration: ", fixed$(inputDuration, 3), " s -> ", fixed$(outDuration, 3), " s"
-appendInfoLine: "  Peak: ", fixed$(inputPeak, 4), " -> ", fixed$(outPeak, 4),
-    ... " (", levelAction$, ")"
+appendInfoLine: "  Peak: ", fixed$(inputPeak, 4), " -> ", fixed$(outPeak, 4), " (", levelAction$, ")"
+if wetTailRMS <> undefined and wetSrcRMS > 0
+    appendInfoLine: "  Wet RMS first 0.5 s after the source re source part: ",
+        ... fixed$(20 * log10(max(wetTailRMS, 1e-15) / wetSrcRMS), 1), " dB"
+endif
 if output_level_mode <> 3 and outPeak > 1
     appendInfoLine: "  WARNING: peak exceeds 1.0 and will clip when saved to integer PCM."
 endif
@@ -933,3 +1252,26 @@ if play_result
 endif
 
 selectObject: output
+
+procedure niceStep: .raw
+    .mag = 10 ^ floor(log10(.raw))
+    .n = .raw / .mag
+    if .n < 1.5
+        .step = .mag
+    elsif .n < 3.5
+        .step = 2 * .mag
+    elsif .n < 7.5
+        .step = 5 * .mag
+    else
+        .step = 10 * .mag
+    endif
+endproc
+
+# |H(e^jw)|^2 of the real resonator output, H = (1 - rc z^-1)/(1 - 2 rc z^-1 + r^2 z^-2)
+procedure resMag2: .r, .rc, .om
+    .nr = 1 - .rc * cos(.om)
+    .ni = .rc * sin(.om)
+    .dr = 1 - 2 * .rc * cos(.om) + .r * .r * cos(2 * .om)
+    .di = 2 * .rc * sin(.om) - .r * .r * sin(2 * .om)
+    .m = (.nr * .nr + .ni * .ni) / (.dr * .dr + .di * .di)
+endproc
