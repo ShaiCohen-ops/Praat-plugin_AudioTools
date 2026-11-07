@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.2 (2026)
+# Version: 2.2 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -14,6 +14,11 @@
 #   silence. The recordings are never cut, stretched, copied, converted
 #   or modified: each event plays one whole source file, with only short
 #   click-free fades, a gain and a spatial position.
+#
+#   v2.0: the main choice is a COMPOSITION PRESET - a whole strategy,
+#   not one effect - plus the duration and a Compositional intensity.
+#   Edit composition controls shows every value the preset set, for
+#   editing; Custom sets them all by hand.
 #
 #   Two stages, kept apart:
 #     1. PLAN   - an event timeline is computed from the catalog and the
@@ -49,6 +54,18 @@
 #   Selection  Source DURATION is chosen by the temporal preset (short to
 #              long, arch, ...) independently of ONSET SPACING, which
 #              comes from the density, overlap and conductor.
+#   Placement  (v2.1) Spatial BEHAVIOUR (the space preset: how space
+#              changes over the form) is separate from PLACEMENT (where
+#              each source group sits). Every layer - or, in a combined
+#              pool, every folder - has a region: a position (-1 left ...
+#              +1 right) and a spread. Spatial movement m (0-1) says how
+#              far the behaviour may take sounds out of their regions:
+#              p = (1 - m) (H + S q) + m q, with q the behaviour on the
+#              whole field. m = 0: fixed regions, the behaviour acts
+#              inside each; m = 1: whole field (v2.0, the default).
+#              Layer-based space is always regional. Edit spatial
+#              layout sets m and each region (one per stream when a
+#              folder is split into streams).
 #   Space      Equal-power panning on a position p in [-1, 1]. Stereo
 #              out: lay/R. Multichannel out (4 or 8): p runs across the
 #              channels in order (ch1 = -1 ... chN = +1), equal-power
@@ -88,6 +105,81 @@
 #   overwritten without confirmation.
 #   Saved files:  <base>_plan.tsv  <base>_settings.tsv  <base>_<mix>.wav
 #                 <base>_stem<k>_<library>.wav   TimeLine_catalog.tsv
+#
+# Composition presets (v2.0):
+#   Emergence            short, quiet, sparse, central -> longer, louder,
+#                        wider (one pool, crescendo; silences where the
+#                        conductor is low, so they gather early)
+#   Accumulation         layers enter one after another (first 45 % of
+#                        the form), entrances and overlaps thicken to the
+#                        end; no absolute silence
+#   Breathing Form       duration waves in phase with the conductor's 4
+#                        waves; silences in the troughs; width follows
+#                        the conductor (Breathing space)
+#   Climax & Rupture     arch durations, late climax (84 %); the grand
+#                        pause starts AT the peak and takes 3/4 of the
+#                        silence budget; quiet epilogue
+#   Spatial Counterpoint independent layers, each with its own temporal
+#                        shape, pace and region of space
+#   Fragmentation        long -> short, decrescendo; many short silences
+#                        that gather and lengthen toward the end
+#   Controlled Chaos     loose duration order, extreme overlap, a
+#                        conductor stepped on 16 segments, random
+#                        silence positions
+#   Custom               the v1.1 defaults; every control by hand
+#   One folder: Accumulation and Spatial Counterpoint split it into 3
+#   independent streams that share its sources (and their repetition
+#   limit); with 2-5 folders each folder is a layer.
+#   Compositional intensity (presets only; 50 % = as designed): scales
+#   density (x0.66..x1.52), overlap (+/-0.2), the conductor's influence
+#   depths (x0.5..x1.5), the dynamic range (x0.7..x1.3) and the shaping
+#   strictness together. It never changes the duration or the planned
+#   silences.
+#
+# Changelog v2.2 (2026) - dynamics in the composition controls:
+#   - UI: Dynamic range (dB) moved from Edit details to Edit composition
+#     controls, beside the conductor curve and the climax position - the
+#     three dynamic decisions in one place. It can be changed there
+#     without touching the other values (Compositional intensity is
+#     applied before the dialog, which shows the resulting value).
+#   - Report: the deepest conductor attenuation, influence x range, and
+#     0 dB at the climax.
+#   - Plans identical to v2.1 (verified).
+#
+# Changelog v2.1 (2026) - spatial placement:
+#   - NEW: Edit spatial layout (main form): Spatial movement + a
+#     position and a spread for every layer / folder / stream. The
+#     behaviour now acts inside the regions the user sets (m < 1).
+#   - FIX: positions edited in Edit layers had no effect unless the
+#     space preset was Layer-based. They moved to Edit spatial layout,
+#     where every value acts (m < 1 or Layer-based); with m = 1 the
+#     dialog says the positions are inactive, and the report warns if
+#     they were changed.
+#   - FIX: with one folder split into streams, the automatic stream
+#     positions overrode the user's. They are now only defaults, shown
+#     per stream and editable.
+#   - NEW: Stream sources: shared pool, or split the files so each file
+#     belongs to one stream (a stream keeps its own sounds - and so its
+#     position).
+#   - Figure: region lines in the space panel; a combined pool is
+#     coloured by folder there. Report lists the regions.
+#   - Default (no dialog): identical plans to v2.0 (verified, 8 presets).
+#   - Scripted calls: one more boolean in the main form.
+#
+# Changelog v2.0 (2026) - compositional strategies:
+#   - NEW: Composition preset (7 strategies + Custom) and Compositional
+#     intensity in the main form; the individual controls moved to the
+#     Edit composition controls dialog, pre-filled by the preset.
+#   - NEW engine options used by the presets: Breathing space (width
+#     follows the conductor), duration waves in phase with the conductor
+#     waves, a stepped conductor, the grand pause at the peak, staggered
+#     layer entries, several streams from one folder, a per-layer region
+#     for Layer-based space in Independent layers.
+#   - UI: "Folders to browse (1-5)" (default 1) and "Folder paths
+#     (optional; separated by ;)" - paths, when given, decide the folders.
+#   - Custom reproduces v1.2 exactly (verified sample-identical). Plans
+#     saved by v1.x render unchanged.
+#   - BREAKING for scripted calls: the main form's fields changed.
 #
 # Changelog v1.2 (2026) - clean-up and file safety:
 #   - Output-file registry: every file is registered before it is
@@ -136,47 +228,23 @@
 # ============================================================
 
 form TimeLine Composer
-    comment === SOURCES (folder dialogs open after OK, or type folders separated by ;) ===
-    integer Number_of_folders 2
-    optionmenu Organization: 2
-        option: "Combined pool (all folders = one collection)"
-        option: "Independent layers (one layer per folder)"
-    sentence Source_folders
+    comment === SOURCES (folder dialogs open after OK) ===
+    integer Folders_to_browse_(1-5) 1
+    sentence Folder_paths_(optional;_separated_by_;)
     comment === COMPOSITION ===
+    optionmenu Composition_preset: 1
+        option: "Emergence"
+        option: "Accumulation"
+        option: "Breathing Form"
+        option: "Climax & Rupture"
+        option: "Spatial Counterpoint"
+        option: "Fragmentation"
+        option: "Controlled Chaos"
+        option: "Custom (set every control yourself)"
     positive Target_duration_(s) 180
-    optionmenu Temporal_preset: 3
-        option: "Short to long"
-        option: "Long to short"
-        option: "Arch (short-long-short)"
-        option: "Inverted arch (long-short-long)"
-        option: "Waves"
-        option: "Controlled random"
-    positive Event_density_(per_minute) 10
-    real Overlap_(0-1) 0.5
+    real Compositional_intensity_(%) 50
     integer Random_seed 1
-    comment === SILENCE, CONDUCTOR, SPACE, LOUDNESS ===
-    optionmenu Silence_mode: 2
-        option: "Continuous (no absolute silence)"
-        option: "Breathing (many short silences)"
-        option: "Structural (few long silences)"
-        option: "Dramatic (grand pause at the climax)"
-    real Silence_amount_(%) 12
-    optionmenu Conductor_preset: 4
-        option: "Crescendo"
-        option: "Decrescendo"
-        option: "Arch"
-        option: "Late climax"
-        option: "Early climax"
-        option: "Waves"
-    real Climax_position_(%) 75
-    optionmenu Spatial_preset: 4
-        option: "Random space"
-        option: "Left to right"
-        option: "Right to left"
-        option: "Expanding space"
-        option: "Contracting space"
-        option: "Alternating sides"
-        option: "Layer-based"
+    boolean Edit_composition_controls 0
     optionmenu Library_balance: 2
         option: "Off (original source levels)"
         option: "Gentle (half the difference, max 6 dB)"
@@ -195,6 +263,7 @@ form TimeLine Composer
     boolean Layer_stems 0
     boolean Edit_details 0
     boolean Edit_layers 0
+    boolean Edit_spatial_layout 0
     boolean Draw_visualization 1
     boolean Play_result 1
 endform
@@ -244,6 +313,275 @@ save_catalog = 0
 output_folder$ = ""
 plan_file$ = ""
 
+# ============================================================
+# COMPOSITION PRESETS (v2.0)
+# A preset is a whole compositional strategy: it sets organisation,
+# temporal shape, density, overlap, silence, conductor, space and the
+# influence depths together. It never changes the target duration.
+# The values below are the preset at 50 % intensity. Every value can
+# still be edited (Edit composition controls); Custom starts from the
+# v1.1 defaults and does not use the intensity.
+# ============================================================
+cpName$[1] = "Emergence"
+cpName$[2] = "Accumulation"
+cpName$[3] = "Breathing Form"
+cpName$[4] = "Climax & Rupture"
+cpName$[5] = "Spatial Counterpoint"
+cpName$[6] = "Fragmentation"
+cpName$[7] = "Controlled Chaos"
+cpName$[8] = "Custom"
+cpDesc$[1] = "Short, quiet, sparse sounds in the centre; durations, density and width grow."
+cpDesc$[2] = "Entrances crowd together, overlaps thicken, layers pile up to a loud peak."
+cpDesc$[3] = "Waves of activity and silence: density, durations and space expand and contract."
+cpDesc$[4] = "Long preparation, intense build-up to a late climax, sudden silence, short epilogue."
+cpDesc$[5] = "Independent layers in separate regions of space, each with its own shape."
+cpDesc$[6] = "From long sounds and continuous textures to short, scattered fragments."
+cpDesc$[7] = "Unpredictable durations, extreme overlaps, abrupt density changes, irregular silences."
+cpDesc$[8] = "Every control set by hand (starts from the v1.1 defaults)."
+composition_preset = max(1, min(8, composition_preset))
+compositional_intensity = max(0, min(100, compositional_intensity))
+
+# v2.1 spatial placement: 1 = the behaviour uses the whole field (v2.0)
+spatial_movement = 1
+
+# strategy flags (engine features a preset can switch on)
+waveCycles = 3
+ruptureMode = 0
+condJag = 0
+streamsWanted = 0
+layerStagger = 0
+counterpoint = 0
+
+# v1.1 defaults (Custom)
+organization = 2
+temporal_preset = 3
+event_density = 10
+overlap = 0.5
+silence_mode = 2
+silence_amount = 12
+conductor_preset = 4
+climax_position = 75
+spatial_preset = 4
+
+cp = composition_preset
+if cp = 1
+    # Emergence: one pool ranked short -> long, crescendo, from the centre
+    organization = 1
+    temporal_preset = 1
+    event_density = 8
+    overlap = 0.4
+    silence_mode = 2
+    silence_amount = 14
+    silence_placement = 7
+    min_silence = 0.8
+    max_silence = 3.5
+    conductor_preset = 1
+    climax_position = 90
+    spatial_preset = 4
+    duration_order_strictness = 0.8
+    randomness = 0.3
+    dynamics_influence = 0.8
+    density_influence = 0.8
+    spatial_influence = 0.7
+    dynamic_range = 24
+elsif cp = 2
+    # Accumulation: layers enter one after another and thicken
+    organization = 2
+    streamsWanted = 3
+    layerStagger = 0.45
+    temporal_preset = 6
+    event_density = 8
+    overlap = 0.6
+    silence_mode = 1
+    silence_amount = 0
+    conductor_preset = 1
+    climax_position = 90
+    spatial_preset = 4
+    duration_order_strictness = 0.5
+    randomness = 0.5
+    dynamics_influence = 0.8
+    density_influence = 1
+    spatial_influence = 0.6
+    dynamic_range = 24
+elsif cp = 3
+    # Breathing Form: duration waves in phase with the conductor waves,
+    # silences in the troughs, width follows the conductor
+    organization = 2
+    temporal_preset = 5
+    waveCycles = 4
+    event_density = 10
+    overlap = 0.5
+    silence_mode = 2
+    silence_amount = 15
+    silence_placement = 7
+    min_silence = 1.5
+    max_silence = 5
+    conductor_preset = 6
+    climax_position = 60
+    spatial_preset = 8
+    duration_order_strictness = 0.7
+    randomness = 0.35
+    dynamics_influence = 0.7
+    density_influence = 0.8
+    spatial_influence = 0.9
+    dynamic_range = 20
+elsif cp = 4
+    # Climax & Rupture: the grand pause starts AT the peak
+    organization = 2
+    temporal_preset = 3
+    event_density = 10
+    overlap = 0.55
+    silence_mode = 4
+    silence_amount = 6
+    silence_placement = 6
+    ruptureMode = 1
+    min_silence = 1
+    max_silence = 8
+    conductor_preset = 4
+    climax_position = 84
+    spatial_preset = 4
+    duration_order_strictness = 0.75
+    randomness = 0.3
+    dynamics_influence = 0.85
+    density_influence = 0.9
+    spatial_influence = 0.7
+    dynamic_range = 28
+elsif cp = 5
+    # Spatial Counterpoint: each layer has its own shape and region
+    organization = 2
+    streamsWanted = 3
+    counterpoint = 1
+    temporal_preset = 3
+    event_density = 7
+    overlap = 0.45
+    silence_mode = 3
+    silence_amount = 10
+    silence_placement = 3
+    conductor_preset = 3
+    climax_position = 55
+    spatial_preset = 7
+    duration_order_strictness = 0.75
+    randomness = 0.3
+    dynamics_influence = 0.6
+    density_influence = 0.6
+    spatial_influence = 0.4
+    dynamic_range = 20
+elsif cp = 6
+    # Fragmentation: long -> short, decrescendo, silences cluster and
+    # lengthen where the conductor is low (late)
+    organization = 1
+    temporal_preset = 2
+    event_density = 10
+    overlap = 0.6
+    silence_mode = 2
+    silence_amount = 18
+    silence_placement = 7
+    min_silence = 0.6
+    max_silence = 3
+    conductor_preset = 2
+    climax_position = 10
+    spatial_preset = 1
+    duration_order_strictness = 0.8
+    randomness = 0.4
+    dynamics_influence = 0.7
+    density_influence = 0.9
+    spatial_influence = 0
+    dynamic_range = 22
+elsif cp = 7
+    # Controlled Chaos: loose duration order, stepped conductor
+    organization = 2
+    temporal_preset = 6
+    event_density = 14
+    overlap = 0.85
+    silence_mode = 4
+    silence_amount = 10
+    silence_placement = 2
+    min_silence = 0.5
+    max_silence = 6
+    conductor_preset = 6
+    condJag = 1
+    climax_position = 50
+    spatial_preset = 1
+    duration_order_strictness = 0.15
+    randomness = 0.95
+    dynamics_influence = 0.9
+    density_influence = 1
+    spatial_influence = 0.5
+    dynamic_range = 30
+endif
+
+# Compositional intensity: how far the preset is pushed (50 % = as
+# designed). It scales density, overlap, the conductor's influence
+# depths, the dynamic range and the shaping strictness together; it
+# never changes the duration and never removes planned silences.
+if cp < 8
+    di = compositional_intensity / 100 - 0.5
+    event_density = event_density * 2 ^ (1.2 * di)
+    overlap = max(0, min(1, overlap + 0.4 * di))
+    dynamics_influence = max(0, min(1, dynamics_influence * (1 + 1.0 * di)))
+    density_influence = max(0, min(1, density_influence * (1 + 1.0 * di)))
+    spatial_influence = max(0, min(1, spatial_influence * (1 + 1.0 * di)))
+    dynamic_range = dynamic_range * (1 + 0.6 * di)
+    if cp = 7
+        # chaos: more intensity = less order
+        duration_order_strictness = max(0, min(1, duration_order_strictness - 0.3 * di))
+        randomness = max(0, min(1, randomness + 0.3 * di))
+    else
+        duration_order_strictness = max(0, min(1, duration_order_strictness + 0.3 * di))
+        randomness = max(0, min(1, randomness - 0.3 * di))
+    endif
+endif
+
+if (edit_composition_controls or cp = 8) and output <> 4
+    beginPause: "TimeLine Composer - composition controls"
+        comment: cpName$[cp] + ": " + cpDesc$[cp]
+        if cp < 8
+            comment: "Loaded from the preset at " + fixed$(compositional_intensity, 0) + " % intensity - every value can be changed."
+        endif
+        optionmenu: "Organization", organization
+            option: "Combined pool (all folders = one collection)"
+            option: "Independent layers (one layer per folder)"
+        optionmenu: "Temporal_preset", temporal_preset
+            option: "Short to long"
+            option: "Long to short"
+            option: "Arch (short-long-short)"
+            option: "Inverted arch (long-short-long)"
+            option: "Waves"
+            option: "Controlled random"
+        real: "Event_density", fixed$(event_density, 2)
+        real: "Overlap", fixed$(overlap, 2)
+        optionmenu: "Silence_mode", silence_mode
+            option: "Continuous (no absolute silence)"
+            option: "Breathing (many short silences)"
+            option: "Structural (few long silences)"
+            option: "Dramatic (grand pause at the climax)"
+        real: "Silence_amount", fixed$(silence_amount, 1)
+        optionmenu: "Conductor_preset", conductor_preset
+            option: "Crescendo"
+            option: "Decrescendo"
+            option: "Arch"
+            option: "Late climax"
+            option: "Early climax"
+            option: "Waves"
+        real: "Climax_position", fixed$(climax_position, 1)
+        real: "Dynamic_range_(dB)", fixed$(dynamic_range, 1)
+        optionmenu: "Spatial_preset", spatial_preset
+            option: "Random space"
+            option: "Left to right"
+            option: "Right to left"
+            option: "Expanding space"
+            option: "Contracting space"
+            option: "Alternating sides"
+            option: "Layer-based"
+            option: "Breathing space (width follows the conductor)"
+    clicked = endPause: "Cancel", "Continue", 2, 1
+    if clicked = 1
+        exitScript: "Cancelled: nothing was done."
+    endif
+    event_density = max(0.1, event_density)
+    dynamic_range = max(0, dynamic_range)
+endif
+
 if edit_details
     beginPause: "TimeLine Composer - composition details"
         comment: "Source selection"
@@ -263,11 +601,10 @@ if edit_details
             option: "After climax"
             option: "Controlled by the conductor"
         real: "Ending_silence", string$(ending_silence)
-        comment: "Conductor influence (0-1) and dynamic range (dB)"
+        comment: "Conductor influence (0-1); the dynamic range is in the composition controls"
         real: "Dynamics_influence", string$(dynamics_influence)
         real: "Density_influence", string$(density_influence)
         real: "Spatial_influence", string$(spatial_influence)
-        positive: "Dynamic_range", string$(dynamic_range)
         comment: "Loudness: Full-balance limit (dB); optional bounded per-file leveling"
         positive: "Max_correction", string$(max_correction)
         boolean: "Per_file_leveling", per_file_leveling
@@ -327,7 +664,7 @@ balName$[3] = "Full"
 balName$[4] = "Manual"
 
 # ---- clamp ----
-number_of_folders = max(1, min(5, number_of_folders))
+folders_to_browse = max(1, min(5, folders_to_browse))
 overlap = max(0, min(1, overlap))
 silence_amount = max(0, min(80, silence_amount))
 climax_position = max(2, min(98, climax_position))
@@ -387,6 +724,7 @@ spName$[4] = "Expanding space"
 spName$[5] = "Contracting space"
 spName$[6] = "Alternating sides"
 spName$[7] = "Layer-based"
+spName$[8] = "Breathing space"
 orgName$[1] = "Combined pool"
 orgName$[2] = "Independent layers"
 
@@ -592,7 +930,12 @@ procedure cond: .x
             .v = 0.5 + 0.5 * cos(pi * (.x - xcEff) / (1 - xcEff))
         endif
         if conductor_preset = 6
-            .v = .v * (0.55 + 0.45 * (0.5 - 0.5 * cos(2 * pi * 4 * .x))) / wavesNorm
+            .v = .v * (0.55 + 0.45 * (0.5 - 0.5 * cos(2 * pi * 4 * .x)))
+            if condJag = 1
+                # Controlled Chaos: abrupt level steps on 16 segments
+                .v = .v * jagF[min(15, floor(.x * 16))]
+            endif
+            .v = .v / wavesNorm
         endif
     elsif conductor_preset = 4
         if .x < xcEff
@@ -627,7 +970,9 @@ procedure rankTarget: .preset, .x
             .r = 1 - .r
         endif
     elsif .preset = 5
-        .r = 0.5 - 0.5 * cos(2 * pi * 3 * .x)
+        # waveCycles = 4 puts the duration waves in phase with the
+        # conductor's waves (Breathing Form); 3 otherwise (v1.x)
+        .r = 0.5 - 0.5 * cos(2 * pi * waveCycles * .x)
     else
         .r = duration_preference
     endif
@@ -729,8 +1074,31 @@ procedure spatialPos: .lay, .lib, .x, .c
             .side = -1
         endif
         .p = .side * (0.35 + 0.6 * .w) + 0.1 * randomness * .jit
+    elsif spatial_preset = 7
+        # layer-based: only the spread inside the layer's region
+        .p = .jit * .w
     else
-        .p = libCentre[.lib] + .jit * libWidth[.lib] * .w
+        # v2.0 breathing space: the width follows the conductor
+        .p = .jit * (0.08 + 0.92 * ((1 - spatial_influence) * 0.5 + spatial_influence * .c))
+    endif
+    # v2.1 placement. .p is the BEHAVIOUR on the whole field [-1, 1].
+    # Each layer (Independent layers) or each folder (Combined pool) has
+    # a region: position H and spread S. Spatial movement m decides how
+    # far the behaviour may take a sound out of its region:
+    #   m = 0  the behaviour acts inside the region: H + S * p
+    #   m = 1  the behaviour uses the whole field (v2.0)
+    # Layer-based space is always regional.
+    if organization = 2
+        .r = .lay
+    else
+        .r = .lib
+    endif
+    .pr = regC[.r] + regW[.r] * max(-1, min(1, .p))
+    if spatial_preset = 7
+        # (same expression as v2.0, so plans stay bit-identical)
+        .p = regC[.r] + .jit * regW[.r] * .w
+    elsif spatial_movement < 1
+        .p = (1 - spatial_movement) * .pr + spatial_movement * .p
     endif
     spatialPos.p = max(-1, min(1, .p))
     spatialPos.width = 0.3 + 0.4 * .w
@@ -776,6 +1144,8 @@ procedure scheduleLayer: .lay, .ws, .we, .ph, .lead
     if .lead = 0
         .t = .ws + randomUniform(0, 0.6) * 60 / .dens0
     endif
+    # v2.0: a layer that has not entered yet (Accumulation) starts later
+    .t = max(.t, layerEntry[.lay])
     .tail = .t
     .first = nEv + 1
     .go = 1
@@ -864,7 +1234,7 @@ procedure repairPhrase: .e0, .ws, .we, .ph
                     while .done = 0 and .tryL < nLayers
                         .tryL = .tryL + 1
                         .lay = ((repairNext + .tryL - 1) mod nLayers) + 1
-                        if plays[.lay] = 1
+                        if plays[.lay] = 1 and .g0 >= layerEntry[.lay]
                             @pickSource: .lay, .g0, .we - .g0, .gl
                             if pickSource.s > 0
                                 @addEvent: .lay, pickSource.s, floor(.g0 * srOut) / srOut, .ph, 0
@@ -1394,7 +1764,7 @@ nStems = 0
 trustAsked = 0
 outDir$ = ""
 
-writeInfoLine: "=== TimeLine Composer v1.2 ==="
+writeInfoLine: "=== TimeLine Composer v2.2 ==="
 
 # Remove our temporary objects, then stop with a message. Objects that
 # belonged to the user before the run are never touched.
@@ -1708,7 +2078,7 @@ if rerender
         @trimText: plan_file$
         pf$ = trimText.out$
         if pf$ = ""
-            @trimText: source_folders$
+            @trimText: folder_paths$
             if right$(trimText.out$, 4) = ".tsv"
                 pf$ = trimText.out$
             endif
@@ -1746,6 +2116,12 @@ if rerender
     selectObject: setID
     nSet = Get number of rows
     set$["ending_silence"] = "0"
+    # keys added in v2.0 (older plans: v1.x behaviour)
+    set$["composition_preset"] = "Custom"
+    set$["compositional_intensity"] = "50"
+    set$["wave_cycles"] = "3"
+    set$["conductor_steps"] = "0"
+    set$["streams"] = "0"
     for r from 1 to nSet
         k$ = Get value: r, "key"
         v$ = Get value: r, "value"
@@ -1773,6 +2149,16 @@ if rerender
         libFolder$[i] = set$["library_" + string$(i) + "_folder"]
     endfor
     nLayers = number(set$["layers"])
+    waveCycles = number(set$["wave_cycles"])
+    condJag = number(set$["conductor_steps"])
+    nStreams = number(set$["streams"])
+    compositional_intensity = number(set$["compositional_intensity"])
+    composition_preset = 8
+    for k from 1 to 7
+        if set$["composition_preset"] = cpName$[k]
+            composition_preset = k
+        endif
+    endfor
 
     selectObject: planID
     nRows = Get number of rows
@@ -1786,6 +2172,7 @@ if rerender
             nEv = nEv + 1
             evLayer[nEv] = Get value: r, "layer"
             evLib[nEv] = Get value: r, "library"
+            layerLibOf[evLayer[nEv]] = evLib[nEv]
             p$ = Get value: r, "path"
             evOn[nEv] = Get value: r, "onset"
             evDur[nEv] = Get value: r, "duration"
@@ -1858,7 +2245,7 @@ endif
 # 2b. NEW COMPOSITION: FOLDERS AND CATALOG
 # ============================================================
 if rerender = 0
-    @trimText: source_folders$
+    @trimText: folder_paths$
     sfText$ = trimText.out$
     nLib = 0
     if sfText$ <> ""
@@ -1873,9 +2260,9 @@ if rerender = 0
             rest$ = mid$(rest$, p + 1, length(rest$) - p)
         endwhile
     else
-        for i from 1 to number_of_folders
+        for i from 1 to folders_to_browse
             f$ = chooseFolder$: "TimeLine Composer: choose SOURCE folder " + string$(i)
-                ... + " of " + string$(number_of_folders)
+                ... + " of " + string$(folders_to_browse)
             @trimText: f$
             if trimText.out$ = ""
                 @fail: "Cancelled at source folder " + string$(i) + " - nothing was done."
@@ -2108,11 +2495,38 @@ if rerender = 0
         endif
         libSeed[i] = i
     endfor
+    # v2.0 preset defaults per library (shown in Edit layers)
+    # Counterpoint: every layer its own temporal shape and pace, and a
+    # narrower region of space
+    cpShape[1] = 1
+    cpShape[2] = 2
+    cpShape[3] = 5
+    cpShape[4] = 3
+    cpShape[5] = 4
+    cpPace[1] = 1
+    cpPace[2] = 0.75
+    cpPace[3] = 1.25
+    cpPace[4] = 0.9
+    cpPace[5] = 1.1
+    if counterpoint = 1 and nLib > 1
+        for i from 1 to nLib
+            libPreset[i] = cpShape[i]
+            libDensity[i] = cpPace[i]
+            libWidth[i] = 0.5 / nLib + 0.05
+        endfor
+    endif
+    if layerStagger > 0
+        # Accumulation: every layer plays once it has entered
+        for i from 1 to nLib
+            libRest[i] = 0
+        endfor
+    endif
     if edit_layers
         for i from 1 to nLib
             beginPause: "Layer " + string$(i) + " of " + string$(nLib)
                 comment: "Library: " + libName$[i] + "  (" + string$(libCount[i]) + " files)"
                 comment: "Preset, density and rest apply in Independent layers mode."
+                comment: "(Position and spread in space: Edit spatial layout.)"
                 optionmenu: "Layer_preset", libPreset[i]
                     option: "Short to long"
                     option: "Long to short"
@@ -2122,16 +2536,12 @@ if rerender = 0
                     option: "Controlled random"
                 real: "Density_factor", string$(libDensity[i])
                 real: "Gain_dB", string$(libGain[i])
-                real: "Space_centre", string$(libCentre[i])
-                real: "Space_half_width", string$(libWidth[i])
                 real: "Rest_probability", string$(libRest[i])
                 integer: "Seed_offset", string$(libSeed[i])
             endPause: "Continue", 1
             libPreset[i] = layer_preset
             libDensity[i] = max(0.05, density_factor)
             libGain[i] = gain_dB
-            libCentre[i] = max(-1, min(1, space_centre))
-            libWidth[i] = max(0, min(2, space_half_width))
             libRest[i] = max(0, min(0.95, rest_probability))
             libSeed[i] = seed_offset
         endfor
@@ -2198,16 +2608,43 @@ if rerender = 0
     endfor
 
     # layers
+    nStreams = 0
     if organization = 1
         nLayers = 1
         layerPreset[1] = temporal_preset
         layerDensity[1] = 1
         layerRest[1] = 0
         layerSeed[1] = 1
+        layerLibOf[1] = 1
         layerN[1] = 0
         for s from 1 to nSrc
             layerN[1] = layerN[1] + 1
             layerSrc[1, layerN[1]] = s
+        endfor
+    elsif nLib = 1 and streamsWanted > 1
+        # v2.0: ONE folder, several independent streams drawn from the
+        # same pool (Accumulation, Spatial Counterpoint). The streams
+        # share every source and its repetition limit.
+        nStreams = streamsWanted
+        nLayers = nStreams
+        for lay from 1 to nLayers
+            layerLibOf[lay] = 1
+            layerPreset[lay] = libPreset[1]
+            layerDensity[lay] = libDensity[1]
+            if counterpoint = 1
+                layerPreset[lay] = cpShape[lay]
+                layerDensity[lay] = libDensity[1] * cpPace[lay]
+            endif
+            layerRest[lay] = 0
+            if lay > 1 and layerStagger = 0
+                layerRest[lay] = 0.1
+            endif
+            layerSeed[lay] = libSeed[1] + lay - 1
+            layerN[lay] = 0
+            for s from 1 to nSrc
+                layerN[lay] = layerN[lay] + 1
+                layerSrc[lay, layerN[lay]] = s
+            endfor
         endfor
     else
         nLayers = 0
@@ -2228,6 +2665,104 @@ if rerender = 0
                 endfor
             endif
         endfor
+    endif
+
+    # ---- v2.1 spatial layout: one region per layer (Independent
+    # layers) or per folder (Combined pool); streams get their own ----
+    if organization = 2
+        nReg = nLayers
+        for r from 1 to nReg
+            regC[r] = libCentre[layerLibOf[r]]
+            regW[r] = libWidth[layerLibOf[r]]
+            regName$[r] = libName$[layerLibOf[r]]
+            if nStreams > 1
+                regC[r] = -0.75 + 1.5 * (r - 1) / (nStreams - 1)
+                regW[r] = 0.5 / nStreams + 0.05
+                regName$[r] = libName$[1] + " / stream " + string$(r)
+            endif
+        endfor
+    else
+        nReg = nLib
+        for r from 1 to nReg
+            regC[r] = libCentre[r]
+            regW[r] = libWidth[r]
+            regName$[r] = libName$[r]
+        endfor
+    endif
+    for r from 1 to nReg
+        regC0[r] = regC[r]
+        regW0[r] = regW[r]
+    endfor
+    stream_sources = 1
+    if edit_spatial_layout
+        # the dialog's variables hold the current values (also when the
+        # pause is skipped, as in a non-interactive run)
+        for r from 1 to nReg
+            position_'r' = regC[r]
+            spread_'r' = regW[r]
+        endfor
+        beginPause: "TimeLine Composer - spatial layout"
+            comment: "Behaviour: " + spName$[spatial_preset] + " (from the preset or the composition controls)"
+            comment: "Position: -1 = left ... 0 = centre ... +1 = right.  Spread: how far sounds scatter around it."
+            if spatial_preset = 7
+                comment: "Layer-based space always keeps every layer inside its region."
+            else
+                comment: "Spatial movement: 0 = each layer stays in its region and the behaviour acts inside it;"
+                comment: "1 = the behaviour uses the whole field and the positions below have no effect."
+            endif
+            real: "Spatial_movement", fixed$(spatial_movement, 2)
+            if nStreams > 1
+                optionmenu: "Stream_sources", 1
+                    option: "Shared pool (every stream draws from all the files)"
+                    option: "Split the files (each file belongs to one stream)"
+            endif
+            for r from 1 to nReg
+                comment: string$(r) + ": " + regName$[r]
+                real: "Position_" + string$(r), fixed$(regC[r], 2)
+                real: "Spread_" + string$(r), fixed$(regW[r], 2)
+            endfor
+        clicked = endPause: "Cancel", "Continue", 2, 1
+        if clicked = 1
+            @fail: "Cancelled: nothing was done."
+        endif
+        spatial_movement = max(0, min(1, spatial_movement))
+        for r from 1 to nReg
+            regC[r] = max(-1, min(1, position_'r'))
+            regW[r] = max(0, min(2, spread_'r'))
+        endfor
+    endif
+    placeEdited = 0
+    for r from 1 to nReg
+        if abs(regC[r] - regC0[r]) > 1e-9 or abs(regW[r] - regW0[r]) > 1e-9
+            placeEdited = 1
+        endif
+    endfor
+    if placeEdited = 1 and spatial_movement >= 1 and spatial_preset <> 7
+        @warn: "Positions were edited but Spatial movement = 1: the behaviour uses the whole field, so they have no effect."
+    endif
+    # split the files of one folder between its streams: sorted by
+    # duration and dealt in turn, so every stream keeps its own files
+    # with a similar range of durations
+    if nStreams > 1 and stream_sources = 2
+        Create Table with column names: "tl_split", nSrc, "s dur"
+        sp = selected("Table")
+        @addTemp: sp
+        for k from 1 to nSrc
+            Set numeric value: k, "s", k
+            Set numeric value: k, "dur", srcDur[k]
+        endfor
+        Sort rows: "dur"
+        for lay from 1 to nLayers
+            layerN[lay] = 0
+        endfor
+        for k from 1 to nSrc
+            s = Get value: k, "s"
+            lay = ((k - 1) mod nLayers) + 1
+            layerN[lay] = layerN[lay] + 1
+            layerSrc[lay, layerN[lay]] = s
+        endfor
+        removeObject: sp
+        @dropTemp: sp
     endif
 
     # exclude sources that can never fit; rank the rest by duration
@@ -2280,6 +2815,17 @@ if rerender = 0
             @warn: "Layer " + string$(lay) + " has no source short enough for the timeline; it stays silent."
         endif
     endfor
+    # share of a shared pool (streams) and entry time (Accumulation)
+    for lay from 1 to nLayers
+        layerShare[lay] = 1
+        if nStreams > 1 and stream_sources = 1
+            layerShare[lay] = 1 / nStreams
+        endif
+        layerEntry[lay] = 0
+        if layerStagger > 0 and nLayers > 1
+            layerEntry[lay] = layerStagger * target_duration * (lay - 1) / nLayers
+        endif
+    endfor
 endif
 tScan = stopwatch
 
@@ -2301,6 +2847,17 @@ endif
 xcEff = max(0, min(1, xcEff))
 if conductor_preset >= 3
     xcEff = max(0.02, min(0.98, xcEff))
+endif
+# Controlled Chaos: stepped conductor levels, fixed by the seed
+for k from 0 to 15
+    jagF[k] = 1
+endfor
+if condJag = 1
+    random_initializeWithSeedUnsafelyButPredictably (random_seed * 6151 + 29)
+    for k from 0 to 15
+        jagF[k] = randomUniform(0.25, 1)
+    endfor
+    random_initializeSafelyAndUnpredictably ()
 endif
 wavesNorm = 1
 if conductor_preset = 6
@@ -2387,6 +2944,10 @@ if rerender = 0
         if silence_mode = 4 or plc = 5 or plc = 6
             grand = 1
             silD[1] = min(max_silence, max(min_silence, 0.5 * sTot))
+            if ruptureMode = 1
+                # the rupture is THE silence: three quarters of the budget
+                silD[1] = min(max_silence, max(min_silence, 0.75 * sTot))
+            endif
         endif
         # rescale to sTot within [min, max]
         for it from 1 to 12
@@ -2458,6 +3019,9 @@ if rerender = 0
             xcl = max(0.1, min(0.9, xPeak))
             if plc = 5
                 silF[1] = xcl - silD[1] / 2 / tDur
+            elsif ruptureMode = 1
+                # Climax & Rupture: the pause begins at the peak itself
+                silF[1] = xcl + silD[1] / 2 / tDur
             else
                 silF[1] = xcl + 0.04 + silD[1] / 2 / tDur
             endif
@@ -2534,8 +3098,8 @@ if rerender = 0
             iO = iD ^ 0.4 * max(0.02, mD * (1 - 0.95 * oE)) ^ 0.6
             dem = dem + tDur / 200 / iO
         endfor
-        dem = dem * (1 - sTot / tDur) * (1 - layerRest[lay])
-        avail = layerN[lay] * max_repetitions
+        dem = dem * (1 - sTot / tDur) * (1 - layerRest[lay]) * (1 - layerEntry[lay] / tDur)
+        avail = layerN[lay] * max_repetitions * layerShare[lay]
         layerDemand[lay] = dem
         layerAvail[lay] = avail
         layerDensityScale[lay] = 1
@@ -2650,7 +3214,7 @@ if rerender = 0
                 if plays[lay] = 1
                     for k from 1 to layerN[lay]
                         s = layerSrc[lay, k]
-                        if srcUses[s] < max_repetitions and srcDur[s] <= we - ws
+                        if srcUses[s] < max_repetitions and srcDur[s] <= we - ws and we - srcDur[s] >= layerEntry[lay]
                             if srcDur[s] >= we - tailNow and srcDur[s] < bestD
                                 bestD = srcDur[s]
                                 bestS = s
@@ -2892,7 +3456,7 @@ if rerender = 0
     Create Table with column names: objBase$ + "_settings", 0, "key value"
     setID = selected("Table")
     @addTemp: setID
-    @kv: "script", "TimeLine_Composer.praat v1.2"
+    @kv: "script", "TimeLine_Composer.praat v2.2"
     @kv: "praat_version", praatVersion$
     @kv: "target_duration", string$(target_duration)
     @kv: "ending_silence", string$(ending_silence)
@@ -2918,6 +3482,21 @@ if rerender = 0
     @kv: "spatial_influence", string$(spatial_influence)
     @kv: "dynamic_range", string$(dynamic_range)
     @kv: "spatial_preset", string$(spatial_preset)
+    @kv: "composition_preset", cpName$[composition_preset]
+    @kv: "compositional_intensity", string$(compositional_intensity)
+    @kv: "wave_cycles", string$(waveCycles)
+    @kv: "conductor_steps", string$(condJag)
+    @kv: "rupture_at_peak", string$(ruptureMode)
+    @kv: "streams", string$(nStreams)
+    @kv: "spatial_movement", string$(spatial_movement)
+    @kv: "stream_sources", if stream_sources = 2 then "split" else "shared" fi
+    @kv: "regions", string$(nReg)
+    for r from 1 to nReg
+        @kv: "region_" + string$(r) + "_name", regName$[r]
+        @kv: "region_" + string$(r) + "_position", string$(regC[r])
+        @kv: "region_" + string$(r) + "_spread", string$(regW[r])
+    endfor
+    @kv: "layer_entry_span", string$(layerStagger)
     @kv: "library_balance", balName$[library_balance]
     @kv: "max_correction", string$(max_correction)
     @kv: "per_file_leveling", string$(per_file_leveling)
@@ -3388,12 +3967,17 @@ if draw_visualization
     Select inner viewport: 0, 8, 0, 0.55
     Axes: 0, 1, 0, 1
     Colour: "Black"
-    Text: 0.5, "centre", 0.62, "half", "##TIMELINE COMPOSER v1.2##"
+    Text: 0.5, "centre", 0.62, "half", "##TIMELINE COMPOSER v2.2##"
     Font size: 7
     Select inner viewport: 0, 8, 0, 0.55
     Axes: 0, 1, 0, 1
     Colour: "{0.35, 0.35, 0.52}"
-    sub$ = orgName$[organization] + "  |  " + string$(nLib) + " librar" + if nLib = 1 then "y" else "ies" fi
+    if composition_preset < 8
+        sub$ = cpName$[composition_preset] + " " + fixed$(compositional_intensity, 0) + "\%  |  "
+    else
+        sub$ = "Custom  |  "
+    endif
+    sub$ = sub$ + orgName$[organization] + "  |  " + string$(nLib) + " librar" + if nLib = 1 then "y" else "ies" fi
         ... + "  |  " + fixed$(tDur, 1) + " s  |  " + tempName$[temporal_preset]
         ... + "  |  Silence: " + silName$[silence_mode]
         ... + "  |  Conductor: " + condName$[conductor_preset]
@@ -3490,6 +4074,8 @@ if draw_visualization
     for lay from 1 to nLayers
         if organization = 1
             lab$ = "Pool"
+        elsif nStreams > 1
+            lab$ = libName$[layerLibOf[lay]] + " / stream " + string$(lay)
         else
             lab$ = libName$[layerLibOf[lay]]
         endif
@@ -3514,8 +4100,29 @@ if draw_visualization
     Dotted line
     Draw line: 0, 0, tDur, 0
     Solid line
+    # v2.1: the regions, when the placement is regional
+    if rerender = 0
+        if spatial_preset = 7 or spatial_movement < 1
+            for r from 1 to nReg
+                @col: min(5, r), 0
+                Colour: col.c$
+                Dashed line
+                Draw line: 0, regC[r], tDur, regC[r]
+                Dotted line
+                Draw line: 0, max(-1, regC[r] - regW[r]), tDur, max(-1, regC[r] - regW[r])
+                Draw line: 0, min(1, regC[r] + regW[r]), tDur, min(1, regC[r] + regW[r])
+                Solid line
+            endfor
+        endif
+    endif
     for ie from 1 to nEv
-        @col: evLayer[ie], 0
+        # a combined pool is coloured by folder here, so the folders'
+        # placement can be read
+        if organization = 1 and nLib > 1
+            @col: min(5, evLib[ie]), 0
+        else
+            @col: evLayer[ie], 0
+        endif
         Paint circle (mm): col.c$, evOn[ie], evPos[ie], 0.6 + 0.9 * (evGainDb[ie] - gMin) / (gMax - gMin)
     endfor
     Select inner viewport: 0.6, 3.95, 5.32, 6.32
@@ -3628,6 +4235,12 @@ tViz = stopwatch
 # ============================================================
 appendInfoLine: ""
 appendInfoLine: "=== Composition ==="
+if composition_preset < 8
+    appendInfoLine: "Preset: ", cpName$[composition_preset], " at ", fixed$(compositional_intensity, 0),
+        ... " % intensity - ", cpDesc$[composition_preset]
+else
+    appendInfoLine: "Preset: Custom (controls set by hand)"
+endif
 appendInfoLine: "Libraries: ", nLib, "   organisation: ", orgName$[organization], "   layers: ", nLayers
 for i from 1 to nLib
     appendInfoLine: "  ", i, ": ", libName$[i], "   ", libFolder$[i]
@@ -3640,6 +4253,40 @@ if rerender = 0
         ... "/min   overlap ", fixed$(overlap, 2), "   max repetitions ", max_repetitions
     appendInfoLine: "Conductor: ", condName$[conductor_preset], " - curve peaks at ",
         ... fixed$(xPeak * 100, 1), "% (requested ", fixed$(climax_position, 1), "%)"
+        ... + if condJag = 1 then " - stepped on 16 segments" else "" fi
+    appendInfoLine: "Space: ", spName$[spatial_preset], "   influence: dynamics ", fixed$(dynamics_influence, 2),
+        ... "  density ", fixed$(density_influence, 2), "  space ", fixed$(spatial_influence, 2),
+        ... "   range ", fixed$(dynamic_range, 1), " dB"
+    appendInfoLine: "Dynamics: the conductor lowers the quietest moments by up to ",
+        ... fixed$(dynamics_influence * dynamic_range, 1), " dB (influence ", fixed$(dynamics_influence, 2),
+        ... " x range ", fixed$(dynamic_range, 1), " dB); 0 dB at the climax"
+    if spatial_preset = 7
+        appendInfoLine: "Placement: every layer stays in its region (Layer-based)"
+    elsif spatial_movement >= 1
+        appendInfoLine: "Placement: spatial movement 1 - the behaviour uses the whole field"
+    else
+        appendInfoLine: "Placement: spatial movement ", fixed$(spatial_movement, 2),
+            ... " - 0 keeps each layer in its region, 1 = whole field"
+    endif
+    if spatial_preset = 7 or spatial_movement < 1
+        for r from 1 to nReg
+            appendInfoLine: "  region ", r, " (", regName$[r], "): position ", fixed$(regC[r], 2),
+                ... ", spread ", fixed$(regW[r], 2)
+        endfor
+    endif
+    if nStreams > 1 and stream_sources = 2
+        appendInfoLine: "Streams: the folder's files are split between the streams (each file in one stream)."
+    endif
+    if nStreams > 1
+        appendInfoLine: "One folder is split into ", nStreams, " independent streams that share its sources."
+    endif
+    if layerStagger > 0 and nLayers > 1
+        ent$ = ""
+        for lay from 2 to nLayers
+            ent$ = ent$ + "  " + fixed$(layerEntry[lay], 1) + " s"
+        endfor
+        appendInfoLine: "Layers enter one after another: layer 1 at 0 s,", ent$
+    endif
     if silence_mode = 1
         appendInfoLine: "Silence: Continuous - no absolute silence is planned"
     else
