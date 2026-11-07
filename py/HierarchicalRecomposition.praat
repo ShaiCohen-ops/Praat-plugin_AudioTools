@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.7 (2026) - True hierarchy + truthful preset/process telemetry
+# Version: 1.10 (2026) - Real endings, aligned/attack-safe stretch, material checks
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -13,6 +13,46 @@
 #   A PyTorch three-level hierarchical model (EventEncoder,
 #   PhraseEncoder, SectionPlanner) generates a recomposition
 #   plan. Audio is re-rendered from the original source material.
+#
+# Changelog v1.10:
+#   - Pairs with hierarchical_recomposition.py v1.10 (Collapsing Refrain ends
+#     in a dedicated collapse window; Hidden Sonata's end fill uses theme B;
+#     phase-vocoder alignment and attack splicing; counterpoint fragmentation;
+#     minimum-material checks; stretch amount).
+#   - New field Stretch_amount (0 = none, 1 = every operation twice as long),
+#     so the Stretch mode has material in every preset.
+#   - When a formal preset cannot be built from the source, the engine stops
+#     and the dialog says so in plain words, instead of a generic failure.
+#   - Info window reports thin-material warnings and, for Hidden Sonata, the
+#     share of each theme window covered by its own material.
+#
+# Changelog v1.9:
+#   - Pairs with hierarchical_recomposition.py v1.9 (sonata windows are hard
+#     bounds; every editable control now changes every preset; phase-locked,
+#     level-matched pitch-preserving stretch; short-input crash fixed).
+#   - Form parts that received no rendered operation are labelled "empty" in
+#     the operations panel and counted in the summary, so a planned part can
+#     no longer pass for a realised one.
+#   - Hidden Sonata reports its five theme windows (expoA, expoB, dev, recapA,
+#     recapB) with rendered operation counts in the summary and Info window.
+#   - The Info window states when the Stretch choice had no effect because no
+#     operation was stretched, and what "audible" measures.
+#
+# Changelog v1.8:
+#   - Pairs with hierarchical_recomposition.py v1.8 (rebuilt sonata, litany,
+#     braiding, counterpoint and echo planners; all 16 plan slots operative;
+#     novelty-based sections; pitch-preserving stretch option; choir voice
+#     levels preserved).
+#   - Presets no longer lock their values behind the scenes: choosing a preset
+#     opens a second dialog pre-filled with its values (Edit preset values),
+#     and whatever is there is what the engine uses (explicit mode). With the
+#     box unticked the stored preset values are sent unchanged.
+#   - New Stretch option: Resample (pitch follows, the v1.7 sound) or
+#     Preserve pitch (phase vocoder).
+#   - Operation counts are planned / rendered / audible; lane counts are
+#     rendered operations only. Form parts (sonata parts, litany cells, braid
+#     phases) are drawn as bands behind the operations panel.
+#   - Form shortened: section comments merged.
 #
 # Changelog v1.7:
 #   - Pairs with hierarchical_recomposition.py v1.7: the hierarchy is now
@@ -152,8 +192,7 @@ endproc
 @cleanUpTempFiles
 
 # ---- FORM ----
-form Hierarchical Neural Recomposition v1.7
-    comment === Preset ===
+form Hierarchical Neural Recomposition v1.10
     optionmenu Preset: 1
         option Custom
         option Latent Counterpoint
@@ -164,28 +203,41 @@ form Hierarchical Neural Recomposition v1.7
         option Echo Architecture
         option Recursive Speech Choir
         option Hidden Sonata
-    comment === Target ===
+    boolean Edit_preset_values 1
+    comment Custom controls (a preset opens its own pre-filled dialog)
     real    Target_duration  1.0
-    comment === Event / Phrase Level ===
     real    Phrase_coherence 0.5
     real    Fragmentation    0.3
-    comment === Section Level ===
     real    Memory_strength  0.5
     real    Repetition       0.5
-    comment === Rendering ===
     real    Overlap_amount   0.3
     real    Formal_surprise  0.2
-    comment === Output ===
+    optionmenu Stretch: 1
+        option Resample (pitch follows)
+        option Preserve pitch (phase vocoder)
+    real    Stretch_amount   0.0
     integer Random_seed       42
     boolean Draw_visualization 1
     boolean Play_result        1
 endform
 
-# Legacy positional placeholders retained for Python CLI compatibility.
-# The v1.1/v1.2 engine does not use these values in planning or rendering.
+# Positional placeholders kept for the Python CLI layout. density and
+# source_trace are inactive in the engine. section_contrast IS read (contrast
+# slot: call/response choice, sonata/counterpoint planning); Custom uses 0.5,
+# presets set their own value below.
 density = 0.5
 section_contrast = 0.5
 source_trace = 0.0
+stretchMode$ = "resample"
+if stretch = 2
+    stretchMode$ = "preserve"
+endif
+if stretch_amount < 0
+    stretch_amount = 0
+endif
+if stretch_amount > 1
+    stretch_amount = 1
+endif
 
 # ---- RESOLVE PRESET NAME ----
 presetName$ = "Custom"
@@ -205,6 +257,48 @@ elsif preset = 8
     presetName$ = "RecursiveSpeechChoir"
 elsif preset = 9
     presetName$ = "HiddenSonata"
+endif
+
+# ---- PRESET VALUES (must match PRESETS in hierarchical_recomposition.py) ----
+# Order: target, coherence, contrast, memory, repetition, fragmentation,
+# overlap, surprise. The engine receives them in explicit mode, so what the
+# dialog shows is exactly what is used.
+presetEdited = 0
+if presetName$ <> "Custom"
+    if presetName$ = "LatentCounterpoint"
+        @presetValues: 1.2, 0.7, 0.8, 0.3, 0.4, 0.3, 0.6, 0.2
+    elsif presetName$ = "MemorySpiral"
+        @presetValues: 1.5, 0.6, 0.4, 0.95, 0.7, 0.2, 0.4, 0.15
+    elsif presetName$ = "FragmentedLitany"
+        @presetValues: 1.3, 0.9, 0.2, 0.8, 0.9, 0.95, 0.1, 0.05
+    elsif presetName$ = "FormalBraiding"
+        @presetValues: 1.1, 0.5, 0.75, 0.5, 0.5, 0.4, 0.7, 0.35
+    elsif presetName$ = "CollapsingRefrain"
+        @presetValues: 1.4, 0.6, 0.5, 0.85, 0.8, 0.8, 0.2, 0.1
+    elsif presetName$ = "EchoArchitecture"
+        @presetValues: 1.6, 0.55, 0.3, 0.6, 0.6, 0.15, 0.8, 0.2
+    elsif presetName$ = "RecursiveSpeechChoir"
+        @presetValues: 1.0, 0.75, 0.4, 0.7, 0.65, 0.2, 0.9, 0.1
+    elsif presetName$ = "HiddenSonata"
+        @presetValues: 1.8, 0.65, 0.7, 0.9, 0.7, 0.5, 0.35, 0.25
+    endif
+    if edit_preset_values
+        beginPause: "Preset values - " + presetName$
+            comment: "Pre-filled with the preset. Edit freely; these exact values are used."
+            real: "Target_duration", string$(target_duration)
+            real: "Phrase_coherence", string$(phrase_coherence)
+            real: "Section_contrast", string$(section_contrast)
+            real: "Memory_strength", string$(memory_strength)
+            real: "Repetition", string$(repetition)
+            real: "Fragmentation", string$(fragmentation)
+            real: "Overlap_amount", string$(overlap_amount)
+            real: "Formal_surprise", string$(formal_surprise)
+        clicked = endPause: "Cancel", "Render", 2, 1
+        if clicked = 1
+            exitScript: "Cancelled."
+        endif
+        presetEdited = 1
+    endif
 endif
 
 # ---- CLAMP ALL PARAMS ----
@@ -250,6 +344,12 @@ endif
 if formal_surprise > 1
     formal_surprise = 1
 endif
+if section_contrast < 0
+    section_contrast = 0
+endif
+if section_contrast > 1
+    section_contrast = 1
+endif
 
 # ---- CAPTURE INPUT PROPERTIES ----
 selectObject: sound
@@ -260,7 +360,7 @@ rms_orig  = Get root-mean-square: 0, 0
 
 # ---- INFO HEADER ----
 clearinfo
-writeInfoLine:  "=== Hierarchical Neural Recomposition v1.7 ==="
+writeInfoLine:  "=== Hierarchical Neural Recomposition v1.10 ==="
 appendInfoLine: "Input:   ", soundName$
 appendInfoLine: "Preset:  ", presetName$
 appendInfoLine: ""
@@ -275,9 +375,15 @@ appendInfoLine: "Repetition:            ", repetition
 appendInfoLine: "Fragmentation:         ", fragmentation
 appendInfoLine: "Overlap amount:        ", overlap_amount
 appendInfoLine: "Formal surprise:       ", formal_surprise
+appendInfoLine: "Contrast:              ", section_contrast
+appendInfoLine: "Stretch:               ", stretchMode$, ", amount ", stretch_amount
 appendInfoLine: "Seed:                  ", random_seed
 if presetName$ <> "Custom"
-    appendInfoLine: "Note: preset values override the corresponding form controls in the engine."
+    if presetEdited
+        appendInfoLine: "Values: preset dialog (as shown there); the main-form controls were not used."
+    else
+        appendInfoLine: "Values: stored preset values; the main-form controls were not used."
+    endif
 endif
 appendInfoLine: ""
 
@@ -328,6 +434,8 @@ pyCmd$ = pythonCmd$ + " """ + pythonScript$ + """"
     ... + " " + fixed$(formal_surprise, 4)
     ... + " " + string$(random_seed)
     ... + " " + presetName$
+    ... + " explicit " + stretchMode$
+    ... + " " + fixed$(stretch_amount, 4)
     ... + " 2> """ + tempLog$ + """"
 
 runSystem_nocheck: pyCmd$
@@ -336,7 +444,14 @@ runSystem_nocheck: pyCmd$
 if not fileReadable(tempOutput$)
     errMsg$ = "Python recomposition failed."
     if fileReadable(tempLog$)
-        errMsg$ = errMsg$ + newline$ + newline$ + "Python error output:" + newline$ + readFile$(tempLog$)
+        logText$ = readFile$(tempLog$)
+        matPos = index(logText$, "INSUFFICIENT MATERIAL:")
+        if matPos > 0
+            errMsg$ = "The " + presetName$ + " form cannot be built from this sound." + newline$ + newline$
+                ... + mid$(logText$, matPos, length(logText$) - matPos + 1)
+        else
+            errMsg$ = errMsg$ + newline$ + newline$ + "Python error output:" + newline$ + logText$
+        endif
     endif
     @cleanUpTempFiles
     exitScript: errMsg$
@@ -389,6 +504,18 @@ nPlanViz = 0
 nPlanCols = 0
 nPlanRowsAll = 0
 nMapOps = 0
+nOpsPlanned = 0
+nOpsRendered = 0
+nOpsAudible = 0
+nOpsRefused = 0
+nFormParts = 0
+nFormPartsAll = 0
+nFormPartsEmpty = 0
+nOpsStretched = -1
+sonataWindows$ = ""
+sonataCoverage$ = ""
+formWarning$ = ""
+sonataComplete = -1
 planSpread$ = "?"
 usedTarget = target_duration
 usedCoherence = phrase_coherence
@@ -619,6 +746,77 @@ if fileReadable(tempStats$)
     if parseStatLine.result$ <> "?"
         nOpsTotal = number(parseStatLine.result$)
     endif
+    @parseStatLine: statsText$, "n_ops_planned="
+    if parseStatLine.result$ <> "?"
+        nOpsPlanned = number(parseStatLine.result$)
+    else
+        nOpsPlanned = nOpsTotal
+    endif
+    @parseStatLine: statsText$, "n_ops_rendered="
+    if parseStatLine.result$ <> "?"
+        nOpsRendered = number(parseStatLine.result$)
+    else
+        nOpsRendered = nOpsTotal
+    endif
+    @parseStatLine: statsText$, "n_ops_audible="
+    if parseStatLine.result$ <> "?"
+        nOpsAudible = number(parseStatLine.result$)
+    else
+        nOpsAudible = nOpsTotal
+    endif
+    @parseStatLine: statsText$, "n_ops_refused_beyond_target="
+    if parseStatLine.result$ <> "?"
+        nOpsRefused = number(parseStatLine.result$)
+    endif
+
+    @parseStatLine: statsText$, "n_form_parts_empty="
+    if parseStatLine.result$ <> "?"
+        nFormPartsEmpty = number(parseStatLine.result$)
+    endif
+    @parseStatLine: statsText$, "n_ops_stretched="
+    if parseStatLine.result$ <> "?"
+        nOpsStretched = number(parseStatLine.result$)
+    endif
+    @parseStatLine: statsText$, "sonata_windows="
+    if parseStatLine.result$ <> "?"
+        sonataWindows$ = parseStatLine.result$
+    endif
+    @parseStatLine: statsText$, "sonata_window_coverage="
+    if parseStatLine.result$ <> "?"
+        sonataCoverage$ = parseStatLine.result$
+    endif
+    @parseStatLine: statsText$, "form_warning="
+    if parseStatLine.result$ <> "?"
+        formWarning$ = parseStatLine.result$
+    endif
+    @parseStatLine: statsText$, "sonata_complete="
+    if parseStatLine.result$ <> "?"
+        sonataComplete = number(parseStatLine.result$)
+    endif
+
+    # Form parts declared by the planner: "t0,t1,nOps,name".
+    @parseStatLine: statsText$, "n_form_parts="
+    if parseStatLine.result$ <> "?"
+        nFormParts = number(parseStatLine.result$)
+    endif
+    @parseStatLine: statsText$, "n_form_parts_all="
+    if parseStatLine.result$ <> "?"
+        nFormPartsAll = number(parseStatLine.result$)
+    endif
+    for iF from 0 to nFormParts - 1
+        @parseStatLine: statsText$, "form_part_" + string$(iF) + "="
+        frow$ = parseStatLine.result$
+        c1 = index(frow$, ",")
+        rest$ = mid$(frow$, c1 + 1, length(frow$) - c1)
+        c2 = index(rest$, ",")
+        rest2$ = mid$(rest$, c2 + 1, length(rest$) - c2)
+        c3 = index(rest2$, ",")
+        fpStart_'iF' = number(left$(frow$, c1 - 1))
+        fpEnd_'iF' = number(left$(rest$, c2 - 1))
+        fpOps_'iF' = number(left$(rest2$, c3 - 1))
+        fpName_'iF'$ = mid$(rest2$, c3 + 1, length(rest2$) - c3)
+    endfor
+
     @parseStatLine: statsText$, "n_op_place="
     if parseStatLine.result$ <> "?"
         nOpPlace = number(parseStatLine.result$)
@@ -716,6 +914,34 @@ appendInfoLine: "Sections:   ", nSecStat$
 appendInfoLine: "PyTorch:    ", torchStat$
 appendInfoLine: "Density:    ", densityStat$
 appendInfoLine: "Brightness: ", brightStat$
+appendInfoLine: "Operations: planned ", nOpsPlanned, ", rendered ", nOpsRendered, ", audible ", nOpsAudible
+appendInfoLine: "  (audible = peak within 60 dB of the mix peak before limiting; not a perceptual test)"
+for iF from 0 to nFormParts - 1
+    emptyTag$ = ""
+    if fpOps_'iF' = 0
+        emptyTag$ = "   EMPTY"
+    endif
+    appendInfoLine: "  part ", iF + 1, ": ", fpName_'iF'$, "  ", fixed$(fpStart_'iF', 2), " - ", fixed$(fpEnd_'iF', 2), " s, ", fpOps_'iF', " ops", emptyTag$
+endfor
+if formWarning$ <> ""
+    appendInfoLine: "WARNING: ", formWarning$
+endif
+if nFormPartsEmpty > 0
+    appendInfoLine: "WARNING: ", nFormPartsEmpty, " declared form part(s) received no rendered operation."
+endif
+if sonataWindows$ <> ""
+    appendInfoLine: "Sonata windows (rendered ops): ", sonataWindows$
+    if sonataCoverage$ <> ""
+        appendInfoLine: "Sonata windows (share of window spanned by its own material): ", sonataCoverage$
+    endif
+    if sonataComplete = 0
+        appendInfoLine: "WARNING: at least one sonata theme window is empty."
+    endif
+endif
+if nOpsStretched = 0 and stretchMode$ = "preserve"
+    appendInfoLine: "Note: no operation was stretched in this render, so the Stretch choice had no effect (raise Stretch amount)."
+endif
+appendInfoLine: "Plan blend (fixed weights): neural 0.07 / descriptors 0.28 / controls 0.65 on the five controlled slots; the network is seeded and untrained."
 
 ###############################################################################
 # VISUALIZATION — actual process map
@@ -792,6 +1018,12 @@ if draw_visualization
     if hasPlan = 0
         yOpsA = 2.89
         yOpsB = 3.84
+    endif
+    # A strip above the seven lanes names the form parts, when there are any.
+    opsTop = 7
+    if nFormParts > 0
+        opsTop = 7.9
+        yOpsB = yOpsB + 0.15
     endif
 
     yPanA = yOpsB + 0.02
@@ -942,12 +1174,24 @@ if draw_visualization
         Text bottom: "yes", "Phrase index  (plan row after descriptor conditioning + effective controls)"
     endif
 
-    # --- 3: scheduled operations by type -------------------------------------
-    @caption: vizL, vizR, yOpsA, yOpsB, "3  Operations actually scheduled for this render"
+    # --- 3: rendered operations by type, over the planner's form parts -------
+    # Form parts (sonata parts, litany cells, braid phases) are painted as
+    # alternating bands behind the lanes, named in a strip above them.
+    @caption: vizL, vizR, yOpsA, yOpsB, "3  Operations rendered in this output (lane counts = rendered; planned and audible in the summary)"
     Font size: 7
     Select inner viewport: vizL, vizR, yOpsA, yOpsB
-    Axes: 0, axisDur, 0, 7
-    Paint rectangle: "{1.00, 1.00, 1.00}", 0, axisDur, 0, 7
+    Axes: 0, axisDur, 0, opsTop
+    Paint rectangle: "{1.00, 1.00, 1.00}", 0, axisDur, 0, opsTop
+    for iF from 0 to nFormParts - 1
+        if fpEnd_'iF' > fpStart_'iF'
+            if iF - 2 * floor(iF / 2) = 0
+                bandCol$ = "{0.90, 0.92, 0.96}"
+            else
+                bandCol$ = "{0.96, 0.95, 0.91}"
+            endif
+            Paint rectangle: bandCol$, fpStart_'iF', min(fpEnd_'iF', axisDur), 0, opsTop
+        endif
+    endfor
     for iO from 0 to nOpViz - 1
         @opLane: opType_'iO'$
         if opEnd_'iO' > opStart_'iO'
@@ -956,9 +1200,38 @@ if draw_visualization
             Draw rectangle: opStart_'iO', opEnd_'iO', opLane.y - 0.28, opLane.y + 0.28
         endif
     endfor
-    Colour: "Black"
+    if nFormParts > 0
+        Colour: "{0.45, 0.45, 0.55}"
+        Select inner viewport: vizL, vizR, yOpsA, yOpsB
+        Axes: 0, axisDur, 0, opsTop
+        for iF from 1 to nFormParts - 1
+            Draw line: fpStart_'iF', 0, fpStart_'iF', opsTop
+        endfor
+        Font size: 5.5
+        Select inner viewport: vizL, vizR, yOpsA, yOpsB
+        Axes: 0, axisDur, 0, opsTop
+        Colour: "{0.25, 0.25, 0.35}"
+        for iF from 0 to nFormParts - 1
+            if fpEnd_'iF' > fpStart_'iF'
+                if nFormParts <= 8
+                    @sanitize: fpName_'iF'$
+                    partLabel$ = sanitize.out$
+                else
+                    partLabel$ = string$(iF + 1)
+                endif
+                if fpOps_'iF' = 0
+                    Colour: "{0.75, 0.15, 0.10}"
+                    partLabel$ = partLabel$ + " (empty)"
+                endif
+                Text: (fpStart_'iF' + min(fpEnd_'iF', axisDur)) / 2, "centre", 7.45, "half", partLabel$
+                Colour: "{0.25, 0.25, 0.35}"
+            endif
+        endfor
+        Colour: "Black"
+    endif
+    Font size: 7
     Select inner viewport: vizL, vizR, yOpsA, yOpsB
-    Axes: 0, axisDur, 0, 7
+    Axes: 0, axisDur, 0, opsTop
     Draw inner box
     @laneLabel: 6.5, nOpPlace, "place"
     @laneLabel: 5.5, nOpRepeat, "repeat"
@@ -969,7 +1242,7 @@ if draw_visualization
     @laneLabel: 0.5, nOpInvert, "invert"
     Font size: 7
     Select inner viewport: vizL, vizR, yOpsA, yOpsB
-    Axes: 0, axisDur, 0, 7
+    Axes: 0, axisDur, 0, opsTop
     Marks bottom every: 1, snapT, "no", "yes", "no"
 
     # --- 4: stereo field (spatial renders only) ------------------------------
@@ -1059,6 +1332,14 @@ if draw_visualization
     @sanitize: monoStrategy$
     monoTxt$ = sanitize.out$
 
+    sonataSummary$ = ""
+    if sonataWindows$ <> ""
+        @sanitize: replace$(sonataWindows$, ",", ", ", 0)
+        sonataSummary$ = "   sonata windows " + sanitize.out$
+        if sonataComplete = 0
+            sonataSummary$ = sonataSummary$ + " INCOMPLETE"
+        endif
+    endif
     Font size: 7
     Select inner viewport: vizL, vizR, ySumA, ySumB
     Axes: 0, 1, 0, 1
@@ -1078,10 +1359,10 @@ if draw_visualization
         ... + "   coherence " + fixed$(usedCoherence, 2)
         ... + ", fragmentation " + fixed$(usedFragmentation, 2)
         ... + "   mean density " + densityStat$ + ", mean brightness " + brightStat$
-    planTxt$ = "Plan: " + modelTxt$ + ", seed " + string$(random_seed)
+    planTxt$ = "Plan: " + modelTxt$
     if hasPlan
         planTxt$ = planTxt$ + ", " + string$(nPlanRowsAll) + " rows x " + string$(nPlanCols) + " slots"
-            ... + ", phrase-to-phrase spread " + planSpread$
+            ... + ", spread " + planSpread$
     endif
     Text: 0.015, "left", 0.620, "half", planTxt$
         ... + "   means repeat " + fixed$(planRep, 2)
@@ -1090,21 +1371,33 @@ if draw_visualization
         ... + ", stretch " + fixed$(planStretch, 2)
         ... + ", memory " + fixed$(planMemory, 2)
         ... + ", braid " + fixed$(planBraid, 2)
-        ... + "   controls memory " + fixed$(usedMemory, 2) + ", repetition " + fixed$(usedRepetition, 2)
-    Text: 0.015, "left", 0.485, "half", "Operations: " + string$(nOpsTotal) + " total"
+    opsTxt$ = "Operations: planned " + string$(nOpsPlanned) + ", rendered " + string$(nOpsRendered)
+        ... + ", audible " + string$(nOpsAudible)
+    if nOpsRefused > 0
+        opsTxt$ = opsTxt$ + " (" + string$(nOpsRefused) + " refused past end)"
+    endif
+    if nFormPartsAll > 0
+        opsTxt$ = opsTxt$ + ", " + string$(nFormPartsAll) + " form parts"
+        if nFormPartsEmpty > 0
+            opsTxt$ = opsTxt$ + " (" + string$(nFormPartsEmpty) + " EMPTY)"
+        endif
+    endif
+    Text: 0.015, "left", 0.485, "half", opsTxt$
         ... + "   place " + string$(nOpPlace) + ", repeat " + string$(nOpRepeat)
         ... + ", fragment " + string$(nOpFragment) + ", recall " + string$(nOpRecall)
         ... + ", braid " + string$(nOpBraid) + ", echo " + string$(nOpEcho)
         ... + ", invert " + string$(nOpInvert)
-    opDrawn$ = string$(nOpViz) + " of " + string$(nOpsTotal)
-    Text: 0.015, "left", 0.350, "half", "Rendering: effective target ratio x" + fixed$(usedTarget, 2)
+    opDrawn$ = string$(nOpViz) + " of " + string$(nOpsRendered)
+    Text: 0.015, "left", 0.350, "half", "Rendering: target ratio x" + fixed$(usedTarget, 2)
+        ... + ", stretch " + stretchMode$
+        ... + ", memory " + fixed$(usedMemory, 2) + ", repetition " + fixed$(usedRepetition, 2)
         ... + ", overlap " + fixed$(usedOverlap, 2)
         ... + ", surprise " + fixed$(usedSurprise, 2)
-        ... + "   analysis " + monoTxt$
-        ... + "   " + opDrawn$ + " operations drawn"
+        ... + "   " + opDrawn$ + " drawn"
     Text: 0.015, "left", 0.215, "half", "Output: " + string$(outputChannels) + " ch, " + spatialTxt$
         ... + ", " + string$(nSpatialOps) + " panned operations, pan " + fixed$(panMin, 2)
         ... + " to " + fixed$(panMax, 2)
+        ... + sonataSummary$
     Text: 0.015, "left", 0.080, "half", "Level: duration " + fixed$(dur, 2) + " to " + fixed$(dur_out, 2)
         ... + " s, content to " + fixed$(contentEnd, 2) + " s"
         ... + "   tail " + fixed$(trailingSilence, 3) + " s   RMS " + fixed$(rms_orig, 4) + " to " + fixed$(rms_out, 4)
@@ -1136,6 +1429,20 @@ appendInfoLine: ""
 appendInfoLine: "=== COMPLETE ==="
 appendInfoLine: "Output: " + soundName$ + "_hnr_" + presetName$
 appendInfoLine: "Duration: " + fixed$(dur_out, 2) + " s"
+
+# -----------------------------------------------------------------------------
+# Preset table helper (sets the same variables the form and dialog use)
+# -----------------------------------------------------------------------------
+procedure presetValues: .t, .coh, .con, .mem, .rep, .frag, .ov, .sur
+    target_duration = .t
+    phrase_coherence = .coh
+    section_contrast = .con
+    memory_strength = .mem
+    repetition = .rep
+    fragmentation = .frag
+    overlap_amount = .ov
+    formal_surprise = .sur
+endproc
 
 # -----------------------------------------------------------------------------
 # Drawing helpers
@@ -1245,7 +1552,7 @@ endproc
 procedure laneLabel: .y, .count, .name$
     Font size: 5.5
     Select inner viewport: vizL, vizR, yOpsA, yOpsB
-    Axes: 0, axisDur, 0, 7
+    Axes: 0, axisDur, 0, opsTop
     if .count > 0
         Colour: "{0.25, 0.25, 0.32}"
     else

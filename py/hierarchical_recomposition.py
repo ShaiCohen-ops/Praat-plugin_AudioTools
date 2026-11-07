@@ -2,9 +2,108 @@
 # =============================================================================
 # Hierarchical Neural Recomposition
 # Author: Shai Cohen — Department of Music, Bar-Ilan University, Israel
-# Version: 1.7 (2026)
+# Version: 1.10 (2026)
 # License: MIT
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v1.10 (response to the v1.9 engineering review):
+#   - Endings. CollapsingRefrain gets a dedicated final window (last 18% of
+#     the target) holding only refrain residues - shorter, quieter, darker,
+#     sparser - the last ending on the final sample. HiddenSonata's duration
+#     fill may only use theme-B material and belongs to the recapitulation;
+#     the generic fill likewise uses the last part's pool when one is set.
+#   - Phase vocoder timing: frames were trimmed at ratio*pad instead of
+#     ratio*pad - (ratio-1)*n/2, shifting output by (ratio-1)*n/2 (-11.6 ms at
+#     x2, +5.8 ms at x0.5). Corrected. Attacks are now spliced back unstretched
+#     at their mapped position (2 ms before to 12 ms after each onset): an
+#     impulse keeps peak 1.000 at its exact position at x0.5 and x2 (v1.9:
+#     0.06-0.33, smeared). Level match runs before the splice.
+#   - Latent Counterpoint: fragmentation = motivic disintegration that grows
+#     through the piece; a voice answers with a slice of the event another
+#     voice just played, in its own position.
+#   - Minimum material: formal presets that the source cannot carry stop with
+#     an explanation (exit 3, shown by Praat) instead of silently running the
+#     generic planner.
+#   - New Stretch amount (CLI arg 17, 0..1 = x1..x2 on every operation), so
+#     the Stretch mode has material to act on in every preset.
+#   - sonata_window_coverage: share of each window covered by its own
+#     rendered material (an "existing" window with one tiny op shows as such).
+#
+# Changelog v1.9 (response to the v1.8 engineering review):
+#   - HiddenSonata windows are now hard bounds: each window starts at its own
+#     boundary and an event that would cross it is cut to end on it. v1.8 let
+#     a long event carry the cursor past later windows (x0.2 gave 0 ops in
+#     development and recapitulation). Verified over x0.1-x3.0, two seeds and
+#     a long-event input: all five windows (expoA, expoB, dev, recapA, recapB)
+#     always get rendered operations, none starts outside its window, 0 ms
+#     overrun. New stats: sonata_windows, sonata_complete.
+#   - Every editable control now changes the audio of every preset (A/B 0 vs 1
+#     at base values and at each preset's own values; target 0.5 vs 2):
+#     sonata memory = literalness of the recapitulation, contrast = overlay
+#     rate, surprise = reversal rate, fragmentation = slice length; litany
+#     memory = returning cells, surprise = mutation strength, contrast = cell
+#     order; braiding contrast = strand width, memory = motif length,
+#     repetition = restated events, fragmentation = grains; counterpoint
+#     memory = imitation, repetition = restated phrases, surprise = rest
+#     irregularity; memory spiral memory = depth and recall length; echo
+#     contrast = echo width. Stretch mode stays conditional: it matters only
+#     when an operation is stretched, so n_ops_stretched is reported.
+#   - Phase vocoder: identity phase locking (bins follow their peak) fixes the
+#     level loss (v1.8: -9.6 dB at x2 on 300 Hz, -16 dB on 1234 Hz; now within
+#     0.06 dB before any correction, 0.00-0.09 dB envelope ripple), plus an
+#     RMS match per event that also covers noise (-0.6 dB incoherent loss).
+#   - Short input: the onset STFT shrinks its frame and hop with the input, so
+#     <= 896-sample files no longer raise "noverlap must be less than
+#     nperseg" (tested 64 samples to 1 s, all nine modes, both stretch modes).
+#   - n_form_parts_empty reports declared parts that got no rendered operation.
+#   - "Audible" is documented for what it is: the operation's peak within
+#     -60 dB of the pre-limiter mix peak, not a perceptual measure.
+#
+# Changelog v1.8 (response to the v1.7 engineering review):
+#   Formal planners
+#   - HiddenSonata: exposition / development / recapitulation get a fixed time
+#     budget (36/36/28 % of the target) before any material is placed, so the
+#     recapitulation always exists. Theme A = first section, theme B = the
+#     section most unlike it; each theme has its own window in exposition and
+#     recapitulation (B returns slowed x1.08 and darkened). The development is
+#     built only from slices of A and B, alternated and overlaid.
+#   - FragmentedLitany: cells of 3-8 micro-slices (40-250 ms, from anywhere in
+#     the event), repeated with cumulative order/length mutation. Cells come
+#     from phrases spread across the whole source (v1.7 used the first third).
+#   - FormalBraiding: real attack / sustain / noise families, three strands
+#     with fixed pans, alternating braided and unravelled phases with a new
+#     phase relationship on each re-formation.
+#   - LatentCounterpoint: phrase clusters become persistent voices with their
+#     own timeline and pan; onsets are staggered and prominence rotates.
+#   - EchoArchitecture: echoes from every selected event on the phrase's own
+#     inter-onset grid (v1.7: first event of each phrase, fixed delay).
+#   - Sections: boundaries at novelty peaks (timbral change, wider-context
+#     change, energy dip) instead of equal-size groups.
+#   Plan -> sound
+#   - All 16 slots now drive the scheduler: foreground -> level, density_up
+#     -> layered entries, density_down -> thinning, call_response -> sequential
+#     answer from a related phrase (contrast slot picks contrasting/agreeing),
+#     restatement -> verbatim return of an earlier phrase, surprise -> a
+#     reversed far-away event cutting in. surprise = 0 still turns it off.
+#   - The plan blend is unchanged and documented: on the five control-mixed
+#     slots neural 0.07 / descriptors 0.28 / controls 0.65. The network is
+#     still untrained and seeded; it is a generative perturbation, not a
+#     learned model of form.
+#   Control and rendering
+#   - CLI arg 15 "explicit": the values passed are final (Praat v1.8 sends
+#     presets as editable values). Absent/"preset" keeps the old override.
+#   - CLI arg 16 stretch mode: "resample" (default, pitch follows) or
+#     "preserve" (phase vocoder; 300 Hz stays 300 Hz at x0.5 and x2).
+#   - RecursiveSpeechChoir: voices are summed unnormalised and limited once,
+#     so the per-voice gain steps survive.
+#   - Slices carry an offset (no longer always the event head); the scheduler
+#     refuses operations that would start after the end.
+#   Telemetry
+#   - planned / rendered / audible operation counts (audible = within -60 dB
+#     of the pre-limiter mix peak); lane counts are rendered operations.
+#   - Source map uses the slice actually read and runs backwards for reversed
+#     material. Form parts (sonata parts, litany cells, braid phases) are
+#     exported with spans and operation counts.
 #
 # Changelog v1.7:
 #   - True event -> phrase -> section hierarchy: contiguous phrase groups are
@@ -66,12 +165,13 @@
 #     of np.correlate full (O(n^2)) — matters for long events.
 #
 # Description:
-#   Multi-scale neural recomposition engine.
-#   Segments an input sound into events → phrases and computes section descriptors
-#   for diagnostics. A phrase-sequence hierarchy then builds seed-deterministic
-#   embeddings via a randomly initialized PyTorch network (no training/checkpoint),
-#   and generates a recomposition plan
-#   (ordering, overlap, memory) and renders a new piece from the source material.
+#   Multi-scale recomposition engine. Segments an input sound into events ->
+#   phrases -> novelty-bounded sections. A 16-slot plan per phrase is built
+#   mainly from acoustic descriptors, perturbed by a seeded, UNTRAINED
+#   hierarchical network (no checkpoint, no learning), and biased by the user
+#   controls. Each preset then runs its own formal planner (sonata, litany,
+#   braid, counterpoint, or the generic phrase pass) and the result is
+#   re-rendered from the source material.
 #
 # Dependencies:
 #   Required: numpy scipy soundfile
@@ -83,7 +183,7 @@
 #       <target_dur> <density> <coherence> <contrast> \
 #       <memory> <repetition> <fragmentation> <overlap> \
 #       <source_trace> <surprise> <seed> \
-#       <preset_name>
+#       <preset_name> [explicit|preset] [resample|preserve]
 # =============================================================================
 
 import sys
@@ -215,7 +315,14 @@ def compute_onset_strength(audio, sr, hop=128):
     Returns (strength_curve, hop_size).
     """
     from scipy.signal import stft as scipy_stft
+    # Shrink the frame for very short input so noverlap < nperseg always holds
+    # (v1.8 crashed on <= 896 samples: SciPy shrank nperseg, noverlap stayed 896).
     n_fft = 1024
+    while n_fft > 16 and n_fft > len(audio):
+        n_fft //= 2
+    hop = max(1, min(hop, n_fft // 4))
+    if len(audio) < n_fft:
+        audio = np.concatenate([audio, np.zeros(n_fft - len(audio), dtype=np.float32)])
     _, _, Zxx = scipy_stft(audio, fs=sr, window="hann",
                            nperseg=n_fft, noverlap=n_fft - hop,
                            nfft=n_fft, boundary="zeros", padded=True)
@@ -296,9 +403,11 @@ def segment_events(audio, sr, min_dur_s=0.05, max_dur_s=4.0):
 
     if len(events) < 2:
         mid = len(audio) // 2
+        # No onset structure: split at the midpoint so the planners have two
+        # units, and mark it so formal presets can tell it is not real structure.
         events = [
-            {'start': 0,   'end': mid,        'audio': audio[:mid].copy()},
-            {'start': mid, 'end': len(audio), 'audio': audio[mid:].copy()}
+            {'start': 0,   'end': mid,        'audio': audio[:mid].copy(), 'forced_split': True},
+            {'start': mid, 'end': len(audio), 'audio': audio[mid:].copy(), 'forced_split': True}
         ]
     return events
 
@@ -449,19 +558,76 @@ def rebalance_phrases(events, features_vecs, n_phrases):
 # SECTION 5 — SECTION DESCRIPTORS
 # =============================================================================
 
-def group_phrases_into_sections(phrases, events, n_sections=4):
-    """Group contiguous phrases into real structural sections.
+def phrase_boundary_novelty(phrases, events, features_list):
+    """Structural novelty at each boundary between consecutive phrases.
 
-    Returns a list of dicts with phrase_indices, event_range and source span.
+    Boundary b sits between phrase b-1 and phrase b (b = 1..n-1). Three cues,
+    each z-scored across the boundaries of this source:
+      - local timbral change: cosine distance between the two phrase centroids;
+      - wider-context change: distance between the mean of up to two phrases
+        before and up to two after, so a single odd phrase scores lower than a
+        real change of material;
+      - pause: how far the energy at the junction dips below the source mean.
+    Returns an array of length n-1 (empty for fewer than two phrases).
+    """
+    n = len(phrases)
+    if n < 2:
+        return np.zeros(0, dtype=np.float64)
+    C = np.asarray([ph['centroid'] for ph in phrases], dtype=np.float64)
+
+    def cdist(a, b):
+        return 1.0 - float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-12))
+
+    rms_all = np.asarray([f['rms'] for f in features_list], dtype=np.float64)
+    rms_mean = float(np.mean(rms_all)) + 1e-12
+    local, context, pause = [], [], []
+    for b in range(1, n):
+        local.append(cdist(C[b - 1], C[b]))
+        context.append(cdist(C[max(0, b - 2):b].mean(axis=0), C[b:min(n, b + 2)].mean(axis=0)))
+        e_last = phrases[b - 1]['event_indices'][-1]
+        e_first = phrases[b]['event_indices'][0]
+        junction = min(rms_all[e_last], rms_all[e_first])
+        pause.append(float(np.clip(1.0 - junction / rms_mean, 0.0, 1.0)))
+
+    def z(v):
+        v = np.asarray(v, dtype=np.float64)
+        sd = float(np.std(v))
+        return (v - float(np.mean(v))) / sd if sd > 1e-9 else np.zeros_like(v)
+
+    return 0.5 * z(local) + 0.3 * z(context) + 0.2 * z(pause)
+
+
+def group_phrases_into_sections(phrases, events, features_list):
+    """Group contiguous phrases into sections at the strongest structural boundaries.
+
+    v1.8: boundaries are the local maxima of phrase_boundary_novelty() whose
+    z-score exceeds 0.5, strongest first, capped at round(sqrt(n))+1 sections.
+    A source of four or more phrases always gets at least one boundary (its
+    strongest). Fewer than four phrases form a single section.
+    Returns (sections, novelty).
     """
     n_ph = len(phrases)
     if n_ph == 0:
-        return []
-    n_sections = max(1, min(int(n_sections), n_ph))
-    bounds = np.linspace(0, n_ph, n_sections + 1).astype(int)
+        return [], np.zeros(0)
+    novelty = phrase_boundary_novelty(phrases, events, features_list)
+    cuts = []
+    if n_ph >= 4 and len(novelty):
+        max_sections = max(2, min(8, int(round(math.sqrt(n_ph))) + 1))
+        peaks = []
+        for i in range(len(novelty)):
+            left = novelty[i - 1] if i > 0 else -np.inf
+            right = novelty[i + 1] if i + 1 < len(novelty) else -np.inf
+            if novelty[i] >= left and novelty[i] >= right and novelty[i] > 0.5:
+                peaks.append(i)
+        peaks.sort(key=lambda i: -novelty[i])
+        chosen = peaks[:max_sections - 1]
+        if not chosen:
+            chosen = [int(np.argmax(novelty))]
+        cuts = sorted(i + 1 for i in chosen)       # boundary i sits before phrase i+1
+    bounds = [0] + cuts + [n_ph]
     sections = []
-    for si in range(n_sections):
-        p0, p1 = int(bounds[si]), int(bounds[si + 1])
+    for si in range(len(bounds) - 1):
+        p0, p1 = bounds[si], bounds[si + 1]
         if p1 <= p0:
             continue
         pidx = list(range(p0, p1))
@@ -474,8 +640,9 @@ def group_phrases_into_sections(phrases, events, n_sections=4):
             'event_range': (e0, e1 + 1),
             'start': events[e0]['start'],
             'end': events[e1]['end'],
+            'novelty_in': float(novelty[p0 - 1]) if p0 > 0 and len(novelty) else 0.0,
         })
-    return sections
+    return sections, novelty
 
 
 def compute_section_descriptors(events, features_list, sr, sections):
@@ -887,10 +1054,10 @@ PRESETS = {
 
     'EchoArchitecture': {
         'description': (
-            'Each event generates one or more echoes — slightly delayed '
-            'and reduced in amplitude. Phrases are constructed by the '
-            'layering of events with their echo trails. The result is '
-            'a space-like architecture built from the source\'s own resonance.'
+            'Placed events, selected by the overlap slot, generate up to three '
+            'echoes that fall on the phrase\'s own inter-onset grid, decaying '
+            'and alternating left/right. The result is a space-like '
+            'architecture built from the source\'s own rhythm.'
         ),
         'params': {
             'target_duration': 1.6, 'coherence': 0.55,
@@ -919,7 +1086,8 @@ PRESETS = {
 
     'HiddenSonata': {
         'description': (
-            'A classical three-part sonata form is projected onto the '
+            'Sonata-INSPIRED (themes are chosen by acoustic contrast, not by '
+            'tonal or thematic relations). A three-part sonata outline is projected onto the '
             'event/phrase structure: an exposition introduces two contrasting '
             'phrase groups, a development section fragments and combines them, '
             'and a recapitulation restates the opening material with a controlled transformation. '
@@ -936,8 +1104,12 @@ PRESETS = {
 }
 
 
-def get_preset(name, fallback_params):
-    """Return preset params merged with fallback, or fallback if unknown."""
+def get_preset(name, fallback_params, explicit=False):
+    """Return (params, ops). With explicit=True the caller's values are final
+    and the preset contributes only its mechanisms (ops); otherwise the
+    preset's parameter table overrides them (pre-v1.8 behaviour)."""
+    if name in PRESETS and explicit:
+        return dict(fallback_params), PRESETS[name].get('ops', {})
     if name in PRESETS:
         p = dict(fallback_params)
         p.update(PRESETS[name]['params'])
@@ -960,305 +1132,976 @@ def build_event_similarity_matrix(feat_vecs):
     return (X_n @ X_n.T).astype(np.float32)
 
 
-def plan_event_ordering(events, feat_vecs, phrases, section_plan_np, params, ops, rng, sr):
-    """Generate scheduled operations and keep cycling until target duration is covered."""
-    sim_matrix = build_event_similarity_matrix(feat_vecs)
-    ops_list = []
-    cursor = 0.0
-    target_dur = params.get('target_duration', 1.0) * sum(len(e['audio']) for e in events) / sr
-    phrase_order = _plan_phrase_order(phrases, section_plan_np, params, ops, rng)
-    if not phrase_order:
-        return ops_list
+class Scheduler:
+    """Shared scheduling state for every planner.
 
-    memory_bank = []
-    refrain_returns = 0
-    n_ph = len(phrases)
-    sonata_exp = n_ph // 2 if ops.get('sonata_form') and n_ph >= 4 else 0
-    sonata_dev = n_ph if sonata_exp else 0
-    max_cycles = max(2, int(math.ceil(target_dur / max(0.05, sum(len(e['audio']) for e in events) / sr))) + 4)
-    cycle = 0
+    All operations pass through add(), which refuses anything starting at or
+    after the target duration (those could never sound) and stamps the current
+    form part. Parts are named time windows a planner declares (sonata
+    sections, litany cells, braid phases) and are exported as telemetry.
+    """
 
-    def slot(name):
-        return PLAN_SLOTS[name]
+    def __init__(self, events, feat_vecs, features_list, phrases, sections,
+                 plan, params, ops, rng, sr):
+        self.events = events
+        self.fv = feat_vecs
+        self.fl = features_list
+        self.phrases = phrases
+        self.sections = sections
+        self.plan = plan
+        self.params = params
+        self.ops = ops
+        self.rng = rng
+        self.sr = sr
+        self.dur = [len(e['audio']) / sr for e in events]
+        self.src_dur = float(sum(self.dur))
+        self.target = float(params.get('target_duration', 1.0)) * self.src_dur
+        self.sim = build_event_similarity_matrix(feat_vecs)
+        self.ev_phrase = np.zeros(len(events), dtype=int)
+        for pi, ph in enumerate(phrases):
+            for ei in ph['event_indices']:
+                self.ev_phrase[ei] = pi
+        self.ops_list = []
+        self.parts = []
+        self.part_idx = -1
+        self.memory_bank = []
+        self.refrain_returns = 0
+        self.n_refused = 0
+        # Stretch amount (v1.10): a global factor on every operation, so the
+        # Stretch mode always has something to act on when amount > 0.
+        self.stretch_amount = float(np.clip(params.get('stretch_amount', 0.0), 0.0, 1.0))
+        # Material the end-of-piece duration fill may use (None = any event).
+        self.fill_pool = None
+        # Layer contrast (v1.10, generic planner): the contrast control also
+        # sets the level of the secondary layers (repeat, recall, braid, echo)
+        # against the main statement: x1.2 at contrast 0, x1.0 at 0.5, x0.8 at 1.
+        self.layer_contrast = False
 
-    while cursor < target_dur and cycle < max_cycles:
-        progressed = False
-        for phrase_pos, phrase_idx in enumerate(phrase_order):
-            if cursor >= target_dur:
-                break
-            phrase = phrases[int(phrase_idx)]
-            plan_row = section_plan_np[min(int(phrase_idx), len(section_plan_np)-1)]
-            ev_indices = list(phrase['event_indices'])
-            if not ev_indices:
-                continue
+    # -- bookkeeping ---------------------------------------------------------
+    def row(self, pi):
+        return self.plan[min(int(pi), len(self.plan) - 1)]
 
-            # Sonata phase is explicit in the first formal pass and mutates gently
-            # on later cycles used only to fill a longer requested duration.
-            sonata_phase = 'none'
-            if sonata_exp:
-                if phrase_pos < sonata_exp:
-                    sonata_phase = 'exposition'
-                elif phrase_pos < sonata_exp + sonata_dev:
-                    sonata_phase = 'development'
-                else:
-                    sonata_phase = 'recapitulation'
+    def begin_part(self, name, t0):
+        self.parts.append([str(name), float(t0), float(t0)])
+        self.part_idx = len(self.parts) - 1
 
-            # MemorySpiral: deterministic recursive recalls with increasing lookback.
-            if memory_bank:
-                do_recall = False
-                recall_entry = None
-                if ops.get('recurrence'):
-                    depth = max(1, int(ops.get('memory_depth', 4)))
-                    lookback = min(len(memory_bank), 1 + ((phrase_pos + cycle) % depth))
-                    recall_entry = memory_bank[-lookback]
-                    do_recall = True
-                elif plan_row[slot('memory')] > 0.55 and rng.random() < plan_row[slot('memory')]:
-                    recall_entry = rng.choice(memory_bank)
-                    do_recall = True
-                if do_recall and recall_entry is not None:
-                    recall_phrase_idx, _ = recall_entry
-                    recall_phrase = phrases[min(int(recall_phrase_idx), len(phrases)-1)]
-                    for ei in recall_phrase['event_indices'][:2]:
-                        dur_s = len(events[ei]['audio']) / sr
-                        ops_list.append({
-                            'type':'recall','event_idx':ei,'start_time':cursor,
-                            'gain':0.58 if ops.get('recurrence') else 0.65,
-                            'crossfade_ms':30,
-                            'label':f'memory_recall(p{recall_phrase_idx})'})
-                        cursor += min(dur_s * 0.42, max(0.0, target_dur-cursor))
-                        if cursor >= target_dur:
-                            break
+    def end_part(self, t1):
+        if self.part_idx >= 0:
+            self.parts[self.part_idx][2] = float(min(t1, self.target))
 
-            if cursor >= target_dur:
-                break
+    def add(self, op):
+        if self.layer_contrast and op.get('type') in ('repeat', 'recall', 'braid', 'echo'):
+            c = float(np.clip(self.params.get('contrast', 0.5), 0, 1))
+            op['gain'] = float(op.get('gain', 1.0)) * (1.0 + 0.4 * (0.5 - c))
+        if self.stretch_amount > 0 and 'stretch' not in op:
+            op['stretch'] = 1.0 + self.stretch_amount
+        if float(op['start_time']) >= self.target:
+            self.n_refused += 1
+            return False
+        if self.part_idx >= 0:
+            op.setdefault('part', self.part_idx)
+        self.ops_list.append(op)
+        return True
 
-            # Preset-level development forces real fragmentation/combination.
-            force_fragment = sonata_phase == 'development'
-            micro = bool(ops.get('micro_events'))
-            if force_fragment or (plan_row[slot('fragmentation')] > 0.6 and rng.random() < plan_row[slot('fragmentation')]):
-                sub_ev = int(rng.choice(ev_indices))
-                if micro:
-                    slice_ratio = rng.uniform(0.06, 0.22)
-                elif force_fragment:
-                    slice_ratio = rng.uniform(0.18, 0.38)
-                else:
-                    slice_ratio = rng.uniform(0.15, 0.45)
-                ops_list.append({
-                    'type':'fragment','event_idx':sub_ev,'start_time':cursor,
-                    'gain':0.82,'crossfade_ms':10,'slice_ratio':slice_ratio,
-                    'label':f'fragment(p{phrase_idx},e{sub_ev})'})
-                dur_s = len(events[sub_ev]['audio']) / sr
-                cursor += dur_s * slice_ratio * (0.65 if micro else 0.9)
+    # -- per-event values read from the plan row -----------------------------
+    def stretch_for(self, row):
+        s = 1.0
+        if row[PLAN_SLOTS['stretch']] > 0.55:
+            s = 1.0 + (row[PLAN_SLOTS['stretch']] - 0.5) * self.params.get('fragmentation', 0.3)
+        return float(np.clip(s * (1.0 + self.stretch_amount), 0.5, 3.0))
 
-            # Collapsing refrain: each return is shorter, quieter and more eroded.
-            collapse_refrain = bool(ops.get('refrain')) and int(phrase_idx) == 0
-            collapse_rate = float(ops.get('collapse_rate', 0.0))
-            if collapse_refrain:
-                refrain_returns += 1
-            collapse_amount = np.clip((refrain_returns - 1) * collapse_rate, 0.0, 0.88) if collapse_refrain else 0.0
+    def fg_gain(self, row):
+        """foreground slot -> level of the phrase's main statement (0.70..1.00)."""
+        return 0.70 + 0.30 * float(np.clip(row[PLAN_SLOTS['foreground']], 0, 1))
 
-            for pos_in_phrase, ei in enumerate(ev_indices):
-                if cursor >= target_dur:
-                    break
-                ev_dur_s = len(events[ei]['audio']) / sr
+    def xfade_ms(self, row):
+        return int(20 + float(row[PLAN_SLOTS['overlap']]) * 80)
 
-                if plan_row[slot('repetition')] > 0.5 and rng.random() < plan_row[slot('repetition')] * 0.4:
-                    ops_list.append({
-                        'type':'repeat','event_idx':ei,
-                        'start_time':max(0.0, cursor-ev_dur_s*rng.uniform(0.0,0.3)),
-                        'gain':0.7,'crossfade_ms':20,
-                        'label':f'repeat(p{phrase_idx},e{ei})'})
+    # -- primitive operations ------------------------------------------------
+    def place(self, ei, cursor, row, typ='place', gain=None, stretch=None,
+              label='', **extra):
+        """Schedule a whole event; return the cursor after it (minus overlap)."""
+        ei = int(ei)
+        if stretch is None:
+            stretch = self.stretch_for(row)
+        if gain is None:
+            gain = self.fg_gain(row)
+        xf = self.xfade_ms(row)
+        op = {'type': typ, 'event_idx': ei, 'start_time': float(cursor),
+              'gain': float(gain), 'crossfade_ms': xf, 'stretch': float(stretch),
+              'label': label}
+        op.update(extra)
+        self.add(op)
+        gap = self.dur[ei] * stretch
+        return cursor + max(gap * 0.1, gap - min(xf / 1000.0, gap * 0.15))
 
-                stretch = 1.0
-                if plan_row[slot('stretch')] > 0.55:
-                    stretch = 1.0 + (plan_row[slot('stretch')] - 0.5) * params.get('fragmentation',0.3)
-                    stretch = float(np.clip(stretch,0.5,3.0))
-                if sonata_phase == 'recapitulation' and ops.get('recapitulation'):
-                    stretch *= 1.08
+    def fragment(self, ei, cursor, ratio, offset_ratio=0.0, gain=0.82, label='',
+                 advance=0.9, typ='fragment', **extra):
+        """Schedule a slice of an event taken from offset_ratio of its length."""
+        ei = int(ei)
+        n = len(self.events[ei]['audio'])
+        off = int(np.clip(offset_ratio, 0.0, 0.98) * n)
+        nf = max(1, min(n - off, int(n * ratio)))
+        op = {'type': typ, 'event_idx': ei, 'start_time': float(cursor),
+              'gain': float(gain), 'crossfade_ms': 10,
+              'slice_ratio': nf / max(1, n), 'slice_offset': off, 'label': label}
+        op.update(extra)
+        self.add(op)
+        return cursor + nf / self.sr * float(op.get('stretch', 1.0)) * advance
 
-                if collapse_amount > 0:
-                    # Later refrain statements progressively reduce to residual fragments.
-                    if pos_in_phrase > 0 and rng.random() < collapse_amount * 0.75:
-                        continue
-                    slice_ratio = max(0.10, 1.0 - collapse_amount)
-                    ops_list.append({
-                        'type':'fragment','event_idx':ei,'start_time':cursor,
-                        'gain':max(0.20, 1.0 - 0.65*collapse_amount),
-                        'crossfade_ms':12,'slice_ratio':slice_ratio,
-                        'erosion':collapse_amount,
-                        'label':f'collapsing_refrain(r{refrain_returns},e{ei})'})
-                    gap = ev_dur_s * slice_ratio
-                else:
-                    op = {
-                        'type':'place','event_idx':ei,'start_time':cursor,'gain':1.0,
-                        'crossfade_ms':int(20+plan_row[slot('overlap')]*80),
-                        'stretch':stretch,'label':f'place(p{phrase_idx},e{ei})'}
-                    if sonata_phase == 'recapitulation' and ops.get('recapitulation') and pos_in_phrase == 0:
-                        op['erosion'] = 0.12
-                    ops_list.append(op)
-                    gap = ev_dur_s * stretch
+    def phrase_similarity(self, i, j):
+        ev_i = self.phrases[i]['event_indices']
+        ev_j = self.phrases[j]['event_indices']
+        return float(np.mean(self.sim[np.ix_(ev_i, ev_j)])) if ev_i and ev_j else 0.5
 
-                xfade_s = int(20 + plan_row[slot('overlap')] * 80) / 1000.0
-                xfade_s = min(xfade_s, gap * 0.15)
-                cursor += max(gap * 0.1, gap - xfade_s)
-                progressed = True
+    def related_phrase(self, phrase_idx, want_contrast=True):
+        """Most dissimilar (or most similar) other phrase."""
+        n = len(self.phrases)
+        if n < 2:
+            return None
+        cand = [j for j in range(n) if j != int(phrase_idx)]
+        sims = [self.phrase_similarity(int(phrase_idx), j) for j in cand]
+        k = int(np.argmin(sims)) if want_contrast else int(np.argmax(sims))
+        return cand[k]
 
-            # Braid, and guaranteed combination during sonata development.
-            do_braid = (ops.get('braid') and plan_row[slot('braid')] > 0.45) or force_fragment
-            if do_braid and cursor < target_dur:
-                contrast_idx = _find_contrast_phrase(int(phrase_idx), phrases, sim_matrix, feat_vecs, rng)
-                if contrast_idx is not None:
-                    braid_evs = phrases[contrast_idx]['event_indices']
-                    braid_cursor = max(0.0, cursor - sum(len(events[ei]['audio'])/sr for ei in ev_indices)*0.5)
-                    n_strands = max(2, int(ops.get('n_strands', ops.get('polyphony', 2))))
-                    strand_pans = np.linspace(-0.78,0.78,n_strands)
-                    for braid_i, bei in enumerate(braid_evs[:3]):
-                        bop = {
-                            'type':'braid','event_idx':bei,'start_time':braid_cursor,
-                            'gain':0.55 if force_fragment else 0.6,'crossfade_ms':25,
-                            'label':f'braid(p{phrase_idx}+p{contrast_idx},e{bei})'}
-                        if ops.get('braid'):
-                            bop['pan'] = float(strand_pans[braid_i % n_strands])
-                        ops_list.append(bop)
-                        braid_cursor += len(events[bei]['audio'])/sr * 0.7
+    def far_event(self, ev_indices):
+        """An event from the far side of the source relative to this phrase."""
+        centre = float(np.mean([self.events[e]['start'] for e in ev_indices]))
+        dist = np.asarray([abs(e['start'] - centre) for e in self.events], dtype=np.float64)
+        order = np.argsort(-dist)
+        pool = order[:max(1, len(order) // 4)]
+        return int(self.rng.choice(list(pool)))
 
-            if plan_row[slot('collapse')] > 0.7 and not ops.get('refrain') and rng.random() < 0.3:
-                cursor += min(rng.uniform(0.2,0.6), max(0.0,target_dur-cursor))
-
-            if ops.get('echo_depth') and ev_indices:
-                echo_decay = ops.get('echo_decay',0.5)
-                echo_depth = int(ops.get('echo_depth',2))
-                src_ev = ev_indices[0]
-                ev_dur_s = len(events[src_ev]['audio'])/sr
-                for ech in range(1,echo_depth+1):
-                    echo_spread = min(0.85,0.28+0.18*ech)
-                    echo_pan = -echo_spread if ech % 2 else echo_spread
-                    ops_list.append({
-                        'type':'echo','event_idx':src_ev,
-                        'start_time':cursor+ev_dur_s*ech*0.6,
-                        'gain':echo_decay**ech,'crossfade_ms':15,
-                        'pan':float(echo_pan),
-                        'label':f'echo{ech}(p{phrase_idx},e{src_ev})'})
-
-            if plan_row[slot('inversion')] > 0.65 and rng.random() < 0.3:
-                for ei in ev_indices[:2]:
-                    if cursor >= target_dur:
-                        break
-                    ops_list.append({
-                        'type':'invert','event_idx':ei,'start_time':cursor,
-                        'gain':0.75,'crossfade_ms':15,
-                        'label':f'invert(p{phrase_idx},e{ei})'})
-                    cursor += len(events[ei]['audio'])/sr * 0.8
-
-            memory_bank.append((int(phrase_idx), cursor))
-            depth = max(4, int(ops.get('memory_depth', 8)))
-            if len(memory_bank) > depth * 3:
-                memory_bank = memory_bank[-depth*3:]
-
-        if not progressed:
-            break
-        cycle += 1
-        if cycle > 0 and cursor < target_dur:
-            # Mutate subsequent fill cycles without changing determinism.
-            if params.get('surprise',0.0) > 0:
-                phrase_order = phrase_order[:]
-                if len(phrase_order) > 1:
-                    shift = 1 + (cycle % len(phrase_order))
-                    phrase_order = phrase_order[shift:] + phrase_order[:shift]
-
-    # Guarantee audible coverage to the target boundary.  Cursor can reach the
-    # target via overlap/gap arithmetic before the last scheduled waveform does.
-    def _sched_end(op):
-        ei = int(op.get('event_idx', -1))
-        if ei < 0 or ei >= len(events):
-            return 0.0
-        a = np.asarray(events[ei]['audio'])
-        if op.get('type') == 'invert':
+    # -- source-time geometry, shared with the duration fill ------------------
+    def op_audio(self, op):
+        a = np.asarray(self.events[int(op['event_idx'])]['audio'])
+        if 'slice_ratio' in op or op.get('type') == 'fragment':
+            off = int(op.get('slice_offset', 0))
+            n = max(1, int(len(a) * float(op.get('slice_ratio', 0.3))))
+            a = a[off:off + n]
+        if op.get('type') == 'invert' or op.get('reverse'):
             a = a[::-1]
-        if op.get('type') == 'fragment':
-            nfrag = max(1, int(len(a) * float(op.get('slice_ratio', 0.3))))
-            a = a[:nfrag]
-        if len(a) == 0:
-            return float(op.get('start_time', 0.0))
-        active = np.flatnonzero(np.abs(a) > 1e-5)
+        return a
+
+    def sched_end(self, op):
+        ei = int(op.get('event_idx', -1))
+        if ei < 0 or ei >= len(self.events):
+            return 0.0
+        a = self.op_audio(op)
+        active = np.flatnonzero(np.abs(a) > 1e-5) if len(a) else np.zeros(0, dtype=int)
         if len(active) == 0:
             return float(op.get('start_time', 0.0))
-        active_len = int(active[-1] + 1)
-        stretch = float(op.get('stretch', 1.0))
-        return float(op.get('start_time', 0.0)) + active_len * stretch / sr
+        return float(op.get('start_time', 0.0)) + (active[-1] + 1) * float(op.get('stretch', 1.0)) / self.sr
 
-    audible_end = max((_sched_end(op) for op in ops_list), default=0.0)
-    if target_dur - audible_end > 0.010 and events:
-        # Choose a source event with energy at one edge.  If its attack is
-        # stronger than its tail, reverse it so the target boundary is reached
-        # by audible material rather than by a silent source tail.
-        edge_scores = []
-        edge_reverse = []
-        for ev in events:
+    def finalize(self):
+        """Guarantee audible coverage to the target boundary."""
+        audible_end = max((self.sched_end(op) for op in self.ops_list), default=0.0)
+        gap = self.target - audible_end
+        if gap <= 0.010 or not self.events:
+            return
+        # The fill belongs to the last declared part and, when the planner set a
+        # pool (sonata: theme B; refrain: the refrain), uses only that material.
+        pool = list(self.fill_pool) if self.fill_pool else list(range(len(self.events)))
+        edge_scores, edge_reverse = [], []
+        for ei_ in pool:
+            ev = self.events[ei_]
             a = ev['audio']
             q = max(16, len(a) // 4)
             head = rms(a[:q]) if len(a) else 0.0
             tail = rms(a[-q:]) if len(a) else 0.0
             edge_scores.append(max(head, tail))
             edge_reverse.append(head > tail)
-        fill_ei = int(np.argmax(edge_scores))
-        fill_dur = len(events[fill_ei]['audio']) / sr
-        fill_start = max(0.0, target_dur - fill_dur)
-        ops_list.append({
-            'type':'invert' if edge_reverse[fill_ei] else 'place',
-            'event_idx':fill_ei,'start_time':fill_start,
-            'gain':0.72,'crossfade_ms':35,'stretch':1.0,
-            'label':'duration_fill'})
+        k_best = int(np.argmax(edge_scores))
+        fill_ei = int(pool[k_best])
+        edge_reverse = {fill_ei: edge_reverse[k_best]}
+        fill_dur = self.dur[fill_ei]
+        if self.ops.get('micro_events'):
+            # A litany ends on one of its own slices, not on a whole event.
+            sdur = float(np.clip(min(gap, 0.25), 0.04, fill_dur))
+            ratio = sdur / max(1e-9, fill_dur)
+            self.fragment(fill_ei, max(0.0, self.target - sdur), ratio, 0.0, 0.72,
+                          'duration_fill', advance=0.0, reverse=bool(edge_reverse[fill_ei]))
+            return
+        self.add({'type': 'invert' if edge_reverse[fill_ei] else 'place',
+                  'event_idx': fill_ei, 'start_time': max(0.0, self.target - fill_dur),
+                  'gain': 0.72, 'crossfade_ms': 35, 'stretch': 1.0,
+                  'label': 'duration_fill'})
 
-    return ops_list
+    # -- the generic per-phrase pass (Custom, MemorySpiral, CollapsingRefrain,
+    #    EchoArchitecture, RecursiveSpeechChoir) -------------------------------
+    def play_phrase(self, phrase_pos, phrase_idx, cursor, cycle):
+        S = PLAN_SLOTS
+        ops, rng, sr = self.ops, self.rng, self.sr
+        T = self.target
+        phrase_idx = int(phrase_idx)
+        row = self.row(phrase_idx)
+        ev_indices = list(self.phrases[phrase_idx]['event_indices'])
+        if not ev_indices:
+            return cursor, False
+        progressed = False
+
+        # memory: MemorySpiral recalls deterministically at growing lookback;
+        # elsewhere the memory slot sets the chance of a free recall.
+        if self.memory_bank:
+            recall_entry = None
+            mem = float(np.clip(self.params.get('memory', 0.5), 0, 1))
+            if ops.get('recurrence'):
+                # memory control: how far back the spiral reaches (v1.9)
+                depth = max(1, int(round(ops.get('memory_depth', 4) * (0.5 + mem))))
+                lookback = min(len(self.memory_bank), 1 + ((phrase_pos + cycle) % depth))
+                recall_entry = self.memory_bank[-lookback]
+            elif row[S['memory']] > 0.55 and rng.random() < row[S['memory']]:
+                recall_entry = rng.choice(self.memory_bank)
+            if recall_entry is not None:
+                rp = int(recall_entry[0])
+                n_rec = 1 + int(round(3 * mem)) if ops.get('recurrence') else 2
+                for ei in self.phrases[min(rp, len(self.phrases) - 1)]['event_indices'][:n_rec]:
+                    if cursor >= T:
+                        break
+                    self.add({'type': 'recall', 'event_idx': ei, 'start_time': cursor,
+                              'gain': 0.58 if ops.get('recurrence') else 0.65,
+                              'crossfade_ms': 30, 'label': f'memory_recall(p{rp})'})
+                    cursor += min(self.dur[ei] * 0.42, max(0.0, T - cursor))
+        if cursor >= T:
+            return cursor, progressed
+
+        # restatement: a verbatim return of a whole earlier phrase.
+        r = float(row[S['restatement']])
+        if self.memory_bank and r > 0.70 and rng.random() < (r - 0.70) * 0.8:
+            past = sorted({int(p) for p, _ in self.memory_bank if int(p) != phrase_idx})
+            if past:
+                rp = rng.choice(past)
+                for ei in self.phrases[rp]['event_indices']:
+                    if cursor >= T:
+                        break
+                    cursor = self.place(ei, cursor, row, typ='recall', stretch=1.0,
+                                        gain=0.80 * self.fg_gain(row),
+                                        label=f'restatement(p{rp},e{ei})')
+                progressed = True
+
+        # fragmentation slot: a slice of one of the phrase's events.
+        frag = float(row[S['fragmentation']])
+        if frag > 0.6 and rng.random() < frag:
+            sub_ev = int(rng.choice(ev_indices))
+            ratio = rng.uniform(0.15, 0.45)
+            cursor = self.fragment(sub_ev, cursor, ratio, rng.uniform(0.0, 1.0 - ratio), 0.82,
+                                   f'fragment(p{phrase_idx},e{sub_ev})', advance=0.9)
+
+        # CollapsingRefrain: each return of phrase 0 is shorter, quieter, eroded.
+        collapse_amount = 0.0
+        if ops.get('refrain') and phrase_idx == 0:
+            self.refrain_returns += 1
+            collapse_amount = float(np.clip((self.refrain_returns - 1) * float(ops.get('collapse_rate', 0.0)), 0.0, 0.88))
+
+        placed = []
+        for pos, ei in enumerate(ev_indices):
+            if cursor >= T:
+                break
+            ev_dur = self.dur[ei]
+            # density_down thins the phrase (never its first event).
+            dd = float(row[S['density_down']])
+            if pos > 0 and dd > 0.6 and rng.random() < (dd - 0.6) * 1.25:
+                continue
+            if row[S['repetition']] > 0.5 and rng.random() < row[S['repetition']] * 0.4:
+                self.add({'type': 'repeat', 'event_idx': ei,
+                          'start_time': max(0.0, cursor - ev_dur * rng.uniform(0.0, 0.3)),
+                          'gain': 0.7, 'crossfade_ms': 20,
+                          'label': f'repeat(p{phrase_idx},e{ei})'})
+            op_start = cursor
+            if collapse_amount > 0:
+                if pos > 0 and rng.random() < collapse_amount * 0.75:
+                    continue
+                ratio = max(0.10, 1.0 - collapse_amount)
+                self.fragment(ei, cursor, ratio, 0.0, max(0.20, 1.0 - 0.65 * collapse_amount),
+                              f'collapsing_refrain(r{self.refrain_returns},e{ei})', advance=0.0,
+                              crossfade_ms=12, erosion=collapse_amount)
+                gap = ev_dur * ratio
+                xf = min(self.xfade_ms(row) / 1000.0, gap * 0.15)
+                cursor += max(gap * 0.1, gap - xf)
+            else:
+                cursor = self.place(ei, cursor, row, label=f'place(p{phrase_idx},e{ei})')
+                placed.append((ei, op_start))
+            # density_up layers a second, quieter entry of the same event.
+            du = float(row[S['density_up']])
+            if du > 0.6 and rng.random() < (du - 0.6) * 1.25:
+                self.add({'type': 'repeat', 'event_idx': ei,
+                          'start_time': op_start + ev_dur * rng.uniform(0.25, 0.5),
+                          'gain': 0.5 * self.fg_gain(row), 'crossfade_ms': 20,
+                          'label': f'density_layer(p{phrase_idx},e{ei})'})
+            progressed = True
+
+        # call_response: an answer from a related phrase after a short breath.
+        # The contrast slot decides whether the answer contrasts or agrees.
+        cr = float(row[S['call_response']])
+        if cr > 0.6 and cursor < T and rng.random() < (cr - 0.6) * 1.5:
+            resp = self.related_phrase(phrase_idx, want_contrast=row[S['contrast']] >= 0.5)
+            if resp is not None:
+                cursor += rng.uniform(0.05, 0.15) * (1.0 - 0.5 * float(row[S['overlap']]))
+                for ei in self.phrases[resp]['event_indices'][:2]:
+                    if cursor >= T:
+                        break
+                    cursor = self.place(ei, cursor, row, gain=0.85 * self.fg_gain(row),
+                                        label=f'response(p{phrase_idx}-p{resp},e{ei})')
+
+        # braid slot: a contrasting phrase interleaved on top (mono).
+        b = float(row[S['braid']])
+        if b > 0.6 and cursor < T and rng.random() < (b - 0.6) * 1.0:
+            ci = self.related_phrase(phrase_idx, want_contrast=True)
+            if ci is not None:
+                bc = max(0.0, cursor - sum(self.dur[e] for e in ev_indices) * 0.5)
+                for bei in self.phrases[ci]['event_indices'][:3]:
+                    self.add({'type': 'braid', 'event_idx': bei, 'start_time': bc,
+                              'gain': 0.6, 'crossfade_ms': 25,
+                              'label': f'braid(p{phrase_idx}+p{ci},e{bei})'})
+                    bc += self.dur[bei] * 0.7
+
+        if row[S['collapse']] > 0.7 and not ops.get('refrain') and rng.random() < 0.3:
+            cursor += min(rng.uniform(0.2, 0.6), max(0.0, T - cursor))
+
+        # EchoArchitecture: echoes on the phrase's own inter-onset grid, from
+        # every placed event the overlap slot selects (not only the first).
+        if ops.get('echo_depth') and placed:
+            depth = int(ops.get('echo_depth', 2))
+            decay = float(ops.get('echo_decay', 0.5))
+            src_on = [self.events[e]['start'] / sr for e in ev_indices]
+            iois = np.diff(src_on) if len(src_on) > 1 else np.asarray([self.dur[ev_indices[0]] * 0.6])
+            iois = np.maximum(iois, 0.05)
+            p_echo = 0.30 + 0.50 * float(row[S['overlap']])
+            for j, (ei, t0) in enumerate(placed):
+                if rng.random() >= p_echo:
+                    continue
+                delay = 0.0
+                for ech in range(1, depth + 1):
+                    delay += float(iois[(j + ech - 1) % len(iois)])
+                    spread = min(0.85, 0.28 + 0.18 * ech) * (0.4 + 0.6 * float(np.clip(self.params.get('contrast', 0.5), 0, 1)))
+                    if not self.add({'type': 'echo', 'event_idx': ei, 'start_time': t0 + delay,
+                                     'gain': decay ** ech, 'crossfade_ms': 15,
+                                     'pan': float(-spread if ech % 2 else spread),
+                                     'label': f'echo{ech}(p{phrase_idx},e{ei})'}):
+                        break
+
+        if row[S['inversion']] > 0.65 and rng.random() < 0.3:
+            for ei in ev_indices[:2]:
+                if cursor >= T:
+                    break
+                self.add({'type': 'invert', 'event_idx': ei, 'start_time': cursor,
+                          'gain': 0.75, 'crossfade_ms': 15,
+                          'label': f'invert(p{phrase_idx},e{ei})'})
+                cursor += self.dur[ei] * 0.8
+
+        # surprise slot: a reversed event from the far side of the source cuts in.
+        sp = float(row[S['surprise']])
+        if sp > 0.35 and cursor < T and rng.random() < sp * 0.35:
+            far = self.far_event(ev_indices)
+            self.add({'type': 'invert', 'event_idx': far, 'start_time': cursor,
+                      'gain': 0.8, 'crossfade_ms': 3,
+                      'label': f'surprise(p{phrase_idx},e{far})'})
+            cursor += self.dur[far] * 0.6
+
+        self.memory_bank.append((phrase_idx, cursor))
+        depth = max(4, int(ops.get('memory_depth', 8)))
+        if len(self.memory_bank) > depth * 3:
+            self.memory_bank = self.memory_bank[-depth * 3:]
+        return cursor, progressed
+
+    # -- window filler used by the sonata ------------------------------------
+    def fill_window(self, phrase_list, t_start, t_end, label, stretch_mul=1.0,
+                    erosion=0.0):
+        """Play phrase_list in order, cycling, strictly inside [t_start, t_end).
+
+        v1.9: the cursor starts at t_start whatever the previous window did, and
+        an event that would run past t_end is cut to the time left (a head
+        slice ending on the boundary), so no window can swallow the next one.
+        A window always receives at least one operation unless it is shorter
+        than 20 ms. Returns the cursor (never beyond t_end).
+        """
+        t_end = min(t_end, self.target)
+        cursor = float(t_start)
+        S = PLAN_SLOTS
+        guard = 0
+        while cursor < t_end - 0.02 and guard < 10000:
+            guard += 1
+            progressed = False
+            for pi in phrase_list:
+                row = self.row(pi)
+                for ei in self.phrases[pi]['event_indices']:
+                    left = t_end - cursor
+                    if left <= 0.02:
+                        break
+                    if row[S['repetition']] > 0.5 and self.rng.random() < row[S['repetition']] * 0.25:
+                        rd = min(self.dur[ei], left)
+                        self.add({'type': 'repeat', 'event_idx': ei,
+                                  'start_time': max(t_start, cursor - rd * self.rng.uniform(0.0, 0.3)),
+                                  'gain': 0.6, 'crossfade_ms': 20,
+                                  'slice_ratio': rd / max(1e-9, self.dur[ei]), 'slice_offset': 0,
+                                  'label': f'{label}_repeat(p{pi},e{ei})'})
+                    extra = {'erosion': erosion} if erosion > 0 else {}
+                    st = self.stretch_for(row) * stretch_mul
+                    span = self.dur[ei] * st
+                    if span > left:
+                        extra['slice_ratio'] = left / span
+                        extra['slice_offset'] = 0
+                        self.place(ei, cursor, row, stretch=st,
+                                   label=f'{label}(p{pi},e{ei},cut)', **extra)
+                        cursor = t_end
+                    else:
+                        cursor = self.place(ei, cursor, row, stretch=st,
+                                            label=f'{label}(p{pi},e{ei})', **extra)
+                    progressed = True
+                if cursor >= t_end - 0.02:
+                    break
+            if not progressed:
+                break
+        return min(cursor, t_end)
+
+
+# =============================================================================
+# Planners
+# =============================================================================
+
+def _phrase_dur(S, pi):
+    return sum(S.dur[e] for e in S.phrases[pi]['event_indices'])
+
+
+def plan_generic(S, phrase_order):
+    S.layer_contrast = True
+    if not phrase_order:
+        return 0.0
+    cursor, cycle = 0.0, 0
+    max_cycles = max(2, int(math.ceil(S.target / max(0.05, S.src_dur))) + 4)
+    while cursor < S.target and cycle < max_cycles:
+        progressed = False
+        for pos, pi in enumerate(phrase_order):
+            if cursor >= S.target:
+                break
+            cursor, p = S.play_phrase(pos, pi, cursor, cycle)
+            progressed = progressed or p
+        if not progressed:
+            break
+        cycle += 1
+        if cursor < S.target and S.params.get('surprise', 0.0) > 0 and len(phrase_order) > 1:
+            shift = 1 + (cycle % len(phrase_order))
+            phrase_order = phrase_order[shift:] + phrase_order[:shift]
+    return cursor
+
+
+def plan_refrain(S, phrase_order):
+    """CollapsingRefrain: the refrain form, then a dedicated final collapse.
+
+    The phrase cycle (refrain returning between body phrases, each return
+    more eroded) runs in the first 82% of the target. The remaining window
+    holds only residues of the refrain: slices that get shorter, quieter,
+    darker and sparser, the last one ending exactly on the final sample, so
+    the piece always ends in the dissolving refrain (v1.9 could end on an
+    ordinary body event).
+    """
+    T, rng = S.target, S.rng
+    rate = float(S.ops.get('collapse_rate', 0.4))
+    S.begin_part('refrain form', 0.0)
+    S.target = 0.82 * T
+    cursor = plan_generic(S, phrase_order)
+    S.target = T
+    c0 = float(np.clip(cursor, 0.80 * T, max(0.80 * T, T - 0.25)))
+    S.end_part(c0)
+    S.begin_part('final collapse', c0)
+    evs = list(S.phrases[0]['event_indices'])
+    S.fill_pool = evs
+    c_start = float(np.clip(S.refrain_returns * rate, 0.35, 0.88))
+    cur, j = c0, 0
+    while cur < T - 0.005:
+        c = c_start + (0.97 - c_start) * (cur - c0) / max(1e-6, T - c0)
+        ei = evs[j % len(evs)]
+        j += 1
+        d_ev = S.dur[ei]
+        sd = float(np.clip(d_ev * max(0.03, 1.0 - c), 0.02, d_ev))
+        gain = max(0.08, 1.0 - 0.85 * c)
+        last = cur + sd >= T - 0.005
+        start = T - sd if last else cur
+        S.fragment(ei, max(c0, start), sd / d_ev, 0.0, gain,
+                   f'collapse_residue({c:.2f},e{ei})', advance=0.0,
+                   erosion=c, crossfade_ms=12)
+        if last:
+            break
+        cur = start + sd * (1.0 + 4.0 * c)          # residues thin out
+        if cur >= T - 0.005:
+            # the next gap would overshoot: end on one more residue at the end
+            ei = evs[j % len(evs)]
+            sd = float(np.clip(S.dur[ei] * 0.03, 0.02, S.dur[ei]))
+            S.fragment(ei, T - sd, sd / S.dur[ei], 0.0, 0.08,
+                       f'collapse_residue(0.97,e{ei})', advance=0.0,
+                       erosion=0.97, crossfade_ms=12)
+            break
+    S.end_part(T)
+
+
+def sonata_themes(S):
+    """Theme A = the first section; theme B = the section most unlike it.
+    With a single section, the phrases are split at the strongest boundary."""
+    n = len(S.phrases)
+    C = np.asarray([ph['centroid'] for ph in S.phrases], dtype=np.float64)
+
+    def cdist(a, b):
+        return 1.0 - float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-12))
+
+    secs = [s for s in S.sections if s['phrase_indices']]
+    if len(secs) >= 2:
+        A = list(secs[0]['phrase_indices'])
+        ca = C[A].mean(axis=0)
+        best = max(secs[1:], key=lambda s: cdist(ca, C[s['phrase_indices']].mean(axis=0)))
+        return A, list(best['phrase_indices'])
+    split = max(1, n // 2)
+    if n >= 3:
+        nov = phrase_boundary_novelty(S.phrases, S.events, S.fl)
+        if len(nov):
+            split = int(np.argmax(nov)) + 1
+    return list(range(split)), list(range(split, n)) or [n - 1]
+
+
+def plan_sonata(S):
+    """Sonata-inspired form: exposition / development / recapitulation.
+
+    Themes are chosen by acoustic contrast between sections, not by tonal or
+    thematic relations, so this is a sonata-INSPIRED recomposition.
+    The time budget (36% / 36% / 28% of the target) is fixed first, and every
+    window is realised strictly inside its own bounds (fill_window cuts the
+    last event at the boundary), so each part and each theme window always
+    gets material. Controls read here:
+      memory     how literally the recapitulation restates the exposition
+                 (low memory = darker, slower, more transformed return);
+      contrast   how often the development overlays the other theme;
+      surprise   how often development slices are reversed;
+      fragmentation  how short the development slices are;
+      repetition / overlap / fragmentation through the plan slots.
+    """
+    T, rng = S.target, S.rng
+    P = S.params
+    mem = float(np.clip(P.get('memory', 0.9), 0, 1))
+    con = float(np.clip(P.get('contrast', 0.7), 0, 1))
+    sur = float(np.clip(P.get('surprise', 0.25), 0, 1))
+    frg = float(np.clip(P.get('fragmentation', 0.5), 0, 1))
+    A, B = sonata_themes(S)
+    b1, b2 = 0.36 * T, 0.72 * T
+
+    S.begin_part('exposition', 0.0)
+    S.fill_window(A, 0.0, 0.5 * b1, 'expoA')
+    S.fill_window(B, 0.5 * b1, b1, 'expoB')
+    S.end_part(b1)
+
+    S.begin_part('development', b1)
+    cursor, k = b1, 0
+    while cursor < b2 - 0.02:
+        th, other = (A, B) if k % 2 == 0 else (B, A)
+        k += 1
+        pi = int(rng.choice(th))
+        row = S.row(pi)
+        ei = int(rng.choice(S.phrases[pi]['event_indices']))
+        st = S.stretch_for(row)
+        # fragmentation control: high = shorter development slices (v1.9)
+        ratio = rng.uniform(0.10, 0.22) + 0.25 * (1.0 - frg)
+        ratio = min(ratio, (b2 - cursor) / max(1e-9, S.dur[ei] * st))
+        progress = (cursor - b1) / max(1e-6, b2 - b1)
+        start = cursor
+        cursor = S.fragment(ei, cursor, ratio, rng.uniform(0.0, 1.0 - ratio),
+                            0.82 * S.fg_gain(row), f'dev(p{pi},e{ei})',
+                            advance=0.95 - 0.40 * progress,
+                            reverse=bool(rng.random() < 0.10 + 0.50 * sur),
+                            stretch=st)
+        p_comb = (0.15 + 0.55 * con) * (0.6 + 0.4 * float(row[PLAN_SLOTS['braid']]))
+        if rng.random() < p_comb:
+            pj = int(rng.choice(other))
+            ej = int(rng.choice(S.phrases[pj]['event_indices']))
+            t_c = start + (cursor - start) * 0.4
+            r2 = min(rng.uniform(0.15, 0.30), max(0.0, b2 - t_c) / max(1e-9, S.dur[ej]))
+            if r2 * S.dur[ej] > 0.01:
+                S.fragment(ej, t_c, r2, rng.uniform(0.0, 1.0 - r2),
+                           0.55, f'dev_combine(p{pi}+p{pj},e{ej})', advance=0.0, typ='braid')
+        if cursor <= start:
+            cursor = start + 0.02
+    S.end_part(b2)
+
+    S.begin_part('recapitulation', b2)
+    loose = 1.0 - mem
+    S.fill_window(A, b2, b2 + 0.55 * (T - b2), 'recapA',
+                  stretch_mul=1.0 + 0.10 * loose, erosion=0.30 * loose)
+    S.fill_window(B, b2 + 0.55 * (T - b2), T, 'recapB',
+                  stretch_mul=1.08 + 0.20 * loose, erosion=0.12 + 0.40 * loose)
+    S.end_part(T)
+    S.fill_pool = [e for pi in B for e in S.phrases[pi]['event_indices']]
+
+
+def plan_litany(S):
+    """FragmentedLitany: cells of micro-slices, repeated with slow mutation.
+
+    Each phrase yields one cell of 3-8 slices of 40-250 ms taken from anywhere
+    inside its events. A cell is repeated `cycles` times; each repeat swaps one
+    adjacent pair and jitters slice lengths by +/-15%, cumulatively. Rests are
+    as long as the slices or longer. When the target cannot hold one cell per
+    phrase, the cells are drawn from phrases spread evenly across the whole
+    source (first and last included) instead of from its opening only.
+    Controls read here (v1.9): repetition = cycles per cell; memory = chance
+    that an earlier cell (in its mutated state) returns for one cycle after a
+    new one; surprise = mutation strength; contrast = cell order (high: each
+    next cell is the most unlike the last one; low: source order); overlap =
+    rest length; fragmentation = slices per cell.
+    """
+    T, rng = S.target, S.rng
+    S_ = PLAN_SLOTS
+    overlap = float(np.clip(S.params.get('overlap', 0.1), 0, 1))
+    rest_k = 0.35 + 0.90 * (1.0 - overlap)
+    breath = 0.12 + 0.25 * (1.0 - overlap)
+    cycles = max(2, int(round(S.ops.get('litany_cycles', 3) * (0.5 + 0.6 * S.params.get('repetition', 0.9)))))
+    mem = float(np.clip(S.params.get('memory', 0.8), 0, 1))
+    sur = float(np.clip(S.params.get('surprise', 0.05), 0, 1))
+    con = float(np.clip(S.params.get('contrast', 0.2), 0, 1))
+    p_swap = 0.35 + 0.60 * sur
+    jit = 0.08 + 0.30 * sur
+    n = len(S.phrases)
+
+    def make_cell(pi):
+        row = S.row(pi)
+        evs = S.phrases[pi]['event_indices']
+        k = int(np.clip(round(3 + 5 * float(row[S_['fragmentation']])), 3, 8))
+        cell = []
+        for j in range(k):
+            ei = int(evs[j]) if j < len(evs) else int(rng.choice(evs))
+            d = S.dur[ei]
+            sdur = min(d, float(np.clip(d * rng.uniform(0.06, 0.22), 0.04, 0.25)))
+            ratio = sdur / max(1e-9, d)
+            cell.append([ei, ratio, rng.uniform(0.0, max(0.0, 1.0 - ratio))])
+        return cell
+
+    def cell_seconds(cell):
+        return cycles * (sum(S.dur[ei] * r for ei, r, _ in cell) * (1.0 + rest_k) + breath)
+
+    cells = [make_cell(pi) for pi in range(n)]
+    est = [cell_seconds(c) for c in cells]
+    order = list(range(n))
+    if n > 1 and sum(est) > T:
+        m = n
+        while m > 1:
+            pick = sorted(set(int(round(x)) for x in np.linspace(0, n - 1, m)))
+            if sum(est[i] for i in pick) <= T * 1.05:
+                break
+            m -= 1
+        order = pick if m > 1 else [0, n - 1]
+    if con > 0.5 and len(order) > 2:
+        # greedy contrast ordering: each next cell is the phrase least like the last
+        rest_o = list(order[1:])
+        seq = [order[0]]
+        while rest_o:
+            nxt = min(rest_o, key=lambda j: S.phrase_similarity(seq[-1], j))
+            seq.append(nxt)
+            rest_o.remove(nxt)
+        order = seq
+
+    def sing(pi, n_cycles, tag, cursor):
+        row = S.row(pi)
+        origin = [list(x) for x in cells[pi]]
+        cell = [list(x) for x in origin]
+        for c in range(n_cycles):
+            if c > 0 and rng.random() >= mem:
+                # memory control: a low-memory cycle forgets the accumulated
+                # mutations and varies the cell as it was first stated
+                cell = [list(x) for x in origin]
+            if c > 0 or tag == 'return':
+                if len(cell) > 1 and rng.random() < p_swap:
+                    i = rng.randint(0, len(cell) - 2)
+                    cell[i], cell[i + 1] = cell[i + 1], cell[i]
+                for x in cell:
+                    x[1] = float(np.clip(x[1] * rng.uniform(1.0 - jit, 1.0 + jit), 0.01, 1.0 - x[2]))
+            for jj, (ei, ratio, off) in enumerate(cell):
+                if cursor >= T:
+                    break
+                sd = S.dur[ei] * ratio
+                st = S.stretch_for(row)
+                # contrast control: accent on the first slice of each statement
+                accent = (1.0 + 0.5 * con) if jj == 0 else (1.0 - 0.25 * con)
+                S.fragment(ei, cursor, ratio, off, 0.85 * S.fg_gain(row) * accent,
+                           f'litany_{tag}(p{pi + 1}.{c + 1},e{ei})', advance=0.0, stretch=st)
+                cursor += sd * st * (1.0 + rest_k)
+            cursor += breath
+        cells[pi] = cell          # a returning cell keeps its mutations
+        return cursor
+
+    cursor, cell_no, guard = 0.0, 0, 0
+    heard = []
+    while cursor < T and guard < 1000:
+        guard += 1
+        for pi in order:
+            if cursor >= T:
+                break
+            cell_no += 1
+            S.begin_part(f'cell {cell_no} (p{pi + 1})', cursor)
+            cursor = sing(pi, cycles, 'cell', cursor)
+            S.end_part(cursor)
+            if heard and cursor < T and rng.random() < 0.9 * mem:
+                back = heard[int(rng.randint(0, len(heard) - 1))]
+                S.begin_part(f'return (p{back + 1})', cursor)
+                cursor = sing(back, 1, 'return', cursor)
+                S.end_part(cursor)
+            heard.append(pi)
+
+
+def classify_material_families(S):
+    """Attack / sustain / noise family per event, from z-scored descriptors.
+    A family nobody falls into borrows the events that score highest for it."""
+    fl = S.fl
+    n = len(fl)
+
+    def z(v):
+        v = np.asarray(v, dtype=np.float64)
+        sd = float(np.std(v))
+        return (v - float(np.mean(v))) / sd if sd > 1e-9 else np.zeros_like(v)
+
+    sharp = z([f['onset_sharpness'] for f in fl])
+    dur = z([math.log(max(1e-3, f['duration'])) for f in fl])
+    flat = z([f['flatness'] for f in fl])
+    harm = z([f['harmonicity'] for f in fl])
+    scores = np.stack([sharp - 0.5 * dur, harm + 0.5 * dur - 0.5 * flat, flat - harm], axis=1)
+    fam = np.argmax(scores, axis=1)
+    # Near-silent events (pauses) score as "noise" because silence is flat;
+    # they are kept out of every strand so a strand never plays a gap.
+    lvl = np.asarray([f['rms'] for f in fl], dtype=np.float64)
+    voiced = lvl >= 0.1 * float(np.median(lvl))
+    if not np.any(voiced):
+        voiced[:] = True
+    members = []
+    for k in range(3):
+        m = [int(i) for i in np.flatnonzero((fam == k) & voiced)]
+        if not m:
+            ranked = [int(i) for i in np.argsort(-scores[:, k]) if voiced[i]]
+            m = sorted(ranked[:max(1, n // 6)])
+        members.append(m)
+    return members
+
+
+def plan_braiding(S):
+    """FormalBraiding: three strands (attack, sustain, noise), each a fixed
+    family with its own stereo position, alternating between braided phases
+    (all strands at once, a new phase offset each time) and unravelled phases
+    (the strands take solo turns in a new order)."""
+    T, rng = S.target, S.rng
+    fams = classify_material_families(S)
+    names = ['attack', 'sustain', 'noise']
+    overlap = float(np.clip(S.params.get('overlap', 0.7), 0, 1))
+    surprise = float(np.clip(S.params.get('surprise', 0.35), 0, 1))
+    # v1.9 controls: contrast = width between strands; memory = how short a
+    # motif each strand cycles (high memory = ostinato on its first events);
+    # repetition = chance a strand restates the event it just played.
+    contrast = float(np.clip(S.params.get('contrast', 0.75), 0, 1))
+    memory = float(np.clip(S.params.get('memory', 0.5), 0, 1))
+    repetition = float(np.clip(S.params.get('repetition', 0.5), 0, 1))
+    fragmentation = float(np.clip(S.params.get('fragmentation', 0.4), 0, 1))
+    width = 0.25 + 0.65 * contrast
+    pans = [-width, 0.0, width]
+    ptr = [0, 0, 0]
+    motif = [max(1, int(math.ceil(len(f) * (1.0 - 0.85 * memory)))) for f in fams]
+    mean_ph = float(np.mean([_phrase_dur(S, i) for i in range(len(S.phrases))])) if S.phrases else 1.0
+    P = float(np.clip(2.0 * mean_ph, 1.5, 6.0))
+
+    def strand_step(s, cur, tag):
+        ei = fams[s][ptr[s] % motif[s]]
+        if not (repetition > 0 and rng.random() < 0.5 * repetition):
+            ptr[s] += 1
+        row = S.row(S.ev_phrase[ei])
+        if rng.random() < 0.6 * fragmentation:
+            # fragmentation control: the strand plays a grain of the event
+            ratio = rng.uniform(0.15, 0.45)
+            st = S.stretch_for(row)
+            S.fragment(ei, cur, ratio, rng.uniform(0.0, 1.0 - ratio), 0.8 * S.fg_gain(row),
+                       f'{names[s]}:{tag}_grain(e{ei})', advance=0.0, typ='braid',
+                       pan=pans[s], voice=s + 1, stretch=st)
+            cur2 = cur + S.dur[ei] * ratio * st
+        else:
+            cur2 = S.place(ei, cur, row, typ='braid', gain=0.8 * S.fg_gain(row),
+                           pan=pans[s], voice=s + 1, label=f'{names[s]}:{tag}(e{ei})')
+        rest_scale = 0.6 if s == 0 else 0.25        # the attack strand breathes most
+        return cur2 + S.dur[ei] * rng.uniform(0.1, 1.0) * rest_scale * (1.0 - overlap)
+
+    t, k = 0.0, 0
+    while t < T:
+        Pk = P * (1.0 + surprise * rng.uniform(-0.5, 0.5))
+        t1 = min(T, t + Pk)
+        if k % 2 == 0:
+            S.begin_part(f'braid {k // 2 + 1}', t)
+            offsets = [rng.uniform(0.0, Pk / 3.0) for _ in range(3)]
+            offsets[rng.randint(0, 2)] = 0.0
+            for s in range(3):
+                cur = t + offsets[s]
+                while cur < t1:
+                    cur = strand_step(s, cur, 'braid')
+        else:
+            S.begin_part(f'unravel {k // 2 + 1}', t)
+            order = rng.sample(range(3), 3)
+            seg = (t1 - t) / 3.0
+            for j, s in enumerate(order):
+                cur = t + j * seg
+                while cur < t + (j + 1) * seg:
+                    cur = strand_step(s, cur, 'solo')
+        S.end_part(t1)
+        t, k = t1, k + 1
+
+
+def cluster_phrases(S, k):
+    """k-means (farthest-point initialisation, deterministic) on phrase centroids."""
+    n = len(S.phrases)
+    if n < k:
+        return [[j % n] for j in range(k)]
+    X = np.asarray([ph['centroid'] for ph in S.phrases], dtype=np.float64)
+    cent = [X[0]]
+    for _ in range(1, k):
+        d = np.min([np.linalg.norm(X - c, axis=1) for c in cent], axis=0)
+        cent.append(X[int(np.argmax(d))])
+    cent = np.asarray(cent)
+    lab = np.zeros(n, dtype=int)
+    for _ in range(25):
+        lab = np.argmin(np.stack([np.linalg.norm(X - c, axis=1) for c in cent], axis=1), axis=1)
+        for j in range(k):
+            if np.any(lab == j):
+                cent[j] = X[lab == j].mean(axis=0)
+    voices = [[int(i) for i in np.flatnonzero(lab == j)] for j in range(k)]
+    for j in range(k):
+        if not voices[j]:
+            big = max(range(k), key=lambda q: len(voices[q]))
+            voices[j] = [voices[big].pop()]
+    return voices
+
+
+def plan_counterpoint(S):
+    """LatentCounterpoint: phrase classes become persistent voices.
+
+    Each voice owns one cluster of phrases (its timbral identity), one stereo
+    position, and its own timeline. Relations between voices are planned:
+    onsets are staggered so no two voices attack together, and prominence
+    rotates between the voices on a slow cosine cycle."""
+    T, rng = S.target, S.rng
+    k = max(2, int(S.ops.get('polyphony', 2)))
+    voices = cluster_phrases(S, k)
+    # v1.9 controls: memory = imitation (a voice answers with the phrase the
+    # other voice just finished, keeping its own pan); repetition = a voice
+    # restates its own phrase before moving on; surprise = rest irregularity.
+    memory = float(np.clip(S.params.get('memory', 0.3), 0, 1))
+    repetition = float(np.clip(S.params.get('repetition', 0.4), 0, 1))
+    surprise = float(np.clip(S.params.get('surprise', 0.2), 0, 1))
+    # fragmentation (v1.10): motivic disintegration passed between voices. As
+    # the piece advances, a voice increasingly answers with a slice of the
+    # event another voice has just played, in its own register (pan) - the
+    # motifs break up and migrate. 0 = whole events only.
+    fragmentation = float(np.clip(S.params.get('fragmentation', 0.3), 0, 1))
+    last_ev = [None] * k
+    last_done = [None] * k
+    current = [None] * k
+    pans = np.linspace(-0.6, 0.6, k)
+    overlap = float(np.clip(S.params.get('overlap', 0.6), 0, 1))
+    contrast = float(np.clip(S.params.get('contrast', 0.8), 0, 1))
+    mean_ph = float(np.mean([_phrase_dur(S, i) for i in range(len(S.phrases))])) if S.phrases else 1.0
+    cursors = [j * mean_ph * 0.5 for j in range(k)]
+    ptr_ph, ptr_ev = [0] * k, [0] * k
+    last_on = [-1e9] * k
+    min_sep = 0.04 + 0.08 * contrast
+    Pe = float(np.clip(4.0 * mean_ph, 3.0, 12.0))
+    S.begin_part('counterpoint', 0.0)
+    guard = 0
+    while min(cursors) < T and guard < 200000:
+        guard += 1
+        v = int(np.argmin(cursors))
+        if current[v] is None:
+            current[v] = voices[v][ptr_ph[v] % len(voices[v])]
+            others = [last_done[u] for u in range(k) if u != v and last_done[u] is not None]
+            if others and rng.random() < 0.6 * memory:
+                current[v] = others[0]                     # imitation
+        pi = current[v]
+        evs = S.phrases[pi]['event_indices']
+        ei = evs[ptr_ev[v] % len(evs)]
+        start = cursors[v]
+        for u in range(k):
+            if u != v and abs(start - last_on[u]) < min_sep:
+                start = last_on[u] + min_sep
+        emph = 0.65 + 0.35 * math.cos(2 * math.pi * start / Pe + v * 2 * math.pi / k)
+        row = S.row(pi)
+        imit = pi not in voices[v]
+        others_ev = [last_ev[u] for u in range(k) if u != v and last_ev[u] is not None]
+        if others_ev and rng.random() < fragmentation * min(1.0, start / max(1e-6, T)) * 1.2:
+            fe = int(others_ev[0])
+            ratio = rng.uniform(0.12, 0.40)
+            S.fragment(fe, start, ratio, rng.uniform(0.0, 1.0 - ratio),
+                       S.fg_gain(row) * emph, f'voice{v + 1}_motif_fragment(e{fe})',
+                       advance=0.0, pan=float(pans[v]), voice=v + 1,
+                       stretch=S.stretch_for(row))
+            last_on[v] = start
+            cursors[v] = start + S.dur[fe] * ratio * S.stretch_for(row) * (1.15 + 0.5 * (1.0 - overlap))
+            continue
+        end = S.place(ei, start, row, gain=S.fg_gain(row) * emph, pan=float(pans[v]),
+                      voice=v + 1, label=f'voice{v + 1}{"_imitation" if imit else ""}(p{pi},e{ei})')
+        last_ev[v] = ei
+        last_on[v] = start
+        ptr_ev[v] += 1
+        if ptr_ev[v] >= len(evs):
+            ptr_ev[v] = 0
+            last_done[v] = pi
+            if imit or not (rng.random() < 0.5 * repetition):
+                if not imit:
+                    ptr_ph[v] += 1
+                current[v] = None
+            rest_f = 0.45 + surprise * rng.uniform(-0.35, 0.35)
+            end += _phrase_dur(S, pi) * rest_f * (1.0 - 0.6 * overlap)
+        cursors[v] = max(end, start + 0.01)
+    S.end_part(T)
+
+
+def plan_event_ordering(events, feat_vecs, features_list, phrases, sections,
+                        plan, params, ops, rng, sr):
+    """Dispatch to the preset's planner; returns the Scheduler (ops + parts)."""
+    S = Scheduler(events, feat_vecs, features_list, phrases, sections,
+                  plan, params, ops, rng, sr)
+    if ops.get('sonata_form') and len(phrases) >= 2:
+        plan_sonata(S)
+    elif ops.get('micro_events'):
+        plan_litany(S)
+    elif ops.get('n_strands', 0) >= 3:
+        plan_braiding(S)
+    elif ops.get('polyphony'):
+        plan_counterpoint(S)
+    elif ops.get('refrain') and len(phrases) >= 2:
+        plan_refrain(S, _plan_phrase_order(phrases, plan, params, ops, rng))
+    else:
+        plan_generic(S, _plan_phrase_order(phrases, plan, params, ops, rng))
+    S.finalize()
+    return S
 
 
 def _plan_phrase_order(phrases, section_plan_np, params, ops, rng):
-    """
-    Decide the order in which phrases appear in the output.
-    Implements sonata-like structure if ops['sonata_form'] is True.
-    Otherwise uses formal arc from plan weights.
-    """
+    """Phrase order for the generic planner: refrain form, or formal_weight
+    order with repetitions and surprise swaps."""
     n = len(phrases)
     indices = list(range(n))
 
-    if ops.get('sonata_form') and n >= 4:
-        # Exposition: first half | Development: fragmented | Recapitulation: first
-        mid = n // 2
-        exposition    = indices[:mid]
-        development   = sorted(indices, key=lambda i: -section_plan_np[min(i, len(section_plan_np)-1), PLAN_SLOTS['contrast']])
-        recapitulation = indices[:max(2, mid//2)]
-        return exposition + development + recapitulation
-
     if ops.get('refrain') and n >= 2:
-        refrain_idx = 0
-        body = [i for i in indices if i != refrain_idx]
+        body = [i for i in indices if i != 0]
+        # contrast control (v1.10): the body phrases between refrain returns
+        # are ordered by distance from the refrain - most unlike first when
+        # contrast >= 0.5, most alike first below it.
+        if len(body) > 1:
+            c0 = np.asarray(phrases[0]['centroid'], dtype=np.float64)
+            def _dist(i):
+                c = np.asarray(phrases[i]['centroid'], dtype=np.float64)
+                return 1.0 - float(np.dot(c0, c) / (np.linalg.norm(c0) * np.linalg.norm(c) + 1e-12))
+            sign = -1.0 if float(params.get('contrast', 0.5)) >= 0.5 else 1.0
+            body = sorted(body, key=lambda i: sign * _dist(i))
         order = []
         for i, b in enumerate(body):
             order.append(b)
             if (i + 1) % 2 == 0:
-                order.append(refrain_idx)  # insert refrain periodically
-        order.append(refrain_idx)
+                order.append(0)
+        order.append(0)
         return order
 
-    if ops.get('litany_cycles'):
-        cycles = ops['litany_cycles']
-        block  = indices[:max(1, n // 3)]
-        order  = []
-        for c in range(cycles):
-            shuffled = block[:]
-            rng.shuffle(shuffled)
-            order += shuffled
-        return order
-
-    # Default: sort by formal_weight, inject repeats and contrasts
     formal_weights = [
         float(section_plan_np[min(i, len(section_plan_np)-1), PLAN_SLOTS['formal_weight']])
         for i in indices
     ]
     order = sorted(indices, key=lambda i: formal_weights[i])
 
-    # Sprinkle repetitions
     rep_thresh = params.get('repetition', 0.5)
     final_order = []
     for idx in order:
@@ -1266,7 +2109,6 @@ def _plan_phrase_order(phrases, section_plan_np, params, ops, rng):
         if rng.random() < rep_thresh * 0.4:
             final_order.append(idx)
 
-    # Surprise: random transpositions
     surprise = params.get('surprise', 0.2)
     if surprise > 0.3 and len(final_order) >= 2:
         n_swaps = int(len(final_order) * surprise * 0.5)
@@ -1278,39 +2120,160 @@ def _plan_phrase_order(phrases, section_plan_np, params, ops, rng):
     return final_order
 
 
-def _find_contrast_phrase(phrase_idx, phrases, sim_matrix, feat_vecs, rng):
-    """Find the phrase most dissimilar to phrase_idx."""
-    n = len(phrases)
-    if n < 2:
-        return None
-    # Average sim across events
-    ev_i = phrases[phrase_idx]['event_indices']
-    scores = []
-    for j in range(n):
-        if j == phrase_idx:
-            scores.append(1.0)
-            continue
-        ev_j = phrases[j]['event_indices']
-        pairs = [(a, b) for a in ev_i for b in ev_j]
-        avg_sim = np.mean([sim_matrix[a, b] for a, b in pairs]) if pairs else 0.5
-        scores.append(avg_sim)
-    return int(np.argmin(scores))
-
-
 # =============================================================================
 # SECTION 11 — AUDIO RENDERING
 # =============================================================================
 
 def time_stretch_naive(audio, ratio):
-    """
-    Very simple time stretch via resampling (pitch changes).
-    For a true pitch-preserving stretch, replace with phase vocoder.
-    """
+    """Resampling stretch: duration and pitch change together (tape-speed).
+    ratio 2.0 = twice as long and an octave lower."""
     if abs(ratio - 1.0) < 0.01:
         return audio
     n_out = max(1, int(len(audio) * ratio))
     indices = np.linspace(0, len(audio) - 1, n_out)
     return np.interp(indices, np.arange(len(audio)), audio).astype(np.float32)
+
+
+def time_stretch_pv(audio, ratio, n_fft=1024, hop=256):
+    """Pitch-preserving stretch: phase vocoder with identity phase locking.
+
+    Analysis frames are read every hop/ratio samples and resynthesised every
+    hop samples. Peak bins advance by their measured instantaneous frequency;
+    every other bin is locked to its nearest peak (Laroche & Dolson identity
+    locking), which keeps the bins of one partial coherent. Without it the
+    zero-padded onset frames left each bin with its own arbitrary phase
+    offset, and partials partly cancelled (v1.8: -9.6 dB on a 300 Hz sine and
+    -16 dB at 1234 Hz for x2). Finally the stretched event is matched to the
+    input RMS, so level does not depend on the ratio or on how coherent the
+    material is (noise lost ~3 dB in incoherent overlap-add).
+    Output length is int(len * ratio). Events under 64 samples resample.
+    """
+    if abs(ratio - 1.0) < 0.01:
+        return audio
+    x = np.asarray(audio, dtype=np.float64).reshape(-1)
+    n_out = max(1, int(len(x) * ratio))
+    if len(x) < 64:
+        return time_stretch_naive(audio, ratio)
+    while n_fft > 64 and n_fft > len(x):
+        n_fft //= 2
+    hop = max(1, n_fft // 4)
+    win = np.hanning(n_fft)
+    pad = n_fft
+    xp = np.concatenate([np.zeros(pad), x, np.zeros(pad + n_fft)])
+    Ha = hop / float(ratio)
+    n_frames = int((len(xp) - n_fft) / Ha) + 1
+    y = np.zeros(n_frames * hop + n_fft)
+    wsum = np.zeros_like(y)
+    nb = n_fft // 2 + 1
+    omega = 2.0 * np.pi * np.arange(nb) / n_fft
+    bins = np.arange(nb)
+    prev_ph = None
+    prev_pos = 0
+    acc = None
+    for k in range(n_frames):
+        pos = int(round(k * Ha))
+        if pos + n_fft > len(xp):
+            break
+        X = np.fft.rfft(xp[pos:pos + n_fft] * win)
+        mag, ph = np.abs(X), np.angle(X)
+        if acc is None:
+            out_ph = ph.copy()
+        else:
+            dpos = max(1, pos - prev_pos)
+            dphi = ph - prev_ph - omega * dpos
+            dphi = (dphi + np.pi) % (2.0 * np.pi) - np.pi
+            adv = acc + (omega + dphi / dpos) * hop
+            # identity phase locking: every bin follows its region's peak
+            m = mag
+            is_pk = np.zeros(nb, dtype=bool)
+            is_pk[1:-1] = (m[1:-1] > m[:-2]) & (m[1:-1] >= m[2:])
+            pk = np.flatnonzero(is_pk)
+            if len(pk):
+                mids = (pk[:-1] + pk[1:]) // 2
+                owner = pk[np.searchsorted(mids, bins, side='left')]
+                out_ph = adv[owner] + (ph - ph[owner])
+            else:
+                out_ph = adv
+        acc = out_ph
+        prev_ph, prev_pos = ph, pos
+        o = k * hop
+        y[o:o + n_fft] += np.fft.irfft(mag * np.exp(1j * out_ph), n_fft) * win
+        wsum[o:o + n_fft] += win ** 2
+    y = np.where(wsum > 1e-3, y / np.maximum(wsum, 1e-3), 0.0)
+    # Time alignment (v1.10): analysis frame k is centred on padded input
+    # sample k*Ha + n/2 and resynthesised centred on k*hop + n/2, so padded
+    # input sample t lands at ratio*t - (ratio-1)*n/2. v1.9 trimmed at
+    # ratio*pad, which shifted everything by (ratio-1)*n/2 (-11.6 ms at x2).
+    s0 = int(round(pad * ratio - (ratio - 1.0) * n_fft / 2.0))
+    if s0 < 0:
+        y = np.concatenate([np.zeros(-s0), y])
+        s0 = 0
+    y = y[s0:s0 + n_out]
+    if len(y) < n_out:
+        y = np.concatenate([y, np.zeros(n_out - len(y))])
+    r_in = float(np.sqrt(np.mean(x ** 2)))
+    r_out = float(np.sqrt(np.mean(y ** 2)))
+    if r_in > 1e-9 and r_out > 1e-9:
+        y *= float(np.clip(r_in / r_out, 0.25, 4.0))      # match level, at most +/-12 dB
+    # attacks are spliced in after the level match, at their original level
+    y = _transient_splice(x, y, ratio)
+    return y.astype(np.float32)
+
+
+def _transient_splice(x, y, ratio, sr_guess=44100):
+    """Copy each sharp attack of x, unstretched, into the stretched y.
+
+    A phase vocoder spreads an attack over its analysis window (an impulse
+    lost ~94% of its peak at x2 in v1.9). Attacks are found as >= 9 dB jumps
+    of 1 ms short-term energy that also reach -40 dB of the event's loudest
+    millisecond; for each, 2 ms before to 12 ms after the onset is copied from
+    the source to the mapped position (onset * ratio), with 1 ms raised-cosine
+    joins. A loud first millisecond counts as an attack.
+    """
+    n = len(x)
+    fr = max(8, int(0.001 * sr_guess))
+    if n < 4 * fr:
+        return y
+    nf = n // fr
+    e = np.sqrt(np.mean(x[:nf * fr].reshape(nf, fr) ** 2, axis=1)) + 1e-12
+    top = float(e.max())
+    pre, post, xf = 2 * fr, 12 * fr, max(4, fr)
+    out = y.copy()
+    last = -10 ** 9
+    for i in range(0, nf):
+        # frame 0 counts as an attack when the event starts loud (events are
+        # cut at onsets, so this is the usual case)
+        rise = e[i] / max(e[i - 1], 1e-12) if i > 0 else e[0] / (top * 0.005)
+        if rise < 2.8 or e[i] < top * 0.01:
+            continue
+        n0 = i * fr
+        if n0 - last < post:
+            continue
+        last = n0
+        # refine to the first sample above half of this frame's peak
+        seg = np.abs(x[n0:n0 + fr])
+        n0 += int(np.argmax(seg >= 0.5 * seg.max())) if seg.max() > 0 else 0
+        a0, a1 = max(0, n0 - pre), min(n, n0 + post)
+        m0 = int(round(n0 * ratio)) - (n0 - a0)
+        if m0 < 0:                       # compressed start: drop part of the pre-roll
+            a0 -= m0
+            m0 = 0
+        a1 = min(a1, a0 + (len(out) - m0))
+        L = a1 - a0
+        if a0 > n0 or L <= 2 * xf:
+            continue
+        w = np.ones(L)
+        xin = max(1, min(xf, n0 - a0))          # fade-in must end before the onset
+        w[:xin] = 0.5 - 0.5 * np.cos(np.linspace(0, np.pi, xin))
+        w[-xf:] = (0.5 - 0.5 * np.cos(np.linspace(0, np.pi, xf)))[::-1]
+        out[m0:m0 + L] = out[m0:m0 + L] * (1.0 - w) + x[a0:a1] * w
+    return out
+
+
+def apply_stretch(audio, ratio, mode='resample'):
+    if mode == 'preserve':
+        return time_stretch_pv(audio, ratio)
+    return time_stretch_naive(audio, ratio)
 
 
 def equal_power_pan_gains(pan):
@@ -1327,67 +2290,70 @@ def pan_mono_buffer(audio, pan):
     return np.column_stack((audio * gl, audio * gr)).astype(np.float32)
 
 
-def render_ops(ops_list, events, sr, target_dur_s, overlap_default_ms=20):
+def soft_limit(output):
+    """Static tanh squash, then normalise to 0.92 peak (memoryless, no pumping)."""
+    peak = float(np.abs(output).max()) if output.size else 0.0
+    if peak > 0.01:
+        drive = min(0.9 / peak, 4.0)
+        output = np.tanh(output * drive).astype(np.float32)
+        post_peak = float(np.abs(output).max())
+        if post_peak > 0.01:
+            output = output / post_peak * 0.92
+    return output.astype(np.float32)
+
+
+def render_ops(ops_list, events, sr, target_dur_s, overlap_default_ms=20,
+               stretch_mode='resample', force_mono=False, normalize=True, meta=None):
     """
     Render a sequence of operation dicts to an audio buffer.
 
-    Design decisions to avoid tremolo / amplitude flutter:
-    - Crossfade envelopes are applied ONLY at junctions where two events
-      genuinely overlap (determined by whether the next op starts before
-      the current one ends).  Non-overlapping events get short 5 ms de-click fades at both edges;
-      longer fades are applied only where overlaps genuinely occur.
-    - The weight-division normalisation is REMOVED.  Amplitude is
-      controlled solely by per-event gain.  Polyphonic passages that
-      overlap will naturally sum; a single soft-limiter at the end
-      prevents clipping without modulating the envelope.
-    - 'place' ops always use gain = 1.0 (set at call site). Secondary
-      ops (repeat, recall, braid, echo) keep their lower gain so they
-      blend without competing.
+    - Crossfades only where two events genuinely overlap; otherwise 5 ms
+      de-click fades. No weight-division normalisation; amplitude is set by
+      per-op gain and one soft limiter at the end.
+    - Any op carrying slice_ratio is cut from slice_offset in source time
+      first; 'invert' ops and ops with reverse=True are then reversed.
+    - normalize=False returns the raw sum (used per choir voice, so the voice
+      gains survive into the final mix). force_mono ignores per-op pan.
+    - Each op dict is annotated in place: _rendered (any sample inside the
+      target duration) and _peak (peak of the part that was written).
+      meta['pre_peak'] receives the mix peak before limiting.
     """
     if not ops_list:
         return np.zeros(int(sr * 1.0), dtype=np.float32)
 
-    # ── Filter and sort by start_time ────────────────────────────────────
     valid_ops = [op for op in ops_list if 0 <= op['event_idx'] < len(events)]
     if not valid_ops:
         return np.zeros(int(sr * max(target_dur_s, 1.0)), dtype=np.float32)
-
     valid_ops = sorted(valid_ops, key=lambda o: o['start_time'])
 
-    # ── Size output buffer ───────────────────────────────────────────────
     max_time = max(
         max(0.0, op['start_time']) + len(events[op['event_idx']]['audio']) / sr
         for op in valid_ops
     )
     total_samples = int(max(max_time, target_dur_s) * sr) + sr
-    spatial = any(abs(float(op.get('pan', 0.0))) > 1e-9 for op in valid_ops)
-    if spatial:
-        output = np.zeros((total_samples, 2), dtype=np.float32)
-    else:
-        # Preserve the exact historical mono code path for non-spatial presets.
-        output = np.zeros(total_samples, dtype=np.float32)
+    tgt = int(target_dur_s * sr)
+    spatial = (not force_mono) and any(abs(float(op.get('pan', 0.0))) > 1e-9 for op in valid_ops)
+    output = np.zeros((total_samples, 2) if spatial else total_samples, dtype=np.float32)
 
-    # Build a list of (start_samp, end_samp) for overlap detection
-    placements = []   # filled per-op below, used to decide crossfade length
-
-    declick_samples = max(1, int(0.005 * sr))   # 5 ms de-click fade-in only
+    placements = []
+    declick_samples = max(1, int(0.005 * sr))
 
     for idx, op in enumerate(valid_ops):
-        ei   = op['event_idx']
-        raw  = events[ei]['audio'].copy()
+        op['_rendered'] = False
+        op['_peak'] = 0.0
+        ei = op['event_idx']
+        raw = events[ei]['audio'].copy()
         gain = float(op.get('gain', 1.0))
 
-        # ── Audio transforms ─────────────────────────────────────────────
-        if op['type'] == 'invert':
+        if 'slice_ratio' in op or op['type'] == 'fragment':
+            off = int(op.get('slice_offset', 0))
+            n = max(1, int(len(raw) * float(op.get('slice_ratio', 0.3))))
+            raw = raw[off:off + n].copy()
+        if op['type'] == 'invert' or op.get('reverse'):
             raw = raw[::-1].copy()
-
-        if op['type'] == 'fragment':
-            ratio = float(op.get('slice_ratio', 0.3))
-            raw   = raw[:max(1, int(len(raw) * ratio))]
 
         erosion = float(np.clip(op.get('erosion', 0.0), 0.0, 1.0))
         if erosion > 1e-6 and len(raw) > 16:
-            # Progressive spectral erosion for collapsing/recap transformations.
             cutoff = max(180.0, (0.48 - 0.40 * erosion) * sr)
             cutoff = min(cutoff, sr * 0.49)
             try:
@@ -1396,68 +2362,46 @@ def render_ops(ops_list, events, sr, target_dur_s, overlap_default_ms=20):
             except Exception:
                 pass
 
-        if op['type'] in ('place', 'recall', 'repeat', 'braid', 'echo', 'invert', 'fragment'):
-            stretch = float(op.get('stretch', 1.0))
-            if abs(stretch - 1.0) > 0.02:
-                raw = time_stretch_naive(raw, stretch)
+        stretch = float(op.get('stretch', 1.0))
+        if abs(stretch - 1.0) > 0.02:
+            raw = apply_stretch(raw, stretch, stretch_mode)
 
         if len(raw) == 0:
             continue
-
         raw = raw * gain
 
-        # ── Placement ────────────────────────────────────────────────────
         skip = max(0, -int(op['start_time'] * sr))
         if skip >= len(raw):
             continue
         raw = raw[skip:]
-
         start_samp = max(0, int(op['start_time'] * sr))
-        end_samp   = start_samp + len(raw)
+        end_samp = start_samp + len(raw)
 
-        if len(raw) == 0:
-            continue
-
-        # ── Crossfade only where this event overlaps the PREVIOUS placed event ──
-        # Find the most recent placement that overlaps our start
         xfade_samples = 0
         for prev_start, prev_end in reversed(placements):
             if prev_end > start_samp:
-                # Overlap: fade for the overlapping region, capped at crossfade_ms
-                max_xfade_ms = op.get('crossfade_ms', overlap_default_ms)
-                max_xfade_s  = int(max_xfade_ms * sr / 1000.0)
+                max_xfade_s = int(op.get('crossfade_ms', overlap_default_ms) * sr / 1000.0)
                 xfade_samples = min(max_xfade_s, prev_end - start_samp, len(raw) // 2)
                 break
-
-        # Apply fade-in at the junction (de-click or crossfade)
-        fade_in_len = max(declick_samples, xfade_samples)
-        fade_in_len = min(fade_in_len, len(raw) // 2)
+        fade_in_len = min(max(declick_samples, xfade_samples), len(raw) // 2)
         if fade_in_len > 0:
             raw[:fade_in_len] *= np.linspace(0.0, 1.0, fade_in_len, dtype=np.float32)
 
-        # Apply fade-out ONLY if this event overlaps the NEXT placed event
-        # (look-ahead: check if any later op starts before our end_samp)
-        fade_out_len = declick_samples  # always a tiny de-click at tail
-        for nxt_op in valid_ops[idx+1:idx+6]:   # check next 5 ops only
+        fade_out_len = declick_samples
+        for nxt_op in valid_ops[idx+1:idx+6]:
             nxt_start = max(0, int(nxt_op['start_time'] * sr))
             if nxt_start < end_samp:
-                max_xfade_ms = nxt_op.get('crossfade_ms', overlap_default_ms)
-                max_xfade_s  = int(max_xfade_ms * sr / 1000.0)
+                max_xfade_s = int(nxt_op.get('crossfade_ms', overlap_default_ms) * sr / 1000.0)
                 fade_out_len = min(max_xfade_s, end_samp - nxt_start, len(raw) // 2)
                 break
-        fade_out_len = max(declick_samples, fade_out_len)
-        fade_out_len = min(fade_out_len, len(raw) // 2)
+        fade_out_len = min(max(declick_samples, fade_out_len), len(raw) // 2)
         if fade_out_len > 0:
             raw[-fade_out_len:] *= np.linspace(1.0, 0.0, fade_out_len, dtype=np.float32)
 
-        # ── Write into buffer ─────────────────────────────────────────────
         if end_samp > len(output):
             pad = end_samp - len(output)
-            if spatial:
-                output = np.concatenate(
-                    [output, np.zeros((pad, 2), dtype=np.float32)], axis=0)
-            else:
-                output = np.concatenate([output, np.zeros(pad, dtype=np.float32)])
+            padding = np.zeros((pad, 2) if spatial else pad, dtype=np.float32)
+            output = np.concatenate([output, padding], axis=0)
 
         if spatial:
             gl, gr = equal_power_pan_gains(op.get('pan', 0.0))
@@ -1467,31 +2411,21 @@ def render_ops(ops_list, events, sr, target_dur_s, overlap_default_ms=20):
             output[start_samp:end_samp] += raw
         placements.append((start_samp, end_samp))
 
-    # ── Trim to target duration ──────────────────────────────────────────
-    tgt = int(target_dur_s * sr)
+        if start_samp < tgt:
+            seen = raw[:tgt - start_samp]
+            op['_rendered'] = True
+            op['_peak'] = float(np.abs(seen).max()) if len(seen) else 0.0
+
     if len(output) > tgt:
         output = output[:tgt]
     elif len(output) < tgt:
         pad = tgt - len(output)
-        if spatial:
-            output = np.concatenate(
-                [output, np.zeros((pad, 2), dtype=np.float32)], axis=0)
-        else:
-            output = np.concatenate([output, np.zeros(pad, dtype=np.float32)])
+        output = np.concatenate([output, np.zeros((pad, 2) if spatial else pad, dtype=np.float32)], axis=0)
 
-    # ── Soft-limiter: smooth tanh squash, then normalise to -1 dBFS ─────
-    # This does NOT create amplitude modulation — it is a static memoryless
-    # function applied sample-by-sample.
-    peak = float(np.abs(output).max())
-    if peak > 0.01:
-        # Scale so loudest moment enters tanh at ~0.9 (gentle knee)
-        drive  = min(0.9 / peak, 4.0)
-        output = np.tanh(output * drive).astype(np.float32)
-        # Final normalise to 0.92 peak
-        post_peak = float(np.abs(output).max())
-        if post_peak > 0.01:
-            output = output / post_peak * 0.92
-
+    if meta is not None:
+        meta['pre_peak'] = float(np.abs(output).max()) if output.size else 0.0
+    if normalize:
+        output = soft_limit(output)
     return output.astype(np.float32)
 
 
@@ -1527,6 +2461,16 @@ def parse_args(argv):
       [12] surprise               (0.0 – 1.0)
       [13] seed                   (integer)
       [14] preset_name            (string or "Custom")
+      [15] param_mode             "explicit" = the values above are final
+                                  (v1.8 Praat front-end: presets arrive as
+                                  pre-filled, user-editable values);
+                                  "preset" (default, older front-ends) =
+                                  the preset's table overrides them
+      [16] stretch_mode           "resample" (default; pitch follows the
+                                  stretch) or "preserve" (phase vocoder)
+      [17] stretch_amount         0..1 (default 0): every operation is
+                                  stretched by 1 + amount (x1 .. x2) on top
+                                  of the plan's own stretch
     """
     def f(i, default):
         try:
@@ -1558,6 +2502,9 @@ def parse_args(argv):
         },
         'seed':   int(f(13, 42)),
         'preset': s(14, 'Custom'),
+        'param_mode': s(15, 'preset').strip().lower(),
+        'stretch_mode': 'preserve' if s(16, 'resample').strip().lower().startswith('pres') else 'resample',
+        'stretch_amount': float(np.clip(f(17, 0.0), 0.0, 1.0)),
     }
 
 
@@ -1571,7 +2518,10 @@ def main():
     preset_name = cfg['preset']
 
     # Apply preset overrides
-    params, ops = get_preset(preset_name, params)
+    explicit = cfg['param_mode'] == 'explicit'
+    stretch_mode = cfg['stretch_mode']
+    params, ops = get_preset(preset_name, params, explicit=explicit)
+    params['stretch_amount'] = cfg['stretch_amount']
 
     # Legacy controls kept only for positional CLI compatibility. They are not
     # part of the current renderer/planner (source_trace was deliberately removed).
@@ -1616,15 +2566,41 @@ def main():
         min_form_phrases = 2
     elif ops.get('refrain'):
         min_form_phrases = 2
-    if len(phrases) < min_form_phrases and len(events) >= min_form_phrases:
-        phrases = rebalance_phrases(events, feat_vecs, min_form_phrases)
+    if len(phrases) < min_form_phrases and len(events) >= 2:
+        phrases = rebalance_phrases(events, feat_vecs, min(min_form_phrases, len(events)))
+    # Minimum material for the formal presets (v1.10). If the source cannot
+    # carry the requested form, stop with an explanation instead of silently
+    # rendering a different planner.
+    need = None
+    n_natural = 1 if events and events[0].get('forced_split') else len(events)
+    if (ops.get('sonata_form') or ops.get('refrain') or ops.get('polyphony')) and n_natural < 2:
+        need = (f'{preset_name} needs at least two onset-separated events; the source has no '
+                'detectable onset structure (it was only split at its midpoint)')
+    elif ops.get('sonata_form') and len(phrases) < 2:
+        need = 'Hidden Sonata needs two contrasting phrase groups (themes A and B)'
+    elif ops.get('refrain') and len(phrases) < 2:
+        need = 'Collapsing Refrain needs a refrain phrase plus at least one other phrase'
+    elif ops.get('polyphony') and len(phrases) < 2:
+        need = 'Latent Counterpoint needs at least two phrases to form two voices'
+    elif ops.get('n_strands', 0) >= 3 and n_natural < 3:
+        need = 'Formal Braiding needs at least three events for its three strands'
+    form_warning = ''
+    if not need and min_form_phrases > 1 and n_natural < min_form_phrases:
+        form_warning = (f'thin material: {n_natural} event(s) for a form that wants '
+                        f'{min_form_phrases} phrases; phrases were split from them')
+    if need:
+        sys.stderr.write(
+            f"INSUFFICIENT MATERIAL: {need}.\n"
+            f"The source gave {n_natural} onset-separated event(s).\n"
+            "Try a longer or more varied source, a higher Phrase coherence, "
+            "or a non-formal preset (Custom, Memory Spiral, Echo Architecture).\n")
+        sys.exit(3)
     n_ph = len(phrases)
     print(f"      {n_ph} phrases found.", flush=True)
 
     # ── Stage 4: Real phrase-derived sections ────────────────────────────
     print("[4/6] Building sections + descriptors...", flush=True)
-    n_sections_target = max(1, min(8, int(round(math.sqrt(max(1, n_ph))))))
-    phrase_sections = group_phrases_into_sections(phrases, events, n_sections_target)
+    phrase_sections, boundary_novelty = group_phrases_into_sections(phrases, events, features_list)
     sections = compute_section_descriptors(events, features_list, sr, phrase_sections)
     print(f"      {len(sections)} sections found.", flush=True)
 
@@ -1692,21 +2668,24 @@ def main():
 
     visual_ops = []
     spatial_mode = "mono"
+    sched_main = None
     if n_voices > 1:
-        # Render each voice through the historical mono renderer first, then
-        # distribute the completed voices with equal-power panning. This keeps
-        # each voice's internal sound identical and changes only its location.
-        voice_buffers = []
+        # Each voice is rendered unnormalised and in mono, then panned and
+        # summed; ONE limiter runs on the sum. v1.7 normalised every voice
+        # separately, which erased the planned per-voice gain steps.
+        voice_sum = None
         voice_pans = np.linspace(-0.85, 0.85, n_voices)
         for v in range(n_voices):
             v_seed = seed + v * 137
             v_rng  = random.Random(v_seed)
             v_np   = np.random.RandomState(v_seed)
-            v_plan = section_plan_np.copy()
-            v_plan = v_plan + v_np.randn(*v_plan.shape) * 0.05
-            v_plan = np.clip(v_plan, 0, 1)
-            v_ops  = plan_event_ordering(
-                events, feat_vecs, phrases, v_plan, params, ops, v_rng, sr)
+            v_plan = np.clip(section_plan_np + v_np.randn(*section_plan_np.shape) * 0.05, 0, 1)
+            v_sched = plan_event_ordering(
+                events, feat_vecs, features_list, phrases, phrase_sections,
+                v_plan, params, ops, v_rng, sr)
+            if sched_main is None:
+                sched_main = v_sched
+            v_ops = v_sched.ops_list
             offset = (v * dur_in / n_voices * 0.3) if ops.get('phase_offset', False) else 0.0
             voice_pan = float(voice_pans[v])
             for op in v_ops:
@@ -1715,42 +2694,45 @@ def main():
                 op['pan']         = voice_pan
                 op['voice']       = v + 1
             visual_ops.extend(v_ops)
-            # Deliberately remove pan only for the per-voice render so the
-            # pre-pan voice buffer is sample-identical to v1.3.
-            mono_ops = [dict(op, pan=0.0) for op in v_ops]
-            buf = render_ops(mono_ops, events, sr, target_dur)
-            voice_buffers.append(pan_mono_buffer(buf, voice_pan))
-
-        max_len = max(len(b) for b in voice_buffers)
-        output_audio = np.zeros((max_len, 2), dtype=np.float32)
-        for buf in voice_buffers:
-            output_audio[:len(buf), :] += buf / n_voices
+            buf = render_ops(v_ops, events, sr, target_dur, stretch_mode=stretch_mode,
+                             force_mono=True, normalize=False)
+            pbuf = pan_mono_buffer(buf, voice_pan) / n_voices
+            pk_scale = max(equal_power_pan_gains(voice_pan)) / n_voices
+            for op in v_ops:
+                op['_peak'] = float(op.get('_peak', 0.0)) * pk_scale
+            if voice_sum is None:
+                voice_sum = pbuf
+            else:
+                n = max(len(voice_sum), len(pbuf))
+                acc = np.zeros((n, 2), dtype=np.float32)
+                acc[:len(voice_sum)] += voice_sum
+                acc[:len(pbuf)] += pbuf
+                voice_sum = acc
+        mix_pre_peak = float(np.abs(voice_sum).max())
+        output_audio = soft_limit(voice_sum)
         spatial_mode = f"choir_{n_voices}_voices"
     else:
-        plan_ops = plan_event_ordering(
-            events, feat_vecs, phrases, section_plan_np, params, ops, rng, sr)
-        visual_ops = plan_ops
-        output_audio = render_ops(plan_ops, events, sr, target_dur)
+        sched_main = plan_event_ordering(
+            events, feat_vecs, features_list, phrases, phrase_sections,
+            section_plan_np, params, ops, rng, sr)
+        visual_ops = sched_main.ops_list
+        rmeta = {}
+        output_audio = render_ops(visual_ops, events, sr, target_dur,
+                                  stretch_mode=stretch_mode, meta=rmeta)
+        mix_pre_peak = rmeta.get('pre_peak', 0.0)
         if output_audio.ndim == 2:
             if ops.get('echo_depth'):
                 spatial_mode = "echo_alternating"
-            elif ops.get('braid'):
+            elif ops.get('n_strands', 0) >= 3:
                 spatial_mode = "braid_strands"
+            elif ops.get('polyphony'):
+                spatial_mode = "counterpoint_voices"
             else:
                 spatial_mode = "operation_pan"
 
-    # ── Source trace: removed ────────────────────────────────────────────
-    # The review noted this layer is unnecessary: the recomposition already
-    # preserves source identity structurally. More importantly, mixing a
-    # time-stretched copy of the original back into the output at any ratio
-    # creates comb filtering and amplitude beating (tremolo) because the
-    # stretched signal is partially correlated with the summed events at
-    # unpredictable phase relationships. Removed entirely.
-
-    # Final normalise (single-pass, no modulation)
-    peak = float(np.abs(output_audio).max())
-    if peak > 0.01:
-        output_audio = (output_audio / peak * 0.92).astype(np.float32)
+    # Source trace stays removed: mixing a stretched copy of the original back
+    # in produced comb filtering / beating against the correlated events.
+    # Rendering already ends in a single soft limiter at 0.92 peak.
 
     save_audio(cfg['output'], output_audio, sr)
     print(f"[HNR] Output written: {cfg['output']}", flush=True)
@@ -1792,6 +2774,14 @@ def main():
         'used_fragmentation': f'{params["fragmentation"]:.4f}',
         'used_overlap': f'{params["overlap"]:.4f}',
         'used_surprise': f'{params["surprise"]:.4f}',
+        'param_mode': 'explicit' if explicit else 'preset_table',
+        'stretch_mode': stretch_mode,
+        'stretch_amount': f'{cfg["stretch_amount"]:.3f}',
+        'form_warning': form_warning,
+        # Fixed blend weights of the plan (not a measured audible contribution):
+        # on the five control-mixed slots neural 0.07 / descriptors 0.28 /
+        # controls 0.65; on the other slots neural 0.20 / descriptors 0.80.
+        'plan_mix': 'neural 0.20 + descriptors 0.80, then 0.35 plan + 0.65 control on 5 slots',
     }
 
     # Actual plan values used by the scheduler (after user-parameter modulation).
@@ -1827,8 +2817,10 @@ def main():
         stats[f'plan_row_{j}'] = ','.join(
             f'{float(v):.4f}' for v in section_plan_np[int(pi)])
 
-    # Actual section spans and phrase membership.
+    # Actual section spans and phrase membership (boundaries = novelty peaks).
     stats['n_section_viz'] = len(phrase_sections)
+    stats['section_method'] = 'novelty_peaks'
+    stats['boundary_novelty'] = ','.join(f'{float(v):.3f}' for v in boundary_novelty)
     for si, sec in enumerate(phrase_sections):
         p0 = sec['phrase_indices'][0] if sec['phrase_indices'] else -1
         p1 = sec['phrase_indices'][-1] if sec['phrase_indices'] else -1
@@ -1876,40 +2868,116 @@ def main():
             f'{t0p:.6f},{t1p:.6f},{len(inds)},{int(pi)}')
 
     # Actual scheduled operations, including all voices in choir mode.
+    # planned  = accepted by the scheduler (starts before the target end)
+    # rendered = at least one sample written inside the output
+    # audible  = rendered and its peak within -60 dB of the mix peak (pre-limiter)
     def _op_duration_seconds(op):
         ei = int(op.get('event_idx', -1))
         if ei < 0 or ei >= len(events):
             return 0.0
         n = len(events[ei]['audio'])
-        if op.get('type') == 'fragment':
-            n = max(1, int(n * float(op.get('slice_ratio', 0.3))))
+        if 'slice_ratio' in op or op.get('type') == 'fragment':
+            off = int(op.get('slice_offset', 0))
+            n = min(n - off, max(1, int(n * float(op.get('slice_ratio', 0.3)))))
         stretch = float(op.get('stretch', 1.0))
         if abs(stretch - 1.0) > 0.02:
             n = max(1, int(n * stretch))
-        return n / sr
+        return max(1, n) / sr
+
+    def _op_source_span(op):
+        """Source-time span actually read, oriented in playback direction."""
+        ei = int(op.get('event_idx', -1))
+        ev = events[ei]
+        s0, s1 = ev['start'], ev['end']
+        if 'slice_ratio' in op or op.get('type') == 'fragment':
+            n = ev['end'] - ev['start']
+            off = int(op.get('slice_offset', 0))
+            s0 = ev['start'] + off
+            s1 = min(ev['end'], s0 + max(1, int(n * float(op.get('slice_ratio', 0.3)))))
+        if op.get('type') == 'invert' or op.get('reverse'):
+            s0, s1 = s1, s0
+        return s0 / sr, s1 / sr
+
+    aud_floor = 1e-3 * max(mix_pre_peak, 1e-9)
+    for op in visual_ops:
+        op['_audible'] = bool(op.get('_rendered')) and float(op.get('_peak', 0.0)) >= aud_floor
 
     ops_sorted = sorted(visual_ops, key=lambda o: float(o.get('start_time', 0.0)))
-    op_counts = {}
-    for op in ops_sorted:
-        typ = str(op.get('type', 'other'))
-        op_counts[typ] = op_counts.get(typ, 0) + 1
-    stats['n_ops_total'] = len(ops_sorted)
-    pan_values = np.array([float(op.get('pan', 0.0)) for op in ops_sorted], dtype=float) \
-        if ops_sorted else np.array([0.0])
+    stats['n_ops_planned'] = len(ops_sorted)
+    stats['n_ops_rendered'] = sum(1 for o in ops_sorted if o.get('_rendered'))
+    stats['n_ops_audible'] = sum(1 for o in ops_sorted if o.get('_audible'))
+    stats['n_ops_refused_beyond_target'] = int(sched_main.n_refused) if sched_main else 0
+    stats['n_ops_stretched'] = sum(1 for o in ops_sorted if o.get('_rendered')
+                                   and abs(float(o.get('stretch', 1.0)) - 1.0) > 0.02)
+    stats['n_ops_total'] = stats['n_ops_rendered']
+    rendered_ops = [o for o in ops_sorted if o.get('_rendered')]
+    pan_values = np.array([float(op.get('pan', 0.0)) for op in rendered_ops], dtype=float) \
+        if rendered_ops else np.array([0.0])
     stats['pan_min'] = f'{float(np.min(pan_values)):.4f}'
     stats['pan_max'] = f'{float(np.max(pan_values)):.4f}'
     stats['n_spatial_ops'] = int(np.count_nonzero(np.abs(pan_values) > 1e-9))
     for typ in ('place', 'repeat', 'fragment', 'recall', 'braid', 'echo', 'invert'):
-        stats[f'n_op_{typ}'] = op_counts.get(typ, 0)
+        stats[f'n_op_{typ}'] = sum(1 for o in rendered_ops if o.get('type') == typ)
+        stats[f'n_op_{typ}_planned'] = sum(1 for o in ops_sorted if o.get('type') == typ)
+    for key, lab in (('restatement', 'restatement'), ('response', 'response'),
+                     ('surprise', 'surprise'), ('density_layer', 'density_layer')):
+        stats[f'n_mech_{key}'] = sum(1 for o in rendered_ops if str(o.get('label', '')).startswith(lab))
+
+    # Sonata: rendered operations per theme window, so a missing theme shows.
+    if ops.get('sonata_form'):
+        win_counts = {}
+        for o in rendered_ops:
+            if int(o.get('voice', 1)) > 1:
+                continue
+            lab = str(o.get('label', '')).split('(')[0].replace('_repeat', '')
+            win_counts[lab] = win_counts.get(lab, 0) + 1
+        stats['sonata_windows'] = ','.join(
+            f'{w}:{win_counts.get(w, 0)}' for w in ('expoA', 'expoB', 'dev', 'recapA', 'recapB'))
+        stats['sonata_complete'] = int(all(win_counts.get(w, 0) > 0 for w in ('expoA', 'expoB', 'dev', 'recapA', 'recapB')))
+        # Share of each window's duration actually covered by its own
+        # rendered material (union of op spans). 1 op can still cover 100%.
+        T_ = target_dur
+        b1_, b2_ = 0.36 * T_, 0.72 * T_
+        wins = {'expoA': (0, 0.5 * b1_), 'expoB': (0.5 * b1_, b1_), 'dev': (b1_, b2_),
+                'recapA': (b2_, b2_ + 0.55 * (T_ - b2_)), 'recapB': (b2_ + 0.55 * (T_ - b2_), T_)}
+        cover = []
+        for w, (w0, w1) in wins.items():
+            spans = []
+            for o in rendered_ops:
+                lab = str(o.get('label', '')).split('(')[0].replace('_repeat', '')
+                if lab == w or (w == 'dev' and lab == 'dev_combine'):
+                    st_ = float(o['start_time'])
+                    spans.append((max(w0, st_), min(w1, st_ + _op_duration_seconds(o))))
+            spans.sort()
+            tot, ce = 0.0, w0
+            for a_, b_ in spans:
+                a_ = max(a_, ce)
+                if b_ > a_:
+                    tot += b_ - a_
+                    ce = b_
+            cover.append(f'{w}:{tot / max(1e-9, w1 - w0):.2f}')
+        stats['sonata_window_coverage'] = ','.join(cover)
+
+    # Form parts declared by the planner (voice 1 in choir mode).
+    parts = sched_main.parts if sched_main else []
+    max_parts = 64
+    stats['n_form_parts'] = min(len(parts), max_parts)
+    stats['n_form_parts_all'] = len(parts)
+    n_empty = 0
+    for pi_, (pname, t0p, t1p) in enumerate(parts[:max_parts]):
+        n_in = sum(1 for o in rendered_ops if o.get('part') == pi_ and int(o.get('voice', 1)) <= 1)
+        stats[f'form_part_{pi_}'] = f'{t0p:.6f},{t1p:.6f},{n_in},{pname}'
+    for pi_ in range(len(parts)):
+        if not any(o.get('part') == pi_ for o in rendered_ops):
+            n_empty += 1
+    stats['n_form_parts_empty'] = n_empty
 
     max_op_viz = 240
     audible_ops = []
-    for op in ops_sorted:
+    for op in rendered_ops:
         start = float(op.get('start_time', 0.0))
-        dur_op = _op_duration_seconds(op)
-        end = start + dur_op
-        if end > 0.0 and start < target_dur:
-            audible_ops.append((op, max(0.0, start), min(target_dur, end)))
+        end = start + _op_duration_seconds(op)
+        audible_ops.append((op, max(0.0, start), min(target_dur, end)))
     if len(audible_ops) <= max_op_viz:
         op_viz = audible_ops
     else:
@@ -1921,12 +2989,10 @@ def main():
             f'{op.get("type", "other")},{t0o:.6f},{t1o:.6f},'
             f'{int(op.get("event_idx", -1))},{float(op.get("gain", 1.0)):.4f},'
             f'{float(op.get("pan", 0.0)):.4f},{int(op.get("voice", 0))}')
-        # Where in the SOURCE this operation's material came from. Separate key
-        # so a front-end that parses the fixed op_ layout is unaffected.
         ei = int(op.get('event_idx', -1))
         if 0 <= ei < len(events):
-            stats[f'opsrc_{j}'] = (
-                f'{events[ei]["start"]/sr:.6f},{events[ei]["end"]/sr:.6f}')
+            sa, sb = _op_source_span(op)
+            stats[f'opsrc_{j}'] = f'{sa:.6f},{sb:.6f}'
         else:
             stats[f'opsrc_{j}'] = '-1.000000,-1.000000'
 
