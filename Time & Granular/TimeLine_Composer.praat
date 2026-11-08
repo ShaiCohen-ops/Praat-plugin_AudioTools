@@ -3,9 +3,17 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 2.3 (2026)
+# Version: 2.9 (2026) - Live Bridge prototype
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Live Bridge prototype (v2.9):
+#   Output 7 writes the same verified Arrangement JSON to the per-user
+#   LOCALAPPDATA/PraatAudioTools/LiveBridge/inbox folder. A Node for Max
+#   watcher imports it in the background. This is local file IPC, not a
+#   native network message from Praat; nothing requires Python.
+#   The new output does NOT assert that Ableton imported successfully:
+#   the M4L device reports actual import status.
 #
 # Description:
 #   Non-destructive, corpus-based composition. Organises existing
@@ -98,6 +106,8 @@
 #                              audio (mix, stems) to a folder you choose.
 #   Render a saved plan        a *_plan.tsv file, or the two plan Tables
 #                              left by Plan only (select them first).
+#   Export Arrangement JSON    plan only, no audio: writes
+#                              <base>_arrangement.json (v2.8, see below).
 #   Files are written only when asked for (export, Save plan, Save
 #   catalog) or when the output exceeds the memory budget - then it is
 #   streamed to a 16-bit WAV, opened as a LongSound, and the file is
@@ -126,6 +136,23 @@
 #   Controlled Chaos     loose duration order, extreme overlap, a
 #                        conductor stepped on 16 segments, random
 #                        silence positions
+#   Gesture Crescendo    (v2.6) one short continuous gesture, 5-15 s:
+#                        short -> long, crescendo conductor (more and
+#                        more overlapping entrances), gesture-aware
+#                        selection toward energetic recordings,
+#                        expanding space; no silence, 0.2-0.5 s fade
+#   Gesture Decrescendo  (v2.6) the complement: long -> short (loose,
+#                        strictness 0.4), decrescendo conductor, energetic
+#                        recordings first then delicate ones, contracting
+#                        space; no silence, 0.2-0.5 s fade
+#                        Both: independent layers, 4 dB conductor depth
+#                        (0.5 x 8), density influence 0.7, awareness 0.35.
+#                        Density / overlap / fade follow the duration:
+#                        5 s 40/min, 0.85, 0.2 s - 10 s 30/min, 0.80,
+#                        0.3 s (Cresc.) or 0.4 s (Decresc.) - 15 s 25/min,
+#                        0.75, 0.5 s (linear between, held outside;
+#                        intensity then scales density and overlap once,
+#                        as for every preset). Outside 5-15 s: a note.
 #   Custom               the v1.1 defaults; every control by hand
 #   One folder: Accumulation and Spatial Counterpoint split it into 3
 #   independent streams that share its sources (and their repetition
@@ -142,6 +169,142 @@
 #   = 2.7 dB; Fragmentation 0.45 x 8 = 3.6 dB; Controlled Chaos
 #   0.55 x 10 = 5.5 dB. Form comes mainly from the relations between
 #   sounds; deeper contrasts remain available by hand.
+#
+# Musical energy profiling (Output: "Profile source energy"):
+#   Measurement only - no composition, and nothing in the planning uses
+#   it. Every file is measured over its whole length (30 s chunks):
+#   level of the loudest 0.5 s, spectral centroid, percussive ratio
+#   (energy above 2 kHz in the 50 ms after the strongest onset vs the
+#   next 250 ms) and crest factor. All are ranked WITHIN each folder.
+#   An experimental score (0.4 level + 0.3 brightness + 0.3
+#   percussiveness; crest not scored) orders the files; files whose
+#   measures disagree are flagged "mixed". Results: the Table
+#   TimeLine_energy_profile, a report with Spearman correlations
+#   (duration-energy and between measures), a figure, and one
+#   EnergyAudition Sound per folder (3 low, 3 middle, 3 high, each up
+#   to 6 s around its strongest onset, not levelled). The measures are
+#   also stored in a saved catalog; an older catalog without them is
+#   completed when they are needed.
+#
+# Gesture-aware selection (Gesture_awareness, Edit details > Source
+# selection; 0-1):
+#   Each source's musical energy is its rank, IN ITS OWN FOLDER, by the
+#   profile score (0.4 level + 0.3 brightness + 0.3 percussiveness).
+#   When a source is picked, the conductor at that moment is the energy
+#   target, and every eligible candidate's duration-based weight is
+#   multiplied by
+#       max(0.35, exp(-Gesture_awareness * (energy - c)^2 / (2 * 0.5^2)))
+#   - a soft, bounded preference (at most x2.9 between candidates), never
+#   an exclusion. All eligibility rules (room before the deadline,
+#   repetitions, layers, pacing, repair, closing) are unchanged. A source
+#   whose energy is unavailable counts as mid-energy (0.5). With
+#   Gesture_awareness 0 the selection is exactly v2.4's (no extra random
+#   numbers; verified). With Duration order strictness = 1 the pick is
+#   deterministic by duration and the energy has no effect.
+#   Measured only when needed (awareness > 0, profiling, saved catalog).
+#   Deviation from the proposed formula: "energy" is the RANK of the
+#   score in the folder, not the score itself - the score is an average
+#   of ranks and so is compressed toward the middle (about 0.2-0.8), and
+#   a conductor at 0 or 1 would never meet a matching source.
+#
+# Natural ending (v2.7):
+#   The target duration is the PLANNING horizon, not a cut. The form,
+#   the conductor and the silence plan run on 0..target; no recording
+#   STARTS at or after the musical end (target - ending silence). Every
+#   recording that starts is heard to its own end, so the output lasts
+#       max(target, last event end + ending silence)
+#   Only the last phrase is open-ended; a phrase before a planned
+#   silence keeps its strict deadline. No global fade by default (an
+#   explicit Final fade in Edit details still works, at the end of the
+#   output's music). Plans made before v2.7 render exactly as before.
+#
+# Arrangement JSON (v2.8, Output "Export Arrangement JSON"):
+#   A plan-only export for other tools (a future Ableton importer).
+#   No audio is rendered, copied or changed; sources are referenced by
+#   absolute path, never remapped. Schema:
+#     format "PraatAudioTools.TimeLineArrangement", schema_version "1.0"
+#     generator    script name and version
+#     composition  preset, seed, intensity, organisation, nominal target
+#                  duration vs actual end, musical end, last onset, last
+#                  event end, natural tail extension, ending silence,
+#                  channels, sample rate, event and silence counts
+#     rendering    normalisation settings (informative; applied_mix_gain
+#                  is null because nothing is rendered)
+#     libraries    id, name, absolute folder, usable files, balance
+#     layers       id, name, library (null for a combined pool), stream
+#     sources      unique files in order of first use, with uses
+#     events       one per planned event: id "event_NNNNNN", library,
+#                  layer, source, onset/duration/end in seconds (full
+#                  precision, no tempo or grid), source offset 0,
+#                  planned gain_db (+ its components; no normalisation
+#                  folded in), position, width, fades in seconds,
+#                  source rate/channels, energy (null if missing),
+#                  phrase, closing
+#     silences     planned silences only (type "planned")
+#     incidental_gaps  measured gaps that are neither planned silence
+#                  nor the ending silence
+#     settings     the settings Table, as strings
+#   The text is pure ASCII: non-ASCII characters are written as \uXXXX
+#   (surrogate pairs above U+FFFF), so Hebrew and emoji paths survive
+#   any reader. The same plan and seed give a byte-identical file: no
+#   random calls and no timestamps while writing. The serialiser
+#   (@arrangementJson) writes through @jsonOut to a file or to a string.
+#   The file goes through the output registry: written beside the
+#   target, verified by read-back, never left behind on failure.
+#
+# Changelog v2.8 (2026) - Export Arrangement JSON:
+#   - NEW Output option: Export Arrangement JSON (plan only, no audio).
+#   - Versioned schema 1.0 (above); escaping, absolute paths, stable ids.
+#   - File-safety: registry kind 5 (text), read-back verification.
+#   - Other outputs unchanged (renders identical to v2.7).
+#
+# Changelog v2.7 (2026) - natural ending, complete source tails:
+#   - Final phrase: a candidate only has to start before the musical
+#     end; its tail may run on (the remaining-time exclusion is lifted
+#     there only). If the sound stops before the nominal end, it is
+#     continued from where it stops (an ordinary pick), never by a sound
+#     starting at or after the end. Selection weights, repetition limits,
+#     awareness, density and overlap are unchanged.
+#   - Final fade default 0 (was 3 s); the gesture presets set none.
+#   - Rendering (memory, streamed, export, stems, saved plan,
+#     verification) uses the actual output length, in whole samples.
+#   - Settings: nominal_duration, last_event_end, output_duration.
+#   - Report: requested duration, last permitted onset, last event end,
+#     natural tail extension, ending silence, actual output, fade,
+#     truncated recordings. Figure: drawn to the actual end, the
+#     requested duration dashed.
+#
+# Changelog v2.6 (2026) - two short-form gesture presets:
+#   - NEW presets 8 Gesture Crescendo and 9 Gesture Decrescendo; Custom
+#     is now 10. Every "preset or Custom" test uses cpCustom; saved plans
+#     store the preset by NAME, so older plans (Custom = 8) still map.
+#   - The seven earlier presets and Custom are unchanged (plans verified
+#     identical to v2.5).
+#
+# Changelog v2.5 (2026) - gesture-aware selection (stage 1):
+#   - NEW: Gesture_awareness (Edit details). Preset defaults: Emergence
+#     0.45, Accumulation 0.35, Breathing Form 0.40, Climax & Rupture
+#     0.55, Spatial Counterpoint 0.25, Fragmentation 0.40, Controlled
+#     Chaos 0.15, Custom 0 (experimental; intensity does not change it).
+#   - FIX: duration-energy Spearman now ranks both variables.
+#   - FIX: missing measurements stay missing (ranks over valid values,
+#     score renormalised over the measures that exist, "unavailable"
+#     if none; never read as low energy). A silent file's level is
+#     missing, not -300 dB.
+#   - Energy ranking moved into one procedure (energyRank) used by the
+#     profile and by composition.
+#   - Plan: new last column "energy" (metadata; rendering ignores it).
+#     Report: energy-conductor and duration-energy correlations, regions,
+#     durations, the climax region's high-energy supply, missing values,
+#     and how often a pick had a real choice.
+#   - Gains, dynamics, balance, rendering and space are unchanged.
+#
+# Changelog v2.4 (2026) - musical energy profiling (stage 0):
+#   - NEW Output option: Profile source energy (catalog, figure,
+#     audition; no composition).
+#   - Catalog: loud_db, centroid_hz, perc_db, attack_time, full_peak_db
+#     (measured only when profiling or saving the catalog).
+#   - Every other output: plans identical to v2.3 (verified).
 #
 # Changelog v2.3 (2026) - dynamics recalibration:
 #   - Presets: restrained conductor dynamics (see "Dynamics" above);
@@ -255,6 +418,8 @@ form TimeLine Composer
         option: "Spatial Counterpoint"
         option: "Fragmentation"
         option: "Controlled Chaos"
+        option: "Gesture Crescendo"
+        option: "Gesture Decrescendo"
         option: "Custom (set every control yourself)"
     positive Target_duration_(s) 180
     real Compositional_intensity_(%) 50
@@ -271,6 +436,9 @@ form TimeLine Composer
         option: "Plan only (timeline Tables, no audio)"
         option: "Export composition (also save audio files)"
         option: "Render a saved plan (file or selected Tables)"
+        option: "Profile source energy (catalog, figure, audition; no composition)"
+        option: "Export Arrangement JSON (plan only, no audio)"
+        option: "Send Arrangement to Ableton Live (background, no audio)"
     optionmenu Channels: 1
         option: "Stereo"
         option: "4 channels"
@@ -299,6 +467,10 @@ endfor
 # DETAIL DEFAULTS (second dialogs show and edit these)
 # ============================================================
 duration_order_strictness = 0.7
+# Gesture awareness (0-1): how much a source's musical energy (its rank
+# in its folder) is matched to the conductor when sources are picked.
+# 0 = selection exactly as before. Presets set it; intensity does not.
+gesture_awareness = 0
 duration_preference = 0.5
 randomness = 0.4
 max_repetitions = 3
@@ -316,7 +488,10 @@ file_level_limit = 4
 output_sample_rate = 0
 event_fade_in = 10
 event_fade_out = 40
-final_fade = 3
+# Natural ending (v2.7): no global fade by default - every recording
+# that starts is heard to its own end. A fade (s) is an explicit choice
+# in Edit details; no preset sets one.
+final_fade = 0
 normalize = 1
 peak_dBFS = -1
 memory_budget = 1024
@@ -337,6 +512,7 @@ plan_file$ = ""
 # still be edited (Edit composition controls); Custom starts from the
 # v1.1 defaults and does not use the intensity.
 # ============================================================
+tlVersion$ = "2.9"
 cpName$[1] = "Emergence"
 cpName$[2] = "Accumulation"
 cpName$[3] = "Breathing Form"
@@ -344,7 +520,12 @@ cpName$[4] = "Climax & Rupture"
 cpName$[5] = "Spatial Counterpoint"
 cpName$[6] = "Fragmentation"
 cpName$[7] = "Controlled Chaos"
-cpName$[8] = "Custom"
+cpName$[8] = "Gesture Crescendo"
+cpName$[9] = "Gesture Decrescendo"
+# Custom is always the LAST entry: every test for "a preset or Custom"
+# uses cpCustom, never a number
+cpCustom = 10
+cpName$[cpCustom] = "Custom"
 cpDesc$[1] = "Short, quiet, sparse sounds in the centre; durations, density and width grow."
 cpDesc$[2] = "Entrances crowd together, overlaps thicken, layers pile up to a loud peak."
 cpDesc$[3] = "Waves of activity and silence: density, durations and space expand and contract."
@@ -352,12 +533,16 @@ cpDesc$[4] = "Long preparation, intense build-up to a late climax, sudden silenc
 cpDesc$[5] = "Independent layers in separate regions of space, each with its own shape."
 cpDesc$[6] = "From long sounds and continuous textures to short, scattered fragments."
 cpDesc$[7] = "Unpredictable durations, extreme overlaps, abrupt density changes, irregular silences."
-cpDesc$[8] = "Every control set by hand (starts from the v1.1 defaults)."
-composition_preset = max(1, min(8, composition_preset))
+cpDesc$[8] = "One short continuous gesture: delicate and sparse, growing in energy, density and width."
+cpDesc$[9] = "One short continuous gesture: energetic and dense at once, thinning toward delicate material."
+cpDesc$[cpCustom] = "Every control set by hand (starts from the v1.1 defaults)."
+composition_preset = max(1, min(cpCustom, composition_preset))
 compositional_intensity = max(0, min(100, compositional_intensity))
 
 # v2.1 spatial placement: 1 = the behaviour uses the whole field (v2.0)
 spatial_movement = 1
+
+gestureNote$ = ""
 
 # strategy flags (engine features a preset can switch on)
 waveCycles = 3
@@ -394,6 +579,7 @@ if cp = 1
     climax_position = 90
     spatial_preset = 4
     duration_order_strictness = 0.8
+    gesture_awareness = 0.45
     randomness = 0.3
     dynamics_influence = 0.5
     density_influence = 0.8
@@ -413,6 +599,7 @@ elsif cp = 2
     climax_position = 90
     spatial_preset = 4
     duration_order_strictness = 0.5
+    gesture_awareness = 0.35
     randomness = 0.5
     dynamics_influence = 0.5
     density_influence = 1
@@ -435,6 +622,7 @@ elsif cp = 3
     climax_position = 60
     spatial_preset = 8
     duration_order_strictness = 0.7
+    gesture_awareness = 0.4
     randomness = 0.35
     dynamics_influence = 0.5
     density_influence = 0.8
@@ -456,6 +644,7 @@ elsif cp = 4
     climax_position = 84
     spatial_preset = 4
     duration_order_strictness = 0.75
+    gesture_awareness = 0.55
     randomness = 0.3
     dynamics_influence = 0.55
     density_influence = 0.9
@@ -476,6 +665,7 @@ elsif cp = 5
     climax_position = 55
     spatial_preset = 7
     duration_order_strictness = 0.75
+    gesture_awareness = 0.25
     randomness = 0.3
     dynamics_influence = 0.45
     density_influence = 0.6
@@ -497,6 +687,7 @@ elsif cp = 6
     climax_position = 10
     spatial_preset = 1
     duration_order_strictness = 0.8
+    gesture_awareness = 0.4
     randomness = 0.4
     dynamics_influence = 0.45
     density_influence = 0.9
@@ -518,11 +709,66 @@ elsif cp = 7
     climax_position = 50
     spatial_preset = 1
     duration_order_strictness = 0.15
+    gesture_awareness = 0.15
     randomness = 0.95
     dynamics_influence = 0.55
     density_influence = 1
     spatial_influence = 0.5
     dynamic_range = 10
+elsif cp = 8 or cp = 9
+    # Gesture Crescendo / Gesture Decrescendo: one short continuous
+    # gesture (5-15 s) built from whole recordings. The growth or decay
+    # comes from WHICH recordings are chosen (gesture-aware selection),
+    # how many enter and how much they overlap (conductor -> density and
+    # overlap), their durations and their spread in space - the
+    # conductor's gain is kept shallow (0.5 x 8 dB = 4 dB). No planned
+    # silence, no ending silence; the gesture ends with the natural tails
+    # of its last recordings (no fade).
+    organization = 2
+    silence_mode = 1
+    silence_amount = 0
+    ending_silence = 0
+    dynamic_range = 8
+    dynamics_influence = 0.5
+    density_influence = 0.7
+    gesture_awareness = 0.35
+    randomness = 0.4
+    spatial_influence = 0.6
+    # density and overlap follow the target duration gently
+    # (piecewise linear between 5, 10 and 15 s; held outside): a 5 s
+    # gesture needs more entrances per minute and more overlap than a
+    # 15 s one to stay continuous. These are the 50 % values; intensity
+    # then scales density and overlap exactly as for every preset.
+    gd = max(5, min(15, target_duration))
+    if gd <= 10
+        gu = (gd - 5) / 5
+        event_density = 40 + (30 - 40) * gu
+        overlap = 0.85 + (0.80 - 0.85) * gu
+    else
+        gu = (gd - 10) / 5
+        event_density = 30 + (25 - 30) * gu
+        overlap = 0.80 + (0.75 - 0.80) * gu
+    endif
+    if cp = 8
+        temporal_preset = 1
+        conductor_preset = 1
+        climax_position = 90
+        spatial_preset = 4
+        duration_order_strictness = 0.45
+    else
+        # low strictness: the shortest recordings may be percussive, so
+        # a strict long-to-short order could end too sharply
+        temporal_preset = 2
+        conductor_preset = 2
+        climax_position = 10
+        spatial_preset = 5
+        duration_order_strictness = 0.4
+    endif
+    if target_duration < 5 or target_duration > 15
+        gestureNote$ = cpName$[cp] + " is designed for 5-15 s; " + fixed$(target_duration, 1)
+            ... + " s is used as requested (density and overlap held at their "
+            ... + if target_duration < 5 then "5" else "15" fi + " s values)."
+    endif
 endif
 
 # Compositional intensity: how far the preset is pushed (50 % = as
@@ -539,7 +785,7 @@ endif
 # (c - 1)), and both values can still be set to anything by hand:
 # Dynamic range in Edit composition controls, Dynamics influence in
 # Edit details.
-if cp < 8
+if cp < cpCustom
     di = compositional_intensity / 100 - 0.5
     event_density = event_density * 2 ^ (1.2 * di)
     overlap = max(0, min(1, overlap + 0.4 * di))
@@ -557,10 +803,10 @@ if cp < 8
     endif
 endif
 
-if (edit_composition_controls or cp = 8) and output <> 4
+if (edit_composition_controls or cp = cpCustom) and (output < 4 or output = 6 or output = 7)
     beginPause: "TimeLine Composer - composition controls"
         comment: cpName$[cp] + ": " + cpDesc$[cp]
-        if cp < 8
+        if cp < cpCustom
             comment: "Loaded from the preset at " + fixed$(compositional_intensity, 0) + " % intensity - every value can be changed."
         endif
         optionmenu: "Organization", organization
@@ -611,6 +857,7 @@ if edit_details
     beginPause: "TimeLine Composer - composition details"
         comment: "Source selection"
         real: "Duration_order_strictness", string$(duration_order_strictness)
+        real: "Gesture_awareness", string$(gesture_awareness)
         real: "Duration_preference", string$(duration_preference)
         real: "Randomness", string$(randomness)
         integer: "Max_repetitions", string$(max_repetitions)
@@ -671,6 +918,29 @@ elsif output = 3
 elsif output = 4
     rerender = 1
 endif
+# Arrangement JSON (output 6): plan only (no audio), plus one JSON file
+# describing the composition for a DAW importer
+jsonExport = 0
+wJson = 0
+liveSend = 0
+if output = 6 or output = 7
+    planOnly = 1
+    jsonExport = 1
+    if output = 7
+        liveSend = 1
+        # A background send produces only the JSON handoff, not side files.
+        save_plan = 0
+        save_catalog = 0
+    endif
+endif
+# Musical energy profiling (output 5): measure, report, draw, audition;
+# no composition. The energy measures are also taken whenever the
+# catalog is saved, so a saved catalog is complete; otherwise a normal
+# run does not take them, and nothing in the planning uses them.
+profileOnly = 0
+if output = 5
+    profileOnly = 1
+endif
 wantMix = 1 - planOnly
 wantStems = 0
 if layer_stems and wantMix
@@ -694,6 +964,10 @@ overlap = max(0, min(1, overlap))
 silence_amount = max(0, min(80, silence_amount))
 climax_position = max(2, min(98, climax_position))
 duration_order_strictness = max(0, min(1, duration_order_strictness))
+if gesture_awareness = undefined
+    gesture_awareness = 0
+endif
+gesture_awareness = max(0, min(1, gesture_awareness))
 duration_preference = max(0, min(1, duration_preference))
 randomness = max(0, min(1, randomness))
 max_repetitions = max(1, max_repetitions)
@@ -770,6 +1044,9 @@ layerG[5] = 0.40
 layerB[5] = 0.74
 
 warnCount = 0
+if gestureNote$ <> ""
+    @warn: gestureNote$
+endif
 
 # ============================================================
 # PROCEDURES
@@ -892,6 +1169,746 @@ procedure measureLevel: .ls, .d
     measureLevel.reliable = 0
     if measureLevel.actS >= 0.1 and .maxB >= 0.001
         measureLevel.reliable = 1
+    endif
+endproc
+
+# ---------- musical energy profiling (measurement only) ----------
+# Measures taken over the WHOLE file in 30 s chunks (a single strong
+# gesture in a long recording is not missed), on the mono mix:
+#   loud_db    level of the loudest 0.5 s (RMS, dB). Unlike the active
+#              RMS it is not lowered by long decay tails, so it does not
+#              rank long notes as weaker (piano corpus: rho with duration
+#              -0.01, against -0.45 for the active RMS).
+#   centroid   power-weighted spectral centre of gravity (Hz). Rises with
+#              REGISTER as well as with playing force.
+#   perc_db    percussive ratio: energy above 2 kHz in the 50 ms after
+#              the strongest onset, relative to the 250 ms that follow
+#              (dB). Hammer noise and hard strikes raise it. Gain-free.
+#              (A 10-90 % rise time was tried first and rejected: its
+#              ranking changed with the analysis window, rho 0.10.)
+#   full peak  absolute peak of the whole file (crest = peak - active RMS).
+# The strongest onset: the steepest 5 ms rise in the 100 ms before the
+# loudest 5 ms moment of the file.
+procedure measureEnergy: .ls, .d
+    .chunk = 30
+    .nC = max(1, ceiling(.d / .chunk))
+    .eSum = 0
+    .cSum = 0
+    .pk = 0
+    .loud = -300
+    .bestI = -1e9
+    measureEnergy.perc = undefined
+    measureEnergy.attT = undefined
+    for .k from 1 to .nC
+        .a = (.k - 1) * .chunk
+        .b = min(.d, .k * .chunk + 0.3)
+        selectObject: .ls
+        nocheck Extract part: .a, .b, "no"
+        @gotNew: "Sound", .ls
+        .part = gotNew.id
+        if .part = 0
+            @fail: "Cannot read a section of a source while profiling its energy (memory?)."
+        endif
+        @addTemp: .part
+        .nch = Get number of channels
+        if .nch > 1
+            Convert to mono
+            .mono = selected("Sound")
+            @addTemp: .mono
+            removeObject: .part
+            @dropTemp: .part
+        else
+            .mono = .part
+        endif
+        selectObject: .mono
+        .dur = Get total duration
+        .pkk = Get absolute extremum: 0, 0, "None"
+        .pk = max(.pk, .pkk)
+        # loudest 0.5 s (hop 0.1 s); a shorter file: its whole RMS
+        if .dur <= 0.5
+            .r = Get root-mean-square: 0, 0
+            if .r <> undefined and .r > 0
+                .loud = max(.loud, 20 * log10(.r))
+            endif
+        else
+            .t = 0
+            while .t + 0.5 <= .dur + 1e-9
+                .r = Get root-mean-square: .t, min(.dur, .t + 0.5)
+                if .r <> undefined and .r > 0
+                    .loud = max(.loud, 20 * log10(.r))
+                endif
+                .t = .t + 0.1
+            endwhile
+        endif
+        .e = Get energy: 0, 0
+        if .e > 0
+            To Spectrum: "yes"
+            .spec = selected("Spectrum")
+            @addTemp: .spec
+            .cg = Get centre of gravity: 2
+            removeObject: .spec
+            @dropTemp: .spec
+            if .cg <> undefined
+                .eSum = .eSum + .e
+                .cSum = .cSum + .cg * .e
+            endif
+            if .dur > 0.02
+                # 5 ms intensity envelope: loudest moment, then the
+                # steepest 5 ms rise in the 100 ms before it
+                selectObject: .mono
+                To Intensity: 640, 0, "no"
+                .int = selected("Intensity")
+                @addTemp: .int
+                .im = Get maximum: 0, 0, "Parabolic"
+                if .im <> undefined and .im > .bestI
+                    .bestI = .im
+                    .tm = Get time of maximum: 0, 0, "Parabolic"
+                    .dt = Get time step
+                    .nf = Get number of frames
+                    .fm = Get frame number from time: .tm
+                    .fm = max(1, min(.nf, round(.fm)))
+                    .lag = max(1, round(0.005 / .dt))
+                    .f0 = max(1, .fm - round(0.1 / .dt))
+                    .best = -1e9
+                    .fo = .fm
+                    for .f from .f0 to .fm - .lag
+                        .v1 = Get value in frame: .f
+                        .v2 = Get value in frame: .f + .lag
+                        if .v1 <> undefined and .v2 <> undefined
+                            if .v2 - .v1 > .best
+                                .best = .v2 - .v1
+                                .fo = .f + round(.lag / 2)
+                            endif
+                        endif
+                    endfor
+                    .to = Get time from frame number: .fo
+                    measureEnergy.attT = .a + .to
+                    # percussive ratio on the high-passed excerpt
+                    selectObject: .mono
+                    .x0 = max(0, .to - 0.02)
+                    .x1 = min(.dur, .to + 0.32)
+                    Extract part: .x0, .x1, "rectangular", 1, "yes"
+                    .ex = selected("Sound")
+                    @addTemp: .ex
+                    .srx = Get sampling frequency
+                    if .srx > 4400
+                        Filter (pass Hann band): 2000, 0, 100
+                        .hp = selected("Sound")
+                        @addTemp: .hp
+                        .tA = min(.x1, .to + 0.05)
+                        .tB = min(.x1, .to + 0.30)
+                        .eA = Get energy: .to, .tA
+                        .eB = 0
+                        if .tB - .tA > 0.01
+                            .eB = Get energy: .tA, .tB
+                        endif
+                        if .eA > 0 and .eB > 0
+                            measureEnergy.perc = 10 * log10(.eA / (.tA - .to)) - 10 * log10(.eB / (.tB - .tA))
+                        endif
+                        removeObject: .hp
+                        @dropTemp: .hp
+                    endif
+                    removeObject: .ex
+                    @dropTemp: .ex
+                    selectObject: .int
+                endif
+                removeObject: .int
+                @dropTemp: .int
+            endif
+        endif
+        removeObject: .mono
+        @dropTemp: .mono
+    endfor
+    if .eSum > 0
+        measureEnergy.cog = .cSum / .eSum
+    else
+        measureEnergy.cog = undefined
+    endif
+    measureEnergy.pkDb = 20 * log10(max(1e-10, .pk))
+    # nothing measurable (a silent file): missing, not "very quiet"
+    if .loud <= -299
+        measureEnergy.loudDb = undefined
+    else
+        measureEnergy.loudDb = .loud
+    endif
+endproc
+
+# Fractional rank in [0, 1] (ties share their mean rank) of rkIn[1..n]
+# into rkOut[1..n]; one value -> 0.5.
+procedure rankFrac: .n
+    for .a from 1 to .n
+        if .n = 1
+            rkOut[.a] = 0.5
+        else
+            .less = 0
+            .eq = 0
+            for .b from 1 to .n
+                if rkIn[.b] < rkIn[.a]
+                    .less = .less + 1
+                elsif rkIn[.b] = rkIn[.a]
+                    .eq = .eq + 1
+                endif
+            endfor
+            rkOut[.a] = (.less + (.eq - 1) / 2) / (.n - 1)
+        endif
+    endfor
+endproc
+
+# A number for the report, or "n/a" when it is missing.
+procedure fmtU: .v, .dec
+    if .v = undefined
+        fmtU.out$ = "n/a"
+    else
+        fmtU.out$ = fixed$(.v, .dec)
+    endif
+endproc
+
+# A label for the Picture window: shortened, and Praat's text codes
+# (_ ^ % # \) shown as plain characters.
+procedure figLabel: .t$, .max
+    if length(.t$) > .max
+        .t$ = left$(.t$, .max - 2) + ".."
+    endif
+    .t$ = replace$(.t$, "\", "\bs", 0)
+    .t$ = replace$(.t$, "_", "\_ ", 0)
+    .t$ = replace$(.t$, "^", "\^ ", 0)
+    .t$ = replace$(.t$, "%", "\% ", 0)
+    .t$ = replace$(.t$, "#", "\# ", 0)
+    figLabel.out$ = .t$
+endproc
+
+# Spearman correlation of spA[1..n] and spB[1..n] over the files where
+# BOTH are defined: both variables are ranked (ties share their mean
+# rank) and the ranks are correlated (Pearson). Fewer than 3 pairs ->
+# undefined.
+procedure spearPair: .n
+    .m = 0
+    for .k from 1 to .n
+        if spA[.k] <> undefined and spB[.k] <> undefined
+            .m = .m + 1
+            spVa[.m] = spA[.k]
+            spVb[.m] = spB[.k]
+        endif
+    endfor
+    spearPair.r = undefined
+    spearPair.m = .m
+    if .m >= 3
+        for .k from 1 to .m
+            rkIn[.k] = spVa[.k]
+        endfor
+        @rankFrac: .m
+        for .k from 1 to .m
+            crA[.k] = rkOut[.k]
+            rkIn[.k] = spVb[.k]
+        endfor
+        @rankFrac: .m
+        for .k from 1 to .m
+            crB[.k] = rkOut[.k]
+        endfor
+        @corrArr: .m
+        spearPair.r = corrArr.r
+    endif
+endproc
+
+# Ranks of enV[1..n] among its DEFINED values only, into enR[1..n];
+# missing values stay undefined.
+procedure rankValid: .n
+    .m = 0
+    for .k from 1 to .n
+        enR[.k] = undefined
+        if enV[.k] <> undefined
+            .m = .m + 1
+            rkIn[.m] = enV[.k]
+            rkMap[.m] = .k
+        endif
+    endfor
+    if .m > 0
+        @rankFrac: .m
+        for .j from 1 to .m
+            enR[rkMap[.j]] = rkOut[.j]
+        endfor
+    endif
+endproc
+
+# Musical energy of every source, RELATIVE TO ITS OWN FOLDER (also in a
+# combined pool and in streams). Used by the profile and by
+# Gesture-aware selection. Per source:
+#   srcRLev/RBri/RPerc/RCre  feature ranks in the folder (missing stays
+#                            missing; a feature is ranked among the files
+#                            where it was measured)
+#   srcEnScore  0.4 level + 0.3 brightness + 0.3 percussiveness, the
+#               weights renormalised over the features that exist;
+#               undefined if none exists -> srcEnOK = 0 ("unavailable")
+#   srcEnRank   rank of the score in the folder, 0..1 (what selection uses)
+#   srcEnMix    spread of the scored ranks ("mixed" profile if > 0.6)
+# Missing measurements are never read as low energy.
+procedure energyRank
+    enW1 = 0.4
+    enW2 = 0.3
+    enW3 = 0.3
+    for .s from 1 to nSrc
+        srcEnOK[.s] = 0
+        srcEnScore[.s] = undefined
+        srcEnRank[.s] = undefined
+        srcEnMix[.s] = 0
+        srcRLev[.s] = undefined
+        srcRBri[.s] = undefined
+        srcRPerc[.s] = undefined
+        srcRCre[.s] = undefined
+        srcCrest[.s] = undefined
+    endfor
+    for .i from 1 to nLib
+        .n = 0
+        for .s from 1 to nSrc
+            if srcLib[.s] = .i
+                .n = .n + 1
+                enIdx[.n] = .s
+            endif
+        endfor
+        libEnN[.i] = .n
+        libEnMiss[.i] = 0
+        libMissLev[.i] = 0
+        libMissBri[.i] = 0
+        libMissPerc[.i] = 0
+        if .n > 0
+            # feature 1: loudest 0.5 s level (missing: not measured, or silent)
+            for .k from 1 to .n
+                .s = enIdx[.k]
+                enV[.k] = undefined
+                if srcHasEn[.s]
+                    if srcLoud[.s] <> undefined
+                        if srcLoud[.s] > -299
+                            enV[.k] = srcLoud[.s]
+                        endif
+                    endif
+                endif
+                if enV[.k] = undefined
+                    libMissLev[.i] = libMissLev[.i] + 1
+                endif
+            endfor
+            @rankValid: .n
+            for .k from 1 to .n
+                srcRLev[enIdx[.k]] = enR[.k]
+                .s = enIdx[.k]
+                enV[.k] = undefined
+                if srcHasEn[.s]
+                    if srcCog[.s] <> undefined
+                        if srcCog[.s] > 0
+                            enV[.k] = srcCog[.s]
+                        endif
+                    endif
+                endif
+                if enV[.k] = undefined
+                    libMissBri[.i] = libMissBri[.i] + 1
+                endif
+            endfor
+            @rankValid: .n
+            for .k from 1 to .n
+                srcRBri[enIdx[.k]] = enR[.k]
+                .s = enIdx[.k]
+                enV[.k] = undefined
+                if srcHasEn[.s]
+                    enV[.k] = srcPerc[.s]
+                endif
+                if enV[.k] = undefined
+                    libMissPerc[.i] = libMissPerc[.i] + 1
+                endif
+            endfor
+            @rankValid: .n
+            for .k from 1 to .n
+                srcRPerc[enIdx[.k]] = enR[.k]
+                .s = enIdx[.k]
+                enV[.k] = undefined
+                if srcHasEn[.s]
+                    if srcFullPk[.s] <> undefined and srcActDb[.s] > -199
+                        enV[.k] = srcFullPk[.s] - srcActDb[.s]
+                    endif
+                endif
+                srcCrest[.s] = enV[.k]
+            endfor
+            @rankValid: .n
+            for .k from 1 to .n
+                .s = enIdx[.k]
+                srcRCre[.s] = enR[.k]
+                # combined score over the features that exist
+                .sw = 0
+                .sv = 0
+                .lo = 2
+                .hi = -1
+                .nv = 0
+                if srcRLev[.s] <> undefined
+                    .sw = .sw + enW1
+                    .sv = .sv + enW1 * srcRLev[.s]
+                    .lo = min(.lo, srcRLev[.s])
+                    .hi = max(.hi, srcRLev[.s])
+                    .nv = .nv + 1
+                endif
+                if srcRBri[.s] <> undefined
+                    .sw = .sw + enW2
+                    .sv = .sv + enW2 * srcRBri[.s]
+                    .lo = min(.lo, srcRBri[.s])
+                    .hi = max(.hi, srcRBri[.s])
+                    .nv = .nv + 1
+                endif
+                if srcRPerc[.s] <> undefined
+                    .sw = .sw + enW3
+                    .sv = .sv + enW3 * srcRPerc[.s]
+                    .lo = min(.lo, srcRPerc[.s])
+                    .hi = max(.hi, srcRPerc[.s])
+                    .nv = .nv + 1
+                endif
+                if .sw > 0
+                    srcEnScore[.s] = .sv / .sw
+                    srcEnOK[.s] = 1
+                else
+                    libEnMiss[.i] = libEnMiss[.i] + 1
+                endif
+                if .nv >= 2
+                    srcEnMix[.s] = .hi - .lo
+                endif
+                enV[.k] = srcEnScore[.s]
+            endfor
+            @rankValid: .n
+            for .k from 1 to .n
+                srcEnRank[enIdx[.k]] = enR[.k]
+            endfor
+            # Spearman correlations (both variables ranked)
+            for .k from 1 to .n
+                spA[.k] = srcDur[enIdx[.k]]
+                spB[.k] = srcEnScore[enIdx[.k]]
+            endfor
+            @spearPair: .n
+            libRhoDurE[.i] = spearPair.r
+            for .k from 1 to .n
+                spB[.k] = srcRLev[enIdx[.k]]
+            endfor
+            @spearPair: .n
+            libRhoDurL[.i] = spearPair.r
+            for .k from 1 to .n
+                spA[.k] = srcRLev[enIdx[.k]]
+                spB[.k] = srcRBri[enIdx[.k]]
+            endfor
+            @spearPair: .n
+            libRhoLB[.i] = spearPair.r
+            for .k from 1 to .n
+                spB[.k] = srcRPerc[enIdx[.k]]
+            endfor
+            @spearPair: .n
+            libRhoLA[.i] = spearPair.r
+            for .k from 1 to .n
+                spA[.k] = srcRBri[enIdx[.k]]
+            endfor
+            @spearPair: .n
+            libRhoBA[.i] = spearPair.r
+        endif
+    endfor
+endproc
+
+# Energy profile figure: one panel per folder, files ordered by the
+# score (bars); the three scored ranks as coloured dots and the crest
+# rank as a grey ring, so a disagreement between measures is visible.
+procedure energyFigure
+    .panH = 1.55
+    .labH = 0.65
+    .gap = 0.2
+    .top0 = 1.25
+    .sumTop = .top0 + nLib * (.panH + .labH + .gap)
+    .sumH = 0.45 + 0.26 * nLib
+    .tot = .sumTop + .sumH + 0.1
+    Erase all
+    Font size: 13
+    Select outer viewport: 0, 8, 0, 0.6
+    Axes: 0, 1, 0, 1
+    Text: 0.5, "centre", 0.45, "half", "##MUSICAL ENERGY PROFILE##"
+    Font size: 7
+    Select outer viewport: 0, 8, 0.55, 0.85
+    Axes: 0, 1, 0, 1
+    Colour: "{0.35, 0.35, 0.55}"
+    Text: 0.5, "centre", 0.5, "half", "Measurement only - ranks within each folder (0 = lowest, 1 = highest); score = "
+        ... + fixed$(enW1, 1) + " level + " + fixed$(enW2, 1) + " brightness + " + fixed$(enW3, 1) + " percussiveness (experimental)"
+    # legend
+    Select outer viewport: 0, 8, 0.85, 1.15
+    Axes: 0, 8, 0, 1
+    Paint rectangle: "{0.80, 0.86, 0.94}", 0.6, 0.85, 0.3, 0.7
+    Colour: "Black"
+    Text: 0.92, "left", 0.5, "half", "energy score"
+    Paint circle (mm): "{0.20, 0.40, 0.80}", 2.0, 0.5, 1.4
+    Text: 2.08, "left", 0.5, "half", "level (loudest 0.5 s)"
+    Paint circle (mm): "{0.90, 0.55, 0.10}", 3.35, 0.5, 1.4
+    Text: 3.43, "left", 0.5, "half", "brightness (centroid)"
+    Paint circle (mm): "{0.20, 0.65, 0.30}", 4.85, 0.5, 1.4
+    Text: 4.93, "left", 0.5, "half", "percussiveness"
+    Colour: "{0.45, 0.45, 0.45}"
+    Draw circle (mm): 6.1, 0.5, 1.4
+    Text: 6.18, "left", 0.5, "half", "crest (not scored)"
+    Colour: "{0.80, 0.10, 0.10}"
+    Text: 7.35, "left", 0.5, "half", "##!## mixed"
+    for .i from 1 to nLib
+        .n = libEnN[.i]
+        if .n > 0
+            .y1 = .top0 + (.i - 1) * (.panH + .labH + .gap)
+            .y2 = .y1 + .panH
+            for .s from 1 to nSrc
+                if srcLib[.s] = .i
+                    enFigS[profOrd[.s]] = .s
+                endif
+            endfor
+            Select inner viewport: 0.6, 7.7, .y1, .y2
+            Axes: 0.4, .n + 0.6, -0.04, 1.1
+            Paint rectangle: "{0.98, 0.98, 0.98}", 0.4, .n + 0.6, -0.04, 1.1
+            Colour: "{0.70, 0.70, 0.70}"
+            Dotted line
+            .nk = libEnNok[.i]
+            Draw line: .nk / 3 + 0.5, -0.04, .nk / 3 + 0.5, 1.1
+            Draw line: 2 * .nk / 3 + 0.5, -0.04, 2 * .nk / 3 + 0.5, 1.1
+            Solid line
+            .ms = min(1.4, max(0.6, 40 / .n))
+            .off = min(0.22, 0.3)
+            for .q from 1 to .n
+                .s = enFigS[.q]
+                # missing values are not drawn
+                if profScore[.s] <> undefined
+                    Paint rectangle: "{0.80, 0.86, 0.94}", .q - 0.38, .q + 0.38, 0, profScore[.s]
+                else
+                    Colour: "{0.60, 0.60, 0.60}"
+                    Text: .q, "centre", 0.5, "half", "n/a"
+                endif
+                Colour: "{0.45, 0.45, 0.45}"
+                if profRCre[.s] <> undefined
+                    Draw circle (mm): .q, profRCre[.s], .ms
+                endif
+                if profRLev[.s] <> undefined
+                    Paint circle (mm): "{0.20, 0.40, 0.80}", .q - .off, profRLev[.s], .ms
+                endif
+                if profRBri[.s] <> undefined
+                    Paint circle (mm): "{0.90, 0.55, 0.10}", .q, profRBri[.s], .ms
+                endif
+                if profRAtt[.s] <> undefined
+                    Paint circle (mm): "{0.20, 0.65, 0.30}", .q + .off, profRAtt[.s], .ms
+                endif
+                if profMix[.s] > 0.6
+                    Colour: "{0.80, 0.10, 0.10}"
+                    Font size: 7
+                    Text: .q, "centre", 1.03, "bottom", "##!##"
+                endif
+                Colour: "Black"
+                Font size: 6
+                @figLabel: srcName$[.s], 16
+                Text special: .q, "right", -0.08, "half", "Helvetica", 6, "90", figLabel.out$
+            endfor
+            Colour: "Black"
+            Font size: 6
+            Marks left every: 1, 0.5, "yes", "yes", "no"
+            Text left: "yes", "Rank in folder"
+            Draw inner box
+            Font size: 7
+            @figLabel: libName$[.i], 40
+            Text top: "no", "##Folder " + string$(.i) + ": " + figLabel.out$ + "##  - " + string$(.n)
+                ... + " files, ordered by energy score; dotted lines = thirds (low | mid | high)"
+        endif
+    endfor
+    # summary panel
+    Select inner viewport: 0.6, 7.7, .sumTop, .sumTop + .sumH
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    Colour: "Black"
+    Font size: 7
+    .line = 1
+    for .i from 1 to nLib
+        if libEnN[.i] > 0
+            .yy = 1 - (.line - 0.35) / (nLib + 1)
+            @figLabel: libName$[.i], 40
+            @fmtU: libRhoDurE[.i], 2
+            .c1$ = fmtU.out$
+            @fmtU: libRhoLB[.i], 2
+            .c2$ = fmtU.out$
+            @fmtU: libRhoLA[.i], 2
+            .c3$ = fmtU.out$
+            @fmtU: libRhoBA[.i], 2
+            .c4$ = fmtU.out$
+            Text: 0.02, "left", .yy, "half", "##" + figLabel.out$ + "##   Spearman: duration-energy " + .c1$
+                ... + "  |  level-brightness " + .c2$
+                ... + "  |  level-percussive " + .c3$
+                ... + "  |  brightness-percussive " + .c4$
+                ... + "  |  mixed " + string$(libMixed[.i]) + " of " + string$(libEnN[.i])
+            .line = .line + 1
+        endif
+    endfor
+    .yy = 1 - (.line - 0.35) / (nLib + 1)
+    Colour: "{0.35, 0.35, 0.35}"
+    Text: 0.02, "left", .yy, "half", "Level = loudest 0.5 s (recorded level); brightness also rises with register; the score is a hypothesis to test by listening."
+    Colour: "Black"
+    Draw inner box
+    Select outer viewport: 0, 8, 0, .tot
+endproc
+
+# Listening audition for one folder: 3 lowest, 3 middle and 3 highest
+# by score (all files if 9 or fewer), each up to 6 s around its
+# strongest attack, 0.8 s apart and 2 s between the groups. The files
+# are NOT levelled - the recorded level is one of the things to judge.
+# One overall scale only if the joined result would clip.
+procedure energyAudition: .i
+    .n = libEnNok[.i]
+    for .s from 1 to nSrc
+        if srcLib[.s] = .i
+            audBy[profOrd[.s]] = .s
+        endif
+    endfor
+    .np = 0
+    if .n <= 9
+        for .q from 1 to .n
+            .np = .np + 1
+            audPick[.np] = .q
+            audGrp[.np] = 1 + floor(3 * (.q - 1) / .n)
+        endfor
+    else
+        .m = round((.n + 1) / 2)
+        for .q from 1 to 3
+            .np = .np + 1
+            audPick[.np] = .q
+            audGrp[.np] = 1
+        endfor
+        for .q from .m - 1 to .m + 1
+            .np = .np + 1
+            audPick[.np] = .q
+            audGrp[.np] = 2
+        endfor
+        for .q from .n - 2 to .n
+            .np = .np + 1
+            audPick[.np] = .q
+            audGrp[.np] = 3
+        endfor
+    endif
+    .srA = srcSr[audBy[audPick[1]]]
+    .nPart = 0
+    .t = 0
+    appendInfoLine: ""
+    appendInfoLine: "Audition for ", libName$[.i], " (in the order heard):"
+    for .k from 1 to .np
+        .s = audBy[audPick[.k]]
+        .len = min(srcDur[.s], 6)
+        .a = 0
+        if srcAttT[.s] <> undefined
+            .a = max(0, min(srcAttT[.s] - 1, srcDur[.s] - .len))
+        endif
+        selectObject: placeholderID
+        nocheck Open long sound file: srcPath$[.s]
+        @gotNew: "LongSound", placeholderID
+        .ls = gotNew.id
+        if .ls = 0
+            @fail: "Cannot open " + srcPath$[.s] + " for the audition."
+        endif
+        @addTemp: .ls
+        nocheck Extract part: .a, .a + .len, "no"
+        @gotNew: "Sound", .ls
+        .pc = gotNew.id
+        if .pc = 0
+            @fail: "Cannot read " + srcPath$[.s] + " for the audition (memory?)."
+        endif
+        @addTemp: .pc
+        removeObject: .ls
+        @dropTemp: .ls
+        selectObject: .pc
+        .sr = Get sampling frequency
+        if abs(.sr - .srA) > 0.5
+            Resample: .srA, 50
+            .tmp = selected("Sound")
+            @addTemp: .tmp
+            removeObject: .pc
+            @dropTemp: .pc
+            .pc = .tmp
+        endif
+        selectObject: .pc
+        .nch = Get number of channels
+        if .nch <> 2
+            Extract one channel: 1
+            .c1 = selected("Sound")
+            @addTemp: .c1
+            selectObject: .pc
+            Extract one channel: min(2, .nch)
+            .c2 = selected("Sound")
+            @addTemp: .c2
+            selectObject: .c1, .c2
+            Combine to stereo
+            .tmp = selected("Sound")
+            @addTemp: .tmp
+            removeObject: .pc, .c1, .c2
+            @dropTemp: .pc
+            @dropTemp: .c1
+            @dropTemp: .c2
+            .pc = .tmp
+        endif
+        selectObject: .pc
+        .dd = Get total duration
+        Formula (part): max(0, .dd - 0.05), .dd, 1, 2, "self * (" + string$(.dd) + " - x) / 0.05"
+        Formula (part): 0, min(.dd, 0.005), 1, 2, "self * x / 0.005"
+        .nPart = .nPart + 1
+        audPart[.nPart] = .pc
+        .gb$ = "low"
+        if audGrp[.k] = 2
+            .gb$ = "mid"
+        elsif audGrp[.k] = 3
+            .gb$ = "high"
+        endif
+        appendInfoLine: "  ", fixed$(.t, 1), " s  ", .gb$, "  order ", audPick[.k], "  ", srcName$[.s],
+            ... "  (score ", fixed$(profScore[.s], 2), ", from ", fixed$(.a, 2), " s)"
+        .t = .t + .dd
+        if .k < .np
+            .g = 0.8
+            if audGrp[.k + 1] <> audGrp[.k]
+                .g = 2
+            endif
+            Create Sound from formula: "gap", 2, 0, .g, .srA, "0"
+            .gp = selected("Sound")
+            @addTemp: .gp
+            .nPart = .nPart + 1
+            audPart[.nPart] = .gp
+            .t = .t + .g
+        endif
+    endfor
+    selectObject: audPart[1]
+    for .k from 2 to .nPart
+        plusObject: audPart[.k]
+    endfor
+    Concatenate
+    .res = selected("Sound")
+    @addTemp: .res
+    Rename: "EnergyAudition_" + libName$[.i]
+    .pk = Get absolute extremum: 0, 0, "None"
+    if .pk > 0.99
+        Scale peak: 0.99
+        appendInfoLine: "  (scaled by one overall factor to avoid clipping; relative levels kept)"
+    endif
+    for .k from 1 to .nPart
+        removeObject: audPart[.k]
+        @dropTemp: audPart[.k]
+    endfor
+    nAud = nAud + 1
+    audSnd[nAud] = .res
+endproc
+
+# Pearson correlation of crA[1..n] and crB[1..n] (on ranks = Spearman).
+procedure corrArr: .n
+    .ma = 0
+    .mb = 0
+    for .k from 1 to .n
+        .ma = .ma + crA[.k]
+        .mb = .mb + crB[.k]
+    endfor
+    .ma = .ma / .n
+    .mb = .mb / .n
+    .sab = 0
+    .saa = 0
+    .sbb = 0
+    for .k from 1 to .n
+        .sab = .sab + (crA[.k] - .ma) * (crB[.k] - .mb)
+        .saa = .saa + (crA[.k] - .ma) ^ 2
+        .sbb = .sbb + (crB[.k] - .mb) ^ 2
+    endfor
+    if .saa > 0 and .sbb > 0
+        corrArr.r = .sab / sqrt(.saa * .sbb)
+    else
+        corrArr.r = undefined
     endif
 endproc
 
@@ -1029,10 +2046,27 @@ procedure pickSource: .lay, .t, .room, .bridge
     .wsum = 0
     .best = 0
     .bestD = 1e9
+    # Gesture awareness: the conductor at this moment is the energy
+    # target (0 = calm ... 1 = climax). No random numbers are drawn here,
+    # and with Gesture awareness 0 nothing below changes.
+    .gaOn = 0
+    if gesture_awareness > 0 and energyOn = 1
+        .gaOn = 1
+        .keepV = cond.v
+        .keepX = cond.x
+        @cond: .x
+        .eT = cond.v
+        cond.v = .keepV
+        cond.x = .keepX
+        .eK = gesture_awareness / (2 * 0.5 * 0.5)
+    endif
+    .nElig = 0
     for .k from 1 to layerN[.lay]
         .si = layerSrc[.lay, .k]
         .w = 0
-        if srcUses[.si] < max_repetitions and srcDur[.si] <= .room + 1e-9
+        # in the FINAL phrase (openEnd = 1) a sound only has to START
+        # before the nominal end; its tail may run past it (natural ending)
+        if srcUses[.si] < max_repetitions and (openEnd = 1 or srcDur[.si] <= .room + 1e-9)
             .d = abs(srcRank[.si] - .r)
             .w = exp(-(.d * .d) / (2 * .sd * .sd)) * 0.5 ^ srcUses[.si]
             if .si = layerLast[.lay]
@@ -1043,6 +2077,19 @@ procedure pickSource: .lay, .t, .room, .bridge
             if .bridge > 0 and srcDur[.si] < .bridge
                 .w = .w * 0.15
             endif
+            # energy compatibility: a soft, bounded factor on the
+            # duration-based weight (never below 0.35, never above 1); a
+            # source whose energy is unavailable is treated as mid-energy
+            if .gaOn = 1
+                .eS = 0.5
+                if srcEnOK[.si]
+                    .eS = srcEnRank[.si]
+                endif
+                .w = .w * max(0.35, exp(-.eK * (.eS - .eT) ^ 2))
+            endif
+            if .w > 0
+                .nElig = .nElig + 1
+            endif
             .dd = .d + srcUses[.si] * 0.05 + randomUniform(0, 1e-6)
             if .dd < .bestD
                 .bestD = .dd
@@ -1052,6 +2099,13 @@ procedure pickSource: .lay, .t, .room, .bridge
         cand[.k] = .w
         .wsum = .wsum + .w
     endfor
+    # (diagnostics only: how often energy had a real choice)
+    if .gaOn = 1
+        gaPicks = gaPicks + 1
+        if .nElig >= 2
+            gaChoice = gaChoice + 1
+        endif
+    endif
     # (.s is pickSource.s itself in Praat, so never use it as a loop name)
     pickSource.s = 0
     if .best > 0
@@ -1232,6 +2286,615 @@ procedure scheduleLayer: .lay, .ws, .we, .ph, .lead
     endwhile
 endproc
 
+# ============================================================
+# ARRANGEMENT JSON (schema PraatAudioTools.TimeLineArrangement 1.0)
+# ============================================================
+# The serialiser reads ONLY the plan and settings Tables (the
+# authoritative record) and a few global facts of the composition; it
+# draws no random numbers and changes nothing. It writes through a sink
+# (@jsonOut), so the same text can go to a file (jsonSink = 1) or be
+# collected in memory (jsonSink = 2) for a future bridge. All non-ASCII
+# characters are written as \uXXXX escapes (surrogate pairs above
+# U+FFFF), so the file is plain ASCII - valid UTF-8 for any reader,
+# whatever Praat's text-encoding preference.
+
+# four lower-case hex digits
+procedure hex4: .v
+    .h$ = ""
+    for .i from 1 to 4
+        .d = .v mod 16
+        .v = floor(.v / 16)
+        .h$ = mid$("0123456789abcdef", .d + 1, 1) + .h$
+    endfor
+    hex4.out$ = .h$
+endproc
+
+# a JSON string literal (with quotes)
+procedure jsonStr: .s$
+    if index_regex(.s$, "[^ -~]") = 0 and index(.s$, """") = 0 and index(.s$, "\") = 0
+        jsonStr.out$ = """" + .s$ + """"
+    else
+        .o$ = ""
+        for .i from 1 to length(.s$)
+            .c$ = mid$(.s$, .i, 1)
+            .c = unicode(.c$)
+            if .c = 34
+                .o$ = .o$ + "\"""
+            elsif .c = 92
+                .o$ = .o$ + "\\"
+            elsif .c = 10
+                .o$ = .o$ + "\n"
+            elsif .c = 13
+                .o$ = .o$ + "\r"
+            elsif .c = 9
+                .o$ = .o$ + "\t"
+            elsif .c = 8
+                .o$ = .o$ + "\b"
+            elsif .c = 12
+                .o$ = .o$ + "\f"
+            elsif .c >= 32 and .c <= 126
+                .o$ = .o$ + .c$
+            elsif .c > 65535
+                .u = .c - 65536
+                @hex4: 55296 + floor(.u / 1024)
+                .o$ = .o$ + "\u" + hex4.out$
+                @hex4: 56320 + (.u mod 1024)
+                .o$ = .o$ + "\u" + hex4.out$
+            else
+                @hex4: .c
+                .o$ = .o$ + "\u" + hex4.out$
+            endif
+        endfor
+        jsonStr.out$ = """" + .o$ + """"
+    endif
+endproc
+
+# a JSON number at full round-trip precision, or null
+procedure jsonNum: .x
+    if .x = undefined
+        jsonNum.out$ = "null"
+    else
+        jsonNum.out$ = string$(.x)
+    endif
+endproc
+
+# An absolute path for the JSON: a relative path is resolved the way
+# Praat resolves it (against this script's folder, defaultDirectory$).
+# Absolute: "/...", "\\server\..." or a drive "C:..." .
+procedure absPath: .p$
+    if left$(.p$, 1) = "/" or left$(.p$, 1) = "\" or mid$(.p$, 2, 1) = ":"
+        absPath.out$ = .p$
+    else
+        .sep$ = "/"
+        if index(defaultDirectory$, "\") > 0
+            .sep$ = "\"
+        endif
+        absPath.out$ = defaultDirectory$ + .sep$ + .p$
+    endif
+endproc
+
+# the sink: one line at a time
+procedure jsonOut: .line$
+    if jsonSink = 1
+        # nocheck: a failed write (disk full) is caught by the read-back
+        # check in @exportArrangement, which then deletes the file
+        nocheck appendFile: jsonPath$, .line$ + newline$
+    else
+        jsonBuf$ = jsonBuf$ + .line$ + newline$
+    endif
+    jsonChars = jsonChars + length(.line$) + length(newline$)
+    jsonLines = jsonLines + 1
+endproc
+
+# "key": value (value already JSON)
+procedure jkv: .k$, .v$
+    @jsonStr: .k$
+    jkv.out$ = jsonStr.out$ + ": " + .v$
+endproc
+procedure jkn: .k$, .x
+    @jsonNum: .x
+    @jkv: .k$, jsonNum.out$
+    jkn.out$ = jkv.out$
+endproc
+procedure jks: .k$, .s$
+    @jsonStr: .s$
+    @jkv: .k$, jsonStr.out$
+    jks.out$ = jkv.out$
+endproc
+
+# The whole arrangement, from planID / setID.
+procedure arrangementJson
+    jsonChars = 0
+    jsonLines = 0
+    selectObject: planID
+    .nRows = Get number of rows
+    .nE = 0
+    .nS = 0
+    for .r from 1 to .nRows
+        .k$ = Get value: .r, "kind"
+        if .k$ = "event"
+            .nE = .nE + 1
+        else
+            .nS = .nS + 1
+        endif
+    endfor
+    @jsonOut: "{"
+    @jks: "format", "PraatAudioTools.TimeLineArrangement"
+    @jsonOut: "  " + jks.out$ + ","
+    @jks: "schema_version", "1.0"
+    @jsonOut: "  " + jks.out$ + ","
+    @jsonOut: "  ""generator"": {""name"": ""TimeLine Composer"", ""version"": """ + tlVersion$ + """, ""script"": ""TimeLine_Composer.praat""},"
+
+    # ---- composition ----
+    @jsonOut: "  ""composition"": {"
+    @jks: "name", objBase$
+    .l$ = "    " + jks.out$
+    if composition_preset < cpCustom
+        @jks: "preset", cpName$[composition_preset]
+    else
+        @jks: "preset", "Custom"
+    endif
+    .l$ = .l$ + ", " + jks.out$
+    @jkn: "compositional_intensity_percent", compositional_intensity
+    .l$ = .l$ + ", " + jkn.out$
+    @jkn: "random_seed", random_seed
+    @jsonOut: .l$ + ", " + jkn.out$ + ","
+    @jks: "time_unit", "seconds"
+    .l$ = "    " + jks.out$
+    @jkn: "target_duration_seconds", tDur
+    .l$ = .l$ + ", " + jkn.out$
+    @jkn: "musical_end_seconds", endTime
+    .l$ = .l$ + ", " + jkn.out$
+    @jkn: "last_onset_seconds", lastOn
+    @jsonOut: .l$ + ", " + jkn.out$ + ","
+    @jkn: "last_event_end_seconds", lastEnd
+    .l$ = "    " + jkn.out$
+    @jkn: "natural_tail_extension_seconds", tailExt
+    .l$ = .l$ + ", " + jkn.out$
+    @jkn: "actual_end_seconds", outDur
+    @jsonOut: .l$ + ", " + jkn.out$ + ","
+    @jkn: "start_seconds", musEnd
+    .es$ = jkn.out$
+    @jkn: "end_seconds", outDur
+    .es$ = .es$ + ", " + jkn.out$
+    @jkn: "duration_seconds", ending_silence
+    @jsonOut: "    ""ending_silence"": {" + .es$ + ", " + jkn.out$ + "},"
+    @jsonOut: "    ""natural_ending"": true,"
+    @jkn: "output_channels", nOutCh
+    .l$ = "    " + jkn.out$
+    @jkn: "sample_rate", srOut
+    .l$ = .l$ + ", " + jkn.out$
+    @jkn: "event_count", .nE
+    .l$ = .l$ + ", " + jkn.out$
+    @jkn: "planned_silence_count", .nS
+    @jsonOut: .l$ + ", " + jkn.out$ + ","
+    @jks: "organization", orgName$[organization]
+    .l$ = "    " + jks.out$
+    @jks: "temporal_preset", tempName$[temporal_preset]
+    .l$ = .l$ + ", " + jks.out$
+    @jks: "conductor_preset", condName$[conductor_preset]
+    .l$ = .l$ + ", " + jks.out$
+    @jkn: "climax_position_fraction", xPeak
+    .l$ = .l$ + ", " + jkn.out$
+    @jks: "silence_mode", silName$[silence_mode]
+    .l$ = .l$ + ", " + jks.out$
+    @jks: "spatial_preset", spName$[spatial_preset]
+    .l$ = .l$ + ", " + jks.out$
+    @jkn: "spatial_movement", spatial_movement
+    .l$ = .l$ + ", " + jkn.out$
+    @jkn: "gesture_awareness", gesture_awareness
+    @jsonOut: .l$ + ", " + jkn.out$
+    @jsonOut: "  },"
+
+    # ---- rendering facts (the mix gain is known only after rendering) ----
+    @jks: "normalization", if normalize = 1 then "peak" else "none" fi
+    .l$ = jks.out$
+    @jkn: "target_peak_dbfs", peak_dBFS
+    .l$ = .l$ + ", " + jkn.out$
+    @jkv: "applied_mix_gain", "null"
+    .l$ = .l$ + ", " + jkv.out$
+    @jkn: "final_fade_seconds", final_fade
+    .l$ = .l$ + ", " + jkn.out$
+    @jks: "panning", "equal-power; position -1 (left) .. +1 (right); multichannel: between adjacent channels"
+    @jsonOut: "  ""rendering"": {" + .l$ + ", " + jks.out$ + "},"
+
+    # ---- libraries ----
+    @jsonOut: "  ""libraries"": ["
+    for .i from 1 to nLib
+        @jkn: "id", .i
+        .l$ = jkn.out$
+        @jks: "name", libName$[.i]
+        .l$ = .l$ + ", " + jks.out$
+        @absPath: libFolder$[.i]
+        @jks: "folder", absPath.out$
+        .l$ = .l$ + ", " + jks.out$
+        .nf = 0
+        for .s from 1 to nSrc
+            if srcLib[.s] = .i
+                .nf = .nf + 1
+            endif
+        endfor
+        @jkn: "usable_files", .nf
+        .l$ = .l$ + ", " + jkn.out$
+        @jkn: "reference_level_db", libRef[.i]
+        .l$ = .l$ + ", " + jkn.out$
+        @jkn: "balance_db", libAuto[.i]
+        .l$ = .l$ + ", " + jkn.out$
+        @jkn: "manual_gain_db", libManual[.i]
+        .l$ = .l$ + ", " + jkn.out$
+        if organization = 1
+            @jkn: "region_position", regC[.i]
+            .l$ = .l$ + ", " + jkn.out$
+            @jkn: "region_spread", regW[.i]
+            .l$ = .l$ + ", " + jkn.out$
+        endif
+        @jsonOut: "    {" + .l$ + "}" + if .i < nLib then "," else "" fi
+    endfor
+    @jsonOut: "  ],"
+
+    # ---- layers ----
+    @jsonOut: "  ""layers"": ["
+    for .lay from 1 to nLayers
+        @jkn: "id", .lay
+        .l$ = jkn.out$
+        if organization = 1
+            .nm$ = "Pool"
+            .lib$ = "null"
+        elsif nStreams > 1
+            .nm$ = libName$[layerLibOf[.lay]] + " / stream " + string$(.lay)
+            .lib$ = string$(layerLibOf[.lay])
+        else
+            .nm$ = libName$[layerLibOf[.lay]]
+            .lib$ = string$(layerLibOf[.lay])
+        endif
+        @jks: "name", .nm$
+        .l$ = .l$ + ", " + jks.out$
+        @jkv: "library_id", .lib$
+        .l$ = .l$ + ", " + jkv.out$
+        if organization = 1
+            @jks: "source_pool", "all libraries (combined pool)"
+        elsif nStreams > 1
+            @jks: "source_pool", if stream_sources = 2 then "this library, files split between its streams" else "this library, shared with its other streams" fi
+        else
+            @jks: "source_pool", "this library"
+        endif
+        .l$ = .l$ + ", " + jks.out$
+        @jkn: "stream", if nStreams > 1 then .lay else 0 fi
+        .l$ = .l$ + ", " + jkn.out$
+        @jks: "temporal_preset", tempName$[layerPreset[.lay]]
+        .l$ = .l$ + ", " + jks.out$
+        @jkn: "density_factor", layerDensity[.lay]
+        .l$ = .l$ + ", " + jkn.out$
+        @jkn: "entry_seconds", layerEntry[.lay]
+        .l$ = .l$ + ", " + jkn.out$
+        if organization = 2
+            @jkn: "region_position", regC[.lay]
+            .l$ = .l$ + ", " + jkn.out$
+            @jkn: "region_spread", regW[.lay]
+            .l$ = .l$ + ", " + jkn.out$
+        endif
+        @jsonOut: "    {" + .l$ + "}" + if .lay < nLayers then "," else "" fi
+    endfor
+    @jsonOut: "  ],"
+
+    # ---- sources: one entry per distinct file used, in order of first use ----
+    .nU = 0
+    for .r from 1 to .nRows
+        jsRowSrc[.r] = 0
+    endfor
+    for .r from 1 to .nRows
+        selectObject: planID
+        .k$ = Get value: .r, "kind"
+        if .k$ = "event"
+            .p$ = Get value: .r, "path"
+            .found = 0
+            for .u from 1 to .nU
+                if jsUPath$[.u] = .p$
+                    .found = .u
+                endif
+            endfor
+            if .found = 0
+                .nU = .nU + 1
+                jsUPath$[.nU] = .p$
+                jsURow[.nU] = .r
+                .found = .nU
+            endif
+            jsRowSrc[.r] = .found
+        endif
+    endfor
+    @jsonOut: "  ""sources"": ["
+    for .u from 1 to .nU
+        selectObject: planID
+        .r = jsURow[.u]
+        @jkn: "id", .u
+        .l$ = jkn.out$
+        .v$ = Get value: .r, "source"
+        @jks: "name", .v$
+        .l$ = .l$ + ", " + jks.out$
+        @absPath: jsUPath$[.u]
+        @jks: "path", absPath.out$
+        .l$ = .l$ + ", " + jks.out$
+        .v = Get value: .r, "library"
+        @jkn: "library_id", .v
+        .l$ = .l$ + ", " + jkn.out$
+        .v = Get value: .r, "duration"
+        @jkn: "duration_seconds", .v
+        .l$ = .l$ + ", " + jkn.out$
+        .v = Get value: .r, "source_rate"
+        @jkn: "sample_rate", .v
+        .l$ = .l$ + ", " + jkn.out$
+        .v = Get value: .r, "source_channels"
+        @jkn: "channels", .v
+        .l$ = .l$ + ", " + jkn.out$
+        .v = Get value: .r, "energy"
+        @jkn: "energy", .v
+        .l$ = .l$ + ", " + jkn.out$
+        .uses = 0
+        for .r2 from 1 to .nRows
+            if jsRowSrc[.r2] = .u
+                .uses = .uses + 1
+            endif
+        endfor
+        @jkn: "uses", .uses
+        @jsonOut: "    {" + .l$ + ", " + jkn.out$ + "}" + if .u < .nU then "," else "" fi
+    endfor
+    @jsonOut: "  ],"
+
+    # ---- events (plan order) ----
+    @jsonOut: "  ""events"": ["
+    .e = 0
+    for .r from 1 to .nRows
+        selectObject: planID
+        .k$ = Get value: .r, "kind"
+        if .k$ = "event"
+            .e = .e + 1
+            .n = Get value: .r, "n"
+            @jks: "id", "event_" + right$("000000" + string$(.n), 6)
+            .l$ = jks.out$
+            @jkn: "index", .n
+            .l$ = .l$ + ", " + jkn.out$
+            .v = Get value: .r, "library"
+            @jkn: "library_id", .v
+            .l$ = .l$ + ", " + jkn.out$
+            .v$ = Get value: .r, "library_name"
+            @jks: "library_name", .v$
+            .l$ = .l$ + ", " + jks.out$
+            .v = Get value: .r, "layer"
+            @jkn: "layer_id", .v
+            .l$ = .l$ + ", " + jkn.out$
+            @jkn: "source_id", jsRowSrc[.r]
+            .l$ = .l$ + ", " + jkn.out$
+            .v$ = Get value: .r, "source"
+            @jks: "source_name", .v$
+            .l$ = .l$ + ", " + jks.out$
+            .v$ = Get value: .r, "path"
+            @absPath: .v$
+            @jks: "source_path", absPath.out$
+            .l$ = .l$ + ", " + jks.out$
+            .v = Get value: .r, "onset"
+            @jkn: "onset_seconds", .v
+            .l$ = .l$ + ", " + jkn.out$
+            @jkn: "source_offset_seconds", 0
+            .l$ = .l$ + ", " + jkn.out$
+            .v = Get value: .r, "duration"
+            @jkn: "duration_seconds", .v
+            .l$ = .l$ + ", " + jkn.out$
+            .v = Get value: .r, "end"
+            @jkn: "end_seconds", .v
+            .l$ = .l$ + ", " + jkn.out$
+            .v = Get value: .r, "gain_db"
+            @jkn: "gain_db", .v
+            .l$ = .l$ + ", " + jkn.out$
+            .g$ = ""
+            .v = Get value: .r, "balance_db"
+            @jkn: "balance_db", .v
+            .g$ = jkn.out$
+            .v = Get value: .r, "manual_db"
+            @jkn: "manual_db", .v
+            .g$ = .g$ + ", " + jkn.out$
+            .v = Get value: .r, "file_db"
+            @jkn: "file_db", .v
+            .g$ = .g$ + ", " + jkn.out$
+            .v = Get value: .r, "conductor_db"
+            @jkn: "conductor_db", .v
+            .g$ = .g$ + ", " + jkn.out$
+            .v = Get value: .r, "random_db"
+            @jkn: "random_db", .v
+            .g$ = .g$ + ", " + jkn.out$
+            .l$ = .l$ + ", ""gain_components"": {" + .g$ + "}"
+            .v = Get value: .r, "position"
+            @jkn: "position", .v
+            .l$ = .l$ + ", " + jkn.out$
+            .v = Get value: .r, "width"
+            @jkn: "width", .v
+            .l$ = .l$ + ", " + jkn.out$
+            .v = Get value: .r, "fade_in"
+            @jkn: "fade_in_seconds", .v
+            .l$ = .l$ + ", " + jkn.out$
+            .v = Get value: .r, "fade_out"
+            @jkn: "fade_out_seconds", .v
+            .l$ = .l$ + ", " + jkn.out$
+            .v = Get value: .r, "source_rate"
+            @jkn: "source_sample_rate", .v
+            .l$ = .l$ + ", " + jkn.out$
+            .v = Get value: .r, "source_channels"
+            @jkn: "source_channels", .v
+            .l$ = .l$ + ", " + jkn.out$
+            .v = Get value: .r, "conductor"
+            @jkn: "conductor", .v
+            .l$ = .l$ + ", " + jkn.out$
+            .v = Get value: .r, "energy"
+            @jkn: "energy", .v
+            .l$ = .l$ + ", " + jkn.out$
+            .v = Get value: .r, "phrase"
+            @jkn: "phrase", .v
+            .l$ = .l$ + ", " + jkn.out$
+            .v = Get value: .r, "closing"
+            @jkv: "closing", if .v = 1 then "true" else "false" fi
+            .l$ = .l$ + ", " + jkv.out$
+            @jsonOut: "    {" + .l$ + "}" + if .e < .nE then "," else "" fi
+        endif
+    endfor
+    @jsonOut: "  ],"
+
+    # ---- planned absolute silences (not audio clips) ----
+    @jsonOut: "  ""silences"": ["
+    .q = 0
+    for .r from 1 to .nRows
+        selectObject: planID
+        .k$ = Get value: .r, "kind"
+        if .k$ = "silence"
+            .q = .q + 1
+            @jks: "id", "silence_" + right$("000" + string$(.q), 3)
+            .l$ = jks.out$
+            @jks: "type", "planned"
+            .l$ = .l$ + ", " + jks.out$
+            .v = Get value: .r, "onset"
+            @jkn: "start_seconds", .v
+            .l$ = .l$ + ", " + jkn.out$
+            .v = Get value: .r, "end"
+            @jkn: "end_seconds", .v
+            .l$ = .l$ + ", " + jkn.out$
+            .v = Get value: .r, "duration"
+            @jkn: "duration_seconds", .v
+            .l$ = .l$ + ", " + jkn.out$
+            .v = Get value: .r, "phrase"
+            @jkn: "after_phrase", .v
+            @jsonOut: "    {" + .l$ + ", " + jkn.out$ + "}" + if .q < .nS then "," else "" fi
+        endif
+    endfor
+    @jsonOut: "  ],"
+
+    # ---- incidental gaps: measured silence that is neither planned nor
+    # the ending silence (the material could not fill it) ----
+    .ng = 0
+    for .k from 1 to nGap
+        .inc = 1
+        if gapS[.k] >= musEnd - 1e-6
+            .inc = 0
+        endif
+        for .q from 1 to nSilP
+            if gapS[.k] < silEndP[.q] - 1e-6 and gapE[.k] > silStartP[.q] + 1e-6
+                .inc = 0
+            endif
+        endfor
+        if .inc = 1 and gapE[.k] - gapS[.k] > 1e-6
+            .ng = .ng + 1
+            jsGapS[.ng] = gapS[.k]
+            jsGapE[.ng] = gapE[.k]
+        endif
+    endfor
+    @jsonOut: "  ""incidental_gaps"": ["
+    for .q from 1 to .ng
+        @jkn: "start_seconds", jsGapS[.q]
+        .l$ = jkn.out$
+        @jkn: "end_seconds", jsGapE[.q]
+        .l$ = .l$ + ", " + jkn.out$
+        @jkn: "duration_seconds", jsGapE[.q] - jsGapS[.q]
+        @jsonOut: "    {" + .l$ + ", " + jkn.out$ + "}" + if .q < .ng then "," else "" fi
+    endfor
+    @jsonOut: "  ],"
+
+    # ---- settings (key -> value strings, as in the settings Table) ----
+    selectObject: setID
+    .nSet = Get number of rows
+    @jsonOut: "  ""settings"": {"
+    for .r from 1 to .nSet
+        selectObject: setID
+        .k$ = Get value: .r, "key"
+        .v$ = Get value: .r, "value"
+        @jks: .k$, .v$
+        @jsonOut: "    " + jks.out$ + if .r < .nSet then "," else "" fi
+    endfor
+    @jsonOut: "  }"
+    @jsonOut: "}"
+    arrangementJson.events = .nE
+    arrangementJson.silences = .nS
+    arrangementJson.sources = .nU
+endproc
+
+# Write the arrangement JSON through the output registry (group 4):
+# a new name or a confirmed overwrite (side file, then copy), the file
+# read back and checked, deleted on failure.
+procedure exportArrangement
+    if liveSend
+        # Windows direct handoff: a private local inbox monitored by
+        # Node for Max. No socket, Python, PowerShell or user-selected
+        # file. The Max device imports it after the write is verified.
+        .local$ = environment$("LOCALAPPDATA")
+        if .local$ = ""
+            @fail: "Send Arrangement to Ableton currently requires Windows LOCALAPPDATA. Use Export Arrangement JSON instead."
+        endif
+        @ensureTrust
+        .root$ = .local$ + "/PraatAudioTools"
+        .bridge$ = .root$ + "/LiveBridge"
+        .inbox$ = .bridge$ + "/inbox"
+        if folderExists(.root$) = 0
+            createFolder: .root$
+        endif
+        if folderExists(.bridge$) = 0
+            createFolder: .bridge$
+        endif
+        if folderExists(.inbox$) = 0
+            createFolder: .inbox$
+        endif
+        if folderExists(.inbox$) = 0
+            @fail: "Could not create the local Live Bridge inbox: " + .inbox$
+        endif
+        output_folder$ = .inbox$
+        outDir$ = ""
+        # Queue a distinct file each time; never overwrite.
+        existing_files = 1
+    endif
+    @needOutDir: "save the arrangement JSON"
+    if jsonBaseDone = 0
+        wPlan = 0
+        wAudio = 0
+        wJson = 1
+        @chooseBase: replace$(objBase$, "TimeLine_Seed", "TimeLine_seed", 1)
+    endif
+    @regOut: base$ + "_arrangement.json", 5, 4
+    .k = regOut.k
+    jsonPath$ = regOut.path$
+    jsonSink = 1
+    nocheck writeFile: jsonPath$, ""
+    if fileReadable(jsonPath$) = 0
+        @fail: "Could not write " + jsonPath$ + " (disk full or no permission?)."
+    endif
+    outState[.k] = 1
+    @arrangementJson
+    verChars = jsonChars
+    @verifyOut: .k, 0
+    if verifyOut.ok = 0
+        @fail: "Could not write " + outTarget$[.k] + " completely (disk full or no permission?)."
+    endif
+    @commitGroup: 4
+    overwriteConfirmed = 0
+    savedFiles = savedFiles + 1
+    savedFile$[savedFiles] = outTarget$[.k]
+    jsonDone$ = outTarget$[.k]
+endproc
+
+# Output length from the planned events (v2.7):
+#   lastEnd  = latest event end (onset + whole source duration)
+#   outDur   = max(target, lastEnd + ending silence)  (the rendered length)
+#   musEnd   = outDur - ending silence  (where the explicit ending silence
+#              begins; never while a source is still sounding)
+#   tailExt  = how far the natural tails run past the nominal musical end
+procedure outputLength
+    lastEnd = 0
+    lastOn = 0
+    for .ie from 1 to nEv
+        lastEnd = max(lastEnd, evEnd[.ie])
+        lastOn = max(lastOn, evOn[.ie])
+    endfor
+    outDur = max(tDur, lastEnd + ending_silence)
+    # whole samples, so every renderer produces exactly the same length
+    outDur = ceiling(outDur * srOut - 1e-6) / srOut
+    musEnd = outDur - ending_silence
+    tailExt = max(0, lastEnd - endTime)
+endproc
+
 # Repair pass for one phrase: close holes in the union of its events
 # (including a late start) with any playing layer's fitting source.
 # Holes nothing can fill stay - they are reported as material shortage.
@@ -1357,7 +3020,8 @@ endproc
 #          2 = stream 30 s chunks -> 16-bit (scratch files, joined)
 #   .gain  linear gain applied before saving
 procedure renderPass: .lib, .sink, .gain, .path$, .measure
-    .nTot = round(target_duration * srOut)
+    # the ACTUAL output length (natural tails included), not the target
+    .nTot = round(outDur * srOut)
     if .sink = 1
         .chunkN = .nTot
     else
@@ -1397,10 +3061,10 @@ procedure renderPass: .lib, .sink, .gain, .path$, .measure
             endif
         endfor
         # end-of-composition fade (only the last final_fade seconds)
-        if final_fade > 0 and .c1 > endTime - final_fade
+        if final_fade > 0 and .c1 > musEnd - final_fade
             selectObject: .buffer
-            Formula (part): max(.c0, endTime - final_fade), .c1, 1, nOutCh,
-                ... "self * max(0, min(1, (" + string$(endTime) + " - x) / "
+            Formula (part): max(.c0, musEnd - final_fade), .c1, 1, nOutCh,
+                ... "self * max(0, min(1, (" + string$(musEnd) + " - x) / "
                 ... + string$(final_fade) + "))^2"
         endif
         selectObject: .buffer
@@ -1656,6 +3320,11 @@ procedure targetsFree: .b$
             endfor
         endif
     endif
+    if wJson
+        if fileReadable(.b$ + "_arrangement.json")
+            .free = 0
+        endif
+    endif
     targetsFree.free = .free
 endproc
 
@@ -1789,7 +3458,43 @@ nStems = 0
 trustAsked = 0
 outDir$ = ""
 
-writeInfoLine: "=== TimeLine Composer v2.3 ==="
+writeInfoLine: "=== TimeLine Composer v" + tlVersion$ + " ==="
+
+# The catalog: headers, levels and (when measured) the energy measures.
+procedure saveCatalog
+    @needOutDir: "save the catalog"
+    Create Table with column names: "tl_catalog", nSrc,
+        ... "library folder file path duration sample_rate channels rms_db peak_db active_db active_s reliable"
+        ... + " loud_db centroid_hz perc_db attack_time full_peak_db"
+    .cat = selected("Table")
+    @addTemp: .cat
+    for .s from 1 to nSrc
+        Set numeric value: .s, "library", srcLib[.s]
+        Set string value: .s, "folder", libFolder$[srcLib[.s]]
+        Set string value: .s, "file", srcName$[.s]
+        Set string value: .s, "path", srcPath$[.s]
+        Set numeric value: .s, "duration", srcDur[.s]
+        Set numeric value: .s, "sample_rate", srcSr[.s]
+        Set numeric value: .s, "channels", srcCh[.s]
+        Set numeric value: .s, "rms_db", srcRmsDb[.s]
+        Set numeric value: .s, "peak_db", srcPeakDb[.s]
+        Set numeric value: .s, "active_db", srcActDb[.s]
+        Set numeric value: .s, "active_s", srcActS[.s]
+        Set numeric value: .s, "reliable", srcReliable[.s]
+        if srcHasEn[.s]
+            Set numeric value: .s, "centroid_hz", srcCog[.s]
+            Set numeric value: .s, "loud_db", srcLoud[.s]
+            Set numeric value: .s, "perc_db", srcPerc[.s]
+            Set numeric value: .s, "attack_time", srcAttT[.s]
+            Set numeric value: .s, "full_peak_db", srcFullPk[.s]
+        endif
+    endfor
+    @saveTableSafely: .cat, outDir$ + "/TimeLine_catalog.tsv", 1
+    savedFiles = savedFiles + 1
+    savedFile$[savedFiles] = saveTableSafely.path$
+    removeObject: .cat
+    @dropTemp: .cat
+endproc
 
 # Remove our temporary objects, then stop with a message. Objects that
 # belonged to the user before the run are never touched.
@@ -1824,7 +3529,7 @@ endproc
 # Every file the script writes is registered first.
 #   kind 1 = Sound saved as 24-bit WAV, 2 = streamed 16-bit WAV that a
 #   LongSound reads, 3 = Table (TSV), 4 = scratch chunk of a streamed
-#   render (always deleted).
+#   render (always deleted), 5 = text file (the arrangement JSON).
 #   state 0 = not written, 1 = written but not committed (deleted by
 #   @fail), 2 = committed (kept; never deleted by this script),
 #   3 = scratch file already deleted.
@@ -1874,7 +3579,16 @@ endproc
 procedure verifyOut: .k, .dur
     verifyOut.ok = 0
     if fileReadable(outWrite$[.k])
-        if outKind[.k] = 3
+        if outKind[.k] = 5
+            # text (JSON): the whole file read back must be exactly what
+            # was written, starting with "{" and ending with "}"
+            .t$ = readFile$(outWrite$[.k])
+            if length(.t$) = verChars and left$(.t$, 1) = "{"
+                if index_regex(.t$, "\}\s*$") > 0
+                    verifyOut.ok = 1
+                endif
+            endif
+        elsif outKind[.k] = 3
             selectObject: placeholderID
             nocheck Read Table from tab-separated file: outWrite$[.k]
             @gotNew: "Table", placeholderID
@@ -1929,7 +3643,7 @@ procedure verWindow: .lib
             .le = max(.le, evEnd[.ei])
         endif
     endfor
-    .le = min(.le, endTime)
+    .le = min(.le, musEnd)
     verWb = max(0, .le - 0.01)
     verWa = max(0, .le - 0.26)
 endproc
@@ -1949,6 +3663,14 @@ procedure commitGroup: .group
                     selectObject: outObj[.k]
                     nocheck Save as tab-separated file: outTarget$[.k]
                     .okCopy = fileReadable(outTarget$[.k])
+                elsif outKind[.k] = 5
+                    # text: copy the verified side file over the target
+                    .tx$ = readFile$(outWrite$[.k])
+                    nocheck writeFile: outTarget$[.k], .tx$
+                    if fileReadable(outTarget$[.k])
+                        .back$ = readFile$(outTarget$[.k])
+                        .okCopy = .back$ = .tx$
+                    endif
                 elsif outKind[.k] = 2
                     selectObject: placeholderID
                     nocheck Open long sound file: outWrite$[.k]
@@ -2178,8 +3900,9 @@ if rerender
     condJag = number(set$["conductor_steps"])
     nStreams = number(set$["streams"])
     compositional_intensity = number(set$["compositional_intensity"])
-    composition_preset = 8
-    for k from 1 to 7
+    # by NAME, so plans saved before v2.6 (Custom was number 8) still map
+    composition_preset = cpCustom
+    for k from 1 to cpCustom - 1
         if set$["composition_preset"] = cpName$[k]
             composition_preset = k
         endif
@@ -2310,6 +4033,13 @@ if rerender = 0
     # ---- previous catalog, if reuse is requested ----
     nOld = 0
     oldHasLevels = 0
+    oldHasEnergy = 0
+    nEnMeasured = 0
+    nEnReused = 0
+    needEnergy = 0
+    if profileOnly or save_catalog or gesture_awareness > 0
+        needEnergy = 1
+    endif
     if catalog_mode = 2
         @trimText: catalog_file$
         catPath$ = trimText.out$
@@ -2330,6 +4060,10 @@ if rerender = 0
             if cLev > 0
                 oldHasLevels = 1
             endif
+            cEn = Get column index: "perc_db"
+            if cEn > 0
+                oldHasEnergy = 1
+            endif
             for r from 1 to nOld
                 oldPath$[r] = Get value: r, "path"
                 oldDur[r] = Get value: r, "duration"
@@ -2341,6 +4075,13 @@ if rerender = 0
                     oldAct[r] = Get value: r, "active_db"
                     oldActS[r] = Get value: r, "active_s"
                     oldRel[r] = Get value: r, "reliable"
+                endif
+                if oldHasEnergy
+                    oldCog[r] = Get value: r, "centroid_hz"
+                    oldPerc[r] = Get value: r, "perc_db"
+                    oldLoud[r] = Get value: r, "loud_db"
+                    oldAttT[r] = Get value: r, "attack_time"
+                    oldFullPk[r] = Get value: r, "full_peak_db"
                 endif
             endfor
             removeObject: catOld
@@ -2435,6 +4176,28 @@ if rerender = 0
                             d = 0
                         endif
                     endif
+                    # musical energy measures, only when needed; an older
+                    # catalog without them is completed here
+                    enHas = 0
+                    if needEnergy and d > 0.005
+                        if reuse = 1 and oldHasEnergy
+                            enCog = oldCog[got]
+                            enPerc = oldPerc[got]
+                            enLoud = oldLoud[got]
+                            nEnReused = nEnReused + 1
+                            enAttT = oldAttT[got]
+                            enPk = oldFullPk[got]
+                        else
+                            @measureEnergy: lsID, d
+                            enCog = measureEnergy.cog
+                            enPerc = measureEnergy.perc
+                            enLoud = measureEnergy.loudDb
+                            nEnMeasured = nEnMeasured + 1
+                            enAttT = measureEnergy.attT
+                            enPk = measureEnergy.pkDb
+                        endif
+                        enHas = 1
+                    endif
                     removeObject: lsID
                 endif
                 if d > 0.005
@@ -2451,6 +4214,14 @@ if rerender = 0
                     srcActDb[nSrc] = lvAct
                     srcActS[nSrc] = lvActS
                     srcReliable[nSrc] = lvRel
+                    srcHasEn[nSrc] = enHas
+                    if enHas
+                        srcCog[nSrc] = enCog
+                        srcPerc[nSrc] = enPerc
+                        srcLoud[nSrc] = enLoud
+                        srcAttT[nSrc] = enAttT
+                        srcFullPk[nSrc] = enPk
+                    endif
                     libCount[i] = libCount[i] + 1
                 else
                     nSkipped = nSkipped + 1
@@ -2474,6 +4245,233 @@ if rerender = 0
             @warn: "Folder " + string$(i) + " (" + libName$[i] + ") has no readable audio files."
         endif
     endfor
+endif
+
+# ============================================================
+# 2c. MUSICAL ENERGY PROFILE (output 5) - measurement only
+# ============================================================
+# Everything is ranked WITHIN each folder (so recording-level
+# differences between folders do not count). The combined score is
+# EXPERIMENTAL: 0.4 level + 0.3 brightness + 0.3 percussiveness.
+# The crest factor is shown but not scored (its musical direction is
+# not yet known). Files whose measures disagree strongly (spread of
+# their three scored ranks > 0.6) are flagged "mixed": listen to those
+# first. No composition is made.
+if profileOnly
+    tScan = stopwatch
+    enW1 = 0.4
+    enW2 = 0.3
+    enW3 = 0.3
+    savedFiles = 0
+    Create Table with column names: "TimeLine_energy_profile", nSrc,
+        ... "library folder file path duration loud_db active_db centroid_hz perc_db attack_time crest_db"
+        ... + " level_rank brightness_rank percussive_rank crest_rank energy_score order band mixed"
+    profID = selected("Table")
+    # temporary until the profile is complete (a failure removes it)
+    @addTemp: profID
+    appendInfoLine: ""
+    appendInfoLine: "=== Musical energy profile (ranks within each folder, 0 = lowest, 1 = highest) ==="
+    appendInfoLine: "Energy measures: ", nEnMeasured, " file(s) measured, ", nEnReused, " reused from the catalog."
+    appendInfoLine: "Score (experimental) = ", enW1, " level + ", enW2, " brightness + ", enW3,
+        ... " percussiveness; crest shown, not scored."
+    @energyRank
+    for i from 1 to nLib
+        n = libEnN[i]
+        if n > 0
+            # order: files with a score by score (ties by file order),
+            # then the files whose energy is unavailable
+            m = 0
+            for s from 1 to nSrc
+                if srcLib[s] = i and srcEnOK[s]
+                    m = m + 1
+                    enIdx[m] = s
+                endif
+            endfor
+            nOK = m
+            for k from 1 to nOK
+                enOrd[k] = 1
+                for k2 from 1 to nOK
+                    if srcEnScore[enIdx[k2]] < srcEnScore[enIdx[k]] or (srcEnScore[enIdx[k2]] = srcEnScore[enIdx[k]] and k2 < k)
+                        enOrd[k] = enOrd[k] + 1
+                    endif
+                endfor
+                enPos[enOrd[k]] = enIdx[k]
+            endfor
+            for s from 1 to nSrc
+                if srcLib[s] = i and srcEnOK[s] = 0
+                    m = m + 1
+                    enPos[m] = s
+                endif
+            endfor
+            libMixed[i] = 0
+            appendInfoLine: ""
+            appendInfoLine: "Folder ", i, ": ", libName$[i], " - ", n, " file(s)"
+            appendInfoLine: "  order  file                    dur s  loud dB  centroid Hz  perc dB  crest dB",
+                ... "  | level bright perc  crest | score  band"
+            for q from 1 to n
+                s = enPos[q]
+                if srcEnOK[s] = 0
+                    band$ = "unavailable"
+                elsif q <= nOK / 3
+                    band$ = "low"
+                elsif q > 2 * nOK / 3
+                    band$ = "high"
+                else
+                    band$ = "mid"
+                endif
+                mixFlag$ = ""
+                if srcEnMix[s] > 0.6
+                    mixFlag$ = "  mixed"
+                    libMixed[i] = libMixed[i] + 1
+                endif
+                nm$ = srcName$[s]
+                while length(nm$) < 22
+                    nm$ = nm$ + " "
+                endwhile
+                @fmtU: srcLoud[s], 1
+                f1$ = fmtU.out$
+                @fmtU: srcCog[s], 0
+                f2$ = fmtU.out$
+                @fmtU: srcPerc[s], 1
+                f3$ = fmtU.out$
+                @fmtU: srcCrest[s], 1
+                f4$ = fmtU.out$
+                @fmtU: srcRLev[s], 2
+                r1$ = fmtU.out$
+                @fmtU: srcRBri[s], 2
+                r2$ = fmtU.out$
+                @fmtU: srcRPerc[s], 2
+                r3$ = fmtU.out$
+                @fmtU: srcRCre[s], 2
+                r4$ = fmtU.out$
+                @fmtU: srcEnScore[s], 2
+                sc$ = fmtU.out$
+                appendInfoLine: "  ", fixed$(q, 0), tab$, nm$, " ", fixed$(srcDur[s], 2), tab$, f1$,
+                    ... tab$, f2$, tab$, f3$, tab$, f4$,
+                    ... "  | ", r1$, "  ", r2$, "  ", r3$, "  ", r4$, " | ", sc$, "  ", band$, mixFlag$
+                # one table row per file (missing values stay missing)
+                selectObject: profID
+                Set numeric value: s, "library", i
+                Set string value: s, "folder", libFolder$[i]
+                Set string value: s, "file", srcName$[s]
+                Set string value: s, "path", srcPath$[s]
+                Set numeric value: s, "duration", srcDur[s]
+                Set numeric value: s, "loud_db", srcLoud[s]
+                Set numeric value: s, "active_db", srcActDb[s]
+                Set numeric value: s, "centroid_hz", srcCog[s]
+                Set numeric value: s, "perc_db", srcPerc[s]
+                Set numeric value: s, "attack_time", srcAttT[s]
+                Set numeric value: s, "crest_db", srcCrest[s]
+                Set numeric value: s, "level_rank", srcRLev[s]
+                Set numeric value: s, "brightness_rank", srcRBri[s]
+                Set numeric value: s, "percussive_rank", srcRPerc[s]
+                Set numeric value: s, "crest_rank", srcRCre[s]
+                Set numeric value: s, "energy_score", srcEnScore[s]
+                Set numeric value: s, "order", q
+                Set string value: s, "band", band$
+                Set numeric value: s, "mixed", if srcEnMix[s] > 0.6 then 1 else 0 fi
+                profScore[s] = srcEnScore[s]
+                profOrd[s] = q
+                profMix[s] = srcEnMix[s]
+                profRLev[s] = srcRLev[s]
+                profRBri[s] = srcRBri[s]
+                profRAtt[s] = srcRPerc[s]
+                profRCre[s] = srcRCre[s]
+            endfor
+            libEnNok[i] = nOK
+            @fmtU: libRhoDurE[i], 2
+            c1$ = fmtU.out$
+            @fmtU: libRhoDurL[i], 2
+            c2$ = fmtU.out$
+            @fmtU: libRhoLB[i], 2
+            c3$ = fmtU.out$
+            @fmtU: libRhoLA[i], 2
+            c4$ = fmtU.out$
+            @fmtU: libRhoBA[i], 2
+            c5$ = fmtU.out$
+            appendInfoLine: "  Spearman: duration-energy ", c1$, "   duration-level ", c2$,
+                ... "   level-brightness ", c3$, "   level-percussive ", c4$, "   brightness-percussive ", c5$
+            appendInfoLine: "  Mixed profiles (scored measures disagree by > 0.6): ", libMixed[i]
+            if libEnMiss[i] + libMissLev[i] + libMissBri[i] + libMissPerc[i] > 0
+                appendInfoLine: "  Missing measurements: level ", libMissLev[i], ", brightness ", libMissBri[i],
+                    ... ", percussiveness ", libMissPerc[i], "; energy unavailable for ", libEnMiss[i], " file(s)"
+            endif
+        endif
+    endfor
+    selectObject: profID
+    Sort rows: "library energy_score"
+    appendInfoLine: ""
+    appendInfoLine: "Reading guide: level = loudest 0.5 s, the RECORDED level (ranked within the folder);"
+    appendInfoLine: "brightness also rises with register; percussiveness = energy above 2 kHz in the 50 ms"
+    appendInfoLine: "after the strongest onset relative to the next 250 ms (attack_time = that onset, s)."
+    appendInfoLine: "The score is a hypothesis to test by listening, not a result."
+
+    # ---- figure ----
+    if draw_visualization
+        @energyFigure
+    endif
+    # ---- listening audition: 3 low, 3 middle, 3 high per folder ----
+    nAud = 0
+    for i from 1 to nLib
+        if libEnNok[i] > 0
+            @energyAudition: i
+        endif
+    endfor
+    if save_catalog
+        @saveCatalog
+        appendInfoLine: ""
+        appendInfoLine: "Saved: ", savedFile$[savedFiles]
+    endif
+    tViz = stopwatch
+    appendInfoLine: ""
+    appendInfoLine: "Time (s): scan and measures ", fixed$(tScan, 2), "   profile, figure, audition ", fixed$(tViz, 2)
+    if warnCount > 0
+        appendInfoLine: ""
+        appendInfoLine: "Notes:"
+        for k from 1 to warnCount
+            appendInfoLine: "  - ", warn$[k]
+        endfor
+    endif
+    # keep the results, drop temporary objects
+    removeObject: placeholderID
+    @dropTemp: profID
+    for k from 1 to nAud
+        @dropTemp: audSnd[k]
+    endfor
+    for k from 1 to nTemp
+        if tempID[k] > 0
+            nocheck removeObject: tempID[k]
+        endif
+    endfor
+    if play_result
+        for k from 1 to nAud
+            selectObject: audSnd[k]
+            Play
+        endfor
+    endif
+    selectObject: profID
+    for k from 1 to nAud
+        plusObject: audSnd[k]
+    endfor
+    exitScript ()
+endif
+
+# Energy of every source for this composition (relative to its folder);
+# only when it was measured (Gesture awareness > 0, or a saved catalog).
+energyOn = 0
+openEnd = 0
+gaPicks = 0
+gaChoice = 0
+if rerender = 0
+    if needEnergy
+        @energyRank
+        energyOn = 1
+    else
+        for s from 1 to nSrc
+            srcEnOK[s] = 0
+            srcEnRank[s] = undefined
+        endfor
+    endif
 endif
 
 # ============================================================
@@ -3183,6 +5181,12 @@ if rerender = 0
         we = min(we, endTime)
         phStart[j] = ws
         phDeadline[j] = we
+        # v2.7: only the last phrase is open-ended; every phrase before a
+        # planned silence keeps its strict deadline
+        openEnd = 0
+        if j = nPh
+            openEnd = 1
+        endif
         e0 = nEv + 1
         # which layers play in this phrase
         nAct = 0
@@ -3227,7 +5231,37 @@ if rerender = 0
         for ie from e0 to nEv
             tailNow = max(tailNow, evEnd[ie])
         endfor
-        if we - tailNow > tol
+        if openEnd = 1
+            # final phrase: nothing has to END at the deadline. If the
+            # sound stops before the nominal end, continue it from where
+            # it stops (a normal pick, open tail), never starting at or
+            # after the nominal end.
+            guardC = 0
+            while we - tailNow > tol and guardC < 40
+                guardC = guardC + 1
+                gotC = 0
+                for li from 1 to nLayers
+                    lay = ((max(lead, 1) + li - 2) mod nLayers) + 1
+                    if gotC = 0 and plays[lay] = 1 and tailNow >= layerEntry[lay]
+                        repairing = 1
+                        @pickSource: lay, tailNow, we - tailNow, we - tailNow
+                        repairing = 0
+                        if pickSource.s > 0
+                            @addEvent: lay, pickSource.s, floor(tailNow * srOut) / srOut, j, 1
+                            gotC = 1
+                        endif
+                    endif
+                endfor
+                if gotC = 0
+                    guardC = 99
+                else
+                    @repairPhrase: e0, ws, we, j
+                    for ie from e0 to nEv
+                        tailNow = max(tailNow, evEnd[ie])
+                    endfor
+                endif
+            endwhile
+        elsif we - tailNow > tol
             bestS = 0
             bestLay = 0
             bestD = 1e9
@@ -3308,8 +5342,14 @@ if rerender = 0
         endif
     endwhile
 
+    # ---- v2.7 durations ----
+    # The target is the PLANNING horizon: the form and the conductor run
+    # on 0..tDur, and no sound starts at or after the musical end
+    # (endTime). The output lasts until the last recording has ended on
+    # its own, then the explicit ending silence, if any.
+    @outputLength
     # ---- measured timeline ----
-    @unionGaps: 1, nEv, 0, tDur
+    @unionGaps: 1, nEv, 0, outDur
     nGap = unionGaps.count
     for k from 1 to nGap
         gapS[k] = ugGapS[k]
@@ -3319,7 +5359,7 @@ if rerender = 0
     # unplanned silence = measured minus what the Silence Engine placed
     plannedReal = ending_silence
     for k from 1 to nSilP
-        plannedReal = plannedReal + max(0, min(silEndP[k], tDur) - silStartP[k])
+        plannedReal = plannedReal + max(0, min(silEndP[k], outDur) - silStartP[k])
     endfor
     unplanned = silMeasured - plannedReal
     if unplanned > tol
@@ -3344,13 +5384,17 @@ if rerender = 0
         firstOn = min(firstOn, evOn[ie])
     endfor
     random_initializeSafelyAndUnpredictably ()
+    openEnd = 0
 endif
 
 # For a re-render, rebuild the measured silences from the events.
 if rerender = 1
     tDur = target_duration
     endTime = tDur - ending_silence
-    @unionGaps: 1, nEv, 0, tDur
+    # a plan made before v2.7 never runs past its end, so its output keeps
+    # its old length exactly; a v2.7 plan gets its natural tails back
+    @outputLength
+    @unionGaps: 1, nEv, 0, outDur
     nGap = unionGaps.count
     for k from 1 to nGap
         gapS[k] = ugGapS[k]
@@ -3416,7 +5460,7 @@ planID = 0
 setID = 0
 if rerender = 0
     Create Table with column names: objBase$ + "_plan", nEv + nSilP,
-        ... "kind n layer library library_name source path onset duration end gain_db position width fade_in fade_out source_rate source_channels conductor phrase closing balance_db manual_db file_db conductor_db random_db"
+        ... "kind n layer library library_name source path onset duration end gain_db position width fade_in fade_out source_rate source_channels conductor phrase closing balance_db manual_db file_db conductor_db random_db energy"
     planID = selected("Table")
     @addTemp: planID
     for ie from 1 to nEv
@@ -3446,6 +5490,13 @@ if rerender = 0
         Set numeric value: ie, "file_db", evFileDb[ie]
         Set numeric value: ie, "conductor_db", evCondDb[ie]
         Set numeric value: ie, "random_db", evRandDb[ie]
+        # the source's energy rank in its folder (metadata only; a
+        # rendering never reads it). Missing = not measured / unavailable.
+        if srcEnOK[s]
+            Set numeric value: ie, "energy", srcEnRank[s]
+        else
+            Set numeric value: ie, "energy", undefined
+        endif
     endfor
     for k from 1 to nSilP
         r = nEv + k
@@ -3476,12 +5527,13 @@ if rerender = 0
         Set numeric value: r, "file_db", 0
         Set numeric value: r, "conductor_db", 0
         Set numeric value: r, "random_db", 0
+        Set numeric value: r, "energy", undefined
     endfor
 
     Create Table with column names: objBase$ + "_settings", 0, "key value"
     setID = selected("Table")
     @addTemp: setID
-    @kv: "script", "TimeLine_Composer.praat v2.3"
+    @kv: "script", "TimeLine_Composer.praat v" + tlVersion$
     @kv: "praat_version", praatVersion$
     @kv: "target_duration", string$(target_duration)
     @kv: "ending_silence", string$(ending_silence)
@@ -3513,6 +5565,11 @@ if rerender = 0
     @kv: "conductor_steps", string$(condJag)
     @kv: "rupture_at_peak", string$(ruptureMode)
     @kv: "streams", string$(nStreams)
+    @kv: "gesture_awareness", string$(gesture_awareness)
+    @kv: "natural_ending", "1"
+    @kv: "nominal_duration", string$(tDur)
+    @kv: "last_event_end", string$(lastEnd)
+    @kv: "output_duration", string$(outDur)
     @kv: "spatial_movement", string$(spatial_movement)
     @kv: "stream_sources", if stream_sources = 2 then "split" else "shared" fi
     @kv: "regions", string$(nReg)
@@ -3549,10 +5606,14 @@ if rerender = 0
         @kv: "library_" + string$(i) + "_seed_offset", string$(libSeed[i])
     endfor
 
+    jsonBaseDone = 0
     if save_plan
         @needOutDir: "save the composition plan"
         wPlan = 1
         wAudio = 0
+        # with the JSON, plan and JSON share one base name
+        wJson = jsonExport
+        jsonBaseDone = jsonExport
         @chooseBase: replace$(objBase$, "TimeLine_Seed", "TimeLine_seed", 1)
         # the pair is written as one group: both files or neither
         @regOut: base$ + "_plan.tsv", 3, 2
@@ -3586,36 +5647,26 @@ if rerender = 0
     endif
 
     if save_catalog
-        @needOutDir: "save the catalog"
-        Create Table with column names: "tl_catalog", nSrc,
-            ... "library folder file path duration sample_rate channels rms_db peak_db active_db active_s reliable"
-        catID = selected("Table")
-        @addTemp: catID
-        for s from 1 to nSrc
-            Set numeric value: s, "library", srcLib[s]
-            Set string value: s, "folder", libFolder$[srcLib[s]]
-            Set string value: s, "file", srcName$[s]
-            Set string value: s, "path", srcPath$[s]
-            Set numeric value: s, "duration", srcDur[s]
-            Set numeric value: s, "sample_rate", srcSr[s]
-            Set numeric value: s, "channels", srcCh[s]
-            Set numeric value: s, "rms_db", srcRmsDb[s]
-            Set numeric value: s, "peak_db", srcPeakDb[s]
-            Set numeric value: s, "active_db", srcActDb[s]
-            Set numeric value: s, "active_s", srcActS[s]
-            Set numeric value: s, "reliable", srcReliable[s]
-        endfor
-        @saveTableSafely: catID, outDir$ + "/TimeLine_catalog.tsv", 1
-        savedFiles = savedFiles + 1
-        savedFile$[savedFiles] = saveTableSafely.path$
-        removeObject: catID
-        @dropTemp: catID
+        @saveCatalog
+    endif
+
+    if jsonExport
+        @exportArrangement
     endif
 
     if planOnly
-        # the plan stays in Praat, ready for "Render a saved plan"
-        @dropTemp: planID
-        @dropTemp: setID
+        if liveSend
+            # The one-click bridge should leave no planning Tables behind.
+            removeObject: planID, setID
+            @dropTemp: planID
+            @dropTemp: setID
+            planID = 0
+            setID = 0
+        else
+            # Plan-only and JSON export keep the Tables for re-rendering.
+            @dropTemp: planID
+            @dropTemp: setID
+        endif
     else
         removeObject: planID, setID
         @dropTemp: planID
@@ -3632,7 +5683,7 @@ mixGain = 1
 mixPeak = 0
 outPeak = 0
 silenceRms = 0
-nWin = ceiling(tDur)
+nWin = ceiling(outDur)
 for w from 1 to nWin
     winRms[w] = 0
 endfor
@@ -3658,7 +5709,7 @@ if wantMix
             endif
         endfor
     endif
-    memMB = tDur * srOut * nOutCh * 8 / 1048576
+    memMB = outDur * srOut * nOutCh * 8 / 1048576
     totalMB = memMB * (1 + nStemLib)
     targetPeak = 10 ^ (peak_dBFS / 20)
     if totalMB <= memory_budget
@@ -3696,7 +5747,7 @@ if wantMix
     if sink = 1
         appendInfoLine: "Rendering..."
         renderLabel$ = "mix"
-        nNeed = round(tDur * srOut)
+        nNeed = round(outDur * srOut)
         selectObject: placeholderID
         nocheck Create Sound from formula: mixName$, nOutCh, 0, nNeed / srOut, srOut, "0"
         @gotNew: "Sound", placeholderID
@@ -3711,8 +5762,8 @@ if wantMix
         endfor
         if final_fade > 0
             selectObject: mixID
-            Formula (part): endTime - final_fade, endTime, 1, nOutCh,
-                ... "self * max(0, min(1, (" + string$(endTime) + " - x) / " + string$(final_fade) + "))^2"
+            Formula (part): musEnd - final_fade, musEnd, 1, nOutCh,
+                ... "self * max(0, min(1, (" + string$(musEnd) + " - x) / " + string$(final_fade) + "))^2"
         endif
         selectObject: mixID
         mixPeak = Get absolute extremum: 0, 0, "None"
@@ -3721,7 +5772,7 @@ if wantMix
         endif
         for w from 1 to nWin
             wa = w - 1
-            wb = min(tDur, w)
+            wb = min(outDur, w)
             if wb - wa > 0.01
                 winRms[w] = Get root-mean-square: wa, wb
             endif
@@ -3745,7 +5796,7 @@ if wantMix
             @verWindow: 0
             selectObject: mixID
             verExp = Get root-mean-square: verWa, verWb
-            @verifyOut: kMix, tDur
+            @verifyOut: kMix, outDur
             if verifyOut.ok = 0
                 @fail: "Could not write " + outWrite$[kMix] + " (disk full or no permission?)."
             endif
@@ -3770,7 +5821,7 @@ if wantMix
             mixPeak = renderPass.peak
         endif
         outPeak = renderPass.peak * mixGain
-        @verifyOut: kMix, tDur
+        @verifyOut: kMix, outDur
         if verifyOut.ok = 0
             @fail: "The streamed file " + outWrite$[kMix] + " is incomplete (disk full?)."
         endif
@@ -3813,7 +5864,7 @@ if wantMix
                 @verWindow: i
                 selectObject: stemID[nStems]
                 verExp = Get root-mean-square: verWa, verWb
-                @verifyOut: kS, tDur
+                @verifyOut: kS, outDur
                 if verifyOut.ok = 0
                     @fail: "Could not write " + outWrite$[kS] + " (disk full or no permission?)."
                 endif
@@ -3831,7 +5882,7 @@ if wantMix
             verWa = renderPass.verA
             verWb = renderPass.verB
             verExp = renderPass.verRms
-            @verifyOut: kS, tDur
+            @verifyOut: kS, outDur
             if verifyOut.ok = 0
                 @fail: "The streamed stem " + outWrite$[kS] + " is incomplete (disk full?)."
             endif
@@ -3970,12 +6021,21 @@ if wantMix
         endif
     endfor
 endif
+# v2.7: a tail past the nominal end is legitimate; an "overrun" is now
+# only a sound running past the rendered output (must never happen),
+# and "truncated" a planned event shorter than its source file
 overrun = 0
+truncated = 0
 for ie from 1 to nEv
-    if evEnd[ie] > tDur + 1e-6
+    if evEnd[ie] > outDur + 1e-6
         overrun = overrun + 1
     endif
+    if abs(evDur[ie] - srcDur[evSrc[ie]]) > 1.5 / srOut
+        truncated = truncated + 1
+    endif
 endfor
+# the drawing shows the whole output; the requested duration is marked
+figT = outDur
 
 # ============================================================
 # 9. VISUALIZATION
@@ -3984,7 +6044,7 @@ if draw_visualization
     Erase all
 
 
-    @niceStep: tDur, 8
+    @niceStep: figT, 8
     tStep = niceStep.result
 
     # ---- title ----
@@ -3992,18 +6052,19 @@ if draw_visualization
     Select inner viewport: 0, 8, 0, 0.55
     Axes: 0, 1, 0, 1
     Colour: "Black"
-    Text: 0.5, "centre", 0.62, "half", "##TIMELINE COMPOSER v2.3##"
+    Text: 0.5, "centre", 0.62, "half", "##TIMELINE COMPOSER v" + tlVersion$ + "##"
     Font size: 7
     Select inner viewport: 0, 8, 0, 0.55
     Axes: 0, 1, 0, 1
     Colour: "{0.35, 0.35, 0.52}"
-    if composition_preset < 8
+    if composition_preset < cpCustom
         sub$ = cpName$[composition_preset] + " " + fixed$(compositional_intensity, 0) + "\%  |  "
     else
         sub$ = "Custom  |  "
     endif
     sub$ = sub$ + orgName$[organization] + "  |  " + string$(nLib) + " librar" + if nLib = 1 then "y" else "ies" fi
-        ... + "  |  " + fixed$(tDur, 1) + " s  |  " + tempName$[temporal_preset]
+        ... + "  |  " + fixed$(tDur, 1) + " s" + if figT > tDur + 0.005 then " (+ natural tail to " + fixed$(figT, 1) + " s)" else "" fi
+        ... + "  |  " + tempName$[temporal_preset]
         ... + "  |  Silence: " + silName$[silence_mode]
         ... + "  |  Conductor: " + condName$[conductor_preset]
         ... + "  |  Space: " + spName$[spatial_preset]
@@ -4023,8 +6084,8 @@ if draw_visualization
     # ---- A: conductor ----
     Font size: 6
     Select inner viewport: 0.6, 7.7, 0.95, 1.75
-    Axes: 0, tDur, 0, 1.08
-    Paint rectangle: "{0.97, 0.97, 0.97}", 0, tDur, 0, 1.08
+    Axes: 0, figT, 0, 1.08
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, figT, 0, 1.08
     for k from 1 to nGap
         Paint rectangle: "{0.88, 0.88, 0.88}", gapS[k], gapE[k], 0, 1.08
     endfor
@@ -4044,13 +6105,21 @@ if draw_visualization
     Colour: "{0.84, 0.15, 0.16}"
     Dashed line
     Draw line: xPeak * tDur, 0, xPeak * tDur, 1.08
+    # v2.7: the requested (nominal) duration, when the natural tails run on
+    if figT > tDur + 0.005
+        Colour: "{0.25, 0.25, 0.25}"
+        Dashed line
+        Line width: 1
+        Draw line: tDur, 0, tDur, 1.08
+        Solid line
+    endif
     Solid line
     Select inner viewport: 0.6, 7.7, 0.95, 1.75
-    Axes: 0, tDur, 0, 1.08
+    Axes: 0, figT, 0, 1.08
     Colour: "{0.84, 0.15, 0.16}"
     Text: xPeak * tDur, if xPeak > 0.85 then "right" else "left" fi, 1.0, "half", " climax " + fixed$(xPeak * 100, 0) + "\%  "
     Select inner viewport: 0.6, 7.7, 0.95, 1.75
-    Axes: 0, tDur, 0, 1.08
+    Axes: 0, figT, 0, 1.08
     Colour: "Black"
     Draw inner box
     Marks left every: 1, 0.5, "yes", "yes", "no"
@@ -4063,8 +6132,8 @@ if draw_visualization
         totalLanes = totalLanes + layerLanes[lay] + 0.6
     endfor
     Select inner viewport: 0.6, 7.7, 2.35, 4.55
-    Axes: 0, tDur, totalLanes, 0
-    Paint rectangle: "{0.98, 0.98, 0.98}", 0, tDur, 0, totalLanes
+    Axes: 0, figT, totalLanes, 0
+    Paint rectangle: "{0.98, 0.98, 0.98}", 0, figT, 0, totalLanes
     for k from 1 to nGap
         Paint rectangle: "{0.88, 0.88, 0.88}", gapS[k], gapE[k], 0, totalLanes
     endfor
@@ -4083,14 +6152,22 @@ if draw_visualization
         y1 = laneBase[lay] + evLane[ie] - 0.08
         f = 0.75 * (gMax - evGainDb[ie]) / (gMax - gMin)
         @col: lay, f
-        Paint rectangle: col.c$, evOn[ie], max(evEnd[ie], evOn[ie] + tDur / 1500), y0, y1
+        Paint rectangle: col.c$, evOn[ie], max(evEnd[ie], evOn[ie] + figT / 1500), y0, y1
     endfor
     Colour: "{0.84, 0.15, 0.16}"
     Dashed line
     Draw line: xPeak * tDur, 0, xPeak * tDur, totalLanes
+    # v2.7: the requested (nominal) duration, when the natural tails run on
+    if figT > tDur + 0.005
+        Colour: "{0.25, 0.25, 0.25}"
+        Dashed line
+        Line width: 1
+        Draw line: tDur, 0, tDur, totalLanes
+        Solid line
+    endif
     Solid line
     Select inner viewport: 0.6, 7.7, 2.35, 4.55
-    Axes: 0, tDur, totalLanes, 0
+    Axes: 0, figT, totalLanes, 0
     Colour: "Black"
     Draw inner box
     Marks bottom every: 1, tStep, "yes", "yes", "no"
@@ -4112,18 +6189,18 @@ if draw_visualization
     endfor
     Font size: 7
     Select inner viewport: 0.6, 7.7, 2.35, 4.55
-    Axes: 0, tDur, totalLanes, 0
+    Axes: 0, figT, totalLanes, 0
     Colour: "Black"
     Text bottom: "yes", "Time (s)  - grey bands = measured absolute silence, red = conductor climax"
 
     # ---- C: space ----
     Font size: 6
     Select inner viewport: 0.6, 3.95, 5.32, 6.32
-    Axes: 0, tDur, -1.15, 1.15
-    Paint rectangle: "{0.97, 0.97, 0.97}", 0, tDur, -1.15, 1.15
+    Axes: 0, figT, -1.15, 1.15
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, figT, -1.15, 1.15
     Colour: "{0.75, 0.75, 0.75}"
     Dotted line
-    Draw line: 0, 0, tDur, 0
+    Draw line: 0, 0, figT, 0
     Solid line
     # v2.1: the regions, when the placement is regional
     if rerender = 0
@@ -4132,10 +6209,10 @@ if draw_visualization
                 @col: min(5, r), 0
                 Colour: col.c$
                 Dashed line
-                Draw line: 0, regC[r], tDur, regC[r]
+                Draw line: 0, regC[r], figT, regC[r]
                 Dotted line
-                Draw line: 0, max(-1, regC[r] - regW[r]), tDur, max(-1, regC[r] - regW[r])
-                Draw line: 0, min(1, regC[r] + regW[r]), tDur, min(1, regC[r] + regW[r])
+                Draw line: 0, max(-1, regC[r] - regW[r]), figT, max(-1, regC[r] - regW[r])
+                Draw line: 0, min(1, regC[r] + regW[r]), figT, min(1, regC[r] + regW[r])
                 Solid line
             endfor
         endif
@@ -4151,7 +6228,7 @@ if draw_visualization
         Paint circle (mm): col.c$, evOn[ie], evPos[ie], 0.6 + 0.9 * (evGainDb[ie] - gMin) / (gMax - gMin)
     endfor
     Select inner viewport: 0.6, 3.95, 5.32, 6.32
-    Axes: 0, tDur, -1.15, 1.15
+    Axes: 0, figT, -1.15, 1.15
     Colour: "Black"
     Draw inner box
     if nOutCh = 2
@@ -4162,18 +6239,18 @@ if draw_visualization
         One mark left: -1, "no", "yes", "no", "ch1"
         One mark left: 1, "no", "yes", "no", "ch" + string$(nOutCh)
     endif
-    @niceStep: tDur, 4
+    @niceStep: figT, 4
     Marks bottom every: 1, niceStep.result, "yes", "yes", "no"
     Font size: 7
     Select inner viewport: 0.6, 3.95, 5.32, 6.32
-    Axes: 0, tDur, -1.15, 1.15
+    Axes: 0, figT, -1.15, 1.15
     Text bottom: "yes", "Time (s)"
 
     # ---- D: activity ----
     nStep = 400
     actMax = 1
     for k from 1 to nStep
-        tt = (k - 0.5) / nStep * tDur
+        tt = (k - 0.5) / nStep * figT
         a = 0
         for ie from 1 to nEv
             if evOn[ie] <= tt and evEnd[ie] > tt
@@ -4185,11 +6262,11 @@ if draw_visualization
     endfor
     Font size: 6
     Select inner viewport: 4.45, 7.7, 5.32, 6.32
-    Axes: 0, tDur, 0, actMax * 1.1
-    Paint rectangle: "{0.97, 0.97, 0.97}", 0, tDur, 0, actMax * 1.1
+    Axes: 0, figT, 0, actMax * 1.1
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, figT, 0, actMax * 1.1
     for k from 1 to nStep
         @col: 1, 0.35
-        Paint rectangle: col.c$, (k - 1) / nStep * tDur, k / nStep * tDur, 0, act[k]
+        Paint rectangle: col.c$, (k - 1) / nStep * figT, k / nStep * figT, 0, act[k]
     endfor
     if wantMix
         rMax = 0
@@ -4208,18 +6285,26 @@ if draw_visualization
     Colour: "{0.84, 0.15, 0.16}"
     Dashed line
     Draw line: xPeak * tDur, 0, xPeak * tDur, actMax * 1.1
+    # v2.7: the requested (nominal) duration, when the natural tails run on
+    if figT > tDur + 0.005
+        Colour: "{0.25, 0.25, 0.25}"
+        Dashed line
+        Line width: 1
+        Draw line: tDur, 0, tDur, actMax * 1.1
+        Solid line
+    endif
     Solid line
     Select inner viewport: 4.45, 7.7, 5.32, 6.32
-    Axes: 0, tDur, 0, actMax * 1.1
+    Axes: 0, figT, 0, actMax * 1.1
     Colour: "Black"
     Draw inner box
     @niceStep: actMax, 3
     Marks left every: 1, max(1, round(niceStep.result)), "yes", "yes", "no"
-    @niceStep: tDur, 4
+    @niceStep: figT, 4
     Marks bottom every: 1, niceStep.result, "yes", "yes", "no"
     Font size: 7
     Select inner viewport: 4.45, 7.7, 5.32, 6.32
-    Axes: 0, tDur, 0, actMax * 1.1
+    Axes: 0, figT, 0, actMax * 1.1
     Text bottom: "yes", "Time (s)"
 
     # ---- E: summary ----
@@ -4260,7 +6345,11 @@ tViz = stopwatch
 # ============================================================
 appendInfoLine: ""
 appendInfoLine: "=== Composition ==="
-if composition_preset < 8
+if rerender = 0
+    appendInfoLine: "Gesture awareness: ", fixed$(gesture_awareness, 2),
+        ... if gesture_awareness > 0 then " (source energy follows the conductor softly)" else " (off)" fi
+endif
+if composition_preset < cpCustom
     appendInfoLine: "Preset: ", cpName$[composition_preset], " at ", fixed$(compositional_intensity, 0),
         ... " % intensity - ", cpDesc$[composition_preset]
 else
@@ -4333,22 +6422,28 @@ appendInfoLine: "  polyphony (sounding time): mean ", fixed$(polyMean, 2), ", ma
     ... "   (overlap ", fixed$(overlap, 2), ")"
 appendInfoLine: ""
 appendInfoLine: "Duration:"
-appendInfoLine: "  requested ", fixed$(tDur, 3), " s = timeline length (exact, ", round(tDur * srOut), " samples)"
-appendInfoLine: "  last audible event ends at ", fixed$(lastEnd, 3), " s"
-appendInfoLine: "  planned ending silence ", fixed$(ending_silence, 2), " s (musical end at ", fixed$(endTime, 3), " s)"
+appendInfoLine: "  requested composition duration  ", fixed$(tDur, 3), " s (the planning horizon: form and conductor)"
+appendInfoLine: "  last permitted onset            before ", fixed$(endTime, 3), " s   (latest onset used ", fixed$(lastOn, 3), " s)"
+appendInfoLine: "  last source event ends          ", fixed$(lastEnd, 3), " s"
+appendInfoLine: "  natural tail extension          ", fixed$(tailExt, 3), " s"
+appendInfoLine: "  explicit ending silence         ", fixed$(ending_silence, 3), " s",
+    ... if ending_silence > 0 then " (after the last tail)" else "" fi
+appendInfoLine: "  actual output duration          ", fixed$(outDur, 3), " s (", round(outDur * srOut), " samples)"
+appendInfoLine: "  final global fade               ", if final_fade > 0 then fixed$(final_fade, 2) + " s (explicit; it shapes the last natural tails)" else "Off (natural ending)" fi
+appendInfoLine: "  source recordings truncated     ", truncated, "  (must be 0)"
 emptyTail = max(0, endTime - lastEnd)
 if emptyTail > tol
-    appendInfoLine: "  UNINTENDED empty tail: ", fixed$(emptyTail, 2), " s before the musical end - no unused"
+    appendInfoLine: "  UNINTENDED empty tail: ", fixed$(emptyTail, 2), " s before the nominal end - no unused"
     appendInfoLine: "    source fits there (raise Max repetitions, add sources or lower the density)."
 else
     appendInfoLine: "  unintended empty tail: none (", fixed$(emptyTail, 3), " s, within the ", fixed$(tol, 2), " s tolerance)"
 endif
-appendInfoLine: "  events running past the end: ", overrun, "  (must be 0)"
+appendInfoLine: "  events running past the output: ", overrun, "  (must be 0)"
 appendInfoLine: "  absolute silence: planned ", fixed$(silence_amount, 1), "%, measured ",
-    ... fixed$(silMeasured / tDur * 100, 2), "% = ", fixed$(silMeasured, 2), " s in ", nGap, " interval(s)"
+    ... fixed$(silMeasured / outDur * 100, 2), "% of the output = ", fixed$(silMeasured, 2), " s in ", nGap, " interval(s)"
 if ending_silence > 0
     appendInfoLine: "    of which the planned ending silence is ", fixed$(ending_silence, 2), " s; the form's own silences: ",
-        ... fixed$((silMeasured - ending_silence) / tDur * 100, 2), "%"
+        ... fixed$((silMeasured - ending_silence) / outDur * 100, 2), "%"
 endif
 for k from 1 to nGap
     appendInfoLine: "    ", fixed$(gapS[k], 2), " - ", fixed$(gapE[k], 2), " s  (", fixed$(gapE[k] - gapS[k], 2), " s)"
@@ -4361,6 +6456,166 @@ appendInfoLine: "  conductor ", fixed$(xPeak * 100, 0), "   densest entrances ",
 if loudX >= 0 and abs(loudX - xPeak) > 0.15
     appendInfoLine: "  NOTE: the loudest passage is ", fixed$(abs(loudX - xPeak) * 100, 0),
         ... "% of the duration away from the conductor climax."
+endif
+
+# ---- Gesture-aware selection: diagnostics (the plan is already made) ----
+if rerender = 0 and energyOn = 1
+    appendInfoLine: ""
+    appendInfoLine: "Gesture-aware selection - Gesture awareness ", fixed$(gesture_awareness, 2),
+        ... " (selection only; gains are not changed)"
+    # events whose source has an energy rank
+    nE = 0
+    for ie from 1 to nEv
+        if srcEnOK[evSrc[ie]]
+            nE = nE + 1
+            spA[nE] = srcEnRank[evSrc[ie]]
+            spB[nE] = evCond[ie]
+            gdEn[nE] = srcEnRank[evSrc[ie]]
+            gdC[nE] = evCond[ie]
+            gdDur[nE] = evDur[ie]
+            gdOn[nE] = evOn[ie]
+        endif
+    endfor
+    nMissSrc = 0
+    for s from 1 to nSrc
+        if srcEnOK[s] = 0
+            nMissSrc = nMissSrc + 1
+        endif
+    endfor
+    appendInfoLine: "  events with an energy rank: ", nE, " of ", nEv, "   sources with energy unavailable: ", nMissSrc, " of ", nSrc
+    if nE >= 3
+        @spearPair: nE
+        @fmtU: spearPair.r, 2
+        appendInfoLine: "  Spearman(event energy, conductor at onset) = ", fmtU.out$,
+            ... "   - a correlation, not a match: each pick still follows duration first"
+        madEC = 0
+        for k from 1 to nE
+            madEC = madEC + abs(gdEn[k] - gdC[k])
+            spA[k] = gdDur[k]
+            spB[k] = gdEn[k]
+        endfor
+        @spearPair: nE
+        @fmtU: spearPair.r, 2
+        appendInfoLine: "  mean |energy - conductor| = ", fixed$(madEC / nE, 3),
+            ... "   Spearman(event duration, event energy) = ", fmtU.out$
+        for i from 1 to nLib
+            @fmtU: libRhoDurE[i], 2
+            appendInfoLine: "  corpus ", libName$[i], ": Spearman(duration, energy score) = ", fmtU.out$
+        endfor
+        # temporal regions (thirds of the form, by onset)
+        appendInfoLine: "  by region:     events  conductor  energy  high-energy  low-energy  duration mean (min-max)"
+        for g from 1 to 3
+            gN = 0
+            gC = 0
+            gE = 0
+            gH = 0
+            gL = 0
+            gD = 0
+            gDmin = 1e9
+            gDmax = 0
+            for k from 1 to nE
+                if gdOn[k] >= (g - 1) * tDur / 3 and (gdOn[k] < g * tDur / 3 or g = 3)
+                    gN = gN + 1
+                    gC = gC + gdC[k]
+                    gE = gE + gdEn[k]
+                    if gdEn[k] >= 2 / 3
+                        gH = gH + 1
+                    endif
+                    if gdEn[k] <= 1 / 3
+                        gL = gL + 1
+                    endif
+                    gD = gD + gdDur[k]
+                    gDmin = min(gDmin, gdDur[k])
+                    gDmax = max(gDmax, gdDur[k])
+                endif
+            endfor
+            if gN > 0
+                appendInfoLine: "    third ", g, ":     ", gN, tab$, fixed$(gC / gN, 2), tab$, fixed$(gE / gN, 2),
+                    ... tab$, fixed$(100 * gH / gN, 0), "%", tab$, fixed$(100 * gL / gN, 0), "%",
+                    ... tab$, fixed$(gD / gN, 2), " s (", fixed$(gDmin, 2), "-", fixed$(gDmax, 2), ")"
+            else
+                appendInfoLine: "    third ", g, ":     0"
+            endif
+        endfor
+        # corpus durations
+        for s from 1 to nSrc
+            rkIn[s] = srcDur[s]
+        endfor
+        dMin = 1e9
+        dMax = 0
+        for s from 1 to nSrc
+            dMin = min(dMin, srcDur[s])
+            dMax = max(dMax, srcDur[s])
+        endfor
+        dMed = srcDur[1]
+        for s from 1 to nSrc
+            nBelow = 0
+            nEq = 0
+            for s2 from 1 to nSrc
+                if srcDur[s2] < srcDur[s]
+                    nBelow = nBelow + 1
+                elsif srcDur[s2] = srcDur[s]
+                    nEq = nEq + 1
+                endif
+            endfor
+            if nBelow <= (nSrc - 1) / 2 and nBelow + nEq > (nSrc - 1) / 2
+                dMed = srcDur[s]
+            endif
+        endfor
+        appendInfoLine: "  source durations (corpus): min ", fixed$(dMin, 2), "  median ", fixed$(dMed, 2),
+            ... "  max ", fixed$(dMax, 2), " s"
+        # the climax region: the 15 % of the form leading to the conductor peak
+        cR1 = xPeak * tDur
+        cR0 = max(0, cR1 - 0.15 * tDur)
+        nHi = 0
+        nHiAvail = 0
+        usesHiBefore = 0
+        for s from 1 to nSrc
+            if srcEnOK[s]
+                if srcEnRank[s] >= 2 / 3
+                    nHi = nHi + 1
+                    ub = 0
+                    for ie from 1 to nEv
+                        if evSrc[ie] = s and evOn[ie] < cR0
+                            ub = ub + 1
+                        endif
+                    endfor
+                    usesHiBefore = usesHiBefore + ub
+                    if ub < max_repetitions
+                        nHiAvail = nHiAvail + 1
+                    endif
+                endif
+            endif
+        endfor
+        nInR = 0
+        nHiInR = 0
+        for k from 1 to nE
+            if gdOn[k] >= cR0 and gdOn[k] <= cR1
+                nInR = nInR + 1
+                if gdEn[k] >= 2 / 3
+                    nHiInR = nHiInR + 1
+                endif
+            endif
+        endfor
+        appendInfoLine: "  climax region ", fixed$(cR0, 1), "-", fixed$(cR1, 1), " s: high-energy files (top third) ",
+            ... nHi, ", still usable at its start ", nHiAvail, " (", usesHiBefore, " uses before it, limit ",
+            ... max_repetitions, " each); high-energy events inside it ", nHiInR, " of ", nInR
+        if nHi > 0 and nHiAvail = 0
+            @warn: "All high-energy files were used up before the climax region (" + fixed$(cR0, 1) + " s)."
+        endif
+        if gesture_awareness > 0
+            if gaPicks > 0
+                appendInfoLine: "  picks with more than one eligible source: ", gaChoice, " of ", gaPicks,
+                    ... " (energy can only act where there is a choice)"
+                if gaChoice < 0.3 * gaPicks
+                    @warn: "Gesture awareness had little room: in most picks only one source fitted the time and duration constraints."
+                endif
+            endif
+            if duration_order_strictness >= 0.999
+                @warn: "Duration order strictness = 1 selects deterministically by duration; Gesture awareness has no effect."
+            endif
+        endif
+    endif
 endif
 
 if rerender = 0
@@ -4389,13 +6644,18 @@ endif
 appendInfoLine: ""
 appendInfoLine: "Result in Praat:"
 if planOnly
-    appendInfoLine: "  Plan only - no audio. Tables: ", objBase$, "_plan and ", objBase$, "_settings"
-    appendInfoLine: "  (select both and run Render a saved plan to hear it)."
+    if liveSend
+        appendInfoLine: "  Arrangement queued in the local Ableton Live Bridge inbox (no audio rendered)."
+        appendInfoLine: "  Open the Max for Live device to verify that the clips were imported."
+    else
+        appendInfoLine: "  Plan only - no audio. Tables: ", objBase$, "_plan and ", objBase$, "_settings"
+        appendInfoLine: "  (select both and run Render a saved plan to hear it)."
+    endif
 else
     if diskBacked
         appendInfoLine: "  LongSound ", mixName$, " - ", nOutCh, " ch, reads from its WAV file (keep that file):"
     else
-        appendInfoLine: "  Sound ", mixName$, " - ", nOutCh, " ch, ", fixed$(tDur, 3), " s, peak ",
+        appendInfoLine: "  Sound ", mixName$, " - ", nOutCh, " ch, ", fixed$(outDur, 3), " s, peak ",
             ... fixed$(20 * log10(max(outPeak, 1e-12)), 2), " dBFS (gain x", fixed$(mixGain, 4), ")"
     endif
     appendInfoLine: "    measured residual inside absolute silences: ",
@@ -4449,7 +6709,7 @@ if play_result and wantMix
     if diskBacked
         # a LongSound has no Play; Play part streams it from its file
         selectObject: mixID
-        Play part: 0, tDur
+        Play part: 0, outDur
     elsif nOutCh = 2
         selectObject: mixID
         Play
