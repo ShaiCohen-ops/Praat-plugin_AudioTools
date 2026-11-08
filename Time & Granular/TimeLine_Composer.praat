@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 2.2 (2026)
+# Version: 2.3 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -131,10 +131,25 @@
 #   independent streams that share its sources (and their repetition
 #   limit); with 2-5 folders each folder is a layer.
 #   Compositional intensity (presets only; 50 % = as designed): scales
-#   density (x0.66..x1.52), overlap (+/-0.2), the conductor's influence
-#   depths (x0.5..x1.5), the dynamic range (x0.7..x1.3) and the shaping
-#   strictness together. It never changes the duration or the planned
+#   density (x0.66..x1.52), overlap (+/-0.2), the conductor's density
+#   and spatial influence (x0.5..x1.5) and the shaping strictness
+#   together. Dynamics move only gently: dynamics influence and range
+#   x0.9..x1.1 each. It never changes the duration or the planned
 #   silences.
+#   Dynamics (conductor depth = influence x range, at 50 %):
+#   Emergence, Accumulation, Breathing Form 0.50 x 8 dB = 4 dB;
+#   Climax & Rupture 0.55 x 8 = 4.4 dB; Spatial Counterpoint 0.45 x 6
+#   = 2.7 dB; Fragmentation 0.45 x 8 = 3.6 dB; Controlled Chaos
+#   0.55 x 10 = 5.5 dB. Form comes mainly from the relations between
+#   sounds; deeper contrasts remain available by hand.
+#
+# Changelog v2.3 (2026) - dynamics recalibration:
+#   - Presets: restrained conductor dynamics (see "Dynamics" above);
+#     previously 12-27 dB deep, now 2.7-5.5 dB at 50 % intensity.
+#   - Intensity scales dynamics influence and range by (1 + 0.2 di)
+#     each (was 1.0 and 0.6); other intensity dimensions unchanged.
+#   - Event timeline unchanged: only the conductor's share of the
+#     event gains differs (verified).
 #
 # Changelog v2.2 (2026) - dynamics in the composition controls:
 #   - UI: Dynamic range (dB) moved from Edit details to Edit composition
@@ -380,10 +395,10 @@ if cp = 1
     spatial_preset = 4
     duration_order_strictness = 0.8
     randomness = 0.3
-    dynamics_influence = 0.8
+    dynamics_influence = 0.5
     density_influence = 0.8
     spatial_influence = 0.7
-    dynamic_range = 24
+    dynamic_range = 8
 elsif cp = 2
     # Accumulation: layers enter one after another and thicken
     organization = 2
@@ -399,10 +414,10 @@ elsif cp = 2
     spatial_preset = 4
     duration_order_strictness = 0.5
     randomness = 0.5
-    dynamics_influence = 0.8
+    dynamics_influence = 0.5
     density_influence = 1
     spatial_influence = 0.6
-    dynamic_range = 24
+    dynamic_range = 8
 elsif cp = 3
     # Breathing Form: duration waves in phase with the conductor waves,
     # silences in the troughs, width follows the conductor
@@ -421,10 +436,10 @@ elsif cp = 3
     spatial_preset = 8
     duration_order_strictness = 0.7
     randomness = 0.35
-    dynamics_influence = 0.7
+    dynamics_influence = 0.5
     density_influence = 0.8
     spatial_influence = 0.9
-    dynamic_range = 20
+    dynamic_range = 8
 elsif cp = 4
     # Climax & Rupture: the grand pause starts AT the peak
     organization = 2
@@ -442,10 +457,10 @@ elsif cp = 4
     spatial_preset = 4
     duration_order_strictness = 0.75
     randomness = 0.3
-    dynamics_influence = 0.85
+    dynamics_influence = 0.55
     density_influence = 0.9
     spatial_influence = 0.7
-    dynamic_range = 28
+    dynamic_range = 8
 elsif cp = 5
     # Spatial Counterpoint: each layer has its own shape and region
     organization = 2
@@ -462,10 +477,10 @@ elsif cp = 5
     spatial_preset = 7
     duration_order_strictness = 0.75
     randomness = 0.3
-    dynamics_influence = 0.6
+    dynamics_influence = 0.45
     density_influence = 0.6
     spatial_influence = 0.4
-    dynamic_range = 20
+    dynamic_range = 6
 elsif cp = 6
     # Fragmentation: long -> short, decrescendo, silences cluster and
     # lengthen where the conductor is low (late)
@@ -483,10 +498,10 @@ elsif cp = 6
     spatial_preset = 1
     duration_order_strictness = 0.8
     randomness = 0.4
-    dynamics_influence = 0.7
+    dynamics_influence = 0.45
     density_influence = 0.9
     spatial_influence = 0
-    dynamic_range = 22
+    dynamic_range = 8
 elsif cp = 7
     # Controlled Chaos: loose duration order, stepped conductor
     organization = 2
@@ -504,24 +519,34 @@ elsif cp = 7
     spatial_preset = 1
     duration_order_strictness = 0.15
     randomness = 0.95
-    dynamics_influence = 0.9
+    dynamics_influence = 0.55
     density_influence = 1
     spatial_influence = 0.5
-    dynamic_range = 30
+    dynamic_range = 10
 endif
 
 # Compositional intensity: how far the preset is pushed (50 % = as
-# designed). It scales density, overlap, the conductor's influence
-# depths, the dynamic range and the shaping strictness together; it
-# never changes the duration and never removes planned silences.
+# designed). It scales density, overlap, the conductor's density and
+# spatial influence and the shaping strictness together; it never
+# changes the duration and never removes planned silences.
+# Dynamics policy: musical form should come mainly from the relations
+# between sounds (durations, density, overlap, silence, layers, space),
+# not from attenuating the sounds themselves. The presets therefore
+# use a restrained conductor depth (influence x range = 3-5.5 dB at
+# 50 %), and intensity moves the two dynamic parameters only gently
+# (each x0.9 at 0 %, x1.1 at 100 %; their product x0.81..x1.21). The
+# event-gain formula is unchanged (evCondDb = influence x range x
+# (c - 1)), and both values can still be set to anything by hand:
+# Dynamic range in Edit composition controls, Dynamics influence in
+# Edit details.
 if cp < 8
     di = compositional_intensity / 100 - 0.5
     event_density = event_density * 2 ^ (1.2 * di)
     overlap = max(0, min(1, overlap + 0.4 * di))
-    dynamics_influence = max(0, min(1, dynamics_influence * (1 + 1.0 * di)))
+    dynamics_influence = max(0, min(1, dynamics_influence * (1 + 0.2 * di)))
     density_influence = max(0, min(1, density_influence * (1 + 1.0 * di)))
     spatial_influence = max(0, min(1, spatial_influence * (1 + 1.0 * di)))
-    dynamic_range = dynamic_range * (1 + 0.6 * di)
+    dynamic_range = dynamic_range * (1 + 0.2 * di)
     if cp = 7
         # chaos: more intensity = less order
         duration_order_strictness = max(0, min(1, duration_order_strictness - 0.3 * di))
@@ -1764,7 +1789,7 @@ nStems = 0
 trustAsked = 0
 outDir$ = ""
 
-writeInfoLine: "=== TimeLine Composer v2.2 ==="
+writeInfoLine: "=== TimeLine Composer v2.3 ==="
 
 # Remove our temporary objects, then stop with a message. Objects that
 # belonged to the user before the run are never touched.
@@ -3456,7 +3481,7 @@ if rerender = 0
     Create Table with column names: objBase$ + "_settings", 0, "key value"
     setID = selected("Table")
     @addTemp: setID
-    @kv: "script", "TimeLine_Composer.praat v2.2"
+    @kv: "script", "TimeLine_Composer.praat v2.3"
     @kv: "praat_version", praatVersion$
     @kv: "target_duration", string$(target_duration)
     @kv: "ending_silence", string$(ending_silence)
@@ -3967,7 +3992,7 @@ if draw_visualization
     Select inner viewport: 0, 8, 0, 0.55
     Axes: 0, 1, 0, 1
     Colour: "Black"
-    Text: 0.5, "centre", 0.62, "half", "##TIMELINE COMPOSER v2.2##"
+    Text: 0.5, "centre", 0.62, "half", "##TIMELINE COMPOSER v2.3##"
     Font size: 7
     Select inner viewport: 0, 8, 0, 0.55
     Axes: 0, 1, 0, 1
