@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 2.9 (2026) - Live Bridge prototype
+# Version: 3.1 (2026) - optional non-overlapping layers
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -114,6 +114,7 @@
 #   kept, because the LongSound reads from it. Existing files are never
 #   overwritten without confirmation.
 #   Saved files:  <base>_plan.tsv  <base>_settings.tsv  <base>_<mix>.wav
+#                 (<mix> = stereo, mc4, mc8, or layers<N> for Multitrack)
 #                 <base>_stem<k>_<library>.wav   TimeLine_catalog.tsv
 #
 # Composition presets (v2.0):
@@ -251,6 +252,75 @@
 #   (@arrangementJson) writes through @jsonOut to a file or to a string.
 #   The file goes through the output registry: written beside the
 #   target, verified by read-back, never left behind on failure.
+#
+# Multitrack output (v3.0, Channels "Multitrack (one mono channel per layer)"):
+#   Layer-separated rendering, the counterpart of spatial rendering.
+#   One Sound with one channel per COMPOSITIONAL LAYER (not per folder,
+#   not per region): channel k = layer k of the plan.
+#     Independent layers     one layer per folder with usable files
+#     one folder + streams   one layer per stream (Accumulation,
+#                            Spatial Counterpoint)
+#     Combined pool          ONE layer, however many folders -> 1 channel
+#   Every event is summed into its own layer's channel only, overlaps
+#   included; no equal-power panning, position, width or spatial
+#   movement is applied (they stay in the plan as metadata). Sources:
+#   mono as is; two or more channels -> (ch1 + ch2) / 2 (channels 3+ are
+#   unused, as in the spatial modes), so stereo is never doubled. Event
+#   gains and fades as always; no per-channel processing. Normalize
+#   measures the peak over ALL channels and applies ONE gain to all.
+#   The plan (sources, onsets, gains, silences, random sequence, natural
+#   ending) is the same as for Stereo with the same seed - only the
+#   routing differs. Every channel has the same length (natural tails
+#   included). Layer stems are not rendered (each layer already is a
+#   channel). Saved settings record channel_routing = layer_mono and
+#   channel_<k>_layer; plans without the key are spatial, whatever their
+#   channel count. Render a saved plan follows the SAVED routing. The
+#   Arrangement JSON gains the optional rendering.channel_routing; no
+#   existing field changes meaning (the Live Bridge reads none of it).
+#   File name: <base>_layers<N>.wav, object <name>_layers<N>.
+#
+# Layer overlap policy (v3.1, Edit composition controls,
+# "Allow_overlap_within_layers", under Overlap):
+#   On (default, every preset and Custom): polyphonic layers - the
+#   historical scheduler, plans identical to v3.0.
+#   Off: each COMPOSITIONAL LAYER is one line of whole recordings, one
+#   at a time: next onset >= previous end of the same layer (touching
+#   allowed; tolerance 1e-9 s, far below one sample). Different layers
+#   still overlap freely. Enforced while planning, in every place an
+#   event is created: the scheduler (voice limit 1), phrase repair, the
+#   open final phrase and the closing event - each checks the layer's
+#   occupancy (@layerSlot / @layerFree) and the room before the layer's
+#   next event, and onsets are rounded UP to the sample grid (so no
+#   onset ever lands a sample early, into a previous recording or a
+#   planned silence). Nothing is cut, stretched or re-faded: if no whole
+#   recording fits, the entrance is delayed or omitted and a gap may
+#   stay open. Density becomes a desired entrance rate; Overlap still
+#   sets the spacing but cannot create overlap. Natural ending: the last
+#   recording of a layer may run past the target; nothing of that layer
+#   starts before it ends. Combined pool = ONE layer (one line); for one
+#   line per folder (one Ableton track each) use Independent layers.
+#   Every plan (new or saved) is audited before rendering or export;
+#   with the option off, an overlap is a planning error (nothing is
+#   rendered). The report gives events and maximum polyphony per layer,
+#   intra-layer overlaps, delayed entrances, omitted events, unrepaired
+#   gaps and, for the Ableton outputs, the expected Audio Tracks.
+#   Saved settings: allow_overlap_within_layers (plans without it = 1).
+#
+# Changelog v3.1 (2026) - optional non-overlapping layers:
+#   - NEW composition control Allow_overlap_within_layers (default on).
+#   - Layer-occupancy constraint in scheduleLayer, repairPhrase, the
+#     final-phrase continuation and the closing event (off mode only).
+#   - Final intra-layer audit for every plan; report section.
+#   - Default plans, renders, JSON and Live Bridge identical to v3.0.
+#
+# Changelog v3.0 (2026) - Multitrack (one mono channel per layer):
+#   - NEW Channels option 4: Multitrack; count = number of layers.
+#   - Routing in addEventToBuffer; in-memory, streamed/chunked, export,
+#     saved-plan and playback paths share it (no separate renderer).
+#   - Report: routing, events per channel, library vs layer count.
+#   - Figure: position panel marked "not used" in Multitrack.
+#   - Stereo / 4 / 8 channels, stems, JSON and Live Bridge unchanged
+#     (renders and plans byte-identical to v2.9).
 #
 # Changelog v2.8 (2026) - Export Arrangement JSON:
 #   - NEW Output option: Export Arrangement JSON (plan only, no audio).
@@ -443,6 +513,7 @@ form TimeLine Composer
         option: "Stereo"
         option: "4 channels"
         option: "8 channels"
+        option: "Multitrack (one mono channel per layer)"
     boolean Layer_stems 0
     boolean Edit_details 0
     boolean Edit_layers 0
@@ -467,6 +538,9 @@ endfor
 # DETAIL DEFAULTS (second dialogs show and edit these)
 # ============================================================
 duration_order_strictness = 0.7
+# v3.1: layer overlap policy (composition controls). 1 = polyphonic
+# layers, the historical behaviour, for every preset and Custom.
+allow_overlap_within_layers = 1
 # Gesture awareness (0-1): how much a source's musical energy (its rank
 # in its folder) is matched to the conductor when sources are picked.
 # 0 = selection exactly as before. Presets set it; intensity does not.
@@ -512,7 +586,7 @@ plan_file$ = ""
 # still be edited (Edit composition controls); Custom starts from the
 # v1.1 defaults and does not use the intensity.
 # ============================================================
-tlVersion$ = "2.9"
+tlVersion$ = "3.1"
 cpName$[1] = "Emergence"
 cpName$[2] = "Accumulation"
 cpName$[3] = "Breathing Form"
@@ -821,6 +895,7 @@ if (edit_composition_controls or cp = cpCustom) and (output < 4 or output = 6 or
             option: "Controlled random"
         real: "Event_density", fixed$(event_density, 2)
         real: "Overlap", fixed$(overlap, 2)
+        boolean: "Allow_overlap_within_layers", allow_overlap_within_layers
         optionmenu: "Silence_mode", silence_mode
             option: "Continuous (no absolute silence)"
             option: "Breathing (many short silences)"
@@ -946,12 +1021,19 @@ wantStems = 0
 if layer_stems and wantMix
     wantStems = 1
 endif
+# v3.0: channel routing. "spatial" = positions panned over 2/4/8
+# channels; "layer_mono" = Multitrack, one mono channel per compositional
+# layer (the count is known only once the layers exist - see section 3).
+layerMono = 0
 if channels = 1
     nOutChWanted = 2
 elsif channels = 2
     nOutChWanted = 4
-else
+elsif channels = 3
     nOutChWanted = 8
+else
+    layerMono = 1
+    nOutChWanted = 0
 endif
 balName$[1] = "Off"
 balName$[2] = "Gentle"
@@ -971,6 +1053,11 @@ gesture_awareness = max(0, min(1, gesture_awareness))
 duration_preference = max(0, min(1, duration_preference))
 randomness = max(0, min(1, randomness))
 max_repetitions = max(1, max_repetitions)
+# v3.1 layer overlap policy (a saved plan overrides it with its own)
+allowOv = if allow_overlap_within_layers then 1 else 0 fi
+noOvRoom = 1e30
+nOvDelayed = 0
+nOvOmitted = 0
 dynamics_influence = max(0, min(1, dynamics_influence))
 density_influence = max(0, min(1, density_influence))
 spatial_influence = max(0, min(1, spatial_influence))
@@ -2028,6 +2115,8 @@ procedure pickSource: .lay, .t, .room, .bridge
     # density curve) plus 15 %. Repairs (.bridge < 0 marks none) and
     # closing events are exempt.
     pickSource.s = 0
+    pickSource.blocked = 0
+    .nBlk = 0
     .pace = 1
     if pacingOn = 1 and .bridge >= 0 and repairing = 0
         .ix = max(0, min(200, round(.t / target_duration * 200)))
@@ -2066,7 +2155,12 @@ procedure pickSource: .lay, .t, .room, .bridge
         .w = 0
         # in the FINAL phrase (openEnd = 1) a sound only has to START
         # before the nominal end; its tail may run past it (natural ending)
-        if srcUses[.si] < max_repetitions and (openEnd = 1 or srcDur[.si] <= .room + 1e-9)
+        # v3.1: noOvRoom is the room before this layer's next event in
+        # no-overlap mode (1e30 otherwise, so the default is unchanged)
+        if srcUses[.si] < max_repetitions and (openEnd = 1 or srcDur[.si] <= .room + 1e-9) and srcDur[.si] > noOvRoom
+            .nBlk = .nBlk + 1
+        endif
+        if srcUses[.si] < max_repetitions and (openEnd = 1 or srcDur[.si] <= .room + 1e-9) and srcDur[.si] <= noOvRoom
             .d = abs(srcRank[.si] - .r)
             .w = exp(-(.d * .d) / (2 * .sd * .sd)) * 0.5 ^ srcUses[.si]
             if .si = layerLast[.lay]
@@ -2129,7 +2223,56 @@ procedure pickSource: .lay, .t, .room, .bridge
             endif
         endif
     endif
+    if pickSource.s = 0 and .nBlk > 0
+        pickSource.blocked = 1
     endif
+    endif
+endproc
+
+# v3.1 (no-overlap mode): the earliest legal onset in layer .lay at or
+# after .t, on the output sample grid (rounded up), and the room before the layer's
+# next event (1e30 if none). An onset is legal when no event of this
+# layer is still sounding after it; touching (onset = previous end) is
+# legal. The tolerance (1e-9 s) is far below one sample at any rate.
+procedure layerSlot: .lay, .t
+    # rounded UP to the grid: never earlier than the scheduled time, so a
+    # phrase never starts inside the planned silence before it
+    .x = ceiling(.t * srOut - 1e-6) / srOut
+    if .x < .t - 1e-9
+        .x = .x + 1 / srOut
+    endif
+    .moved = 1
+    .guard = 0
+    while .moved = 1 and .guard < 10000
+        .moved = 0
+        .guard = .guard + 1
+        for .ei from 1 to nEv
+            if evLayer[.ei] = .lay and evOn[.ei] < .x + 1e-9 and evEnd[.ei] > .x + 1e-9
+                .x = ceiling(evEnd[.ei] * srOut - 1e-6) / srOut
+                if .x < evEnd[.ei] - 1e-9
+                    .x = .x + 1 / srOut
+                endif
+                .moved = 1
+            endif
+        endfor
+    endwhile
+    layerSlot.on = .x
+    layerSlot.room = 1e30
+    for .ei from 1 to nEv
+        if evLayer[.ei] = .lay and evOn[.ei] >= .x - 1e-9
+            layerSlot.room = min(layerSlot.room, evOn[.ei] - .x)
+        endif
+    endfor
+endproc
+
+# v3.1: is [.a, .b] free of every event of layer .lay? (touching allowed)
+procedure layerFree: .lay, .a, .b
+    layerFree.ok = 1
+    for .ei from 1 to nEv
+        if evLayer[.ei] = .lay and evOn[.ei] < .b - 1e-9 and evEnd[.ei] > .a + 1e-9
+            layerFree.ok = 0
+        endif
+    endfor
 endproc
 
 # Spatial position p in [-1, 1] for an event.
@@ -2236,6 +2379,11 @@ procedure scheduleLayer: .lay, .ws, .we, .ph, .lead
         .densEff = .dens0 * 2 ^ (density_influence * (2 * .c - 1) * 1.25)
         .ovEff = max(0, min(1, overlap + 0.35 * density_influence * (2 * .c - 1)))
         .voices = 1 + round(.ovEff * 9)
+        .voicesPoly = .voices
+        if allowOv = 0
+            # v3.1: one recording at a time in this layer
+            .voices = 1
+        endif
         # voice limit: count this layer's events still sounding at .t
         .active = 0
         .soonest = 1e9
@@ -2246,6 +2394,9 @@ procedure scheduleLayer: .lay, .ws, .we, .ph, .lead
             endif
         endfor
         if .active >= .voices
+            if allowOv = 0 and .active < .voicesPoly
+                nOvDelayed = nOvDelayed + 1
+            endif
             .t = .soonest
         else
             # v1.1 spacing. Density sets the entrance spacing (.ioiD);
@@ -2261,11 +2412,32 @@ procedure scheduleLayer: .lay, .ws, .we, .ph, .lead
                 # shortest sound that reaches its own next entrance
                 .bridge = min(.ioiD * .kOv ^ 1.5, .we - .t)
             endif
-            @pickSource: .lay, .t, .we - .t, .bridge
+            .tOn = floor(.t * srOut) / srOut
+            if allowOv = 0
+                @layerSlot: .lay, .t
+                if layerSlot.on > .t + 1 / srOut + 1e-9
+                    nOvDelayed = nOvDelayed + 1
+                endif
+                .tOn = layerSlot.on
+                noOvRoom = layerSlot.room
+                .t = max(.t, .tOn)
+            endif
+            if allowOv = 0 and .tOn >= .we
+                pickSource.s = 0
+                pickSource.blocked = 0
+            elsif allowOv = 0
+                @pickSource: .lay, .tOn, .we - .tOn, .bridge
+            else
+                @pickSource: .lay, .t, .we - .t, .bridge
+            endif
+            noOvRoom = 1e30
             if pickSource.s = 0
+                if pickSource.blocked = 1
+                    nOvOmitted = nOvOmitted + 1
+                endif
                 .go = 0
             else
-                @addEvent: .lay, pickSource.s, floor(.t * srOut) / srOut, .ph, 0
+                @addEvent: .lay, pickSource.s, .tOn, .ph, 0
                 .tail = max(.tail, evEnd[nEv])
                 .dPlaced = evDur[nEv]
                 .ioi = .ioiD ^ 0.4 * max(0.02, .dPlaced * .kOv) ^ 0.6
@@ -2496,6 +2668,9 @@ procedure arrangementJson
     @jkn: "final_fade_seconds", final_fade
     .l$ = .l$ + ", " + jkn.out$
     @jks: "panning", "equal-power; position -1 (left) .. +1 (right); multichannel: between adjacent channels"
+    .l$ = .l$ + ", " + jks.out$
+    # v3.0 (optional, additive): the Praat-side render routing
+    @jks: "channel_routing", if layerMono then "layer_mono" else "spatial" fi
     @jsonOut: "  ""rendering"": {" + .l$ + ", " + jks.out$ + "},"
 
     # ---- libraries ----
@@ -2923,9 +3098,23 @@ procedure repairPhrase: .e0, .ws, .we, .ph
                         .tryL = .tryL + 1
                         .lay = ((repairNext + .tryL - 1) mod nLayers) + 1
                         if plays[.lay] = 1 and .g0 >= layerEntry[.lay]
-                            @pickSource: .lay, .g0, .we - .g0, .gl
+                            .tOn = floor(.g0 * srOut) / srOut
+                            pickSource.s = 0
+                            if allowOv = 0
+                                # v3.1: the whole recording must fit before
+                                # this layer's next event
+                                @layerSlot: .lay, .g0
+                                .tOn = layerSlot.on
+                                noOvRoom = layerSlot.room
+                                if .tOn < .we
+                                    @pickSource: .lay, .tOn, .we - .tOn, .gl
+                                endif
+                                noOvRoom = 1e30
+                            else
+                                @pickSource: .lay, .g0, .we - .g0, .gl
+                            endif
                             if pickSource.s > 0
-                                @addEvent: .lay, pickSource.s, floor(.g0 * srOut) / srOut, .ph, 0
+                                @addEvent: .lay, pickSource.s, .tOn, .ph, 0
                                 nRepaired = nRepaired + 1
                                 repairNext = .lay
                                 .done = 1
@@ -2987,6 +3176,17 @@ procedure unionGaps: .e0, .e1, .from, .to
         ugGapS[unionGaps.count] = .cover
         ugGapE[unionGaps.count] = .to
         unionGaps.total = unionGaps.total + .to - .cover
+    endif
+endproc
+
+# v3.0: the name of compositional layer .lay (as in the Arrangement JSON)
+procedure layerName: .lay
+    if organization = 1
+        layerName.out$ = "Pool"
+    elsif nStreams > 1
+        layerName.out$ = libName$[layerLibOf[.lay]] + " / stream " + string$(.lay)
+    else
+        layerName.out$ = libName$[layerLibOf[.lay]]
     endif
 endproc
 
@@ -3279,6 +3479,23 @@ procedure addEventToBuffer: .ei, .buf, .c0, .c1, .bx1
     endif
     .from = .on + .ta
     .to = .on + .tb
+    if layerMono
+        # v3.0 Multitrack: no panning, no position, no width - the event
+        # goes only to its layer's channel. Mono stays mono; two or more
+        # source channels -> (ch1 + ch2) / 2 (channels 3+ are not used,
+        # exactly as in the spatial modes), so a stereo source is never
+        # doubled in level.
+        .ch = evLayer[.ei]
+        .src$ = "object[" + string$(.partID) + ", 1, col + " + string$(.dOff) + "]"
+        .gch = .g
+        if .nsc >= 2
+            .src$ = "(" + .src$ + " + object[" + string$(.partID) + ", 2, col + " + string$(.dOff) + "])"
+            .gch = .g / 2
+        endif
+        selectObject: .buf
+        Formula (part): .from, .to, .ch, .ch, "self + " + string$(.gch) + " * " + .src$
+        .nUse = 0
+    endif
     for .sc from 1 to .nUse
         @panGains: aebQ[.sc]
         aebK[1] = panGains.k1
@@ -3869,6 +4086,11 @@ if rerender
     set$["wave_cycles"] = "3"
     set$["conductor_steps"] = "0"
     set$["streams"] = "0"
+    # v3.0: plans saved before Multitrack are spatial, whatever their
+    # channel count (the count alone never decides the routing)
+    set$["channel_routing"] = "spatial"
+    # v3.1: plans saved before the overlap option are polyphonic
+    set$["allow_overlap_within_layers"] = "1"
     for r from 1 to nSet
         k$ = Get value: r, "key"
         v$ = Get value: r, "value"
@@ -3877,6 +4099,16 @@ if rerender
     target_duration = number(set$["target_duration"])
     srOut = number(set$["output_sample_rate"])
     nOutCh = number(set$["output_channels"])
+    # v3.1: the saved overlap policy (the events are never re-planned;
+    # it only decides how strictly they are audited below)
+    allowOv = if set$["allow_overlap_within_layers"] = "0" then 0 else 1 fi
+    # the SAVED routing decides, not the Channels menu (as for the count)
+    layerMono = 0
+    if set$["channel_routing"] = "layer_mono"
+        layerMono = 1
+    elsif set$["channel_routing"] <> "spatial"
+        @fail: "Unknown channel routing """ + set$["channel_routing"] + """ in the saved plan."
+    endif
     final_fade = number(set$["final_fade"])
     normalize = number(set$["normalize"])
     peak_dBFS = number(set$["peak_dBFS"])
@@ -5243,11 +5475,26 @@ if rerender = 0
                 for li from 1 to nLayers
                     lay = ((max(lead, 1) + li - 2) mod nLayers) + 1
                     if gotC = 0 and plays[lay] = 1 and tailNow >= layerEntry[lay]
+                        onT = floor(tailNow * srOut) / srOut
+                        pickSource.s = 0
                         repairing = 1
-                        @pickSource: lay, tailNow, we - tailNow, we - tailNow
+                        if allowOv = 0
+                            # v3.1: start where this layer is free (never
+                            # a sample early); the open tail may run past
+                            # the nominal end, never into a later event
+                            @layerSlot: lay, tailNow
+                            onT = layerSlot.on
+                            noOvRoom = layerSlot.room
+                            if onT < we
+                                @pickSource: lay, onT, we - onT, we - onT
+                            endif
+                            noOvRoom = 1e30
+                        else
+                            @pickSource: lay, tailNow, we - tailNow, we - tailNow
+                        endif
                         repairing = 0
                         if pickSource.s > 0
-                            @addEvent: lay, pickSource.s, floor(tailNow * srOut) / srOut, j, 1
+                            @addEvent: lay, pickSource.s, onT, j, 1
                             gotC = 1
                         endif
                     endif
@@ -5262,6 +5509,7 @@ if rerender = 0
                 endif
             endwhile
         elsif we - tailNow > tol
+            closeBlocked = 0
             bestS = 0
             bestLay = 0
             bestD = 1e9
@@ -5273,7 +5521,18 @@ if rerender = 0
                 if plays[lay] = 1
                     for k from 1 to layerN[lay]
                         s = layerSrc[lay, k]
-                        if srcUses[s] < max_repetitions and srcDur[s] <= we - ws and we - srcDur[s] >= layerEntry[lay]
+                        okFit = 1
+                        if allowOv = 0 and srcUses[s] < max_repetitions and srcDur[s] <= we - ws and we - srcDur[s] >= layerEntry[lay]
+                            # v3.1: the closing recording must fit whole in
+                            # its layer, where it would be placed
+                            onTry = floor((we - srcDur[s]) * srOut) / srOut
+                            @layerFree: lay, onTry, onTry + srcDur[s]
+                            okFit = layerFree.ok
+                            if okFit = 0
+                                closeBlocked = 1
+                            endif
+                        endif
+                        if okFit and srcUses[s] < max_repetitions and srcDur[s] <= we - ws and we - srcDur[s] >= layerEntry[lay]
                             if srcDur[s] >= we - tailNow and srcDur[s] < bestD
                                 bestD = srcDur[s]
                                 bestS = s
@@ -5291,6 +5550,9 @@ if rerender = 0
             if bestS = 0
                 bestS = altS
                 bestLay = altLay
+            endif
+            if bestS = 0 and closeBlocked = 1
+                nOvOmitted = nOvOmitted + 1
             endif
             if bestS > 0
                 onC = floor((we - srcDur[bestS]) * srOut) / srOut
@@ -5408,6 +5670,79 @@ if rerender = 1
     tol = max(0.25, 0.005 * tDur)
 endif
 
+# ---- v3.1: intra-layer overlap audit of the FINISHED plan (new or
+# saved), before any rendering or export. Events are taken in onset
+# order (plan order on ties), as the Live Bridge importer takes them.
+#   ovStarts   events that start while a recording of the same layer
+#              is still sounding (tolerance 1e-9 s, far below a sample)
+#   layerPoly  most recordings of one layer sounding at once = the
+#              voice tracks the importer opens for that layer (it reuses
+#              a track when the previous clip ends by the next onset)
+for ie from 1 to nEv
+    ordEv[ie] = ie
+endfor
+for i from 2 to nEv
+    a = ordEv[i]
+    j = i - 1
+    mv = 1
+    while mv = 1
+        if j < 1
+            mv = 0
+        elsif evOn[ordEv[j]] > evOn[a]
+            ordEv[j + 1] = ordEv[j]
+            j = j - 1
+        else
+            mv = 0
+        endif
+    endwhile
+    ordEv[j + 1] = a
+endfor
+ovStarts = 0
+for lay from 1 to nLayers
+    layerPoly[lay] = 0
+    layerOv[lay] = 0
+    layerEvN[lay] = 0
+    layerBusy[lay] = -1e30
+endfor
+firstOvE = 0
+for i from 1 to nEv
+    ie = ordEv[i]
+    lay = evLayer[ie]
+    layerEvN[lay] = layerEvN[lay] + 1
+    if evOn[ie] < layerBusy[lay] - 1e-9
+        ovStarts = ovStarts + 1
+        layerOv[lay] = layerOv[lay] + 1
+        if firstOvE = 0
+            firstOvE = ie
+        endif
+    endif
+    layerBusy[lay] = max(layerBusy[lay], evEnd[ie])
+    # first fit over this layer's tracks (importer rule: free if its last
+    # clip ends by this onset + 1e-8)
+    k = 0
+    found = 0
+    while found = 0 and k < layerPoly[lay]
+        k = k + 1
+        if trackFree[lay, k] <= evOn[ie] + 1e-8
+            found = k
+        endif
+    endwhile
+    if found = 0
+        layerPoly[lay] = layerPoly[lay] + 1
+        found = layerPoly[lay]
+    endif
+    trackFree[lay, found] = evEnd[ie]
+endfor
+expTracks = 0
+for lay from 1 to nLayers
+    expTracks = expTracks + layerPoly[lay]
+endfor
+if allowOv = 0 and ovStarts > 0
+    @layerName: evLayer[firstOvE]
+    @fail: "Planning error (overlap within layers is off): " + string$(ovStarts) + " event(s) start while a recording of the same layer is still sounding - first: event "
+        ... + string$(firstOvE) + " in layer " + layerName.out$ + " at " + fixed$(evOn[firstOvE], 6) + " s. Nothing was rendered or exported."
+endif
+
 # voice lanes for the drawing (greedy, per layer)
 maxLane = 1
 for ie from 1 to nEv
@@ -5444,7 +5779,25 @@ if rerender = 0
 else
     objBase$ = replace$(baseShort$, "TimeLine_seed", "TimeLine_Seed", 1) + "_render"
 endif
-if nOutCh > 2
+# v3.0 Multitrack: one output channel per compositional layer (the
+# plan's own layer ids 1..nLayers), known only now. A saved layer_mono
+# plan must agree with its own events.
+if layerMono
+    if rerender = 0
+        nOutCh = nLayers
+    endif
+    if nOutCh <> nLayers or nOutCh < 1
+        @fail: "The saved plan's channel count (" + string$(nOutCh) + ") does not match its "
+            ... + string$(nLayers) + " layer(s) - cannot route one channel per layer."
+    endif
+    for ie from 1 to nEv
+        if evLayer[ie] < 1 or evLayer[ie] > nOutCh or evLayer[ie] <> round(evLayer[ie])
+            @fail: "Event " + string$(ie) + " has layer " + string$(evLayer[ie]) + ", outside 1.." + string$(nOutCh) + "."
+        endif
+    endfor
+    mixName$ = objBase$ + "_layers" + string$(nOutCh)
+    mixSuffix$ = "_layers" + string$(nOutCh) + ".wav"
+elsif nOutCh > 2
     mixName$ = objBase$ + "_mc" + string$(nOutCh)
     mixSuffix$ = "_mc" + string$(nOutCh) + ".wav"
 else
@@ -5583,7 +5936,15 @@ if rerender = 0
     @kv: "max_correction", string$(max_correction)
     @kv: "per_file_leveling", string$(per_file_leveling)
     @kv: "file_level_limit", string$(file_level_limit)
+    @kv: "allow_overlap_within_layers", string$(allowOv)
     @kv: "output_channels", string$(nOutCh)
+    @kv: "channel_routing", if layerMono then "layer_mono" else "spatial" fi
+    if layerMono
+        for k from 1 to nOutCh
+            @layerName: k
+            @kv: "channel_" + string$(k) + "_layer", string$(k) + " " + layerName.out$
+        endfor
+    endif
     @kv: "output_sample_rate", string$(srOut)
     @kv: "event_fade_in", string$(event_fade_in)
     @kv: "event_fade_out", string$(event_fade_out)
@@ -5692,6 +6053,12 @@ memMB = 0
 mixID = 0
 nStems = 0
 diskBacked = 0
+if layerMono and wantStems
+    # v3.0: the Multitrack Sound already holds every layer on its own
+    # channel; per-library stems would only duplicate it
+    wantStems = 0
+    @warn: "Layer stems are not rendered in Multitrack: each layer is already its own channel (Extract one channel to get it as a separate Sound)."
+endif
 if wantMix
     # the libraries that have events (one stem each)
     nStemLib = 0
@@ -6078,7 +6445,7 @@ if draw_visualization
     Colour: "Black"
     Text: 4.15, "centre", 0.78, "half", "Conductor curve c(t) - climax and absolute silences"
     Text: 4.15, "centre", 2.20, "half", "Event timeline - one bar per source file (whole, never cut); paler = quieter"
-    Text: 2.27, "centre", 5.18, "half", "Spatial position of each event"
+    Text: 2.27, "centre", 5.18, "half", if layerMono then "Planned position (not used: one channel per layer)" else "Spatial position of each event" fi
     Text: 6.07, "centre", 5.18, "half", "Active events (steps) and rendered loudness (grey)"
 
     # ---- A: conductor ----
@@ -6231,7 +6598,10 @@ if draw_visualization
     Axes: 0, figT, -1.15, 1.15
     Colour: "Black"
     Draw inner box
-    if nOutCh = 2
+    if layerMono
+        One mark left: -1, "no", "yes", "no", "-1"
+        One mark left: 1, "no", "yes", "no", "+1"
+    elsif nOutCh = 2
         One mark left: -1, "no", "yes", "no", "L"
         One mark left: 0, "no", "yes", "no", "C"
         One mark left: 1, "no", "yes", "no", "R"
@@ -6316,7 +6686,7 @@ if draw_visualization
     @safeText: objBase$
     Text: 0.015, "left", 0.80, "half", "##" + safeText.out$ + "##  |  " + string$(nEv)
         ... + " events  |  " + string$(nGap) + " silences  |  target " + fixed$(tDur, 1)
-        ... + " s, last tail " + fixed$(lastEnd, 2) + " s  |  output " + string$(nOutCh) + " ch @ "
+        ... + " s, last tail " + fixed$(lastEnd, 2) + " s  |  output " + string$(nOutCh) + " ch" + if layerMono then " (one per layer)" else "" fi + " @ "
         ... + string$(srOut) + " Hz"
     Text: 0.015, "left", 0.50, "half", "Silence: planned " + fixed$(silence_amount, 1) + "\%  , measured "
         ... + fixed$(silMeasured / tDur * 100, 1) + "\%  (" + fixed$(silMeasured, 1) + " s)  |  climax: conductor "
@@ -6641,6 +7011,84 @@ if rerender = 0
     endif
 endif
 
+# ---- v3.0: output routing ----
+appendInfoLine: ""
+if layerMono
+    appendInfoLine: "Output: Multitrack - one mono channel per layer"
+    appendInfoLine: "  Channels: ", nOutCh
+    for k from 1 to nOutCh
+        nk = 0
+        for ie from 1 to nEv
+            if evLayer[ie] = k
+                nk = nk + 1
+            endif
+        endfor
+        @layerName: k
+        appendInfoLine: "  Channel ", k, ": ", layerName.out$, " - ", nk, " events"
+    endfor
+    appendInfoLine: "  Spatial panning: bypassed in layer-separated rendering (positions kept in the plan only)"
+    appendInfoLine: "  Source channels: mono as is; stereo and multichannel -> (ch1 + ch2) / 2"
+    if organization = 1 and nLib > 1
+        appendInfoLine: "  ", nLib, " libraries form ONE combined-pool layer -> 1 channel"
+            ... + " (choose Independent layers for one channel per library)."
+    elsif nStreams > 1
+        appendInfoLine: "  1 library played as ", nStreams, " independent streams -> ", nStreams, " channels."
+    elsif nLayers <> nLib
+        appendInfoLine: "  ", nLib, " libraries, ", nLayers, " layers: libraries without usable files have no layer and no channel."
+    endif
+else
+    appendInfoLine: "Output: ", if nOutCh = 2 then "Stereo" else string$(nOutCh) + " channels" fi,
+        ... " - spatial (equal-power panning by position)"
+endif
+appendInfoLine: "  Natural ending: output ", fixed$(outDur, 3), " s (target ", fixed$(tDur, 1),
+    ... " s), the same length on every channel"
+
+# ---- v3.1: layer overlap policy ----
+appendInfoLine: ""
+if allowOv
+    appendInfoLine: "Layer overlap: Enabled - recordings of one layer may overlap (polyphonic layers)"
+else
+    appendInfoLine: "Layer overlap: Disabled - one source recording at a time per layer"
+endif
+appendInfoLine: "  Layers: ", nLayers, "   (libraries ", nLib, ")"
+# (first fit over all layers together = the most sounding at once)
+maxAll = 0
+for i from 1 to nEv
+    ie = ordEv[i]
+    k = 0
+    found = 0
+    while found = 0 and k < maxAll
+        k = k + 1
+        if allFree[k] <= evOn[ie] + 1e-9
+            found = k
+        endif
+    endwhile
+    if found = 0
+        maxAll = maxAll + 1
+        found = maxAll
+    endif
+    allFree[found] = evEnd[ie]
+endfor
+for lay from 1 to nLayers
+    @layerName: lay
+    appendInfoLine: "  ", layerName.out$, ": ", layerEvN[lay], " events, at most ", layerPoly[lay],
+        ... " sounding at once, ", layerOv[lay], " start(s) inside another recording of this layer"
+endfor
+appendInfoLine: "  Intra-layer overlaps: ", ovStarts, "   most recordings sounding at once (all layers): ", maxAll
+if rerender = 0 and allowOv = 0
+    appendInfoLine: "  Entrances delayed by the constraint: ", nOvDelayed,
+        ... "   events omitted (no legal interval): ", nOvOmitted
+    if unplanned > tol
+        appendInfoLine: "  Unplanned gaps not repaired: ", fixed$(unplanned, 2), " s (no whole recording fits them)"
+    else
+        appendInfoLine: "  Unplanned gaps not repaired: none above ", fixed$(tol, 2), " s"
+    endif
+endif
+if output = 6 or output = 7
+    appendInfoLine: "  Expected Ableton Live Audio Tracks (importer voice tracks): ", expTracks,
+        ... if expTracks = nLayers then "  - one per layer" else "" fi
+endif
+
 appendInfoLine: ""
 appendInfoLine: "Result in Praat:"
 if planOnly
@@ -6710,7 +7158,8 @@ if play_result and wantMix
         # a LongSound has no Play; Play part streams it from its file
         selectObject: mixID
         Play part: 0, outDur
-    elsif nOutCh = 2
+    elsif nOutCh <= 2
+        # (Multitrack with 1 layer plays mono; with 2, layer 1 left, layer 2 right)
         selectObject: mixID
         Play
     else
@@ -6735,7 +7184,8 @@ if play_result and wantMix
         if apk > 0.99
             Scale peak: 0.99
         endif
-        appendInfoLine: "Playing a temporary stereo audition of the ", nOutCh, "-channel result (removed afterwards)."
+        appendInfoLine: "Playing a temporary stereo audition of the ", nOutCh, "-channel result",
+            ... if layerMono then " (layers spread left to right)" else "" fi, " (removed afterwards)."
         Play
         removeObject: audID
         @dropTemp: audID
