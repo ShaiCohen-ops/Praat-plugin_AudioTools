@@ -3,13 +3,16 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 3.1 (2026) - optional non-overlapping layers
+# Version: 3.2 (2026) - Live Bridge on macOS
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
-# Live Bridge prototype (v2.9):
-#   Output 7 writes the same verified Arrangement JSON to the per-user
-#   LOCALAPPDATA/PraatAudioTools/LiveBridge/inbox folder. A Node for Max
+# Live Bridge (v2.9; macOS and Linux since v3.2):
+#   Output 7 writes the same verified Arrangement JSON to a per-user
+#   inbox, chosen by the same rule as the M4L watcher:
+#     Windows (LOCALAPPDATA set): %LOCALAPPDATA%/PraatAudioTools/LiveBridge/inbox
+#     macOS / Linux:              ~/.praataudiotools/LiveBridge/inbox
+#   A Node for Max
 #   watcher imports it in the background. This is local file IPC, not a
 #   native network message from Praat; nothing requires Python.
 #   The new output does NOT assert that Ableton imported successfully:
@@ -306,6 +309,13 @@
 #   gaps and, for the Ableton outputs, the expected Audio Tracks.
 #   Saved settings: allow_overlap_within_layers (plans without it = 1).
 #
+# Changelog v3.2 (2026) - Live Bridge on macOS:
+#   - Send Arrangement to Ableton no longer stops without LOCALAPPDATA:
+#     the inbox follows the M4L watcher's own rule (LOCALAPPDATA if set,
+#     else ~/.praataudiotools/LiveBridge/inbox), so Praat and the
+#     device agree on Windows, macOS and Linux. The report shows the
+#     inbox path. Nothing else changed.
+#
 # Changelog v3.1 (2026) - optional non-overlapping layers:
 #   - NEW composition control Allow_overlap_within_layers (default on).
 #   - Layer-occupancy constraint in scheduleLayer, repairPhrase, the
@@ -586,7 +596,7 @@ plan_file$ = ""
 # still be edited (Edit composition controls); Custom starts from the
 # v1.1 defaults and does not use the intensity.
 # ============================================================
-tlVersion$ = "3.1"
+tlVersion$ = "3.2"
 cpName$[1] = "Emergence"
 cpName$[2] = "Accumulation"
 cpName$[3] = "Breathing Form"
@@ -2993,15 +3003,27 @@ endproc
 # read back and checked, deleted on failure.
 procedure exportArrangement
     if liveSend
-        # Windows direct handoff: a private local inbox monitored by
-        # Node for Max. No socket, Python, PowerShell or user-selected
-        # file. The Max device imports it after the write is verified.
+        # Direct handoff: a private local inbox monitored by Node for
+        # Max. No socket, Python, PowerShell or user-selected file. The
+        # Max device imports it after the write is verified.
+        # v3.2: the inbox follows EXACTLY the rule of the M4L watcher, so
+        # both sides always agree on every system:
+        #   LOCALAPPDATA set (Windows) -> %LOCALAPPDATA%/PraatAudioTools/LiveBridge/inbox
+        #   otherwise (macOS, Linux)   -> ~/.praataudiotools/LiveBridge/inbox
         .local$ = environment$("LOCALAPPDATA")
-        if .local$ = ""
-            @fail: "Send Arrangement to Ableton currently requires Windows LOCALAPPDATA. Use Export Arrangement JSON instead."
+        if .local$ <> ""
+            .root$ = replace$(.local$, "\", "/", 0) + "/PraatAudioTools"
+        else
+            .home$ = replace$(homeDirectory$, "\", "/", 0)
+            while right$(.home$, 1) = "/" and length(.home$) > 1
+                .home$ = left$(.home$, length(.home$) - 1)
+            endwhile
+            if .home$ = "" or folderExists(.home$) = 0
+                @fail: "Send Arrangement to Ableton: no home folder found for the Live Bridge inbox. Use Export Arrangement JSON and the device's Manual JSON import instead."
+            endif
+            .root$ = .home$ + "/.praataudiotools"
         endif
         @ensureTrust
-        .root$ = .local$ + "/PraatAudioTools"
         .bridge$ = .root$ + "/LiveBridge"
         .inbox$ = .bridge$ + "/inbox"
         if folderExists(.root$) = 0
@@ -3016,6 +3038,7 @@ procedure exportArrangement
         if folderExists(.inbox$) = 0
             @fail: "Could not create the local Live Bridge inbox: " + .inbox$
         endif
+        liveInbox$ = .inbox$
         output_folder$ = .inbox$
         outDir$ = ""
         # Queue a distinct file each time; never overwrite.
@@ -7093,7 +7116,8 @@ appendInfoLine: ""
 appendInfoLine: "Result in Praat:"
 if planOnly
     if liveSend
-        appendInfoLine: "  Arrangement queued in the local Ableton Live Bridge inbox (no audio rendered)."
+        appendInfoLine: "  Arrangement queued in the local Ableton Live Bridge inbox (no audio rendered):"
+        appendInfoLine: "    ", liveInbox$
         appendInfoLine: "  Open the Max for Live device to verify that the clips were imported."
     else
         appendInfoLine: "  Plan only - no audio. Tables: ", objBase$, "_plan and ", objBase$, "_settings"
