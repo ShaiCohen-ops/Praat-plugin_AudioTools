@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.2 (2026)
+# Version: 1.3 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -110,6 +110,15 @@
 #               same with or without reverb, whatever its settings.
 #
 # Changelog
+#   1.3  Cross-platform file discovery and loading (macOS report: "No usable
+#        recording"): one "*" listing with case-insensitive extensions (.Aif,
+#        .aIFF, .Mp3 ... were missed), hidden and macOS "._" files skipped,
+#        no case-folding de-duplication; selection-safe opening with a reason
+#        for every failure; silence test on the strongest channel, and the
+#        strongest channel used when a stereo mix cancels; a per-folder
+#        diagnosis (files found / opened / accepted, reasons with an example,
+#        empty-folder and subfolder hints) instead of the generic message.
+#        Same sound as 1.2 for the same files and settings.
 #   1.2  Shorter form: Comparison set, Export WAV and metadata, Output
 #        folder and Output name removed (save from the Objects window).
 #        The sound produced is unchanged.
@@ -170,7 +179,7 @@ form Spectral Gesture Forge
     boolean Play_result 1
 endform
 
-sgfVersion$ = "1.2"
+sgfVersion$ = "1.3"
 # No longer in the form (save the result from the Objects window);
 # fixed here so the internal comparison and export code stays inert.
 comparison_set = 1
@@ -320,14 +329,53 @@ endfor
 # analysis window (at most the first 30 s) is read.
 appendInfoLine: "Scanning ", nFold, " folder(s) - selection: ", selName$[source_selection]
 nAct = 0
+catName$[1] = "cannot be opened"
+catName$[2] = "not decodable"
+catName$[3] = "shorter than 0.08 s"
+catName$[4] = "silent / too quiet"
+catName$[5] = "level not measurable"
 for f from 1 to nFold
     @listAudio: foldPath$[f]
     nFiles = listAudio.n
+    fFound[f] = nFiles
+    fOpened[f] = 0
+    fOK[f] = 0
+    fTried[f] = 0
+    for c from 1 to 5
+        fCat[f, c] = 0
+        fEx$[f, c] = ""
+    endfor
+    # what else the folder holds (for the diagnostics)
+    fdEx$ = ""
+    if listAudio.nOther > 0
+        fdEx$ = fdEx$ + ", " + string$(listAudio.nOther) + " other file(s)"
+    endif
+    if listAudio.nHidden > 0
+        fdEx$ = fdEx$ + ", " + string$(listAudio.nHidden) + " hidden skipped"
+    endif
+    if listAudio.nSub > 0
+        fdEx$ = fdEx$ + ", " + string$(listAudio.nSub) + " subfolder(s) not searched"
+    endif
+    fExtra$[f] = fdEx$
     if nFiles = 0
+        if listAudio.denied
+            fHint$[f] = "Praat is NOT ALLOWED to read this folder (the listing was refused). Give Praat access "
+                ... + "(macOS: System Settings > Privacy & Security > Files and Folders, or Full Disk Access) or move the recordings."
+        elsif listAudio.nOther + listAudio.nHidden + listAudio.nSub = 0
+            fHint$[f] = "Praat sees this folder as EMPTY. If Finder shows files in it, Praat is probably not allowed to read it "
+                ... + "(macOS: System Settings > Privacy & Security > Files and Folders, or Full Disk Access, for Praat; "
+                ... + "or move the recordings out of Desktop / Documents / Downloads / iCloud / external drives)."
+        elsif listAudio.nSub > 0
+            fHint$[f] = "No audio files directly in this folder; it has " + string$(listAudio.nSub)
+                ... + " subfolder(s) - choose the folder that contains the recordings."
+        else
+            fHint$[f] = "No WAV, AIFF, FLAC or MP3 files here (" + string$(listAudio.nOther) + " other file(s))."
+        endif
         warnN = warnN + 1
-        warn$[warnN] = "Folder " + foldName$[f] + ": no audio files - skipped."
-        appendInfoLine: "  ", foldName$[f], ": no audio files - skipped"
+        warn$[warnN] = "Folder " + foldName$[f] + ": no audio files - skipped. " + fHint$[f]
+        appendInfoLine: "  ", foldName$[f], ": no audio files", fdEx$, " - skipped"
     else
+        fHint$[f] = ""
         # seeded shuffle (ascending Fisher-Yates)
         for i from 1 to nFiles
             ord[i] = i
@@ -346,6 +394,14 @@ for f from 1 to nFold
             nTried = nTried + 1
             fp$ = listAudio.path$[ord[nTried]]
             @analyzeFile: fp$
+            fOpened[f] = fOpened[f] + an.opened
+            if an.ok = 0 and an.cat > 0
+                fCat[f, an.cat] = fCat[f, an.cat] + 1
+                if fEx$[f, an.cat] = ""
+                    @baseName: fp$
+                    fEx$[f, an.cat] = baseName.out$
+                endif
+            endif
             if an.ok
                 nOK = nOK + 1
                 cPath$[f, nOK] = fp$
@@ -362,6 +418,7 @@ for f from 1 to nFold
                 cBw[f, nOK] = an.bw
                 cTon[f, nOK] = an.tonal
                 cPeakDb[f, nOK] = an.peakDb
+                cUseCh[f, nOK] = an.useCh
                 for b from 1 to nBand
                     cProf[f, nOK, b] = an.prof[b]
                 endfor
@@ -374,7 +431,15 @@ for f from 1 to nFold
                 endif
             endif
         endwhile
-        appendInfoLine: "  ", foldName$[f], ": ", nFiles, " audio file(s), ", nTried, " analysed, ", nOK, " usable"
+        fTried[f] = nTried
+        fOK[f] = nOK
+        appendInfoLine: "  ", foldName$[f], ": ", nFiles, " audio file(s)", fExtra$[f], "; ", nTried, " tried, ",
+            ... fOpened[f], " opened, ", nOK, " usable"
+        for c from 1 to 5
+            if fCat[f, c] > 0
+                appendInfoLine: "      ", fCat[f, c], " x ", catName$[c], " (e.g. ", fEx$[f, c], ")"
+            endif
+        endfor
         if nOK = 0
             warnN = warnN + 1
             warn$[warnN] = "Folder " + foldName$[f] + ": no usable recording among " + string$(nTried) + " tried - skipped."
@@ -386,7 +451,29 @@ for f from 1 to nFold
     endif
 endfor
 if nAct = 0
-    @fail: "No usable recording in any folder (all empty, unreadable, silent or shorter than 0.08 s)."
+    # say exactly what happened in every folder (also in the Info window)
+    failMsg$ = "No usable recording was found. Per folder:"
+    for f from 1 to nFold
+        failMsg$ = failMsg$ + newline$ + newline$ + foldPath$[f] + newline$ + "  " + string$(fFound[f]) + " audio file(s)" + fExtra$[f]
+        if fFound[f] > 0
+            failMsg$ = failMsg$ + "; " + string$(fTried[f]) + " tried, " + string$(fOpened[f]) + " opened, 0 usable"
+            for c from 1 to 5
+                if fCat[f, c] > 0
+                    failMsg$ = failMsg$ + newline$ + "  " + string$(fCat[f, c]) + " x " + catName$[c] + " (e.g. " + fEx$[f, c] + ")"
+                endif
+            endfor
+            if fCat[f, 1] = fTried[f]
+                failMsg$ = failMsg$ + newline$ + "  None of them could be opened by the script. If they open with Open > Read from file, "
+                    ... + "Praat probably lacks permission to read this folder (macOS: System Settings > Privacy & Security > "
+                    ... + "Files and Folders / Full Disk Access)."
+            endif
+        else
+            failMsg$ = failMsg$ + newline$ + "  " + fHint$[f]
+        endif
+    endfor
+    appendInfoLine: ""
+    appendInfoLine: failMsg$
+    @fail: failMsg$
 endif
 
 # ---- choose one candidate per active folder ----
@@ -488,6 +575,7 @@ for k from 1 to nSrc
     srcName$[k] = cName$[f, j]
     srcFold$[k] = foldName$[f]
     srcSrIn[k] = cSr[f, j]
+    srcUseCh[k] = cUseCh[f, j]
     srcNchIn[k] = cNch[f, j]
     srcDurIn[k] = cDur[f, j]
     srcTon[k] = cTon[f, j]
@@ -504,7 +592,7 @@ for k from 1 to nSrc
     srcAttIdx[k] = ai
     @openAudio: srcPath$[k]
     if openAudio.id = 0
-        @fail: "Cannot re-open " + srcPath$[k]
+        @fail: "Cannot re-open " + srcPath$[k] + ": " + openAudio.why$
     endif
     t0 = srcAtt[k]
     t1 = min(srcDurIn[k], t0 + gdur + 0.6)
@@ -521,7 +609,12 @@ for k from 1 to nSrc
     selectObject: part
     nc = Get number of channels
     if nc > 1
-        Convert to mono
+        if srcUseCh[k] > 0 and srcUseCh[k] <= nc
+            # phase-opposed channels: the strongest one, not the mix
+            Extract one channel: srcUseCh[k]
+        else
+            Convert to mono
+        endif
         mono = selected("Sound")
         @addTemp: mono
         removeObject: part
@@ -1226,41 +1319,75 @@ procedure baseName: .p$
     baseName.out$ = replace_regex$(.p$, "^.*/", "", 0)
 endproc
 
-# All audio files of a folder, sorted, without duplicates (a case-
-# insensitive file system matches *.wav and *.WAV to the same file).
+# All audio files of a folder (not its subfolders), sorted. v1.3: one
+# listing of every file ("*", which Praat returns without folders),
+# then the extension is compared case-insensitively in the script -
+# .wav .WAV .Aif .aIFF ... all count, the file name itself is never
+# changed. Hidden files (names starting with ".") are skipped, among
+# them the "._name.wav" companions macOS writes on USB drives, which
+# match *.wav but are not audio. Also counted for the diagnostics:
+# other files and subfolders.
 procedure listAudio: .dir$
-    .nPat = 14
-    .pat$[1] = "*.wav"
-    .pat$[2] = "*.WAV"
-    .pat$[3] = "*.aif"
-    .pat$[4] = "*.AIF"
-    .pat$[5] = "*.aiff"
-    .pat$[6] = "*.AIFF"
-    .pat$[7] = "*.aifc"
-    .pat$[8] = "*.AIFC"
-    .pat$[9] = "*.flac"
-    .pat$[10] = "*.FLAC"
-    .pat$[11] = "*.mp3"
-    .pat$[12] = "*.MP3"
-    .pat$[13] = "*.Wav"
-    .pat$[14] = "*.Flac"
-    .nAll = 0
-    for .q from 1 to .nPat
-        Create Strings as file list: "sgf_list", .dir$ + "/" + .pat$[.q]
-        .sl = selected("Strings")
-        .ns = Get number of strings
-        for .i from 1 to .ns
-            .nAll = .nAll + 1
-            .all$[.nAll] = Get string: .i
-        endfor
-        removeObject: .sl
-    endfor
     listAudio.n = 0
-    if .nAll > 0
+    listAudio.nOther = 0
+    listAudio.nHidden = 0
+    listAudio.nSub = 0
+    listAudio.denied = 0
+    # a folder Praat may not read makes the listing itself fail: caught
+    selectObject: placeholderID
+    nocheck Create Strings as file list: "sgf_list", .dir$ + "/*"
+    @takeNew: "Strings"
+    .sl = takeNew.id
+    if .sl = 0
+        listAudio.denied = 1
+        Create Strings as tokens: "", " "
+        .sl = selected("Strings")
+    endif
+    selectObject: .sl
+    .ns = Get number of strings
+    .nk = 0
+    for .i from 1 to .ns
+        .s$ = Get string: .i
+        if left$(.s$, 1) = "."
+            listAudio.nHidden = listAudio.nHidden + 1
+        else
+            .dot = rindex(.s$, ".")
+            .ext$ = ""
+            if .dot > 0
+                .ext$ = right$(.s$, length(.s$) - .dot)
+                .ext$ = replace_regex$(.ext$, "([A-Z])", "\L\1", 0)
+            endif
+            if .ext$ = "wav" or .ext$ = "aif" or .ext$ = "aiff" or .ext$ = "aifc" or .ext$ = "flac" or .ext$ = "mp3"
+                .nk = .nk + 1
+                .all$[.nk] = .s$
+            else
+                listAudio.nOther = listAudio.nOther + 1
+            endif
+        endif
+    endfor
+    removeObject: .sl
+    selectObject: placeholderID
+    nocheck Create Strings as directory list: "sgf_dirs", .dir$ + "/*"
+    @takeNew: "Strings"
+    .sd = takeNew.id
+    if .sd = 0
+        Create Strings as tokens: "", " "
+        .sd = selected("Strings")
+    endif
+    selectObject: .sd
+    .nd = Get number of strings
+    for .i from 1 to .nd
+        .s$ = Get string: .i
+        if left$(.s$, 1) <> "."
+            listAudio.nSub = listAudio.nSub + 1
+        endif
+    endfor
+    removeObject: .sd
+    if .nk > 0
         # sort via a Strings object (platform-independent order)
         Create Strings as tokens: "x", " "
         .so = selected("Strings")
-        for .i from 1 to .nAll
+        for .i from 1 to .nk
             if .i = 1
                 Set string: 1, .all$[1]
             else
@@ -1268,39 +1395,41 @@ procedure listAudio: .dir$
             endif
         endfor
         Sort
-        .prev$ = ""
-        for .i from 1 to .nAll
+        for .i from 1 to .nk
             .s$ = Get string: .i
-            .low$ = replace_regex$(.s$, "([A-Z])", "\L\1", 0)
-            if .low$ <> .prev$
-                listAudio.n = listAudio.n + 1
-                listAudio.path$[listAudio.n] = .dir$ + "/" + .s$
-                .prev$ = .low$
-            endif
+            listAudio.n = listAudio.n + 1
+            listAudio.path$[listAudio.n] = .dir$ + "/" + .s$
         endfor
         removeObject: .so
     endif
 endproc
 
 # Open a file without loading it: LongSound, or (formats a LongSound
-# cannot stream) a Sound. openAudio.id = 0 if unreadable.
+# cannot stream) a Sound. openAudio.id = 0 if it cannot be opened, with
+# the reason in openAudio.why$. v1.3: the new object is identified by
+# type after every nocheck command (nothing else is assumed about the
+# selection), and any stray object a failed command left is removed.
 procedure openAudio: .path$
     openAudio.id = 0
     openAudio.isLong = 1
-    selectObject: placeholderID
-    nocheck Open long sound file: .path$
-    if selected() <> placeholderID
-        openAudio.id = selected()
+    openAudio.why$ = ""
+    if fileReadable(.path$) = 0
+        openAudio.why$ = "listed but cannot be read (no permission, or the file has gone)"
     else
         selectObject: placeholderID
-        nocheck Read from file: .path$
-        if selected() <> placeholderID
-            if numberOfSelected("Sound") = 1
-                openAudio.id = selected("Sound")
+        nocheck Open long sound file: .path$
+        @takeNew: "LongSound"
+        if takeNew.id > 0
+            openAudio.id = takeNew.id
+        else
+            selectObject: placeholderID
+            nocheck Read from file: .path$
+            @takeNew: "Sound"
+            if takeNew.id > 0
+                openAudio.id = takeNew.id
                 openAudio.isLong = 0
             else
-                .tmp = selected()
-                removeObject: .tmp
+                openAudio.why$ = "found, but Praat could not open it (not a supported audio format?)"
             endif
         endif
     endif
@@ -1309,47 +1438,131 @@ procedure openAudio: .path$
     endif
 endproc
 
+# After a nocheck command run with only the placeholder selected: the
+# first new selected object of type .type$ (0 if none). Every other new
+# object is removed; the selection is left on the result or the
+# placeholder - never empty.
+procedure takeNew: .type$
+    takeNew.id = 0
+    .n = numberOfSelected()
+    for .i from 1 to .n
+        .sel[.i] = selected(.i)
+    endfor
+    for .i from 1 to .n
+        .obj = .sel[.i]
+        if .obj <> placeholderID
+            selectObject: .obj
+            .t$ = extractWord$(selected$(), "")
+            if .t$ = .type$ and takeNew.id = 0
+                takeNew.id = .obj
+            else
+                removeObject: .obj
+            endif
+        endif
+    endfor
+    if takeNew.id > 0
+        selectObject: takeNew.id
+    else
+        selectObject: placeholderID
+    endif
+endproc
+
 # Analysis of one candidate (at most its first 30 s): attacks, spectral
 # centroid and bandwidth, energy in the six bands, tonality.
+#   v1.3: every rejection has a category (an.cat) for the diagnostics:
+#   1 not readable / not openable, 2 opened but not decodable,
+#   3 too short, 4 too quiet, 5 level not measurable. The level test
+#   uses the strongest channel; when the mono mix of a multichannel file
+#   loses more than 12 dB (phase-opposed channels) that channel is also
+#   used as the source (an.useCh), not the cancelled mix.
 procedure analyzeFile: .path$
     an.ok = 0
     an.why$ = ""
+    an.cat = 0
+    an.opened = 0
     an.nAtt = 0
+    an.useCh = 0
     @openAudio: .path$
     if openAudio.id = 0
-        an.why$ = "unreadable or unsupported"
+        an.why$ = openAudio.why$
+        an.cat = 1
     else
+        an.opened = 1
         .oid = openAudio.id
         selectObject: .oid
         an.dur = Get total duration
-        if an.dur < 0.08
+        if an.dur = undefined or an.dur < 0.08
             an.why$ = "shorter than 0.08 s"
+            an.cat = 3
         else
             .aEnd = min(an.dur, 30)
+            selectObject: .oid
             if openAudio.isLong
-                Extract part: 0, .aEnd, "no"
+                nocheck Extract part: 0, .aEnd, "no"
             else
-                Extract part: 0, .aEnd, "rectangular", 1, "no"
+                nocheck Extract part: 0, .aEnd, "rectangular", 1, "no"
             endif
-            .snd = selected("Sound")
+            .snd = 0
+            if numberOfSelected("Sound") = 1
+                if selected("Sound") <> .oid
+                    .snd = selected("Sound")
+                endif
+            endif
+            if .snd = 0
+                an.why$ = "opened, but its samples could not be read"
+                an.cat = 2
+            endif
+        endif
+        if an.cat = 0
             @addTemp: .snd
+            selectObject: .snd
             # (a LongSound has no rate or channel query: read them here)
             an.sr = Get sampling frequency
             an.nch = Get number of channels
+            # the strongest channel decides whether the file is silent
+            .pk = Get absolute extremum: 0, 0, "None"
             if an.nch > 1
                 Convert to mono
                 .m = selected("Sound")
                 @addTemp: .m
+                .pkm = Get absolute extremum: 0, 0, "None"
+                if .pk <> undefined and .pkm <> undefined and .pkm < 0.25 * .pk
+                    # channels cancel in the mix: use the strongest one
+                    removeObject: .m
+                    @dropTemp: .m
+                    .best = 0
+                    for .c from 1 to an.nch
+                        selectObject: .snd
+                        Extract one channel: .c
+                        .ch = selected("Sound")
+                        .pc = Get absolute extremum: 0, 0, "None"
+                        removeObject: .ch
+                        if .pc <> undefined and .pc > .best
+                            .best = .pc
+                            an.useCh = .c
+                        endif
+                    endfor
+                    selectObject: .snd
+                    Extract one channel: an.useCh
+                    .m = selected("Sound")
+                    @addTemp: .m
+                endif
                 removeObject: .snd
                 @dropTemp: .snd
                 .snd = .m
             endif
             selectObject: .snd
-            .pk = Get absolute extremum: 0, 0, "None"
-            an.peakDb = 20 * log10(max(.pk, 1e-12))
-            if .pk < 0.001
-                an.why$ = "silent or nearly silent (peak " + fixed$(an.peakDb, 0) + " dBFS)"
+            if .pk = undefined
+                an.why$ = "its level could not be measured"
+                an.cat = 5
+                an.peakDb = undefined
             else
+                an.peakDb = 20 * log10(max(.pk, 1e-12))
+            endif
+            if an.cat = 0 and .pk < 0.001
+                an.why$ = "silent or nearly silent (peak " + fixed$(an.peakDb, 0) + " dBFS)"
+                an.cat = 4
+            elsif an.cat = 0
                 # attacks: largest 30 ms intensity rises within 25 dB of
                 # the maximum, at least 0.25 s apart (up to three)
                 if .aEnd >= 0.1
