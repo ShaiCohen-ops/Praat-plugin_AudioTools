@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.0.1 (2026)
+# Version: 1.2 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -51,6 +51,48 @@
 #   stays centred. d = 0.5 (Stereo Wet),
 #   0.9 (Wide Wet and the late part of Early Center / Late Wide).
 #
+# Moving-Window Convolution (engine 2, v1.1) - time-varying convolution
+#   after Barry Truax's moving-window convolution:
+#   The source is cut into frames of 2 x hop with a periodic Hann window
+#   at 50 % overlap; these windows add up to exactly 1 at every sample
+#   (partition of unity). Frame i is convolved with its OWN kernel window:
+#   Kernel_window_ms of the PREPARED kernel (trim, stretch, reverse, fades
+#   applied first), taken at position p(t_i), where t_i is the frame centre
+#   in source time. Every frame result is added back at its own place, tail
+#   included (nothing is divided by an overlap count):
+#       wet = sum_i  Convolve(source x w_i, kernel[p(t_i) .. p(t_i) + W])
+#   With a fixed position this IS ordinary convolution with that window
+#   (sum_i w_i = 1, convolution is linear) - verified to rounding error.
+#   Kernel windows are cut with a short raised-cosine taper (10 % of the
+#   window, at most 5 ms) only on an edge that lies INSIDE the kernel; an
+#   edge on the kernel's own start/end keeps its shape (an IR's direct
+#   sound at 0 is not faded away).
+#   Movement of p (kernel seconds per source second = Scan rate):
+#     Static position - p = start; Forward / Reverse - p moves at Scan rate
+#     and wraps round at the end; Ping-pong - p moves at Scan rate and
+#     turns at the ends without a jump; Random walk - smoothed (AR(1),
+#     ~0.25 s memory) random velocity of RMS = Scan rate, reflected at the
+#     ends, repeatable with Random seed. Scan rate 1 = the window moves
+#     through the kernel in real time; 0 = stationary. The kernel samples
+#     are never resampled by the scan: it only chooses WHERE to read.
+#   Hop (0 = auto: half the kernel window, 5..25 ms) sets how often the
+#   kernel changes; it is independent of Scan rate.
+#   Energy compensation (Off / Moderate / Full): gain (Rref / Ri)^a on each
+#   kernel window, a = 0 / 0.5 / 1, Rref = geometric mean of the window
+#   RMS values used, gain at most +12 dB and windows more than 60 dB below
+#   Rref left untouched, so silence is never boosted.
+#   Output support: source + kernel window (+ pre-delay); the full last
+#   tail is kept. Pre-delay delays the whole wet path.
+#   Not available in this engine (reported, never silently ignored):
+#   feedback; Early Center / Late Wide (Wide Wet used); Normalize / Peak
+#   0.99 convolution scaling (per-frame rescaling: Sum used); Outside
+#   domain "similar" (zero used).
+#
+# Changelog v1.1:
+#   - Processing engine: Static (legacy, unchanged) or Moving-Window
+#     Convolution (new). Presets never select the engine.
+#   - Kernel scan map in the figure (moving-window only); processing time.
+#
 # Changelog v1.0.1:
 #   - Fixed Custom-dialog variable names for Pre delay and Early late split.
 #   - Wet/Dry = 0% now renders at the dry source length instead of appending
@@ -65,8 +107,9 @@
 # Requires: Praat 6.3+. Nothing else.
 # ============================================================
 
-version$ = "1.0.1"
+version$ = "1.2"
 
+stopwatch
 # ---- INPUT: exactly two Sounds ----
 if numberOfSelected("Sound") <> 2
     exitScript: "Please select exactly two Sounds: the source and the kernel (IR)."
@@ -79,7 +122,7 @@ nameB$ = selected$("Sound", 2)
 # ============================================================
 # FORM (short)
 # ============================================================
-form: "Creative Convolution v1.0.1"
+form: "Creative Convolution v1.2"
     optionmenu: "Preset", 1
         option: "Natural Convolution"
         option: "Long Hall"
@@ -91,13 +134,38 @@ form: "Creative Convolution v1.0.1"
         option: "Short Texture"
         option: "Experimental Reverse FDN"
         option: "Custom"
-    real: "Wet dry (%)", "-1"
-    comment: "Wet dry: -1 = use the preset's value; 0 = dry only, 100 = wet only"
+    real: "Wet dry (%)", "100"
+    comment: "Wet dry is yours in every preset: 0 = exact dry bypass, 100 = wet only"
     optionmenu: "Normalization", 2
         option: "None"
         option: "Peak"
         option: "RMS (-18 dBFS)"
     real: "Target peak (dBFS)", "-1.0"
+    optionmenu: "Engine", 1
+        option: "Static convolution (legacy)"
+        option: "Moving-window convolution"
+    comment: "Moving-window only:"
+    positive: "Kernel window (ms)", "50"
+    optionmenu: "Window movement", 6
+        option: "Static position"
+        option: "Forward scan"
+        option: "Reverse scan"
+        option: "Ping-pong"
+        option: "Random walk"
+        option: "Forward sweep over the whole source"
+        option: "Reverse sweep over the whole source"
+    optionmenu: "At kernel end", 2
+        option: "Wrap to the other end"
+        option: "Stop at the end"
+        option: "Turn back (ping-pong)"
+    real: "Scan rate", "1.0"
+    real: "Window start (%)", "0"
+    real: "Hop (ms, 0 = auto)", "0"
+    optionmenu: "Energy compensation", 1
+        option: "Off"
+        option: "Moderate"
+        option: "Full"
+    integer: "Random seed (0 = new)", "0"
     boolean: "Show parameters", 0
     boolean: "Draw visualisation", 1
     boolean: "Play result", 1
@@ -249,9 +317,9 @@ presetName$ = preset$
 if preset < 10
     @applyPreset: preset
 endif
-if wet_dry >= 0
-    wetDry = wet_dry
-endif
+# Dry/Wet belongs to the user, not to the preset (v1.2)
+presetWet = wetDry
+wetDry = wet_dry
 
 # ============================================================
 # DETAIL DIALOGS (pre-filled; Custom forces them open)
@@ -343,6 +411,43 @@ endif
 outside$ = "zero"
 if outside = 2
     outside$ = "similar"
+endif
+mwNotes$ = ""
+mwRan = 0
+if engine = 2
+    if kernel_window < 10 or kernel_window > 500
+        exitScript: "Kernel window must lie between 10 and 500 ms."
+    endif
+    if scan_rate < 0 or scan_rate > 20
+        exitScript: "Scan rate must lie between 0 and 20."
+    endif
+    if window_start < 0 or window_start > 100
+        exitScript: "Window start must lie between 0 and 100 %."
+    endif
+    if hop < 0 or (hop > 0 and hop < 2) or hop > 250
+        exitScript: "Hop must be 0 (auto) or between 2 and 250 ms."
+    endif
+    if random_seed < 0
+        exitScript: "Random seed must be 0 (new) or positive."
+    endif
+    if feedbackPct > 0
+        mwNotes$ = mwNotes$ + "feedback " + fixed$(feedbackPct, 0) + "% not available (not applied); "
+        feedbackPct = 0
+    endif
+    if spatialMode = 4
+        mwNotes$ = mwNotes$ + "Early Center / Late Wide not available (Wide Wet used); "
+        spatialMode = 3
+    endif
+    if scaling = 3 or scaling = 4
+        mwNotes$ = mwNotes$ + scaling$ + " scaling would rescale every frame (sum used); "
+        scaling = 1
+        scaling$ = "sum"
+    endif
+    if outside = 2
+        mwNotes$ = mwNotes$ + "outside domain similar not available (zero used); "
+        outside = 1
+        outside$ = "zero"
+    endif
 endif
 
 # ============================================================
@@ -490,6 +595,12 @@ if kerSilent or drySilent
     endif
     kerShow = ker
     kpd = ker
+elsif engine = 2
+    @movingWindow
+    wet = movingWindow.wet
+    kpd = movingWindow.kshow
+    wetNote$ = movingWindow.note$
+    kerShow = kpd
 else
     if spatialMode = 1
         # Mono Wet: mono source x mono kernel
@@ -578,6 +689,215 @@ else
     endif
     kerShow = kpd
 endif
+
+# ============================================================
+# MOVING-WINDOW CONVOLUTION (engine 2)
+# ============================================================
+procedure movingWindow
+    # --- channels: Mono Wet = mono x mono; Stereo / Wide = the legacy
+    #     kernel pair (complementary slow modulation) read window by window
+    if spatialMode = 1
+        mwSrc = srcMono
+    else
+        mwSrc = dry
+    endif
+    selectObject: mwSrc
+    mwN = Get number of samples
+    mwNchS = Get number of channels
+    selectObject: ker
+    mwKn = Get number of samples
+    mwLk = round(kernel_window / 1000 * sr)
+    .lkNote$ = ""
+    if mwLk > mwKn
+        .lkNote$ = " (kernel only " + fixed$(1000 * mwKn / sr, 1) + " ms long: whole kernel used)"
+        mwLk = mwKn
+    endif
+    if hop = 0
+        mwH = round(min(0.025, max(0.005, mwLk / sr / 2)) * sr)
+        mwHopAuto = 1
+    else
+        mwH = round(hop / 1000 * sr)
+        mwHopAuto = 0
+    endif
+    mwH = max(mwH, 2)
+    mwL = 2 * mwH
+    mwM = ceiling(mwN / mwH)
+    mwNfr = mwM + 1
+    if mwNfr > 20000
+        exitScript: "Moving-window: " + string$(mwNfr) + " frames requested (limit 20000). Use a larger Hop or a shorter source."
+    endif
+    mwSpan = mwKn - mwLk
+
+    # --- trajectory p(t) in kernel samples, one value per frame (frame
+    #     centre = m x hop in source time). Seeded only for Random walk.
+    if random_seed > 0
+        mwSeed = random_seed
+    else
+        mwSeed = randomInteger(1, 999999)
+    endif
+    mwP0 = round(window_start / 100 * mwSpan)
+    mwStep = scan_rate * mwH
+    mwWraps = 0
+    if window_movement = 5
+        random_initializeWithSeedUnsafelyButPredictably (mwSeed)
+        .a = exp(-(mwH / sr) / 0.25)
+        .v = randomGauss(0, 1)
+        .p = mwP0
+    endif
+    # single sweeps: the scan rate follows from the source length, so the
+    # window travels from its start to the kernel end exactly once
+    mwRateUsed = scan_rate
+    if window_movement = 6 or window_movement = 7
+        mwStep = (mwSpan - mwP0) / max(1, mwM)
+        mwRateUsed = mwStep / mwH
+    endif
+    mwEnds = 0
+    mwStopAt = -1
+    for .m from 0 to mwM
+        .u = mwP0 + mwStep * .m
+        if window_movement = 1 or mwSpan = 0
+            .q = mwP0
+        elsif window_movement = 2 or window_movement = 3 or window_movement = 6 or window_movement = 7
+            .u = mwP0 + mwStep * .m
+            if window_movement = 3 or window_movement = 7
+                .u = (mwSpan - mwP0) - mwStep * .m
+            endif
+            if .u >= 0 and .u <= mwSpan
+                .q = .u
+            elsif at_kernel_end = 1
+                .q = .u - (mwSpan + 1) * floor(.u / (mwSpan + 1))
+                mwEnds = max(mwEnds, abs(floor(.u / (mwSpan + 1))))
+            elsif at_kernel_end = 2
+                .q = min(mwSpan, max(0, .u))
+                if mwStopAt < 0
+                    mwStopAt = .m * mwH / sr
+                endif
+            else
+                .w = .u - 2 * mwSpan * floor(.u / (2 * mwSpan))
+                .q = if .w <= mwSpan then .w else 2 * mwSpan - .w fi
+                mwEnds = max(mwEnds, abs(floor(.u / mwSpan)))
+            endif
+        elsif window_movement = 4
+            .w = .u - 2 * mwSpan * floor(.u / (2 * mwSpan))
+            .q = if .w <= mwSpan then .w else 2 * mwSpan - .w fi
+            mwEnds = max(mwEnds, floor(.u / mwSpan))
+        else
+            if .m > 0
+                .v = .a * .v + sqrt(1 - .a * .a) * randomGauss(0, 1)
+                .p = .p + mwStep * .v
+                # reflect at the ends
+                while .p < 0 or .p > mwSpan
+                    if .p < 0
+                        .p = -.p
+                    endif
+                    if .p > mwSpan
+                        .p = 2 * mwSpan - .p
+                    endif
+                endwhile
+            endif
+            .q = .p
+        endif
+        mwPos[.m] = min(mwSpan, max(0, round(.q)))
+    endfor
+    if window_movement = 5
+        random_initializeSafelyAndUnpredictably ()
+    endif
+    mwPosMin = mwPos[0]
+    mwPosMax = mwPos[0]
+    for .m from 1 to mwM
+        mwPosMin = min(mwPosMin, mwPos[.m])
+        mwPosMax = max(mwPosMax, mwPos[.m])
+    endfor
+
+    # --- the kernel the windows are read from
+    if spatialMode = 1
+        selectObject: ker
+        if kerCh = 2
+            mwKer = Convert to mono
+        else
+            mwKer = Copy: "cc_mwker"
+        endif
+        .kNote$ = "mono source x mono kernel windows"
+    else
+        pairDepth = if spatialMode = 2 then 0.5 else 0.9 fi
+        mr2 = 1
+        @stereoPairSafe: ker, pairDepth
+        mwKer = stereoPairSafe.pair
+        .kNote$ = if kerCh = 2 then "stereo kernel windows used channel-wise" else "mono kernel -> complementary stereo pair (depth " + fixed$(pairDepth, 1) + "), read window by window" fi
+    endif
+    selectObject: mwKer
+    mwNchK = Get number of channels
+
+    # --- window RMS and energy compensation
+    mwTap = min(round(0.1 * mwLk), round(0.005 * sr))
+    .sumLn = 0
+    .nLn = 0
+    for .m from 0 to mwM
+        selectObject: mwKer
+        .r = Get root-mean-square: mwPos[.m] / sr, (mwPos[.m] + mwLk) / sr
+        if .r = undefined
+            .r = 0
+        endif
+        mwRms[.m] = .r
+        if .r > 1e-12
+            .sumLn += ln(.r)
+            .nLn += 1
+        endif
+    endfor
+    mwRref = if .nLn > 0 then exp(.sumLn / .nLn) else 0 fi
+    mwAlpha = (energy_compensation - 1) / 2
+    mwGmin = 1e9
+    mwGmax = 0
+    for .m from 0 to mwM
+        .g = 1
+        if mwAlpha > 0 and mwRref > 0 and mwRms[.m] > mwRref * 0.001
+            .g = min(4, (mwRref / mwRms[.m]) ^ mwAlpha)
+        endif
+        mwGain[.m] = .g
+        mwGmin = min(mwGmin, .g)
+        mwGmax = max(mwGmax, .g)
+    endfor
+
+    # --- frames: Hann (periodic, 50 % overlap) x source, convolved with
+    #     their own kernel window, accumulated at their own position
+    mwPre = round(preDelayMs / 1000 * sr)
+    mwNchO = max(mwNchS, mwNchK)
+    mwTot = mwPre + mwN + mwLk - 1
+    .buf = Create Sound from formula: "cc_wet", mwNchO, 0, mwTot / sr, sr, "0"
+    mwUsed = 0
+    for .m from 0 to mwM
+        mwFs = .m * mwH - mwH
+        if mwFs + mwL >= 1 and mwFs + 1 <= mwN
+            .fr = Create Sound from formula: "cc_fr", mwNchS, 0, mwL / sr, sr,
+            ... "if col + mwFs >= 1 and col + mwFs <= mwN then object[mwSrc, row, col + mwFs] * (0.5 - 0.5 * cos(2 * pi * (col - 1) / mwL)) else 0 fi"
+            mwPs = mwPos[.m]
+            mwFin = mwPs > 0
+            mwFout = mwPs + mwLk < mwKn
+            mwG = mwGain[.m]
+            .kw = Create Sound from formula: "cc_kw", mwNchK, 0, mwLk / sr, sr,
+            ... "mwG * object[mwKer, row, col + mwPs] * (if mwFin and col <= mwTap then 0.5 - 0.5 * cos(pi * (col - 0.5) / mwTap) else 1 fi) * (if mwFout and col > mwLk - mwTap then 0.5 - 0.5 * cos(pi * (mwLk - col + 0.5) / mwTap) else 1 fi)"
+            selectObject: .fr, .kw
+            .cv = Convolve: convScaling$, "zero"
+            mwNcv = Get number of samples
+            mwNchC = Get number of channels
+            mwCv = .cv
+            mwOff = mwPre + mwFs
+            .c0 = max(1, mwOff + 1)
+            .c1 = min(mwTot, mwOff + mwNcv)
+            selectObject: .buf
+            Formula (part): (.c0 - 1) / sr, .c1 / sr, 1, mwNchO,
+            ... "self + object[mwCv, min(row, mwNchC), col - mwOff]"
+            removeObject: .fr, .kw, .cv
+            mwUsed += 1
+        endif
+    endfor
+    removeObject: mwKer
+    selectObject: ker
+    .kshow = Copy: "cc_kshow"
+    .wet = .buf
+    .note$ = .kNote$ + .lkNote$
+    mwRan = 1
+endproc
 
 # stereoPair wrapper: computes its RMS normaliser before the formula uses it
 procedure stereoPairSafe: .k, .depth
@@ -750,7 +1070,9 @@ ceiling = 10 ^ (target_peak / 20)
 ceiling = min(ceiling, 0.999)
 peakRaw = Get absolute extremum: 0, 0, "None"
 normNote$ = "none"
-if peakRaw > 1e-9
+if wetG = 0
+    normNote$ = "exact dry bypass at wet 0: no normalisation"
+elsif peakRaw > 1e-9
     if normalization = 2
         Scale peak: ceiling
         normNote$ = "peak to " + fixed$(target_peak, 1) + " dBFS"
@@ -817,7 +1139,37 @@ appendInfoLine: "Convolution: scaling ", scalingNote$, ", outside domain ", outs
 appendInfoLine: "Wet:         ", spatialName$, " - ", wetNote$
 appendInfoLine: "             ", matchNote$, "; wet gain ", fixed$(wetGainDb, 1), " dB; width ", fixed$(wetWidth, 0), "%; pan ", fixed$(wetPan, 0)
 appendInfoLine: "             feedback ", fbNote$
-appendInfoLine: "Mix:         wet ", fixed$(wetDry, 0), "% (", lawTxt$, ": dry x", fixed$(dryG, 3), ", wet x", fixed$(wetG, 3), ")"
+mvName$[1] = "Static position"
+mvName$[2] = "Forward scan"
+mvName$[3] = "Reverse scan"
+mvName$[4] = "Ping-pong"
+mvName$[5] = "Random walk"
+mvName$[6] = "Forward sweep (whole source)"
+mvName$[7] = "Reverse sweep (whole source)"
+endName$[1] = "wrap"
+endName$[2] = "stop at end"
+endName$[3] = "turn back"
+ecName$[1] = "off"
+ecName$[2] = "moderate"
+ecName$[3] = "full"
+if engine = 2
+    appendInfoLine: "Engine:      Moving-window convolution"
+    if kerSilent or drySilent
+        appendInfoLine: "             (not run: silent input)"
+    else
+        appendInfoLine: "             kernel window ", fixed$(1000 * mwLk / sr, 1), " ms (", mwLk, " samples); movement ", mvName$[window_movement], ", scan rate ", fixed$(mwRateUsed, 3), if window_movement >= 6 then " (from the source length)" else "" fi, ", start ", fixed$(window_start, 1), "%"
+        appendInfoLine: "             hop ", fixed$(1000 * mwH / sr, 2), " ms", if mwHopAuto then " (auto)" else "" fi, ", source frames ", fixed$(2000 * mwH / sr, 2), " ms Hann, 50% overlap; ", mwUsed, " convolution frames"
+        appendInfoLine: "             kernel positions used ", fixed$(1000 * mwPosMin / sr, 1), "-", fixed$(1000 * (mwPosMax + mwLk) / sr, 1), " ms of ", fixed$(1000 * mwKn / sr, 1), " ms", if (window_movement = 2 or window_movement = 3) then ", at kernel end: " + endName$[at_kernel_end] + (if at_kernel_end = 2 and mwStopAt >= 0 then " (reached at " + fixed$(mwStopAt, 2) + " s)" else if mwEnds > 0 then " (" + string$(mwEnds) + " x)" else " (end not reached)" fi fi) else "" fi, if window_movement = 4 and mwEnds > 0 then ", " + string$(mwEnds) + " turn(s)" else "" fi, if window_movement = 5 then ", seed " + string$(mwSeed) else "" fi
+        appendInfoLine: "             energy compensation ", ecName$[energy_compensation], if energy_compensation > 1 then " (gain " + fixed$(20 * log10(mwGmin), 1) + " to " + fixed$(20 * log10(mwGmax), 1) + " dB)" else "" fi
+    endif
+    if mwNotes$ <> ""
+        appendInfoLine: "             NOTE: ", mwNotes$
+    endif
+else
+    appendInfoLine: "Engine:      Static convolution (legacy)"
+endif
+appendInfoLine: "Time:        ", fixed$(stopwatch, 2), " s processing"
+appendInfoLine: "Mix:         wet ", fixed$(wetDry, 0), "% (", lawTxt$, ": dry x", fixed$(dryG, 3), ", wet x", fixed$(wetG, 3), ")", if preset < 10 then "; this preset's former wet value: " + fixed$(presetWet, 0) + "%" else "" fi
 appendInfoLine: "Output:      ", outName$, "  ", fixed$(outDur, 3), " s stereo; ", normNote$
 appendInfoLine: "             peak ", fixed$(outPeak, 3), " (", fixed$(20 * log10(max(outPeak, 1e-12)), 1), " dBFS), RMS ", fixed$(20 * log10(max(outRms, 1e-12)), 1), " dBFS"
 if kerSilent or drySilent
@@ -920,24 +1272,30 @@ procedure drawFigure
     .sub$ = replace$(srcName$, "_", "\_ ", 0) + "  ×  " + replace$(kerName$, "_", "\_ ", 0)
     Text: 0.5, "centre", 0.18, "half", .sub$
 
-    # all audio panels share the output time axis; the kernel has its own
-    Font size: 7
-    @wavePanel: dry, 0.95, 2.05, outDur, "##Source (dry)## — " + fixed$(dryDur, 2) + " s", "Source", 0
-    .kt$ = "##Prepared kernel## — " + fixed$(kerDurFinal, 3) + " s after trim, stretch, reverse, fades"
-    if preDelayMs > 0
-        .kt$ = .kt$ + " and " + fixed$(preDelayMs, 0) + " ms pre-delay"
+    if mwRan
+        @drawMovingWindowPanels
+        .s0 = 7.15
+        .s1 = 8.15
+    else
+        # all audio panels share the output time axis; the kernel has its own
+        Font size: 7
+        @wavePanel: dry, 0.95, 2.05, outDur, "##Source (dry)## — " + fixed$(dryDur, 2) + " s", "Source", 0
+        .kt$ = "##Prepared kernel## — " + fixed$(kerDurFinal, 3) + " s after trim, stretch, reverse, fades"
+        if preDelayMs > 0
+            .kt$ = .kt$ + " and " + fixed$(preDelayMs, 0) + " ms pre-delay"
+        endif
+        .kt$ = .kt$ + " (own time axis)"
+        @wavePanel: kerShow, 2.40, 3.50, kerDurFinal, .kt$, "Kernel", 1
+        @wavePanel: wet, 3.95, 5.05, outDur, "##Wet convolution## — after RMS match, gain, width, pan; before the mix (blue L, orange R)", "Wet", 0
+        @wavePanel: out, 5.40, 6.50, outDur, "##Output## — wet " + fixed$(wetDry, 0) + "\%  (" + lawTxt$ + "), " + normNote$, "Output", 1
+        Select inner viewport: 0.6, 7.7, 5.40, 6.50
+        Axes: 0, 1, 0, 1
+        Text bottom: "yes", "Time (s)"
+        .s0 = 7.05
+        .s1 = 8.05
     endif
-    .kt$ = .kt$ + " (own time axis)"
-    @wavePanel: kerShow, 2.40, 3.50, kerDurFinal, .kt$, "Kernel", 1
-    @wavePanel: wet, 3.95, 5.05, outDur, "##Wet convolution## — after RMS match, gain, width, pan; before the mix (blue L, orange R)", "Wet", 0
-    @wavePanel: out, 5.40, 6.50, outDur, "##Output## — wet " + fixed$(wetDry, 0) + "\%  (" + lawTxt$ + "), " + normNote$, "Output", 1
-    Select inner viewport: 0.6, 7.7, 5.40, 6.50
-    Axes: 0, 1, 0, 1
-    Text bottom: "yes", "Time (s)"
 
     # summary
-    .s0 = 7.05
-    .s1 = 8.05
     Font size: 7
     Select inner viewport: 0.6, 7.7, .s0, .s1
     Axes: 0, 1, 0, 1
@@ -958,11 +1316,78 @@ procedure drawFigure
     if resampled
         .l4$ = .l4$ + "   |   kernel resampled " + string$(kerSrOrig) + " -> " + string$(sr) + " Hz"
     endif
+    if mwRan
+        .l4$ = .l4$ + "   |   moving-window: " + fixed$(1000 * mwLk / sr, 0) + " ms window, " + mvName$[window_movement] + ", rate " + fixed$(mwRateUsed, 2) + ", hop " + fixed$(1000 * mwH / sr, 1) + " ms, " + string$(mwUsed) + " frames, energy comp. " + ecName$[energy_compensation]
+    endif
     Text: 0.012, "left", 0.08, "half", .l4$
     Select inner viewport: 0.6, 7.7, .s0, .s1
     Axes: 0, 1, 0, 1
     Colour: "Black"
     Draw inner box
+    if mwRan
+        Select inner viewport: 0.6, 7.7, .s0, .s1
+        Axes: 0, 1, 0, 1
+        Font size: 6
+        Colour: "{0.25, 0.25, 0.28}"
+    endif
     Font size: 10
-    Select outer viewport: 0, 8, 0, 8.15
+    Select outer viewport: 0, 8, 0, .s1 + 0.1
+endproc
+
+procedure drawMovingWindowPanels
+    Font size: 7
+    @wavePanel: dry, 0.95, 1.75, outDur, "##Source (dry)## — " + fixed$(dryDur, 2) + " s", "Source", 0
+    .kd = kerDurFinal
+    @wavePanel: kerShow, 2.10, 2.90, .kd, "##Prepared kernel## — " + fixed$(.kd, 3) + " s; shaded: the part the windows were read from (own time axis)", "Kernel", 1
+    Select inner viewport: 0.6, 7.7, 2.10, 2.90
+    Axes: 0, .kd, 0, 1
+    Paint rectangle: "{0.95, 0.80, 0.55}", mwPosMin / sr, min(.kd, (mwPosMax + mwLk) / sr), 0.0, 0.06
+    # Kernel scan map: source time (x) against kernel position (y), one
+    # band per convolution frame = the window actually used
+    .y0 = 3.40
+    .y1 = 4.20
+    .kms = 1000 * .kd
+    Font size: 7
+    Select inner viewport: 0.6, 7.7, .y0, .y1
+    Axes: 0, outDur, 0, .kms
+    Paint rectangle: "{0.98, 0.98, 0.99}", 0, outDur, 0, .kms
+    .hs = mwH / sr
+    for .m from 0 to mwM
+        .tc = .m * .hs
+        if .tc - .hs / 2 < dryDur
+            .x0 = max(0, .tc - .hs / 2)
+            .x1 = min(dryDur, .tc + .hs / 2)
+            .p0 = 1000 * mwPos[.m] / sr
+            Paint rectangle: "{0.96, 0.78, 0.52}", .x0, .x1, .p0, .p0 + 1000 * mwLk / sr
+        endif
+    endfor
+    Select inner viewport: 0.6, 7.7, .y0, .y1
+    Axes: 0, outDur, 0, .kms
+    Colour: "{0.80, 0.40, 0.10}"
+    Line width: 1.5
+    for .m from 1 to mwM
+        if .m * .hs < dryDur
+            Draw line: (.m - 1) * .hs, 1000 * mwPos[.m - 1] / sr, .m * .hs, 1000 * mwPos[.m] / sr
+        endif
+    endfor
+    Line width: 1
+    Colour: "Black"
+    Select inner viewport: 0.6, 7.7, .y0, .y1
+    Axes: 0, outDur, 0, .kms
+    Text top: "no", "##Kernel scan map## — window start (line) and window (band) per frame, " + mvName$[window_movement] + ", " + fixed$(1000 * mwLk / sr, 0) + " ms window, scan rate " + fixed$(mwRateUsed, 2)
+    Select inner viewport: 0.6, 7.7, .y0, .y1
+    Axes: 0, outDur, 0, .kms
+    Draw inner box
+    @niceStep: outDur, 8
+    Marks bottom every: 1, niceStep.step, "no", "yes", "no"
+    @niceStep: .kms, 3
+    Marks left every: 1, niceStep.step, "yes", "yes", "no"
+    Select inner viewport: 0.6, 7.7, .y0, .y1
+    Axes: 0, 1, 0, 1
+    Text special: -0.068, "centre", 0.5, "bottom", "Helvetica", 7, "90", "Kernel ms"
+    @wavePanel: wet, 4.60, 5.40, outDur, "##Wet (moving-window)## — after RMS match, gain, width, pan; before the mix (blue L, orange R)", "Wet", 0
+    @wavePanel: out, 5.80, 6.60, outDur, "##Output## — wet " + fixed$(wetDry, 0) + "\%  (" + lawTxt$ + "), " + normNote$, "Output", 1
+    Select inner viewport: 0.6, 7.7, 5.80, 6.60
+    Axes: 0, 1, 0, 1
+    Text bottom: "yes", "Time (s)"
 endproc
