@@ -3,195 +3,302 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 2.4 (2026) 
+# Version: 3.0 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
 #   RHYTHMATIST - Rhythmic Strata System with Spectral Identity.
-#   Splits audio into segments defined by a mathematical rhythmic
-#   series (uniform, compound, cumulative, or combined), then
-#   reassembles the segments in shuffled order to produce new
-#   rhythmic structures from source material.
+#   Cuts a sound at the points of a mathematical rhythmic series, puts the
+#   segments in a new temporal order and plays each one at its own speed
+#   (tape-style varispeed: speed changes duration and pitch together).
+#   The composition is built from three independent stages:
+#     1. Segmentation   - which durations (Su, Sc, Sy, Sd, SRC)
+#     2. Organization   - in which order
+#     3. Speed          - at which playback speed (trajectory over the
+#                         OUTPUT positions, optionally linked to duration)
 #
-# Series types:
+# Series types (unchanged from v2.x):
 #   Su  - Uniform Regular: n equal durations
 #   Sc  - Regular Compound: union of two uniform grids Su_a u Su_b
 #   Sy  - Irregular Cumulative: n random cumulative split times
 #   Sd  - Irregular Individual: n random durations, normalised
 #   SRC - Combined: all four merged and deduplicated
+#   Param mapping: Su/Sy/Sd n = a; Sc a, b; SRC su = a, sca = b, scb = c,
+#   sy = d, sd = e.
 #
-# Generic parameter mapping (Param_a..e):
-#   Su:   n = a
-#   Sc:   a = a, b = b
-#   Sy:   n = a
-#   Sd:   n = a
-#   SRC:  su = a, sca = b, scb = c, sy = d, sd = e
+# Organization (output order of the segments):
+#   Original order | Random shuffle (Fisher-Yates, as v2.x) | Reverse |
+#   Rotation (by about a third of the segments) | Long-short alternation
+#   (longest, shortest, 2nd longest, ...) | Short to long | Long to short |
+#   Grouped shuffle (groups of ~sqrt(n) neighbours shuffled inside, group
+#   order kept)
 #
-# Feature gating (no separate on/off toggles):
-#   BPM quantize active when Bpm_value > 0
-#   Pitch transposition active when Pitch_levels > 1
-#   Stereo panning active when Stereo_width > 0
+# Speed:
+#   Trajectory over the output position u = 0..1, interpolated on a log
+#   scale between Speed_min and Speed_max:
+#     Constant (geometric centre of the range) | Acceleration |
+#     Deceleration | Arch (climax at the centre) | Alternating (slow/fast) |
+#     Wave (two cycles) | Random controlled (bounded random walk)
+#   Duration_link g (-1..1): log r += g * log(D / Dref), Dref = geometric
+#     mean of the segment durations. 0 = independent, > 0 = longer
+#     segments faster, < 0 = longer segments slower. g = 1 makes every
+#     processed duration equal (D / r = const); the Info window warns
+#     from |g| >= 0.8. Speeds never leave Speed_min..Speed_max.
+#   Playback:
+#     Natural varispeed (default): a segment of duration D at speed r
+#       lasts D / r; the timeline is built from the real durations.
+#     Fixed-slot varispeed (v2.x behaviour): each segment keeps a slot of
+#       its original duration; a faster segment leaves silence in the slot
+#       (shown in the figure), a slower one is cut at the slot end.
+#   Target_duration (s, 0 = free): the speed curve is moved as a whole
+#     (global scale) to reach the target. If the curve would then leave
+#     the speed range, its depth is reduced just enough (shape kept) and
+#     this is reported; if even a flat curve cannot reach the target, the
+#     free result is kept and the reachable interval is reported.
 #
-# v2.4 changelog (visualization precision pass):
-#   * VISUALIZATION ONLY: preserves the existing waveform + original/shuffled
-#     segment-order concept; no redesign of the musical visualization.
-#   * FIX: source names are display-sanitized so underscores do not become
-#     Praat subscripts.
-#   * FIX: title/subtitle/footer bands explicitly reset their 0..1 world
-#     coordinates, so text placement cannot inherit stale Sound/time axes.
-#   * FIX: orig/shuf row labels now live in a dedicated physical left gutter
-#     instead of being drawn outside the data axes where Praat clipped them.
-#   * ALIGNMENT: Source and Result side labels use the same explicit rotated
-#     label gutter rather than panel-height-dependent far-text placement.
-#   * READABILITY: split-marker line width and segment-number labels adapt to
-#     segmentation density; narrow cells are no longer forced to contain text.
-#   * AXIS: Result now has numbered time marks, matching its Time (s) label.
-#   * COLOUR: retains blue=original and orange=shuffled semantics, with a
-#     slightly lighter dark-orange zebra shade for better balance.
+# Articulation:
+#   Gap: none | fixed (ms) | proportional (% of the processed event).
+#   Edge_fade (ms): raised-cosine fade at both ends of every event, inside
+#     the event (no change of duration); 0 = sharp edges.
+#   Safe_cuts: each mathematical boundary may move to the quietest point
+#     within +/-15 ms (+/-5 ms on a BPM grid), then to the nearest zero
+#     crossing. Off by default.
 #
-# v2.3 changelog:
-#   * API COMPATIBILITY: the entire public form is byte-for-byte unchanged.
-#   * CRITICAL FIX: extracted segments are now zero-based (Preserve times=no).
-#     v2.2 preserved each segment's original time domain, but transposeByRatio
-#     later trimmed every segment at 0..segmentDuration; segment 2+ therefore
-#     read outside their own domains when pitch processing was active.
-#   * FIX: a private zero-based processing copy is always created, so sources
-#     whose Sound domain starts at a non-zero time are handled correctly.
-#   * FIX: Sy now creates n-1 independent random interior splits directly.
-#     v2.2 generated n random points and then dropped the largest one, biasing
-#     the distribution toward the start of the file. SRC uses the same
-#     corrected n-segment convention for its Sy stratum.
-#   * FIX: BPM snapping never manufactures a boundary at/after the sound end
-#     when the source is shorter than two grid units. Endpoints and duplicate
-#     snapped boundaries are removed cleanly.
-#   * HARDENING: all final boundaries are separated from neighbours/endpoints
-#     by at least one sample period; tiny random intervals are merged instead
-#     of being silently discarded during extraction.
-#   * HARDENING: split-complexity guard prevents pathological custom values
-#     from creating tens of thousands of indexed variables/objects.
+# Stereo: Off keeps the source channel count (stereo stays stereo).
+#   Panning follows either the source identity of a segment or its output
+#   position. A stereo source is balanced (both channels kept), a mono
+#   source is panned with equal power.
 #
-# v2.2 changelog:
-#   * Form compacted from ~40 rows to ~21 rows. Feature booleans
-#     replaced by "0 = off" conventions on the numeric parameters.
-#     Ten series params collapsed to five generic ones.
-#   * Seed field removed (it never truly seeded Praat's RNG).
-#   * Show_split_points removed; info output is always on.
-#   * Trim_to_grid removed; always trim when BPM is active.
+# Random_seed: > 0 makes segmentation, order, speeds and panning
+#   repeatable (Praat's generator is seeded and reset afterwards);
+#   0 = a new seed each run, printed so the run can be repeated.
 #
-# v2.1 features preserved: BPM-aware grid snapping (quarter / 8th /
-#   triplet 8th / 16th / triplet 16th), beat + grid lines on the
-#   waveform panel, tape-speed per-segment transposition, equal-
-#   power per-segment panning, auto mono-convert for stereo inputs
-#   when pitch/stereo processing is requested.
+# Presets set segmentation, organization, speed behaviour and gaps only.
+#   They never change BPM, stereo, seed, target duration, fades, safe
+#   cuts, playback mode, drawing or playing.
+#
+# v3.0 changelog (2026):
+#   * Speed composition replaces the pitch levels of v2.x: natural
+#     varispeed by default (v2.x padded/trimmed every transposed segment
+#     back to its slot: a 2x segment became 1 s sound + 1 s silence).
+#   * Organization, speed trajectory, duration link, target duration,
+#     gaps, edge fades, safe cuts, stereo by source or output position,
+#     working Random_seed, new presets (8 + Custom).
+#   * No mono collapse of a stereo source; output placed sample-exactly.
+#   * Figure: source, segment map (original vs output timeline, inserted
+#     silence in grey), speed per event, result, summary.
+#   * The v2.x form and its pitch-level parameters are gone.
+#
+# v2.4 / v2.3 / v2.2 / v2.1: see the v2.4 file (visualization pass;
+#   zero-based segments, Sy fix, BPM boundary hardening; compact form;
+#   BPM grid, tape transposition, panning).
 # ============================================================
 
-form Rhythmatist v2.4
+form Rhythmatist v3.0
     optionmenu Preset 1
         option Custom
-        option Simple Pulse   (Su n=8)
-        option Binary Grid    (Sc 2+4)
-        option Golden Split   (Sc 3+5)
-        option Cloud          (Sy n=12)
-        option Fragmented     (Sd n=16)
-        option Dense Strata   (SRC)
+        option Original Pulse
+        option Accelerando
+        option Ritardando
+        option Rhythmic Arch
+        option Long-Short Dialogue
+        option Fractured Time
+        option Controlled Chaos
+        option Dense Strata
     optionmenu Series_type 1
         option Su  - Uniform Regular
         option Sc  - Regular Compound (a + b)
         option Sy  - Irregular Cumulative
         option Sd  - Irregular Individual
         option SRC - Combined (Su+Sc+Sy+Sd)
-    comment Params: Su/Sy/Sd use [a]; Sc uses [a,b]; SRC uses [a,b,c,d,e]
-    natural Param_a 8
-    natural Param_b 4
-    natural Param_c 5
-    natural Param_d 4
-    natural Param_e 3
-    comment BPM (0 = off); grid snaps splits to the pulse
-    real Bpm_value 0
+    sentence Params_a_b_c_d_e 8 4 5 4 3
+    optionmenu Organization 2
+        option Original order
+        option Random shuffle
+        option Reverse
+        option Rotation
+        option Long-short alternation
+        option Short to long
+        option Long to short
+        option Grouped shuffle
+    optionmenu Speed_trajectory 2
+        option Constant
+        option Acceleration
+        option Deceleration
+        option Arch
+        option Alternating
+        option Wave
+        option Random controlled
+    positive Speed_min 0.5
+    positive Speed_max 2.0
+    real Duration_link_(-1..1) 0
+    optionmenu Playback 1
+        option Natural varispeed
+        option Fixed-slot varispeed (v2.x)
+    real Target_duration_(s,_0_=_free) 0
+    optionmenu Gap 1
+        option None
+        option Fixed (ms)
+        option Proportional (% of event)
+    real Gap_value 50
+    real Edge_fade_(ms,_0_=_sharp) 2
+    boolean Safe_cuts 0
+    real Bpm_value_(0_=_off) 0
     optionmenu Grid_division 4
         option Quarter notes
         option Eighth notes
         option Triplet eighths
         option Sixteenth notes
         option Triplet sixteenths
-    comment Pitch (levels=1 = off); step in semitones
-    natural Pitch_levels 4
-    real Pitch_step_semitones 7.0
-    optionmenu Pitch_assign 1
-        option Cycle
-        option Alternating
-        option Random
-    comment Stereo (width=0 = off); equal-power panning
+    optionmenu Stereo_placement 1
+        option Off (keep source channels)
+        option Alternate L-R by source segment
+        option Alternate L-R by output position
+        option Sweep L to R by source segment
+        option Sweep L to R by output position
+        option Cycle 4 positions by output position
+        option Random positions
     real Stereo_width 0.8
-    optionmenu Stereo_mode 1
-        option Alternating L-R
-        option Sweep L to R
-        option Cycle 4-positions
-        option Random
+    integer Random_seed_(0_=_new) 0
     boolean Draw_visualization 1
     boolean Play_result 1
 endform
 
 # ============================================================
-# APPLY PRESETS (overrides series_type + params)
+# PARAMETERS
 # ============================================================
 
+@parseParams: params_a_b_c_d_e$
+param_a = parseParams.v[1]
+param_b = parseParams.v[2]
+param_c = parseParams.v[3]
+param_d = parseParams.v[4]
+param_e = parseParams.v[5]
+durLink = duration_link
+targetDur = target_duration
+fadeMs = edge_fade
+bpm_value = bpm_value
+gapMode = gap
+gapValue = gap_value
+
+# ============================================================
+# PRESETS: segmentation, organization, speed behaviour and gaps only
+# ============================================================
+
+presetName$ = "Custom"
 if preset = 2
+    presetName$ = "Original Pulse"
     series_type = 1
     param_a = 8
+    organization = 1
+    speed_trajectory = 1
+    speed_min = 1
+    speed_max = 1
+    durLink = 0
+    gapMode = 1
 elsif preset = 3
-    series_type = 2
-    param_a = 2
-    param_b = 4
+    presetName$ = "Accelerando"
+    series_type = 1
+    param_a = 16
+    organization = 1
+    speed_trajectory = 2
+    speed_min = 0.6
+    speed_max = 2.2
+    durLink = 0
+    gapMode = 1
 elsif preset = 4
+    presetName$ = "Ritardando"
+    series_type = 1
+    param_a = 12
+    organization = 1
+    speed_trajectory = 3
+    speed_min = 0.45
+    speed_max = 1.6
+    durLink = 0
+    gapMode = 3
+    gapValue = 15
+elsif preset = 5
+    presetName$ = "Rhythmic Arch"
     series_type = 2
     param_a = 3
     param_b = 5
-elsif preset = 5
-    series_type = 3
-    param_a = 12
+    organization = 1
+    speed_trajectory = 4
+    speed_min = 0.6
+    speed_max = 2.4
+    durLink = 0
+    gapMode = 1
 elsif preset = 6
+    presetName$ = "Long-Short Dialogue"
     series_type = 4
-    param_a = 16
+    param_a = 10
+    organization = 5
+    speed_trajectory = 5
+    speed_min = 0.6
+    speed_max = 1.8
+    durLink = -0.4
+    gapMode = 2
+    gapValue = 40
 elsif preset = 7
+    presetName$ = "Fractured Time"
+    series_type = 3
+    param_a = 14
+    organization = 2
+    speed_trajectory = 7
+    speed_min = 0.4
+    speed_max = 2.5
+    durLink = -0.6
+    gapMode = 1
+elsif preset = 8
+    presetName$ = "Controlled Chaos"
     series_type = 5
-    param_a = 3
-    param_b = 2
+    param_a = 4
+    param_b = 3
     param_c = 5
-    param_d = 4
-    param_e = 3
+    param_d = 6
+    param_e = 5
+    organization = 8
+    speed_trajectory = 6
+    speed_min = 0.5
+    speed_max = 2.0
+    durLink = 0.3
+    gapMode = 3
+    gapValue = 10
+elsif preset = 9
+    presetName$ = "Dense Strata"
+    series_type = 5
+    param_a = 6
+    param_b = 4
+    param_c = 7
+    param_d = 8
+    param_e = 6
+    organization = 2
+    speed_trajectory = 1
+    speed_min = 1.4
+    speed_max = 2.4
+    durLink = 0.4
+    gapMode = 1
 endif
 
-# ============================================================
-# DERIVE FEATURE FLAGS from numeric "off" conventions
-# ============================================================
+trajName$[1] = "Constant"
+trajName$[2] = "Acceleration"
+trajName$[3] = "Deceleration"
+trajName$[4] = "Arch"
+trajName$[5] = "Alternating"
+trajName$[6] = "Wave"
+trajName$[7] = "Random controlled"
+orgName$[1] = "Original order"
+orgName$[2] = "Random shuffle"
+orgName$[3] = "Reverse"
+orgName$[4] = "Rotation"
+orgName$[5] = "Long-short alternation"
+orgName$[6] = "Short to long"
+orgName$[7] = "Long to short"
+orgName$[8] = "Grouped shuffle"
 
 bpm_quantize = (bpm_value > 0)
-apply_pitch  = (pitch_levels > 1)
-apply_stereo = (stereo_width > 0)
-
-# ============================================================
-# ALIAS PARAMS TO ORIGINAL SERIES NAMES
-# (keeps the body logic readable and unchanged from v2.1)
-# ============================================================
-
-if series_type = 1
-    su_n = param_a
-elsif series_type = 2
-    sc_a = param_a
-    sc_b = param_b
-elsif series_type = 3
-    sy_n = param_a
-elsif series_type = 4
-    sd_n = param_a
-else
-    src_su  = param_a
-    src_sca = param_b
-    src_scb = param_c
-    src_sy  = param_d
-    src_sd  = param_e
-endif
+apply_stereo = (stereo_placement > 1)
 
 # ============================================================
 # INPUT VALIDATION
@@ -200,10 +307,9 @@ endif
 if numberOfSelected("Sound") <> 1
     exitScript: "Please select exactly one Sound object"
 endif
-
 sound      = selected("Sound")
 soundName$ = selected$("Sound")
-displayName$ = replace$(soundName$, "_", " ", 0)
+displayName$ = replace$(soundName$, "_", "\_ ", 0)
 
 selectObject: sound
 nCh        = Get number of channels
@@ -212,18 +318,43 @@ sourceStart = Get start time
 t_total    = Get total duration
 samplePeriod = 1 / sampleRate
 
-if stereo_width > 1.0
-    stereo_width = 1.0
+if speed_min > speed_max
+    exitScript: "Speed_min must not be larger than Speed_max."
 endif
-if pitch_levels < 1
-    pitch_levels = 1
+if speed_min < 0.1 or speed_max > 8
+    exitScript: "Speeds must lie between 0.1x and 8x."
+endif
+if durLink < -1 or durLink > 1
+    exitScript: "Duration_link must lie between -1 and 1."
+endif
+if targetDur < 0
+    exitScript: "Target_duration must be 0 (free) or positive."
+endif
+if gapValue < 0
+    exitScript: "Gap_value must not be negative."
+endif
+if fadeMs < 0 or fadeMs > 50
+    exitScript: "Edge_fade must lie between 0 and 50 ms."
 endif
 if stereo_width < 0
     stereo_width = 0
+elsif stereo_width > 1
+    stereo_width = 1
 endif
-if pitch_step_semitones < -96 or pitch_step_semitones > 96
-    exitScript: "Pitch step must be between -96 and +96 semitones"
+if random_seed < 0
+    exitScript: "Random_seed must be 0 (new) or positive."
 endif
+if param_a < 1 or param_b < 1 or param_c < 1 or param_d < 1 or param_e < 1
+    exitScript: "Params must be five positive integers, e.g. 8 4 5 4 3."
+endif
+
+# Random seed: every random decision below follows it.
+if random_seed > 0
+    seedUsed = random_seed
+else
+    seedUsed = randomInteger(1, 999999)
+endif
+random_initializeWithSeedUnsafelyButPredictably (seedUsed)
 
 # ============================================================
 # BPM / GRID SETUP
@@ -245,7 +376,6 @@ else
     units_per_beat = 6
     grid_label$    = "triplet 16th"
 endif
-
 if bpm_quantize
     beat_s          = 60 / bpm_value
     grid_interval_s = beat_s / units_per_beat
@@ -254,93 +384,49 @@ else
     grid_interval_s = 0
 endif
 
-# ============================================================
-# TRIM TO GRID (always applied when BPM is active)
-# A private zero-based processing copy is ALWAYS created. This makes every
-# downstream boundary/segment calculation independent of the source xmin.
-# ============================================================
-
 createdTrim = 0
 if bpm_quantize
     n_grid_units = floor(t_total / grid_interval_s)
-    target_dur   = n_grid_units * grid_interval_s
-    if target_dur > 0 and target_dur < t_total - 1e-6
-        t_total = target_dur
+    target_grid  = n_grid_units * grid_interval_s
+    if target_grid > 0 and target_grid < t_total - 1e-6
+        t_total = target_grid
         createdTrim = 1
     endif
 else
     n_grid_units = 0
 endif
 
+# Private zero-based processing copy (all channels kept).
 selectObject: sound
 processingSound = Extract part: sourceStart, sourceStart + t_total, "rectangular", 1, "no"
-if createdTrim
-    Rename: soundName$ + "_gridtrim"
-else
-    Rename: soundName$ + "_rhythmatist_work"
-endif
+Rename: soundName$ + "_rhythmatist_work"
 
 # ============================================================
-# MONO WORKING COPY (only when pitch or stereo is requested)
-# ============================================================
-
-createdMono = 0
-if apply_pitch or apply_stereo
-    if nCh > 1
-        selectObject: processingSound
-        workingSound = Convert to mono
-        createdMono = 1
-    else
-        workingSound = processingSound
-    endif
-else
-    workingSound = processingSound
-endif
-
-# ============================================================
-# SERIES LABEL
+# SERIES (v2.4 definitions)
 # ============================================================
 
 if series_type = 1
-    seriesLabel$ = "Su_" + string$(su_n)
+    su_n = param_a
+    seriesLabel$ = "Su " + string$(su_n)
 elsif series_type = 2
-    seriesLabel$ = "Sc_(" + string$(sc_a) + "+" + string$(sc_b) + ")"
+    sc_a = param_a
+    sc_b = param_b
+    seriesLabel$ = "Sc (" + string$(sc_a) + "+" + string$(sc_b) + ")"
 elsif series_type = 3
-    seriesLabel$ = "Sy_" + string$(sy_n)
+    sy_n = param_a
+    seriesLabel$ = "Sy " + string$(sy_n)
 elsif series_type = 4
-    seriesLabel$ = "Sd_" + string$(sd_n)
+    sd_n = param_a
+    seriesLabel$ = "Sd " + string$(sd_n)
 else
-    seriesLabel$ = "SRC"
+    src_su  = param_a
+    src_sca = param_b
+    src_scb = param_c
+    src_sy  = param_d
+    src_sd  = param_e
+    seriesLabel$ = "SRC (" + string$(src_su) + "," + string$(src_sca) + "," + string$(src_scb) + "," + string$(src_sy) + "," + string$(src_sd) + ")"
 endif
-seriesDisplay$ = replace$(seriesLabel$, "_", " ", 0)
 
-# ============================================================
-# INFO HEADER
-# ============================================================
-
-writeInfoLine:  "=== RHYTHMATIST v2.4 ==="
-appendInfoLine: "Source:  ", soundName$, "  (", fixed$(t_total, 3), " s)"
-appendInfoLine: "Series:  ", seriesLabel$
-if bpm_quantize
-    appendInfoLine: "BPM:     ", fixed$(bpm_value, 1), "   grid=", grid_label$,
-    ...             "   (beat=", fixed$(beat_s, 4), " s   unit=", fixed$(grid_interval_s, 4), " s)"
-    if createdTrim
-        appendInfoLine: "Trim:    source trimmed to ", n_grid_units, " x ", grid_label$, " (", fixed$(t_total, 4), " s)"
-    endif
-endif
-if apply_pitch
-    appendInfoLine: "Pitch:   ", pitch_levels, " levels   step=", fixed$(pitch_step_semitones, 1), " st   assign=", pitch_assign$
-endif
-if apply_stereo
-    appendInfoLine: "Stereo:  mode=", stereo_mode$, "   width=", fixed$(stereo_width, 2)
-endif
-appendInfoLine: ""
-
-# ============================================================
-# BUILD NORMALISED SPLIT-POINT ARRAY
-# ============================================================
-
-# Upper bound on interior split points before de-duplication.
 if series_type = 1
     expectedPts = su_n - 1
 elsif series_type = 2
@@ -352,62 +438,17 @@ elsif series_type = 4
 else
     expectedPts = (src_su - 1) + (src_sca - 1) + (src_scb - 1) + (src_sy - 1) + (src_sd - 1)
 endif
-if expectedPts > 5000
-    exitScript: "Too many requested split points (maximum 5000 before de-duplication)"
+if expectedPts > 2000
+    removeObject: processingSound
+    exitScript: "Too many requested split points (maximum 2000 before de-duplication)"
 endif
 
-maxPts = max(1, expectedPts + 2)
-for i from 1 to maxPts
-    tk[i] = -1
-endfor
 nPts = 0
-
-procedure insertSorted: .v
-    .pos = nPts + 1
-    .i   = 1
-    while .i <= nPts
-        if tk[.i] >= .v
-            .pos = .i
-            .i   = nPts + 1
-        else
-            .i = .i + 1
-        endif
-    endwhile
-    .j = nPts
-    while .j >= .pos
-        tk[.j + 1] = tk[.j]
-        .j = .j - 1
-    endwhile
-    tk[.pos] = .v
-    nPts = nPts + 1
-endproc
-
-procedure deduplicate
-    prev = -1
-    newN = 0
-    for i from 1 to nPts
-        if abs(tk[i] - prev) > 1e-9
-            newN += 1
-            tk2[newN] = tk[i]
-            prev = tk[i]
-        endif
-    endfor
-    nPts = newN
-    for i from 1 to nPts
-        tk[i] = tk2[i]
-    endfor
-endproc
-
-# ============================================================
-# COMPUTE SPLIT POINTS (normalised 0..1)
-# ============================================================
-
 if series_type = 1
     for k from 1 to su_n - 1
         nPts += 1
         tk[nPts] = k / su_n
     endfor
-
 elsif series_type = 2
     for k from 1 to sc_a - 1
         @insertSorted: k / sc_a
@@ -416,15 +457,12 @@ elsif series_type = 2
         @insertSorted: k / sc_b
     endfor
     @deduplicate
-
 elsif series_type = 3
     if sy_n > 1
         for k from 1 to sy_n - 1
-            v = randomUniform(0, 1)
-            @insertSorted: v
+            @insertSorted: randomUniform(0, 1)
         endfor
     endif
-
 elsif series_type = 4
     t_d = 0
     for k from 1 to sd_n
@@ -437,8 +475,7 @@ elsif series_type = 4
         nPts += 1
         tk[nPts] = cumT
     endfor
-
-elsif series_type = 5
+else
     for k from 1 to src_su - 1
         @insertSorted: k / src_su
     endfor
@@ -450,8 +487,7 @@ elsif series_type = 5
     endfor
     if src_sy > 1
         for k from 1 to src_sy - 1
-            v = randomUniform(0, 1)
-            @insertSorted: v
+            @insertSorted: randomUniform(0, 1)
         endfor
     endif
     t_d = 0
@@ -478,18 +514,12 @@ elsif series_type = 5
     endfor
 endif
 
-# === Convert to absolute seconds ===
-nSegments = nPts + 1
 for i from 1 to nPts
     boundary[i] = tk[i] * t_total
 endfor
 
-# ============================================================
-# GRID SNAPPING
-# ============================================================
-
+# Grid snapping (v2.4)
 if bpm_quantize
-    # If there are fewer than two grid units, no interior grid boundary exists.
     if n_grid_units < 2
         nPts = 0
     else
@@ -497,8 +527,6 @@ if bpm_quantize
         prev_b = -1
         for i from 1 to nPts
             snapped = round(boundary[i] / grid_interval_s) * grid_interval_s
-            # Keep only true interior points. Rounding is monotonic because the
-            # incoming boundaries are sorted, so one pass can also de-duplicate.
             if snapped > samplePeriod * 0.5 and snapped < t_total - samplePeriod * 0.5
                 if newN = 0 or abs(snapped - prev_b) > samplePeriod * 0.5
                     newN += 1
@@ -510,13 +538,54 @@ if bpm_quantize
         nPts = newN
         for i from 1 to nPts
             boundary[i] = boundary_tmp[i]
-            tk[i] = boundary[i] / t_total
         endfor
     endif
 endif
 
-# Final one-sample boundary sanitation for ALL series. This merges accidental
-# sub-sample random intervals instead of silently dropping their audio later.
+# Optional safe cuts: quietest point nearby, then nearest zero crossing.
+safeMoved = 0
+safeMaxShift = 0
+if safe_cuts and nPts > 0
+    selectObject: processingSound
+    for i from 1 to nPts
+        bPrev = if i = 1 then 0 else boundary[i - 1] fi
+        bNext = if i = nPts then t_total else boundary[i + 1] fi
+        win = min(0.015, 0.25 * min(boundary[i] - bPrev, bNext - boundary[i]))
+        if bpm_quantize
+            win = min(win, 0.005)
+        endif
+        best = boundary[i]
+        if win > 0.002
+            bestE = 1e30
+            tq = boundary[i] - win
+            while tq <= boundary[i] + win
+                eq = Get root-mean-square: max(0, tq - 0.001), min(t_total, tq + 0.001)
+                if eq <> undefined
+                    if eq < bestE
+                        bestE = eq
+                        best = tq
+                    endif
+                endif
+                tq += 0.0005
+            endwhile
+        endif
+        zc = Get nearest zero crossing: 1, best
+        if zc <> undefined
+            if abs(zc - best) < 0.002
+                best = zc
+            endif
+        endif
+        if best > bPrev + 0.002 and best < bNext - 0.002
+            if abs(best - boundary[i]) > samplePeriod
+                safeMoved += 1
+                safeMaxShift = max(safeMaxShift, abs(best - boundary[i]))
+            endif
+            boundary[i] = best
+        endif
+    endfor
+endif
+
+# One-sample sanitation for all series (v2.4)
 newN = 0
 prev_b = 0
 for i from 1 to nPts
@@ -530,507 +599,712 @@ endfor
 nPts = newN
 for i from 1 to nPts
     boundary[i] = boundary_tmp[i]
-    tk[i] = boundary[i] / t_total
 endfor
-nSegments = nPts + 1
+nSeg = nPts + 1
 
-# === Report split points ===
-appendInfoLine: "--- Split points ---"
-prev_t  = 0
-prev_tk = 0
-for i from 1 to nPts
-    d_s  = boundary[i] - prev_t
-    d_tk = tk[i] - prev_tk
-    if bpm_quantize
-        beat_pos = boundary[i] / beat_s
-        unit_idx = round(boundary[i] / grid_interval_s)
-        appendInfoLine: "k=", i, "   t=", fixed$(boundary[i], 4), " s",
-        ...             "   beat=", fixed$(beat_pos, 3),
-        ...             "   unit=", unit_idx,
-        ...             "   D=", fixed$(d_s, 4), " s"
-    else
-        appendInfoLine: "k=", i, "   T_k=", fixed$(tk[i], 6),
-        ...             "   t=", fixed$(boundary[i], 6), " s",
-        ...             "   D_k=", fixed$(d_tk, 6)
-    endif
-    prev_t  = boundary[i]
-    prev_tk = tk[i]
-endfor
-appendInfoLine: "Total segments: ", nSegments
-appendInfoLine: ""
-
-# ============================================================
-# PROCEDURES
-# ============================================================
-
-procedure trimTo: .snd, .tDur
-    selectObject: .snd
-    .d  = Get total duration
-    .sr = Get sampling frequency
-    .nc = Get number of channels
-    if .d >= .tDur
-        trimResult = Extract part: 0, .tDur, "rectangular", 1, "no"
-    else
-        .ext = .tDur - .d
-        .pad = Create Sound from formula: "pad", .nc, 0, .ext, .sr, "0"
-        selectObject: .snd
-        plusObject: .pad
-        trimResult = Concatenate
-        removeObject: .pad
-    endif
-endproc
-
-procedure transposeByRatio: .snd, .ratio
-    if abs(.ratio - 1.0) < 1e-6
-        selectObject: .snd
-        transposeResult = Copy: "rhy_ps_noop"
-    else
-        selectObject: .snd
-        .intendedDur = Get total duration
-        .sr = Get sampling frequency
-        .tmp = Copy: "rhy_ps_tmp"
-        selectObject: .tmp
-        Override sampling frequency: round(.sr * .ratio)
-        .shifted = Resample: .sr, 50
-        removeObject: .tmp
-        @trimTo: .shifted, .intendedDur
-        removeObject: .shifted
-        transposeResult = trimResult
-    endif
-endproc
-
-procedure makeStereo: .left, .right
-    selectObject: .left
-    plusObject: .right
-    stereoResult = Combine to stereo
-endproc
-
-procedure panMono: .snd, .pan
-    .theta  = (.pan + 1) / 2 * pi / 2
-    .lGain  = cos(.theta)
-    .rGain  = sin(.theta)
-    selectObject: .snd
-    .left  = Copy: "pan_L"
-    selectObject: .snd
-    .right = Copy: "pan_R"
-    selectObject: .left
-    Formula: "self * " + string$(.lGain)
-    selectObject: .right
-    Formula: "self * " + string$(.rGain)
-    @makeStereo: .left, .right
-    removeObject: .left, .right
-    panResult = stereoResult
-endproc
-
-# ============================================================
-# EXTRACT SEGMENTS
-# ============================================================
-
-segStart = 0
-nCreated = 0
-for seg from 1 to nSegments
-    if seg <= nPts
-        segEnd = boundary[seg]
-    else
-        segEnd = t_total
-    endif
-
-    if segEnd - segStart >= samplePeriod * 0.5
-        selectObject: workingSound
-        # Internal processing segments must start at zero because pitch/trim
-        # procedures address them as 0..segmentDuration.
-        Extract part: segStart, segEnd, "rectangular", 1, "no"
-        nCreated += 1
-        partId[nCreated]   = selected("Sound")
-        segIndex[nCreated] = seg
-    endif
-
-    segStart = segEnd
+# Segment table: boundaries on whole samples, so the segments tile the
+# source exactly (sample n of segment s = sample segS0[s] + n of the source)
+selectObject: processingSound
+nSrc = Get number of samples
+for s from 1 to nSeg
+    segS0[s] = if s = 1 then 0 else round(boundary[s - 1] * sampleRate) fi
+    segS1[s] = if s = nSeg then nSrc else round(boundary[s] * sampleRate) fi
+    segT0[s] = segS0[s] / sampleRate
+    segT1[s] = segS1[s] / sampleRate
+    segDur[s] = segT1[s] - segT0[s]
 endfor
 
-appendInfoLine: "Extracted ", nCreated, " segments"
-
 # ============================================================
-# FISHER-YATES SHUFFLE
-# Praat Concatenate follows ascending object-ID order, so we
-# concatenate iteratively (end->start) to enforce shuffled order.
+# STAGE 2: ORGANIZATION (output position -> source segment)
 # ============================================================
 
-i = nCreated
-while i >= 2
-    j = randomInteger(1, i)
-    swapTmp     = partId[i]
-    partId[i]   = partId[j]
-    partId[j]   = swapTmp
-    swapIdx     = segIndex[i]
-    segIndex[i] = segIndex[j]
-    segIndex[j] = swapIdx
-    i -= 1
-endwhile
-
-appendInfoLine: "--- Shuffled order ---"
-for i from 1 to nCreated
-    appendInfoLine: "  pos ", i, "  <-  original segment ", segIndex[i]
+for p from 1 to nSeg
+    order[p] = p
 endfor
-appendInfoLine: ""
-
-# ============================================================
-# PER-SEGMENT PITCH TRANSPOSITION AND STEREO SPATIALIZATION
-# ============================================================
-
-if apply_pitch or apply_stereo
-    appendInfoLine: "--- Per-segment pitch / stereo ---"
-    appendInfoLine: "  seg   pitchLv   semitones   ratio     pan"
-
-    for i from 1 to nCreated
-        origSeg = segIndex[i]
-
-        # ------ PITCH ------
-        if apply_pitch
-            if pitch_assign = 1
-                pitchLevel = (origSeg - 1) mod pitch_levels
-            elsif pitch_assign = 2
-                pitchLevel = (origSeg - 1) mod 2
-            else
-                pitchLevel = randomInteger(0, pitch_levels - 1)
-            endif
-
-            semitones  = pitchLevel * pitch_step_semitones
-            pitchRatio = 2 ^ (semitones / 12)
-
-            @transposeByRatio: partId[i], pitchRatio
-            removeObject: partId[i]
-            partId[i] = transposeResult
-        else
-            pitchLevel = 0
-            semitones  = 0
-            pitchRatio = 1.0
-        endif
-
-        # ------ STEREO ------
-        if apply_stereo
-            if stereo_mode = 1
-                if origSeg mod 2 = 1
-                    panVal = -stereo_width
-                else
-                    panVal = stereo_width
-                endif
-            elsif stereo_mode = 2
-                if nSegments > 1
-                    panVal = ((origSeg - 1) / (nSegments - 1) * 2 - 1) * stereo_width
-                else
-                    panVal = 0
-                endif
-            elsif stereo_mode = 3
-                posIdx = (origSeg - 1) mod 4
-                if posIdx = 0
-                    panVal = -1.00 * stereo_width
-                elsif posIdx = 1
-                    panVal = -0.33 * stereo_width
-                elsif posIdx = 2
-                    panVal =  0.33 * stereo_width
-                else
-                    panVal =  1.00 * stereo_width
-                endif
-            else
-                panVal = randomUniform(-1, 1) * stereo_width
-            endif
-
-            @panMono: partId[i], panVal
-            removeObject: partId[i]
-            partId[i] = panResult
-        else
-            panVal = 0
-        endif
-
-        appendInfoLine: "  ", origSeg, "   lv=", pitchLevel,
-        ...             "   ", fixed$(semitones, 1), " st",
-        ...             "   x", fixed$(pitchRatio, 3),
-        ...             "   pan=", fixed$(panVal, 2)
+rotBy = 0
+groupSize = 0
+if organization = 2
+    @shuffleRange: 1, nSeg
+elsif organization = 3
+    for p from 1 to nSeg
+        order[p] = nSeg + 1 - p
     endfor
-
-    appendInfoLine: ""
-endif
-
-# ============================================================
-# CONCATENATE IN SHUFFLED ORDER (end->start walk)
-# ============================================================
-
-if nCreated > 1
-    selectObject: partId[nCreated]
-    Copy: "rhythmatist_build"
-    buildId = selected("Sound")
-
-    i = nCreated - 1
-    while i >= 1
-        selectObject: partId[i]
-        plusObject: buildId
-        Concatenate
-        newBuild = selected("Sound")
-        removeObject: buildId
-        buildId = newBuild
-        i -= 1
+elsif organization = 4
+    rotBy = max(1, round(nSeg / 3))
+    if nSeg < 2
+        rotBy = 0
+    endif
+    for p from 1 to nSeg
+        order[p] = ((p - 1 + rotBy) mod nSeg) + 1
+    endfor
+elsif organization >= 5 and organization <= 7
+    # stable sort by duration, ascending
+    for p from 1 to nSeg
+        srt[p] = p
+    endfor
+    for p from 2 to nSeg
+        v = srt[p]
+        q = p - 1
+        while q >= 1
+            if segDur[srt[q]] > segDur[v]
+                srt[q + 1] = srt[q]
+                q -= 1
+            else
+                srt[q + 1] = v
+                q = -1
+            endif
+        endwhile
+        if q = 0
+            srt[1] = v
+        endif
+    endfor
+    if organization = 6
+        for p from 1 to nSeg
+            order[p] = srt[p]
+        endfor
+    elsif organization = 7
+        for p from 1 to nSeg
+            order[p] = srt[nSeg + 1 - p]
+        endfor
+    else
+        lo = 1
+        hi = nSeg
+        p = 0
+        while lo <= hi
+            p += 1
+            order[p] = srt[hi]
+            hi -= 1
+            if lo <= hi
+                p += 1
+                order[p] = srt[lo]
+                lo += 1
+            endif
+        endwhile
+    endif
+elsif organization = 8
+    groupSize = max(2, round(sqrt(nSeg)))
+    g0 = 1
+    while g0 <= nSeg
+        g1 = min(nSeg, g0 + groupSize - 1)
+        @shuffleRange: g0, g1
+        g0 = g1 + 1
     endwhile
-
-    selectObject: buildId
-    Rename: soundName$ + "_rhythmatist"
-    result = selected("Sound")
-
-elsif nCreated = 1
-    selectObject: partId[1]
-    Copy: soundName$ + "_rhythmatist"
-    result = selected("Sound")
-
-else
-    exitScript: "No segments created - audio may be too short."
 endif
 
 # ============================================================
-# CLEANUP
+# STAGE 3: SPEED (trajectory over output positions + duration link)
 # ============================================================
 
-for i from 1 to nCreated
-    removeObject: partId[i]
+lnMin = ln(speed_min)
+lnMax = ln(speed_max)
+lnSpan = lnMax - lnMin
+lnCentre = (lnMin + lnMax) / 2
+lnDref = 0
+for s from 1 to nSeg
+    lnDref += ln(segDur[s])
+endfor
+lnDref = lnDref / nSeg
+
+sWalk = randomUniform(0.25, 0.75)
+for p from 1 to nSeg
+    u = if nSeg > 1 then (p - 1) / (nSeg - 1) else 0.5 fi
+    if speed_trajectory = 1
+        sv = 0.5
+    elsif speed_trajectory = 2
+        sv = u
+    elsif speed_trajectory = 3
+        sv = 1 - u
+    elsif speed_trajectory = 4
+        sv = sin(pi * u)
+    elsif speed_trajectory = 5
+        sv = if (p mod 2) = 1 then 0 else 1 fi
+    elsif speed_trajectory = 6
+        sv = 0.5 - 0.5 * cos(4 * pi * u)
+    else
+        # bounded random walk: neighbours stay related, whole range used
+        if p > 1
+            sWalk = sWalk + randomUniform(-0.35, 0.35)
+            sWalk = max(0, min(1, sWalk))
+        endif
+        sv = sWalk
+    endif
+    traj[p] = sv
+    # q = offset from the centre of the range (log units)
+    qv[p] = (sv - 0.5) * lnSpan + durLink * (ln(segDur[order[p]]) - lnDref)
 endfor
 
-if createdMono = 1
-    removeObject: workingSound
+# processed duration factor of a gap
+gapFixed = 0
+gapProp = 0
+if gapMode = 2
+    gapFixed = gapValue / 1000
+elsif gapMode = 3
+    gapProp = gapValue / 100
 endif
+
+# Free curve
+cUse = lnCentre
+wUse = 1
+targetNote$ = "free"
+targetHit = 0
+if targetDur > 0 and playback = 2
+    targetNote$ = "ignored in fixed-slot playback (slots keep the source duration)"
+elsif targetDur > 0
+    # largest depth w in [0, 1] for which the target is reachable inside the range
+    @reach: 1
+    if targetDur >= reach.tLo and targetDur <= reach.tHi
+        wUse = 1
+    else
+        @reach: 0
+        if targetDur >= reach.tLo and targetDur <= reach.tHi
+            wLo = 0
+            wHi = 1
+            for it from 1 to 40
+                wm = (wLo + wHi) / 2
+                @reach: wm
+                if targetDur >= reach.tLo and targetDur <= reach.tHi
+                    wLo = wm
+                else
+                    wHi = wm
+                endif
+            endfor
+            wUse = wLo
+        else
+            wUse = -1
+            tReachLo = reach.tLo
+            tReachHi = reach.tHi
+        endif
+    endif
+    if wUse >= 0
+        @reach: wUse
+        cLo = reach.cLo
+        cHi = reach.cHi
+        for it from 1 to 60
+            cm = (cLo + cHi) / 2
+            @totalFor: cm, wUse
+            if totalFor.t > targetDur
+                cLo = cm
+            else
+                cHi = cm
+            endif
+        endfor
+        cUse = (cLo + cHi) / 2
+        targetHit = 1
+        if wUse < 0.999
+            targetNote$ = "reached; speed-curve depth reduced to " + fixed$(100 * wUse, 0) + " % to stay inside the range"
+        else
+            targetNote$ = "reached by a global speed scale of x" + fixed$(exp(cUse - lnCentre), 3)
+        endif
+    else
+        wUse = 1
+        cUse = lnCentre
+        targetNote$ = "NOT reachable inside " + fixed$(speed_min, 2) + "-" + fixed$(speed_max, 2) + "x (reachable " + fixed$(tReachLo, 2) + "-" + fixed$(tReachHi, 2) + " s); free result kept"
+    endif
+endif
+
+nClamped = 0
+for p from 1 to nSeg
+    lr = cUse + wUse * qv[p]
+    if lr < lnMin - 1e-9
+        lr = lnMin
+        nClamped += 1
+    elsif lr > lnMax + 1e-9
+        lr = lnMax
+        nClamped += 1
+    endif
+    speed[p] = exp(lr)
+endfor
+
+# ============================================================
+# BUILD EVENTS (varispeed, fades, panning) AND THE TIMELINE
+# ============================================================
+
+outCh = if apply_stereo then 2 else nCh fi
+fadeSec = fadeMs / 1000
+cursor = 0
+nPadded = 0
+nCut = 0
+silenceTotal = 0
+for p from 1 to nSeg
+    sIdx = order[p]
+    part = Create Sound from formula: "seg", nCh, 0, (segS1[sIdx] - segS0[sIdx]) / sampleRate, sampleRate,
+    ... "object[" + string$(processingSound) + ", row, col + " + string$(segS0[sIdx]) + "]"
+    r = speed[p]
+    if abs(r - 1) > 1e-9
+        # tape varispeed: reinterpret the rate, then resample (sinc, 50)
+        Override sampling frequency: sampleRate * r
+        ev = Resample: sampleRate, 50
+        removeObject: part
+    else
+        ev = part
+    endif
+    selectObject: ev
+    nEv = Get number of samples
+    # fixed-slot: the slot is the source duration of the segment
+    slotN = round(segDur[sIdx] * sampleRate)
+    padN = 0
+    if playback = 2
+        if nEv > slotN
+            cutPart = Extract part: 0, slotN / sampleRate, "rectangular", 1, "no"
+            removeObject: ev
+            ev = cutPart
+            selectObject: ev
+            nEv = Get number of samples
+            nCut += 1
+            evNote$[p] = "cut to slot"
+        else
+            padN = slotN - nEv
+            if padN > 0
+                nPadded += 1
+            endif
+            evNote$[p] = if padN > 0 then "slot silence " + fixed$(1000 * padN / sampleRate, 0) + " ms" else "" fi
+        endif
+    else
+        evNote$[p] = ""
+    endif
+    evDur = nEv / sampleRate
+    # edge fades inside the event
+    if fadeSec > 0
+        fz = min(fadeSec, evDur / 4)
+        fzs$ = fixed$(fz, 6)
+        eds$ = fixed$(evDur, 6)
+        Formula: "self * (if x < " + fzs$ + " then 0.5 - 0.5 * cos(pi * x / " + fzs$ + ") else 1 fi) * (if x > " + eds$ + " - " + fzs$ + " then 0.5 - 0.5 * cos(pi * (" + eds$ + " - x) / " + fzs$ + ") else 1 fi)"
+    endif
+    # panning
+    panVal = 0
+    if apply_stereo
+        if stereo_placement = 2
+            panVal = if (sIdx mod 2) = 1 then -stereo_width else stereo_width fi
+        elsif stereo_placement = 3
+            panVal = if (p mod 2) = 1 then -stereo_width else stereo_width fi
+        elsif stereo_placement = 4
+            panVal = if nSeg > 1 then ((sIdx - 1) / (nSeg - 1) * 2 - 1) * stereo_width else 0 fi
+        elsif stereo_placement = 5
+            panVal = if nSeg > 1 then ((p - 1) / (nSeg - 1) * 2 - 1) * stereo_width else 0 fi
+        elsif stereo_placement = 6
+            pos4 = (p - 1) mod 4
+            panVal = (-1 + pos4 * 2 / 3) * stereo_width
+        else
+            panVal = randomUniform(-1, 1) * stereo_width
+        endif
+        theta = (panVal + 1) / 2 * pi / 2
+        if nCh = 1
+            # equal power
+            gL = cos(theta)
+            gR = sin(theta)
+            st = Convert to stereo
+            removeObject: ev
+            ev = st
+        else
+            # balance: both channels kept, unity at the centre
+            gL = min(1, sqrt(2) * cos(theta))
+            gR = min(1, sqrt(2) * sin(theta))
+        endif
+        selectObject: ev
+        Formula: "self * (if row = 1 then " + fixed$(gL, 6) + " else " + fixed$(gR, 6) + " fi)"
+    endif
+    evId[p] = ev
+    evN[p] = nEv
+    evPan[p] = panVal
+    evStart[p] = cursor
+    cursor += nEv + padN
+    evSlotEnd[p] = cursor
+    silenceTotal += padN
+    # gap after every event except the last
+    gapN = 0
+    if p < nSeg
+        if gapMode = 2
+            gapN = round(gapFixed * sampleRate)
+        elsif gapMode = 3
+            gapN = round(gapProp * nEv)
+        endif
+    endif
+    evGap[p] = gapN
+    cursor += gapN
+    silenceTotal += gapN
+endfor
+totalN = cursor
+resultDur = totalN / sampleRate
+
+result = Create Sound from formula: soundName$ + "_rhythmatist", outCh, 0, resultDur, sampleRate, "0"
+for p from 1 to nSeg
+    off$ = string$(evStart[p])
+    n$ = string$(evN[p])
+    selectObject: result
+    Formula (part): evStart[p] / sampleRate, (evStart[p] + evN[p]) / sampleRate, 1, outCh,
+    ... "if col - " + off$ + " >= 1 and col - " + off$ + " <= " + n$ + " then object[" + string$(evId[p]) + ", row, col - " + off$ + "] else self fi"
+    removeObject: evId[p]
+endfor
+
+selectObject: result
+peakOut = Get absolute extremum: 0, 0, "None"
+safetyScaled = 0
+if peakOut > 0.99
+    Scale peak: 0.99
+    safetyScaled = 1
+endif
+
+# ============================================================
+# REPORT
+# ============================================================
+
+writeInfoLine: "=== RHYTHMATIST v3.0 ==="
+appendInfoLine: "Source:       ", soundName$, "  (", fixed$(t_total, 3), " s, ", nCh, " ch, ", sampleRate, " Hz)"
+appendInfoLine: "Preset:       ", presetName$
+appendInfoLine: "Segmentation: ", seriesLabel$, "  -> ", nSeg, " segments"
+appendInfoLine: "Organization: ", orgName$[organization], (if organization = 4 then " by " + string$(rotBy) else "" fi), (if organization = 8 then " (groups of " + string$(groupSize) + ")" else "" fi)
+appendInfoLine: "Speed:        ", trajName$[speed_trajectory], "  ", fixed$(speed_min, 2), "-", fixed$(speed_max, 2), "x, duration link ", fixed$(durLink, 2), "  (", if playback = 1 then "natural varispeed" else "fixed-slot varispeed" fi, ")"
+if abs(durLink) >= 0.8
+    appendInfoLine: "              NOTE: |Duration_link| >= 0.8 makes processed durations nearly equal (1 = equal)."
+endif
+if nClamped > 0
+    appendInfoLine: "              ", nClamped, " event speed(s) limited to the range."
+endif
+appendInfoLine: "Target:       ", if targetDur > 0 then fixed$(targetDur, 3) + " s - " + targetNote$ else "free duration" fi
+if bpm_quantize
+    appendInfoLine: "BPM:          ", fixed$(bpm_value, 1), "  grid ", grid_label$, if createdTrim then "  (source trimmed to the grid)" else "" fi
+endif
+if safe_cuts
+    appendInfoLine: "Safe cuts:    ", safeMoved, " boundary(ies) moved, max ", fixed$(1000 * safeMaxShift, 1), " ms"
+endif
+gapTxt$ = "none"
+if gapMode = 2
+    gapTxt$ = fixed$(gapValue, 0) + " ms"
+elsif gapMode = 3
+    gapTxt$ = fixed$(gapValue, 0) + " % of each event"
+endif
+appendInfoLine: "Gaps:         ", gapTxt$, "   Edge fade: ", if fadeMs > 0 then fixed$(fadeMs, 1) + " ms" else "off (sharp)" fi
+appendInfoLine: "Stereo:       ", if apply_stereo then stereo_placement$ + ", width " + fixed$(stereo_width, 2) else "off (" + string$(nCh) + " ch kept)" fi
+appendInfoLine: "Random seed:  ", seedUsed, if random_seed = 0 then "  (new; enter it to repeat this run)" else "" fi
+appendInfoLine: ""
+appendInfoLine: "  pos  seg   D src s   speed    D out s   start s    pan    gap ms   note"
+for p from 1 to nSeg
+    @padL: string$(p), 5
+    c1$ = padL$
+    @padL: string$(order[p]), 5
+    c2$ = padL$
+    @padL: fixed$(segDur[order[p]], 3), 10
+    c3$ = padL$
+    @padL: fixed$(speed[p], 3), 9
+    c4$ = padL$
+    @padL: fixed$(evN[p] / sampleRate, 3), 10
+    c5$ = padL$
+    @padL: fixed$(evStart[p] / sampleRate, 3), 10
+    c6$ = padL$
+    @padL: fixed$(evPan[p], 2), 7
+    c7$ = padL$
+    @padL: fixed$(1000 * evGap[p] / sampleRate, 0), 9
+    c8$ = padL$
+    appendInfoLine: c1$, c2$, c3$, c4$, c5$, c6$, c7$, c8$, "   ", evNote$[p]
+endfor
+appendInfoLine: ""
+appendInfoLine: "Result:       ", fixed$(resultDur, 3), " s (source ", fixed$(t_total, 3), " s); inserted silence ", fixed$(silenceTotal / sampleRate, 3), " s"
+if playback = 2
+    appendInfoLine: "              fixed-slot: ", nPadded, " slot(s) with silence, ", nCut, " event(s) cut at the slot end"
+endif
+appendInfoLine: "Peak:         ", fixed$(peakOut, 3), if safetyScaled then "  (scaled to 0.99)" else "" fi
 
 # ============================================================
 # VISUALIZATION
 # ============================================================
 
 if draw_visualization
+    blueA$ = "{0.55, 0.75, 0.90}"
+    blueB$ = "{0.25, 0.55, 0.75}"
+    orangeA$ = "{0.85, 0.60, 0.25}"
+    orangeB$ = "{0.78, 0.45, 0.16}"
+    tMax = max(t_total, resultDur)
     Erase all
+    Line width: 1
+    Solid line
 
-    # Title
-    Select outer viewport: 1, 8, 0.2, 0.7
+    Font size: 13
+    Select outer viewport: 0, 8, 0, 0.5
     Axes: 0, 1, 0, 1
-    Font size: 14
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "RHYTHMATIST v2.4: " + displayName$
-
-    # Subtitle
-    Select outer viewport: 1, 8, 0.6, 1.0
-    Axes: 0, 1, 0, 1
+    Text: 0.5, "centre", 0.45, "half", "##Rhythmatist v3.0##"
     Font size: 8
-    Colour: "{0.4, 0.4, 0.4}"
-    pitchSub$ = ""
-    if apply_pitch
-        pitchSub$ = "   pitch: " + string$(pitch_levels) + "x" + fixed$(pitch_step_semitones, 0) + "st"
-    endif
-    stereoSub$ = ""
-    if apply_stereo
-        stereoSub$ = "   stereo: " + stereo_mode$
-    endif
-    bpmSub$ = ""
-    if bpm_quantize
-        bpmSub$ = "   " + fixed$(bpm_value, 0) + " BPM " + grid_label$
-    endif
-    Text: 0.5, "centre", 0.5, "half",
-    ... "Series: " + seriesDisplay$
-    ... + "   |   " + string$(nSegments) + " segs"
-    ... + "   |   T=" + fixed$(t_total, 3) + " s"
-    ... + bpmSub$ + pitchSub$ + stereoSub$
+    Select outer viewport: 0, 8, 0.4, 0.8
+    Axes: 0, 1, 0, 1
+    Colour: "{0.35, 0.35, 0.40}"
+    Text: 0.5, "centre", 0.5, "half", displayName$ + "  |  " + presetName$ + "  |  " + seriesLabel$ + "  |  " + orgName$[organization] + "  |  " + trajName$[speed_trajectory]
 
-    # Original waveform with (optionally) beat + grid + split markers
-    Select outer viewport: 0, 8, 1.0, 2.5
-    Select inner viewport: 0.6, 7.6, 1.1, 2.4
+    Font size: 7
+    # A: source with boundaries (and BPM grid)
+    Select outer viewport: 0, 8, 0.75, 2.25
+    Select inner viewport: 0.6, 7.7, 0.95, 2.05
     selectObject: processingSound
-    Colour: "{0.6, 0.6, 0.6}"
+    Axes: 0, tMax, -1, 1
+    Colour: "{0.60, 0.60, 0.60}"
     Draw: 0, 0, 0, 0, "no", "Curve"
-    Axes: 0, t_total, -1, 1
-
+    Axes: 0, tMax, -1, 1
     if bpm_quantize
         Colour: "{0.85, 0.85, 0.65}"
-        Line width: 1
         Dotted line
-        grid_t = grid_interval_s
-        while grid_t < t_total - 1e-6
-            Draw line: grid_t, -1, grid_t, 1
-            grid_t = grid_t + grid_interval_s
+        gt = grid_interval_s
+        while gt < t_total - 1e-6
+            Draw line: gt, -1, gt, 1
+            gt += grid_interval_s
         endwhile
         Solid line
-
-        Colour: "{0.65, 0.65, 0.35}"
-        Line width: 1
-        beat_t = beat_s
-        while beat_t < t_total - 1e-6
-            Draw line: beat_t, -1, beat_t, 1
-            beat_t = beat_t + beat_s
-        endwhile
     endif
-
-    Colour: "{1, 0.3, 0.3}"
-    if nPts > 40
-        Line width: 1
-    else
-        Line width: 2
-    endif
+    Colour: "{1.00, 0.30, 0.30}"
+    Line width: if nPts > 40 then 1 else 1.5 fi
     for i from 1 to nPts
         Draw line: boundary[i], -1, boundary[i], 1
     endfor
     Line width: 1
-
     Colour: "Black"
     Draw inner box
+    Text left: "no", "Source"
+    Text top: "no", "##Source## and segment boundaries (" + string$(nSeg) + " segments, " + fixed$(t_total, 2) + " s)"
 
-    # Explicit left label gutter: same physical x anchor as Result below.
-    Select outer viewport: 0.05, 0.55, 1.1, 2.4
-    Axes: 0, 1, 0, 1
     Font size: 7
-    Colour: "Black"
-    Text special: 0.50, "centre", 0.50, "half", "Times", 7, "90", "Source"
-
-    # Segment-order diagram
-    Select outer viewport: 0, 8, 2.6, 3.8
-    Select inner viewport: 0.6, 7.6, 2.65, 3.75
-    Axes: 0, t_total, 0, 2
-    Paint rectangle: "{0.95, 0.95, 0.95}", 0, t_total, 0, 2
-
-    prevT = 0
-    for seg from 1 to nSegments
-        if seg <= nPts
-            segEndV = boundary[seg]
-        else
-            segEndV = t_total
-        endif
-        if seg mod 2 = 1
-            Paint rectangle: "{0.55, 0.75, 0.9}", prevT + 0.001, segEndV - 0.001, 1.05, 1.95
-        else
-            Paint rectangle: "{0.25, 0.55, 0.75}", prevT + 0.001, segEndV - 0.001, 1.05, 1.95
-        endif
-        if (segEndV - prevT) >= 0.035 * t_total
-            Font size: 6
+    # B: segment map - original timeline (blue) vs output timeline (orange)
+    Select outer viewport: 0, 8, 2.25, 3.65
+    Select inner viewport: 0.6, 7.7, 2.45, 3.45
+    Axes: 0, tMax, 0, 2
+    Paint rectangle: "{0.96, 0.96, 0.96}", 0, tMax, 0, 2
+    for s from 1 to nSeg
+        Paint rectangle: if (s mod 2) = 1 then blueA$ else blueB$ fi, segT0[s], segT1[s], 1.08, 1.92
+        if segDur[s] >= 0.03 * tMax
             Colour: "White"
-            Text: (prevT + segEndV) / 2, "centre", 1.5, "half", string$(seg)
+            Text: (segT0[s] + segT1[s]) / 2, "centre", 1.5, "half", string$(s)
         endif
-        prevT = segEndV
     endfor
-
-    drawPos = 0
-    for i from 1 to nCreated
-        origSeg = segIndex[i]
-        if origSeg = 1
-            segStartOrig = 0
-        else
-            segStartOrig = boundary[origSeg - 1]
+    for p from 1 to nSeg
+        sIdx = order[p]
+        a0 = evStart[p] / sampleRate
+        a1 = (evStart[p] + evN[p]) / sampleRate
+        Paint rectangle: if (sIdx mod 2) = 1 then orangeA$ else orangeB$ fi, a0, a1, 0.08, 0.92
+        if evSlotEnd[p] > evStart[p] + evN[p]
+            Paint rectangle: "{0.80, 0.80, 0.80}", a1, evSlotEnd[p] / sampleRate, 0.30, 0.70
         endif
-        if origSeg <= nPts
-            segEndOrig = boundary[origSeg]
-        else
-            segEndOrig = t_total
+        if evGap[p] > 0
+            Paint rectangle: "{0.88, 0.88, 0.88}", evSlotEnd[p] / sampleRate, (evSlotEnd[p] + evGap[p]) / sampleRate, 0.40, 0.60
         endif
-        segDurI = segEndOrig - segStartOrig
-
-        if origSeg mod 2 = 1
-            Paint rectangle: "{0.85, 0.6, 0.25}", drawPos + 0.001, drawPos + segDurI - 0.001, 0.05, 0.95
-        else
-            Paint rectangle: "{0.78, 0.45, 0.16}",  drawPos + 0.001, drawPos + segDurI - 0.001, 0.05, 0.95
-        endif
-        if segDurI >= 0.035 * t_total
-            Font size: 6
+        if a1 - a0 >= 0.03 * tMax
             Colour: "White"
-            Text: drawPos + segDurI / 2, "centre", 0.5, "half", string$(origSeg)
+            Text: (a0 + a1) / 2, "centre", 0.5, "half", string$(sIdx)
         endif
-
-        drawPos += segDurI
     endfor
-
-    Colour: "{0.7, 0.7, 0.7}"
-    Draw line: 0, 1, t_total, 1
+    Colour: "{0.70, 0.70, 0.70}"
+    Draw line: 0, 1, tMax, 1
     Colour: "Black"
     Draw inner box
+    Colour: blueB$
+    One mark left: 1.5, "no", "no", "no", "source"
+    Colour: orangeB$
+    One mark left: 0.5, "no", "no", "no", "output"
+    Colour: "Black"
+    Text top: "no", "##Segment map##: source timeline (blue) and output timeline (orange, numbers = source segment; grey = inserted silence)"
 
-    # Dedicated row-label gutter (never clipped by the data axes).
-    Select outer viewport: 0.05, 0.55, 2.65, 3.75
-    Axes: 0, 1, 0, 2
     Font size: 7
-    Colour: "{0.25, 0.55, 0.75}"
-    Text: 0.95, "right", 1.5, "half", "orig"
-    Colour: "{0.78, 0.45, 0.16}"
-    Text: 0.95, "right", 0.5, "half", "shuf"
+    # C: speed per event on the output timeline (log scale)
+    Select outer viewport: 0, 8, 3.65, 5.0
+    Select inner viewport: 0.6, 7.7, 3.85, 4.8
+    yLo = ln(speed_min) - 0.1 * max(lnSpan, 0.4)
+    yHi = ln(speed_max) + 0.1 * max(lnSpan, 0.4)
+    yLo = min(yLo, ln(0.95))
+    yHi = max(yHi, ln(1.05))
+    Axes: 0, tMax, yLo, yHi
+    Paint rectangle: "{0.98, 0.98, 0.98}", 0, tMax, yLo, yHi
+    Colour: "{0.75, 0.75, 0.75}"
+    Dotted line
+    Draw line: 0, ln(speed_min), tMax, ln(speed_min)
+    Draw line: 0, ln(speed_max), tMax, ln(speed_max)
+    Solid line
+    Colour: "{0.55, 0.55, 0.55}"
+    Draw line: 0, 0, tMax, 0
+    Colour: orangeB$
+    Line width: 2
+    for p from 1 to nSeg
+        a0 = evStart[p] / sampleRate
+        a1 = (evStart[p] + evN[p]) / sampleRate
+        Draw line: a0, ln(speed[p]), a1, ln(speed[p])
+        if p < nSeg
+            Line width: 1
+            Draw line: a1, ln(speed[p]), evStart[p + 1] / sampleRate, ln(speed[p + 1])
+            Line width: 2
+        endif
+    endfor
+    Line width: 1
+    Colour: "Black"
+    Draw inner box
+    One mark left: ln(speed_min), "no", "yes", "no", fixed$(speed_min, 2) + "x"
+    One mark left: ln(speed_max), "no", "yes", "no", fixed$(speed_max, 2) + "x"
+    if speed_min < 0.97 and speed_max > 1.03
+        One mark left: 0, "no", "yes", "no", "1x"
+    endif
+    Text top: "no", "##Playback speed## per event (log scale; output timeline)"
 
-    # Result waveform
-    Select outer viewport: 0, 8, 3.9, 5.4
-    Select inner viewport: 0.6, 7.6, 4.0, 5.3
+    Font size: 7
+    # D: result
+    Select outer viewport: 0, 8, 5.0, 6.45
+    Select inner viewport: 0.6, 7.7, 5.2, 6.1
     selectObject: result
-    resultNch = Get number of channels
-    if resultNch > 1
-        vizL = Extract one channel: 1
+    Axes: 0, tMax, -1, 1
+    if outCh > 1
+        vL = Extract one channel: 1
         selectObject: result
-        vizR = Extract one channel: 2
-        selectObject: vizL
-        Colour: "{0.2, 0.5, 0.7}"
-        Draw: 0, 0, 0, 0, "no", "Curve"
-        selectObject: vizR
+        vR = Extract one channel: 2
+        selectObject: vL
+        Colour: "{0.20, 0.50, 0.70}"
+        Draw: 0, 0, -1, 1, "no", "Curve"
+        selectObject: vR
         Colour: "{0.75, 0.25, 0.15}"
-        Draw: 0, 0, 0, 0, "no", "Curve"
-        removeObject: vizL, vizR
+        Draw: 0, 0, -1, 1, "no", "Curve"
+        removeObject: vL, vR
     else
-        selectObject: result
-        Colour: "{0.2, 0.5, 0.7}"
-        Draw: 0, 0, 0, 0, "no", "Curve"
+        Colour: "{0.20, 0.50, 0.70}"
+        Draw: 0, 0, -1, 1, "no", "Curve"
     endif
-    Axes: 0, t_total, -1, 1
+    Axes: 0, tMax, -1, 1
     Colour: "Black"
     Draw inner box
-    Font size: 8
-    Marks bottom: 7, "yes", "yes", "no"
-    Text bottom: "yes", "Time (s)"
-
-    # Explicit result label gutter, aligned with Source above.
-    Select outer viewport: 0.05, 0.55, 4.0, 5.3
-    Axes: 0, 1, 0, 1
-    Font size: 7
-    Colour: "Black"
-    if resultNch > 1
-        Text special: 0.50, "centre", 0.50, "half", "Times", 7, "90", "Result L/R"
-    else
-        Text special: 0.50, "centre", 0.50, "half", "Times", 7, "90", "Result"
+    tStep = 10 ^ floor(log10(tMax / 2))
+    if tMax / tStep > 10
+        tStep = tStep * 5
+    elsif tMax / tStep > 5
+        tStep = tStep * 2
     endif
+    Marks bottom every: 1, tStep, "yes", "yes", "no"
+    Text bottom: "yes", "Time (s)"
+    Text top: "no", "##Result## (" + fixed$(resultDur, 2) + " s" + if outCh > 1 then ", L blue / R red" else "" fi + ")"
 
-    # Legend
-    Select outer viewport: 1, 8, 5.5, 5.9
+    Font size: 7
+    # Summary
+    Select outer viewport: 0, 8, 6.75, 7.75
     Axes: 0, 1, 0, 1
-    Font size: 8
-    Colour: "{0.4, 0.4, 0.4}"
-    Text: 0.5, "centre", 0.5, "half",
-    ... seriesDisplay$
-    ... + "   |   " + string$(nCreated) + " segments shuffled"
-    ... + bpmSub$ + pitchSub$ + stereoSub$
-
-    Font size: 10
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    Draw inner box
+    Colour: "{0.20, 0.20, 0.20}"
+    Text: 0.02, "left", 0.80, "half", "##" + presetName$ + "##   " + seriesLabel$ + "  |  " + orgName$[organization] + "  |  " + trajName$[speed_trajectory] + " " + fixed$(speed_min, 2) + "-" + fixed$(speed_max, 2) + "x  |  link " + fixed$(durLink, 2) + "  |  " + if playback = 1 then "natural varispeed" else "fixed-slot" fi
+    Text: 0.02, "left", 0.50, "half", "Source " + fixed$(t_total, 2) + " s  ->  result " + fixed$(resultDur, 2) + " s  |  silence " + fixed$(silenceTotal / sampleRate, 2) + " s  |  gaps " + gapTxt$ + "  |  fade " + fixed$(fadeMs, 1) + " ms" + if safe_cuts then "  |  safe cuts " + string$(safeMoved) else "" fi
+    Text: 0.02, "left", 0.20, "half", "Target: " + if targetDur > 0 then fixed$(targetDur, 2) + " s, " + targetNote$ else "free" fi + "  |  stereo " + if apply_stereo then "on" else "off" fi + "  |  seed " + string$(seedUsed) + "  |  peak " + fixed$(peakOut, 2)
     Colour: "Black"
+    # whole figure selected, so Save/Copy takes all panels
+    Select outer viewport: 0, 8, 0, 7.85
 endif
 
-# ============================================================
-# FINAL INFO
-# ============================================================
-
-selectObject: result
-resultDuration = Get total duration
-
-appendInfoLine: ""
-appendInfoLine: "=== Done ==="
-appendInfoLine: "Original:  ", fixed$(t_total, 3), " s"
-appendInfoLine: "Result:    ", fixed$(resultDuration, 3), " s"
-appendInfoLine: "Created:   ", selected$("Sound")
-
-# ============================================================
-# CLEANUP TRIMMED SOURCE
-# ============================================================
-
 removeObject: processingSound
-
-# ============================================================
-# PLAY
-# ============================================================
+random_initializeSafelyAndUnpredictably ()
 
 if play_result
     selectObject: result
     Play
 endif
-
 selectObject: result
+
+# ============================================================
+# PROCEDURES
+# ============================================================
+
+procedure parseParams: .s$
+    .s$ = replace$(replace$(.s$, ",", " ", 0), tab$, " ", 0) + " "
+    .n = 0
+    for .k from 1 to 5
+        .v[.k] = 0
+    endfor
+    while index(.s$, " ") > 0 and .n < 5
+        .w$ = left$(.s$, index(.s$, " ") - 1)
+        .s$ = mid$(.s$, index(.s$, " ") + 1, 10000)
+        if .w$ <> ""
+            .n += 1
+            .x = number(.w$)
+            .v[.n] = if .x = undefined then 0 else round(.x) fi
+        endif
+    endwhile
+    for .k from .n + 1 to 5
+        .v[.k] = 1
+    endfor
+endproc
+
+procedure insertSorted: .v
+    .pos = nPts + 1
+    .i = 1
+    while .i <= nPts
+        if tk[.i] >= .v
+            .pos = .i
+            .i = nPts + 1
+        else
+            .i += 1
+        endif
+    endwhile
+    .j = nPts
+    while .j >= .pos
+        tk[.j + 1] = tk[.j]
+        .j -= 1
+    endwhile
+    tk[.pos] = .v
+    nPts += 1
+endproc
+
+procedure deduplicate
+    .prev = -1
+    .newN = 0
+    for .i from 1 to nPts
+        if abs(tk[.i] - .prev) > 1e-9
+            .newN += 1
+            tk2[.newN] = tk[.i]
+            .prev = tk[.i]
+        endif
+    endfor
+    nPts = .newN
+    for .i from 1 to nPts
+        tk[.i] = tk2[.i]
+    endfor
+endproc
+
+# Fisher-Yates on order[.a .. .b]
+procedure shuffleRange: .a, .b
+    .i = .b
+    while .i > .a
+        .j = randomInteger(.a, .i)
+        .t = order[.i]
+        order[.i] = order[.j]
+        order[.j] = .t
+        .i -= 1
+    endwhile
+endproc
+
+# Total output duration for log-centre .c and depth .w (natural playback)
+procedure totalFor: .c, .w
+    .t = 0
+    for .p from 1 to nSeg
+        .d = segDur[order[.p]] / exp(.c + .w * qv[.p])
+        .t += .d
+        if .p < nSeg
+            .t += gapFixed + gapProp * .d
+        endif
+    endfor
+    totalFor.t = .t
+endproc
+
+# Reachable durations for depth .w with every speed inside the range
+procedure reach: .w
+    .qMin = 1e9
+    .qMax = -1e9
+    for .p from 1 to nSeg
+        .qMin = min(.qMin, .w * qv[.p])
+        .qMax = max(.qMax, .w * qv[.p])
+    endfor
+    reach.cLo = lnMin - .qMin
+    reach.cHi = lnMax - .qMax
+    if reach.cLo > reach.cHi + 1e-12
+        reach.tLo = 1e9
+        reach.tHi = -1e9
+    else
+        @totalFor: reach.cHi, .w
+        reach.tLo = totalFor.t
+        @totalFor: reach.cLo, .w
+        reach.tHi = totalFor.t
+    endif
+endproc
+
+procedure padL: .s$, .w
+    padL$ = .s$
+    while length(padL$) < .w
+        padL$ = " " + padL$
+    endwhile
+endproc
