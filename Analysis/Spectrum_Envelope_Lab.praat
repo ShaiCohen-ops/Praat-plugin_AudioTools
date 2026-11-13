@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.0.4 (2026)
+# Version: 1.1.1 (2026)
 # License: MIT License
 # Category: Analysis
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
@@ -26,7 +26,14 @@
 #                                       on Window A (whole Sound: its midpoint)
 #
 # Outputs:
-#   Praat Picture visualization and optional compact results Table.
+#   Praat Picture visualization, optional compact results Table, and an
+#   Info-window summary. In modes A-C the Info window also carries a
+#   Harmonic Components Report per window: H1-H10 in harmonic order with
+#   expected frequency (n x F0), measured frequency and level of the
+#   validated peak (sine-calibrated dBFS), level relative to the strongest
+#   measured component, deviation in cents from the ideal harmonic series,
+#   and status Validated / Missing / Out of range /
+#   Unavailable. It is printed whatever the drawing and Table settings.
 #   No audio is produced and the selected Sounds are never modified.
 #
 # Methodological notes and limitations:
@@ -80,6 +87,14 @@
 #              maximum to 0 dB, so only shapes are compared.
 #
 # Changelog:
+#   v1.1.1 (2026) - Report gains a Deviation (cents) column:
+#     1200 x log2 (measured / (n x F0)), deviation from the ideal harmonic
+#     series (not equal temperament), with a note naming the F0 it refers
+#     to (fitted, user-specified or Pitch median).
+#   v1.1.0 (2026) - Harmonic Components Report in the Info window (modes
+#     A, B, C; not in D). Reads the existing validation arrays; no new
+#     detector, no form fields, no objects. Levels are independent of the
+#     Peak-normalized display option.
 #   v1.0.4 (2026) - Review round 4.
 #     - FFT lab: the peak search range is checked before use (Praat searches
 #       the whole Sound when a range is inverted); a display band too narrow
@@ -129,7 +144,7 @@
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 # ============================================================
 
-form Spectrum Envelope Lab v1.0.4
+form Spectrum Envelope Lab v1.1.1
 	optionmenu Analysis_mode 1
 		option A. Single spectrum / envelope
 		option B. Compare two windows in one Sound
@@ -1192,7 +1207,7 @@ procedure buildTable
 endproc
 
 procedure writeInfo
-	writeInfoLine: "Spectrum & Envelope Lab v1.0.4 - ", modeName$[mode]
+	writeInfoLine: "Spectrum & Envelope Lab v1.1.1 - ", modeName$[mode]
 	appendInfoLine: "Spectra: Hann window, amplitude calibrated so a sinusoid of amplitude A reads 20*log10(A) dBFS."
 	if nyquistLimited
 		appendInfoLine: "Frequency range limited to ", fixed$ (fmaxEff, 0), " Hz (98 percent of the lowest Nyquist frequency)."
@@ -1229,6 +1244,142 @@ procedure writeInfo
 	if create_results_table
 		appendInfoLine: "Table Spectrum_Envelope_Lab created (one row per analysis window)."
 	endif
+	if mode <> 4
+		for .k to nSlot
+			@harmonicReport: .k
+		endfor
+		appendInfoLine: ""
+		appendInfoLine: "Expected frequencies are integer multiples of F0. Measured values are reported only for validated spectral peaks. Relative levels are referenced to the strongest measured component of the analysis window."
+	endif
+endproc
+
+# --------------------------------------------------------------------
+# Harmonic Components Report (Info window, modes A-C)
+# H1-H10 in harmonic order, read from the existing validation arrays
+# (hStat##, hFreq##, hDb##). Levels are restored to the analysis values:
+# the display shift of "Peak-normalized shape" is subtracted, so the
+# report is identical in both level scales. Relative dB is referenced to
+# the strongest measured component of the window (20 Hz to the maximum
+# analysis frequency). Nothing is measured here.
+# --------------------------------------------------------------------
+procedure harmonicReport: .k
+	.s = slotSnd[.k]
+	appendInfoLine: ""
+	appendInfoLine: "=== HARMONIC COMPONENTS: " + slotLabel$[.k] + " ==="
+	appendInfoLine: "Sound: ", origName$[.s], if sNch[.s] > 1 then "  (channel " + string$ (sCh[.s]) + " of " + string$ (sNch[.s]) + ")" else "" fi
+	.t0 = slotT1[.k] - sXmin[.s]
+	.t0$ = if abs (.t0) < 0.0005 then "0.000" else fixed$ (.t0, 3) fi
+	appendInfoLine: "Window: start ", .t0$, " s | duration ", fixed$ (slotTw[.k], 3), " s | analysis range 20-", fixed$ (fmaxEff, 0), " Hz"
+	if slotF0[.k] = undefined
+		appendInfoLine: "F0: unavailable (", slotF0note$[.k], ")"
+		appendInfoLine: "Harmonic analysis unavailable for this window; H1-H10 are not reported."
+	elsif slotModel$[.k] = "unresolved" or slotModel$[.k] = "unavailable"
+		appendInfoLine: "F0: ", fixed$ (slotF0[.k], 1), " Hz (", slotF0src$[.k], ")"
+		appendInfoLine: "Harmonic analysis unavailable for this window (", slotF0note$[.k], "); H1-H10 are not reported."
+	else
+		.ref = slotMaxDb[.k]
+		.st$ = "harmonic pattern " + slotModel$[.k]
+		if slotF0note$[.k] <> ""
+			.st$ = .st$ + "; WARNING " + slotF0note$[.k]
+		endif
+		appendInfoLine: "F0: ", fixed$ (slotF0[.k], 1), " Hz (", slotF0src$[.k], ") | status: ", .st$
+		appendInfoLine: "Strongest measured component: ", fixed$ (slotMaxHz[.k], 1), " Hz at ", fixed$ (.ref, 1), " dBFS"
+		appendInfoLine: ""
+		@padR: "Harmonic", 10
+		.l$ = padR.out$
+		@padL: "Expected Hz", 12
+		.l$ = .l$ + padL.out$
+		@padL: "Measured Hz", 13
+		.l$ = .l$ + padL.out$
+		@padL: "Level dBFS", 12
+		.l$ = .l$ + padL.out$
+		@padL: "Relative dB", 13
+		.l$ = .l$ + padL.out$
+		@padL: "Deviation (cents)", 19
+		.l$ = .l$ + padL.out$
+		appendInfoLine: .l$, "   Status"
+		appendInfoLine: "---------------------------------------------------------------------------------------------"
+		for .h to 10
+			.fe = .h * slotF0[.k]
+			.meas$ = "--"
+			.lev$ = "--"
+			.rel$ = "--"
+			.dev$ = "--"
+			if .fe > fmaxEff
+				.stat$ = "Out of range"
+			elsif hStat##[.k, .h] = 1
+				.f = hFreq##[.k, .h]
+				# analysis level: undo any display-only shift
+				.d = hDb##[.k, .h] - slotShift[.k]
+				if .f = undefined or .d = undefined or .f <= 0
+					.stat$ = "Unavailable"
+				else
+					.stat$ = "Validated"
+					@fmt1: .f
+					.meas$ = fmt1.out$
+					@fmt1: .d
+					.lev$ = fmt1.out$
+					@fmt1: .d - .ref
+					.rel$ = fmt1.out$
+					# deviation from the ideal harmonic series, from the
+					# unrounded measured and expected frequencies
+					.cents = round (1200 * log2 (.f / .fe))
+					.dev$ = if .cents > 0 then "+" + string$ (.cents) else string$ (.cents) fi
+				endif
+			else
+				.stat$ = "Missing"
+			endif
+			@padR: "H" + string$ (.h), 10
+			.l$ = padR.out$
+			@fmt1: .fe
+			@padL: fmt1.out$, 12
+			.l$ = .l$ + padL.out$
+			@padL: .meas$, 13
+			.l$ = .l$ + padL.out$
+			@padL: .lev$, 12
+			.l$ = .l$ + padL.out$
+			@padL: .rel$, 13
+			.l$ = .l$ + padL.out$
+			@padL: .dev$, 19
+			.l$ = .l$ + padL.out$
+			appendInfoLine: .l$, "   ", .stat$
+		endfor
+		# what the cents column is measured against
+		if index (slotF0src$[.k], "peak-refined") > 0
+			.ref$ = "an F0 fitted to the validated peaks of this window, so the column shows departures from that fitted series"
+		elsif slotF0src$[.k] = "user-specified"
+			.ref$ = "the user-specified F0"
+		else
+			.ref$ = "the F0 of the Pitch analysis (" + slotF0src$[.k] + ")"
+		endif
+		appendInfoLine: "Deviation (cents) = 1200 x log2 (measured / (n x F0)): deviation from the ideal harmonic series, not from equal temperament."
+		appendInfoLine: "It is referenced to ", .ref$, ". It is an estimate: pitch movement within the window and peak-frequency precision (window ", fixed$ (slotTw[.k] * 1000, 0), " ms, Hann -3 dB width ", fixed$ (1.44 / slotTw[.k], 1), " Hz) also produce small deviations."
+	endif
+endproc
+
+# One decimal, rounded first; never prints "-0.0" or fixed$'s bare "0"
+procedure fmt1: .x
+	.r = round (.x * 10) / 10
+	if abs (.r) < 0.05
+		.out$ = "0.0"
+	else
+		.out$ = fixed$ (.r, 1)
+	endif
+endproc
+
+# Fixed-width columns (Praat has no pad primitive)
+procedure padL: .s$, .w
+	while length (.s$) < .w
+		.s$ = " " + .s$
+	endwhile
+	padL.out$ = .s$
+endproc
+
+procedure padR: .s$, .w
+	while length (.s$) < .w
+		.s$ = .s$ + " "
+	endwhile
+	padR.out$ = .s$
 endproc
 
 # --------------------------------------------------------------------
