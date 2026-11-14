@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4 (2026)
+# Version: 0.5.1 experimental (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -30,6 +30,11 @@
 #   The engine is a Python script (rf_engine.py). The front end discovers
 #   Python automatically, uses a compatible installed engine when present,
 #   and otherwise writes its embedded copy to a unique temporary file.
+#
+# v0.5 experimental:
+#   - Activity-aware grain selection, microphrases and neighborhood novelty.
+#   - Optional trajectory rendering, MFCC importance, and activity controls.
+#   - Embeds the v0.5 Python engine for one-file Praat use.
 #
 # v0.4:
 #   - Makes Repeat_penalty effective with overlapping grain pools by calibrating
@@ -87,6 +92,12 @@ form RF_Concatenative
         option random_walk
     real Trajectory_weight 0.6
     real Repeat_penalty 0.5
+    comment --- v0.5 experimental controls ---
+    real Activity_target 0.78
+    positive Min_phrase_ms 140
+    positive Max_phrase_ms 420
+    real Mfcc_weight 0.12
+    real Render_strength 1.0
     comment --- Random forest ---
     natural Trees 100
     integer Max_depth 15
@@ -207,6 +218,30 @@ endif
 if repeat_penalty > 10
     repeat_penalty = 10
 endif
+if activity_target < 0.05
+    activity_target = 0.05
+endif
+if activity_target > 1.0
+    activity_target = 1.0
+endif
+if min_phrase_ms < 20
+    min_phrase_ms = 20
+endif
+if max_phrase_ms < min_phrase_ms
+    max_phrase_ms = min_phrase_ms
+endif
+if mfcc_weight < 0
+    mfcc_weight = 0
+endif
+if mfcc_weight > 3
+    mfcc_weight = 3
+endif
+if render_strength < 0
+    render_strength = 0
+endif
+if render_strength > 2
+    render_strength = 2
+endif
 if trees > 1000
     trees = 1000
 endif
@@ -286,7 +321,7 @@ endproc
 # ===========================================================================
 
 clearinfo
-writeInfoLine:  "=== RF_Concatenative v0.4 ==="
+writeInfoLine:  "=== RF_Concatenative v0.5.1 experimental ==="
 appendInfoLine: "Input object: ", inputName$
 appendInfoLine: "Preset:       ", presetName$
 appendInfoLine: ""
@@ -297,6 +332,10 @@ appendInfoLine: "Grain / hop:      ", fixed$(frame_length_ms, 1), " ms / ",
 appendInfoLine: "Trajectory:       ", trajectory$
 appendInfoLine: "Trajectory weight:", " ", fixed$(trajectory_weight, 2)
 appendInfoLine: "Repeat penalty:   ", fixed$(repeat_penalty, 2)
+appendInfoLine: "Active material target: ", fixed$(activity_target, 2)
+appendInfoLine: "Source microphrases:    ", fixed$(min_phrase_ms, 0), "-", fixed$(max_phrase_ms, 0), " ms"
+appendInfoLine: "MFCC importance:        ", fixed$(mfcc_weight, 2)
+appendInfoLine: "Trajectory rendering:   ", fixed$(render_strength, 2)
 appendInfoLine: "Forest:           ", trees, " trees, depth ", max_depth,
     ... " (0 = unlimited), k = ", lookahead_k
 appendInfoLine: "Seed:             ", seed
@@ -334,18 +373,18 @@ appendInfoLine: "  Dependencies will be verified by the engine (single import pa
 appendInfoLine: "[2/6] Preparing Python engine..."
 
 useExternal = 0
-externalPath$ = preferencesDirectory$ + "/plugin_AudioTools/py/rf_engine.py"
+externalPath$ = preferencesDirectory$ + "/plugin_AudioTools/py/rf_engine_v0.5.py"
 if not fileReadable(externalPath$)
-    externalPath$ = defaultDirectory$ + "/rf_engine.py"
+    externalPath$ = defaultDirectory$ + "/rf_engine_v0.5.py"
 endif
 if fileReadable(externalPath$)
     externalText$ = readFile$(externalPath$)
-    if index(externalText$, "# Version: 0.4 (2026)") > 0
+    if index(externalText$, "# Version: 0.5 (2026)") > 0
         enginePath$ = externalPath$
         useExternal = 1
-        appendInfoLine: "  Using compatible installed rf_engine.py"
+        appendInfoLine: "  Using compatible external v0.5 Python engine"
     else
-        appendInfoLine: "  Installed rf_engine.py is not v0.4; using embedded engine."
+        appendInfoLine: "  External engine is not v0.5; using embedded v0.5 engine."
     endif
 endif
 
@@ -356,7 +395,7 @@ if not useExternal
         @cleanUpTempFiles
         exitScript: "Could not write the engine to:" + newline$ + enginePath$
     endif
-    appendInfoLine: "  Using embedded engine"
+    appendInfoLine: "  Using embedded v0.5 Python engine"
 endif
 
 # ===========================================================================
@@ -393,7 +432,12 @@ runSubprocess: pythonCmd$, enginePath$,
     ... "--repeat-penalty", fixed$(repeat_penalty, 4),
     ... "--seed", string$(seed),
     ... "--match-input-rms", string$(match_input_RMS),
-    ... "--safety-peak", fixed$(safety_peak, 6)
+    ... "--safety-peak", fixed$(safety_peak, 6),
+    ... "--activity-target", fixed$(activity_target, 4),
+    ... "--min-run-ms", fixed$(min_phrase_ms, 2),
+    ... "--max-run-ms", fixed$(max_phrase_ms, 2),
+    ... "--mfcc-weight", fixed$(mfcc_weight, 4),
+    ... "--render-strength", fixed$(render_strength, 4)
 
 # ===========================================================================
 # Stage 4 - Echo the engine log into the info window
@@ -967,9 +1011,10 @@ procedure parseStatLine: .text$, .key$
 endproc
 
 # ---------------------------------------------------------------------------
-# writeEngine - streams the standalone v0.4 engine to a unique temp file.
-# The embedded block is generated from rf_engine_v0.4.py and the
-# regression test verifies that it is byte-identical apart from newline EOF.
+
+# ---------------------------------------------------------------------------
+# writeEngine - generated from rf_engine_v0.5.py (embedded Python engine).
+# The single-file Praat script is usable without a separate engine file.
 # ---------------------------------------------------------------------------
 procedure writeEngine
     writeFileLine: enginePath$, "#!/usr/bin/env python3"
@@ -979,9 +1024,19 @@ procedure writeEngine
     appendFileLine: enginePath$, "# Part of Praat AudioTools plugin"
     appendFileLine: enginePath$, "# Author: Shai Cohen, Department of Music, Bar-Ilan University, Israel"
     appendFileLine: enginePath$, "# Email: shai.cohen@biu.ac.il"
-    appendFileLine: enginePath$, "# Version: 0.4 (2026)"
+    appendFileLine: enginePath$, "# Version: 0.5 (2026)"
     appendFileLine: enginePath$, "# License: MIT"
     appendFileLine: enginePath$, "# Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools"
+    appendFileLine: enginePath$, "#"
+    appendFileLine: enginePath$, "# v0.5 experimental:"
+    appendFileLine: enginePath$, "#   - Activity-aware selection: silence is scheduled, not accidentally preferred."
+    appendFileLine: enginePath$, "#   - Source-contiguous microphrases replace isolated per-hop jumps."
+    appendFileLine: enginePath$, "#   - Corpus-neighborhood novelty penalty and controllable feature weighting."
+    appendFileLine: enginePath$, "#   - Unspecified MFCC goals follow the RF prediction instead of corpus zero."
+    appendFileLine: enginePath$, "#   - Chronologically held-out evaluation with a leakage guard."
+    appendFileLine: enginePath$, "#   - Offline optional trajectory rendering for energy and spectral tilt."
+    appendFileLine: enginePath$, "#   - Backwards-compatible v0.4 command-line flags and output stats."
+    appendFileLine: enginePath$, "#   - New tuning flags for Python and the v0.5 experimental Praat form."
     appendFileLine: enginePath$, "#"
     appendFileLine: enginePath$, "# v0.4:"
     appendFileLine: enginePath$, "#   - Calibrates Repeat penalty to corpus-scale pairwise distance so it remains effective with heavily overlapping grains."
@@ -1067,6 +1122,7 @@ procedure writeEngine
     appendFileLine: enginePath$, "MAX_RMS_MATCH_GAIN = 4.0   # +12.04 dB guard against pathological quiet selections"
     appendFileLine: enginePath$, ""
     appendFileLine: enginePath$, "TRAJECTORIES = [""crescendo_brightening"", ""spectral_descent"", ""random_walk""]"
+    appendFileLine: enginePath$, "ENGINE_VERSION = ""0.5-experimental"""
     appendFileLine: enginePath$, ""
     appendFileLine: enginePath$, ""
     appendFileLine: enginePath$, "# --------------------------------------------------------------------------"
@@ -1363,66 +1419,260 @@ procedure writeEngine
     appendFileLine: enginePath$, "    return float(np.median(tri))"
     appendFileLine: enginePath$, ""
     appendFileLine: enginePath$, ""
-    appendFileLine: enginePath$, "def walk_pool(rf, Z, T, traj_weight, repeat_penalty, seed, log):"
+    appendFileLine: enginePath$, "def estimate_activity(F):"
+    appendFileLine: enginePath$, "    """"""Find low-energy source frames by corpus-relative RMS, without a fixed dB gate."
+    appendFileLine: enginePath$, ""
+    appendFileLine: enginePath$, "    A stationary, low-dynamic-range recording is treated as wholly active."
+    appendFileLine: enginePath$, "    This is a coarse activity proxy, not a phoneme / voiced-unvoiced detector."
+    appendFileLine: enginePath$, "    """""""
+    appendFileLine: enginePath$, "    import numpy as np"
+    appendFileLine: enginePath$, "    r = np.asarray(F[:, IDX_RMS], dtype=float)"
+    appendFileLine: enginePath$, "    q10, q50, q90 = np.percentile(r, [10, 50, 90])"
+    appendFileLine: enginePath$, "    if q90 < 1.e-8 or q90 / max(q10, 1.e-8) < 3.5:"
+    appendFileLine: enginePath$, "        return np.ones(r.size, dtype=bool), 0.0"
+    appendFileLine: enginePath$, "    threshold = max(3.0 * q10, 0.08 * q90)"
+    appendFileLine: enginePath$, "    threshold = min(threshold, 0.4 * q50) if q50 > 0 else threshold"
+    appendFileLine: enginePath$, "    mask = r > threshold"
+    appendFileLine: enginePath$, "    if mask.mean() < 0.12:"
+    appendFileLine: enginePath$, "        return np.ones(r.size, dtype=bool), 0.0"
+    appendFileLine: enginePath$, "    return mask, float(threshold)"
+    appendFileLine: enginePath$, ""
+    appendFileLine: enginePath$, ""
+    appendFileLine: enginePath$, "def planned_activity(F, active, n_steps, target, hop_len, sr, trajectory_kind):"
+    appendFileLine: enginePath$, "    """"""Transfer the slow source activity contour to the new time scale."
+    appendFileLine: enginePath$, ""
+    appendFileLine: enginePath$, "    Quantile thresholding controls the requested activity ratio. Smoothing"
+    appendFileLine: enginePath$, "    avoids alternating single-grain speech and silence decisions."
+    appendFileLine: enginePath$, "    """""""
+    appendFileLine: enginePath$, "    import numpy as np"
+    appendFileLine: enginePath$, "    from scipy.ndimage import gaussian_filter1d"
+    appendFileLine: enginePath$, "    if active.all() or target >= .999:"
+    appendFileLine: enginePath$, "        return np.ones(n_steps, dtype=bool)"
+    appendFileLine: enginePath$, "    n = active.size"
+    appendFileLine: enginePath$, "    src = np.log1p(F[:, IDX_RMS] / max(np.percentile(F[:, IDX_RMS], 90), 1.e-8))"
+    appendFileLine: enginePath$, "    xold = np.linspace(0., 1., n)"
+    appendFileLine: enginePath$, "    xnew = np.linspace(0., 1., n_steps)"
+    appendFileLine: enginePath$, "    smooth = gaussian_filter1d(np.interp(xnew, xold, src),"
+    appendFileLine: enginePath$, "                              sigma=max(1., 0.085 * sr / hop_len), mode=""nearest"")"
+    appendFileLine: enginePath$, "    if trajectory_kind == ""crescendo_brightening"":"
+    appendFileLine: enginePath$, "        # Gradually allocate more of the available rests to the beginning."
+    appendFileLine: enginePath$, "        # This also lets the sustained ending support the requested crescendo."
+    appendFileLine: enginePath$, "        smooth += 0.40 * (xnew - .5)"
+    appendFileLine: enginePath$, "    # Stable quantile threshold: exactly the requested duty fraction except ties."
+    appendFileLine: enginePath$, "    k = int(np.clip(round((1.0 - target) * n_steps), 0, n_steps))"
+    appendFileLine: enginePath$, "    schedule = np.ones(n_steps, dtype=bool)"
+    appendFileLine: enginePath$, "    if k:"
+    appendFileLine: enginePath$, "        schedule[np.argsort(smooth, kind=""stable"")[:k]] = False"
+    appendFileLine: enginePath$, "    return schedule"
+    appendFileLine: enginePath$, ""
+    appendFileLine: enginePath$, ""
+    appendFileLine: enginePath$, "def forward_mean(A, width):"
+    appendFileLine: enginePath$, "    """"""Fixed-width *future* average for pool segment scoring."""""""
+    appendFileLine: enginePath$, "    import numpy as np"
+    appendFileLine: enginePath$, "    width = max(1, min(int(width), len(A)))"
+    appendFileLine: enginePath$, "    ext = np.concatenate((A, np.repeat(A[-1:, :], width, axis=0)), axis=0)"
+    appendFileLine: enginePath$, "    cs = np.vstack((np.zeros((1, A.shape[1])), np.cumsum(ext, axis=0)))"
+    appendFileLine: enginePath$, "    return (cs[width:width + len(A)] - cs[:len(A)]) / width"
+    appendFileLine: enginePath$, ""
+    appendFileLine: enginePath$, ""
+    appendFileLine: enginePath$, "def blocked_validation(Z, lookahead, trees, max_depth, seed, frame_len, hop_len, log):"
+    appendFileLine: enginePath$, "    """"""Hold out the final chronological block; guard against STFT overlap leakage."
+    appendFileLine: enginePath$, ""
+    appendFileLine: enginePath$, "    Reports skill over the persistence baseline on temporally unseen rows,"
+    appendFileLine: enginePath$, "    not a promise of perceptually better music. Final forest still uses all rows."
+    appendFileLine: enginePath$, "    """""""
+    appendFileLine: enginePath$, "    import numpy as np"
+    appendFileLine: enginePath$, "    from sklearn.ensemble import RandomForestRegressor"
+    appendFileLine: enginePath$, "    n = len(Z) - lookahead"
+    appendFileLine: enginePath$, "    if n < 80:"
+    appendFileLine: enginePath$, "        return float(""nan"")"
+    appendFileLine: enginePath$, "    split = int(n * .8)"
+    appendFileLine: enginePath$, "    guard = max(lookahead + 1, int(np.ceil(frame_len / float(hop_len))) + lookahead)"
+    appendFileLine: enginePath$, "    end = max(10, split - guard)"
+    appendFileLine: enginePath$, "    test = np.arange(split, n)"
+    appendFileLine: enginePath$, "    if test.size < 10:"
+    appendFileLine: enginePath$, "        return float(""nan"")"
+    appendFileLine: enginePath$, "    tr = np.arange(end)"
+    appendFileLine: enginePath$, "    if tr.size > MAX_TRAIN_ROWS:"
+    appendFileLine: enginePath$, "        tr = tr[::int(np.ceil(tr.size / MAX_TRAIN_ROWS))]"
+    appendFileLine: enginePath$, "    test = test[::max(1, int(np.ceil(test.size / 2500.0)))]"
+    appendFileLine: enginePath$, "    rf = RandomForestRegressor(n_estimators=min(100, trees),"
+    appendFileLine: enginePath$, "                               max_depth=None if max_depth <= 0 else max_depth,"
+    appendFileLine: enginePath$, "                               random_state=seed, n_jobs=-1)"
+    appendFileLine: enginePath$, "    rf.fit(Z[tr], Z[tr + lookahead])"
+    appendFileLine: enginePath$, "    pred = rf.predict(Z[test])"
+    appendFileLine: enginePath$, "    baseline = np.mean((Z[test + lookahead] - Z[test]) ** 2)"
+    appendFileLine: enginePath$, "    model_err = np.mean((Z[test + lookahead] - pred) ** 2)"
+    appendFileLine: enginePath$, "    skill = 1.0 - model_err / baseline if baseline > 1.e-15 else float(""nan"")"
+    appendFileLine: enginePath$, "    log(""    Chronological held-out RF skill vs persistence: %.4f (%d test frames, guard %d)"" %"
+    appendFileLine: enginePath$, "        (skill, len(test), guard))"
+    appendFileLine: enginePath$, "    return float(skill)"
+    appendFileLine: enginePath$, ""
+    appendFileLine: enginePath$, ""
+    appendFileLine: enginePath$, "def walk_pool(rf, Z, T, traj_weight, repeat_penalty, seed, log,"
+    appendFileLine: enginePath$, "              F=None, frame_len=None, hop_len=None, sr=None,"
+    appendFileLine: enginePath$, "              activity_target=.78, min_run_ms=140., max_run_ms=420.,"
+    appendFileLine: enginePath$, "              mfcc_weight=.12, trajectory_kind=""crescendo_brightening""):"
+    appendFileLine: enginePath$, ""
+    appendFileLine: enginePath$, "    """"""RF-guided *microphrase* walk with activity-aware, novelty-aware selection."
+    appendFileLine: enginePath$, ""
+    appendFileLine: enginePath$, "    Each new microphrase starts at a source index chosen by RF plus the target."
+    appendFileLine: enginePath$, "    Subsequent grains advance one source hop at a time. Segment boundaries"
+    appendFileLine: enginePath$, "    or an activity transition trigger a new search. No pitch is fabricated."
+    appendFileLine: enginePath$, "    """""""
     appendFileLine: enginePath$, "    import numpy as np"
     appendFileLine: enginePath$, "    from scipy.spatial.distance import cdist"
-    appendFileLine: enginePath$, ""
-    appendFileLine: enginePath$, "    n_pool  = Z.shape[0]"
-    appendFileLine: enginePath$, "    n_steps = T.shape[0]"
-    appendFileLine: enginePath$, ""
+    appendFileLine: enginePath$, "    if F is None or frame_len is None or hop_len is None or sr is None:"
+    appendFileLine: enginePath$, "        raise ValueError(""v0.5 walk_pool needs feature and timing metadata"")"
+    appendFileLine: enginePath$, "    rng = np.random.RandomState(seed + 851)"
+    appendFileLine: enginePath$, "    n_pool, n_steps = Z.shape[0], T.shape[0]"
     appendFileLine: enginePath$, "    nn_scale = median_nn_distance(Z, seed)"
-    appendFileLine: enginePath$, "    if not np.isfinite(nn_scale) or nn_scale < 0:"
-    appendFileLine: enginePath$, "        nn_scale = 0.0"
-    appendFileLine: enginePath$, ""
     appendFileLine: enginePath$, "    repeat_scale = median_pair_distance(Z, seed)"
-    appendFileLine: enginePath$, "    if not np.isfinite(repeat_scale) or repeat_scale <= 0:"
-    appendFileLine: enginePath$, "        repeat_scale = 1.0"
+    appendFileLine: enginePath$, "    active, activity_threshold = estimate_activity(F)"
+    appendFileLine: enginePath$, "    plan = planned_activity(F, active, n_steps, activity_target, hop_len, sr, trajectory_kind)"
     appendFileLine: enginePath$, ""
-    appendFileLine: enginePath$, "    # Penalty is expressed in units of the median pairwise corpus distance."
-    appendFileLine: enginePath$, "    # This stays meaningful even when overlap makes adjacent grains almost"
-    appendFileLine: enginePath$, "    # identical. Only the exact grain is penalised, so natural j -> j+1 source"
-    appendFileLine: enginePath$, "    # continuity remains available to the forest."
-    appendFileLine: enginePath$, "    hit_cost = repeat_penalty * repeat_scale"
-    appendFileLine: enginePath$, "    decay    = 0.5"
+    appendFileLine: enginePath$, "    min_run = max(1, int(round(min_run_ms * .001 * sr / hop_len)))"
+    appendFileLine: enginePath$, "    max_run = max(min_run, int(round(max_run_ms * .001 * sr / hop_len)))"
+    appendFileLine: enginePath$, "    # Brightness and amplitude drive the target; MFCC2-13 are timbral ties."
+    appendFileLine: enginePath$, "    weights = np.full(Z.shape[1], mfcc_weight, dtype=float)"
+    appendFileLine: enginePath$, "    weights[IDX_RMS] = 2.6"
+    appendFileLine: enginePath$, "    weights[IDX_CENTROID] = 1.1"
+    appendFileLine: enginePath$, "    weights[IDX_FLATNESS] = .25"
+    appendFileLine: enginePath$, "    weights[IDX_ZCR] = .20"
+    appendFileLine: enginePath$, "    weights[IDX_MFCC1] = .60"
+    appendFileLine: enginePath$, "    wroot = np.sqrt(weights)"
+    appendFileLine: enginePath$, "    candidate_width = max(2, min_run // 2)"
+    appendFileLine: enginePath$, "    future = forward_mean(Z, candidate_width)"
+    appendFileLine: enginePath$, "    local_active = forward_mean(active[:, None].astype(float), candidate_width)[:, 0]"
     appendFileLine: enginePath$, ""
-    appendFileLine: enginePath$, "    penalty = np.zeros(n_pool)"
-    appendFileLine: enginePath$, "    chosen, dists = [], []"
-    appendFileLine: enginePath$, ""
-    appendFileLine: enginePath$, "    # Seed on the grain closest to the first target point."
-    appendFileLine: enginePath$, "    state_idx = int(np.argmin(cdist(T[0:1], Z)[0]))"
-    appendFileLine: enginePath$, "    state = Z[state_idx]"
-    appendFileLine: enginePath$, ""
-    appendFileLine: enginePath$, "    t0 = time.time()"
+    appendFileLine: enginePath$, "    recent = np.zeros(n_pool, dtype=float)"
+    appendFileLine: enginePath$, "    chosen = np.empty(n_steps, dtype=int)"
+    appendFileLine: enginePath$, "    dists = np.empty(n_steps, dtype=float)"
+    appendFileLine: enginePath$, "    jumps = []"
+    appendFileLine: enginePath$, "    last_j = -1"
+    appendFileLine: enginePath$, "    remaining = 0"
+    appendFileLine: enginePath$, "    target_kind = np.any(np.abs(T[:, IDX_MFCC1 + 1:]) > 1.e-7)"
+    appendFileLine: enginePath$, "    # Distinct grain ban is too weak; smear novelty cost around whole phrase."
+    appendFileLine: enginePath$, "    neighborhood = max(1, int(round(.35 * sr / hop_len)))"
     appendFileLine: enginePath$, "    for t in range(n_steps):"
-    appendFileLine: enginePath$, "        pred = rf.predict(state.reshape(1, -1))[0]"
-    appendFileLine: enginePath$, "        goal = (1.0 - traj_weight) * pred + traj_weight * T[t]"
+    appendFileLine: enginePath$, "        wants_active = bool(plan[t])"
+    appendFileLine: enginePath$, "        continues = (last_j >= 0 and remaining > 0 and last_j + 1 < n_pool"
+    appendFileLine: enginePath$, "                     and bool(active[last_j + 1]) == wants_active)"
+    appendFileLine: enginePath$, "        if continues:"
+    appendFileLine: enginePath$, "            j = last_j + 1"
+    appendFileLine: enginePath$, "            remaining -= 1"
+    appendFileLine: enginePath$, "        else:"
+    appendFileLine: enginePath$, "            recent *= .86  # decay per phrase, not per grain"
+    appendFileLine: enginePath$, "            # Predict expected transition from last actual descriptor."
+    appendFileLine: enginePath$, "            state = Z[last_j] if last_j >= 0 else Z[int(np.argmin("
+    appendFileLine: enginePath$, "                np.sum((Z[:, :5] - T[0, :5]) ** 2, axis=1)))]"
+    appendFileLine: enginePath$, "            pred = rf.predict(state[None, :])[0]"
+    appendFileLine: enginePath$, "            goal = pred.copy()"
+    appendFileLine: enginePath$, "            goal[:IDX_MFCC1 + 1] = ((1.0 - traj_weight) * pred[:IDX_MFCC1 + 1] +"
+    appendFileLine: enginePath$, "                                      traj_weight * T[t, :IDX_MFCC1 + 1])"
+    appendFileLine: enginePath$, "            if target_kind:"
+    appendFileLine: enginePath$, "                goal[IDX_MFCC1 + 1:] = ((1.0 - traj_weight) * pred[IDX_MFCC1 + 1:] +"
+    appendFileLine: enginePath$, "                                      traj_weight * T[t, IDX_MFCC1 + 1:])"
     appendFileLine: enginePath$, ""
-    appendFileLine: enginePath$, "        d = cdist(goal.reshape(1, -1), Z)[0]"
-    appendFileLine: enginePath$, "        j = int(np.argmin(d + penalty))"
-    appendFileLine: enginePath$, ""
-    appendFileLine: enginePath$, "        chosen.append(j)"
-    appendFileLine: enginePath$, "        dists.append(float(d[j]))"
-    appendFileLine: enginePath$, ""
-    appendFileLine: enginePath$, "        penalty *= decay"
-    appendFileLine: enginePath$, "        penalty[j] += hit_cost"
-    appendFileLine: enginePath$, "        state = Z[j]"
-    appendFileLine: enginePath$, ""
-    appendFileLine: enginePath$, "    chosen = np.asarray(chosen, dtype=int)"
-    appendFileLine: enginePath$, "    dists = np.asarray(dists)"
-    appendFileLine: enginePath$, "    immediate_repeat_pct = (100.0 * float(np.mean(chosen[1:] == chosen[:-1]))"
-    appendFileLine: enginePath$, "                            if chosen.size > 1 else 0.0)"
-    appendFileLine: enginePath$, "    log(""    Walked %d steps in %.1f s"" % (n_steps, time.time() - t0))"
-    appendFileLine: enginePath$, "    log(""    Repeat scale %.4f; immediate repeats %.1f%%"""
-    appendFileLine: enginePath$, "        % (repeat_scale, immediate_repeat_pct))"
-    appendFileLine: enginePath$, "    return chosen, dists, nn_scale, repeat_scale, immediate_repeat_pct"
+    appendFileLine: enginePath$, "            diff = (Z - goal[None, :]) * wroot[None, :]"
+    appendFileLine: enginePath$, "            future_diff = (future - goal[None, :]) * wroot[None, :]"
+    appendFileLine: enginePath$, "            scores = .65 * np.sum(diff * diff, axis=1) + .35 * np.sum(future_diff * future_diff, axis=1)"
+    appendFileLine: enginePath$, "            # Avoid selecting runs dominated by the wrong activity class."
+    appendFileLine: enginePath$, "            if wants_active:"
+    appendFileLine: enginePath$, "                scores += 17.0 * (1.0 - local_active) ** 2"
+    appendFileLine: enginePath$, "                scores[~active] += 30.0"
+    appendFileLine: enginePath$, "            else:"
+    appendFileLine: enginePath$, "                scores += 17.0 * local_active ** 2"
+    appendFileLine: enginePath$, "                scores[active] += 30.0"
+    appendFileLine: enginePath$, "            # Cost for recently visited neighborhoods of the recording."
+    appendFileLine: enginePath$, "            scores += repeat_penalty * recent"
+    appendFileLine: enginePath$, "            # Do not start a phrase too close to the end of the source pool."
+    appendFileLine: enginePath$, "            scores[max(0, n_pool - candidate_width):] += 20.0"
+    appendFileLine: enginePath$, "            if last_j >= 0:"
+    appendFileLine: enginePath$, "                # A shallow join mismatch penalty, never stronger than timbral choice."
+    appendFileLine: enginePath$, "                scores += .10 * np.sum((Z - Z[last_j][None, :]) ** 2 * weights[None, :], axis=1)"
+    appendFileLine: enginePath$, "            j = int(np.argmin(scores))"
+    appendFileLine: enginePath$, "            # Variation in phrase length makes the result less grid-like."
+    appendFileLine: enginePath$, "            run_cap = max_run if wants_active else max(min_run, int(max_run * .55))"
+    appendFileLine: enginePath$, "            remaining = int(rng.randint(min_run, run_cap + 1)) - 1"
+    appendFileLine: enginePath$, "            jumps.append(t)"
+    appendFileLine: enginePath$, "            # Neighborhood suppression includes adjacent overlapping frames."
+    appendFileLine: enginePath$, "            lo, hi = max(0, j - neighborhood), min(n_pool, j + neighborhood + 1)"
+    appendFileLine: enginePath$, "            dx = (np.arange(lo, hi) - j) / float(max(1, neighborhood))"
+    appendFileLine: enginePath$, "            recent[lo:hi] += (1.3 * repeat_scale) * np.exp(-3.0 * dx * dx)"
+    appendFileLine: enginePath$, "        # Per-step feature mismatch, including source-contiguous steps."
+    appendFileLine: enginePath$, "        current_goal = pred.copy()"
+    appendFileLine: enginePath$, "        current_goal[:IDX_MFCC1 + 1] = ((1. - traj_weight) * pred[:IDX_MFCC1 + 1] +"
+    appendFileLine: enginePath$, "                                           traj_weight * T[t, :IDX_MFCC1 + 1])"
+    appendFileLine: enginePath$, "        if target_kind:"
+    appendFileLine: enginePath$, "            current_goal[IDX_MFCC1 + 1:] = ((1. - traj_weight) * pred[IDX_MFCC1 + 1:] +"
+    appendFileLine: enginePath$, "                                               traj_weight * T[t, IDX_MFCC1 + 1:])"
+    appendFileLine: enginePath$, "        dists[t] = float(np.sqrt(np.sum(weights * (Z[j] - current_goal) ** 2)))"
+    appendFileLine: enginePath$, "        chosen[t] = j"
+    appendFileLine: enginePath$, "        last_j = j"
+    appendFileLine: enginePath$, "    immediate_repeat_pct = (100.0 * np.mean(chosen[1:] == chosen[:-1])) if n_steps > 1 else 0.0"
+    appendFileLine: enginePath$, "    adjacent_pct = (100.0 * np.mean(np.diff(chosen) == 1)) if n_steps > 1 else 0.0"
+    appendFileLine: enginePath$, "    selected_active_pct = 100.0 * float(np.mean(active[chosen]))"
+    appendFileLine: enginePath$, "    plan_active_pct = 100.0 * float(np.mean(plan))"
+    appendFileLine: enginePath$, "    mean_phrase_ms = 1000. * n_steps * hop_len / float(sr * max(1, len(jumps)))"
+    appendFileLine: enginePath$, "    extra = dict(activity_threshold=activity_threshold,"
+    appendFileLine: enginePath$, "                 source_active_pct=100.0 * active.mean(),"
+    appendFileLine: enginePath$, "                 target_active_pct=plan_active_pct,"
+    appendFileLine: enginePath$, "                 selected_active_pct=selected_active_pct,"
+    appendFileLine: enginePath$, "                 source_continuation_pct=adjacent_pct,"
+    appendFileLine: enginePath$, "                 n_phrases=len(jumps), mean_phrase_ms=mean_phrase_ms,"
+    appendFileLine: enginePath$, "                 min_run_ms=min_run * hop_len * 1000. / sr,"
+    appendFileLine: enginePath$, "                 max_run_ms=max_run * hop_len * 1000. / sr,"
+    appendFileLine: enginePath$, "                 match_metric=""weighted_phrase_l2"")"
+    appendFileLine: enginePath$, "    log(""    Microphrases %d (mean %.0f ms); consecutive source hops %.1f%%"" %"
+    appendFileLine: enginePath$, "        (len(jumps), mean_phrase_ms, adjacent_pct))"
+    appendFileLine: enginePath$, "    log(""    Activity source %.1f%%, target %.1f%%, selected %.1f%% (gate %.5f RMS)"" %"
+    appendFileLine: enginePath$, "        (extra[""source_active_pct""], plan_active_pct, selected_active_pct,"
+    appendFileLine: enginePath$, "         activity_threshold))"
+    appendFileLine: enginePath$, "    log(""    Corpus novelty neighborhood %.0f ms; immediate repeats %.1f%%"" %"
+    appendFileLine: enginePath$, "        (neighborhood * hop_len * 1000. / sr, immediate_repeat_pct))"
+    appendFileLine: enginePath$, "    return chosen, dists, nn_scale, repeat_scale, immediate_repeat_pct, extra"
     appendFileLine: enginePath$, ""
     appendFileLine: enginePath$, ""
     appendFileLine: enginePath$, "# =========================================================================="
     appendFileLine: enginePath$, "# Stage 6 -- Overlap-add resynthesis"
     appendFileLine: enginePath$, "# =========================================================================="
     appendFileLine: enginePath$, ""
+    appendFileLine: enginePath$, "def apply_trajectory_render(out, sr, kind, strength, log):"
+    appendFileLine: enginePath$, "    """"""Conservative offline energy/spectral-tilt contour after concatenation."
+    appendFileLine: enginePath$, ""
+    appendFileLine: enginePath$, "    RF and microphrase selection choose source material; this final stage"
+    appendFileLine: enginePath$, "    disambiguates independent amplitude and brightness goals that can be"
+    appendFileLine: enginePath$, "    negatively correlated in natural speech. It can be disabled with a flag."
+    appendFileLine: enginePath$, "    """""""
+    appendFileLine: enginePath$, "    import numpy as np"
+    appendFileLine: enginePath$, "    from scipy.signal import butter, sosfiltfilt"
+    appendFileLine: enginePath$, "    strength = float(strength)"
+    appendFileLine: enginePath$, "    if strength <= 0 or kind == ""random_walk"" or out.shape[1] < 100:"
+    appendFileLine: enginePath$, "        return out"
+    appendFileLine: enginePath$, "    u = smoothstep(np.linspace(0., 1., out.shape[1]))"
+    appendFileLine: enginePath$, "    if kind == ""crescendo_brightening"":"
+    appendFileLine: enginePath$, "        level_db = strength * (-4.5 + 9.0 * u)"
+    appendFileLine: enginePath$, "        tilt_db = strength * (-7.0 + 14.0 * u)"
+    appendFileLine: enginePath$, "    elif kind == ""spectral_descent"":"
+    appendFileLine: enginePath$, "        level_db = np.zeros_like(u)"
+    appendFileLine: enginePath$, "        tilt_db = strength * (7.0 - 14.0 * u)"
+    appendFileLine: enginePath$, "    else:"
+    appendFileLine: enginePath$, "        return out"
+    appendFileLine: enginePath$, "    cutoff = min(1800., sr * .2)"
+    appendFileLine: enginePath$, "    sos = butter(2, cutoff, btype=""highpass"", fs=sr, output=""sos"")"
+    appendFileLine: enginePath$, "    high = sosfiltfilt(sos, out, axis=1)"
+    appendFileLine: enginePath$, "    tilt = 10. ** (tilt_db / 20.) - 1."
+    appendFileLine: enginePath$, "    out = out + high * tilt[None, :]"
+    appendFileLine: enginePath$, "    out = out * (10. ** (level_db / 20.))[None, :]"
+    appendFileLine: enginePath$, "    log(""    Rendered %s: level %.1f to %.1f dB, high band %.1f to %.1f dB at %.0f Hz"" %"
+    appendFileLine: enginePath$, "        (kind, level_db[0], level_db[-1], tilt_db[0], tilt_db[-1], cutoff))"
+    appendFileLine: enginePath$, "    return out"
+    appendFileLine: enginePath$, ""
+    appendFileLine: enginePath$, ""
     appendFileLine: enginePath$, "def resynthesise(audio, chosen, frame_len, hop_len, out_samples,"
-    appendFileLine: enginePath$, "                 match_input_rms, safety_peak, log):"
+    appendFileLine: enginePath$, "                  match_input_rms, safety_peak, log, sr=None,"
+    appendFileLine: enginePath$, "                  render_kind=""random_walk"", render_strength=1.):"
     appendFileLine: enginePath$, "    import numpy as np"
     appendFileLine: enginePath$, ""
     appendFileLine: enginePath$, "    n_channels, n_source = audio.shape"
@@ -1454,6 +1704,8 @@ procedure writeEngine
     appendFileLine: enginePath$, "    # Fade the FINAL buffer. Fading before trimming can cut off the end of the"
     appendFileLine: enginePath$, "    # fade whenever target duration is not aligned to the hop grid."
     appendFileLine: enginePath$, "    out = apply_edge_fades(out, frame_len)"
+    appendFileLine: enginePath$, "    if sr is not None:"
+    appendFileLine: enginePath$, "        out = apply_trajectory_render(out, sr, render_kind, render_strength, log)"
     appendFileLine: enginePath$, ""
     appendFileLine: enginePath$, "    input_rms = float(np.sqrt(np.mean(audio * audio))) if audio.size else 0.0"
     appendFileLine: enginePath$, "    rms_before_match = float(np.sqrt(np.mean(out * out))) if out.size else 0.0"
@@ -1519,7 +1771,7 @@ procedure writeEngine
     appendFileLine: enginePath$, "                peak_before, peak_after, input_rms, rms_before_match,"
     appendFileLine: enginePath$, "                rms_after_match, output_rms, rms_gain, rms_limited,"
     appendFileLine: enginePath$, "                train_rows, oob, oob_skill, nn_scale, repeat_scale,"
-    appendFileLine: enginePath$, "                immediate_repeat_pct, hop_len, frame_len, elapsed, warnings):"
+    appendFileLine: enginePath$, "                immediate_repeat_pct, hop_len, frame_len, elapsed, warnings, extra=None, blocked_skill=float(""nan"")):"
     appendFileLine: enginePath$, "    import numpy as np"
     appendFileLine: enginePath$, ""
     appendFileLine: enginePath$, "    distinct = int(np.unique(chosen).size)"
@@ -1574,6 +1826,14 @@ procedure writeEngine
     appendFileLine: enginePath$, "        p(""src_times=%s""         % "","".join(""%.3f"" % v for v in src_t))"
     appendFileLine: enginePath$, "        p(""out_times=%s""         % "","".join(""%.3f"" % v for v in out_t))"
     appendFileLine: enginePath$, "        p(""match_dists=%s""       % "","".join(""%.3f"" % v for v in mdist))"
+    appendFileLine: enginePath$, "        p(""engine_version=%s"" % ENGINE_VERSION)"
+    appendFileLine: enginePath$, "        p(""rf_blocked_skill=%.4f"" % blocked_skill)"
+    appendFileLine: enginePath$, "        if extra:"
+    appendFileLine: enginePath$, "            for key, val in extra.items():"
+    appendFileLine: enginePath$, "                if isinstance(val, (int, float, np.floating)):"
+    appendFileLine: enginePath$, "                    p(""%s=%.5f"" % (key, val))"
+    appendFileLine: enginePath$, "                else:"
+    appendFileLine: enginePath$, "                    p(""%s=%s"" % (key, str(val)))"
     appendFileLine: enginePath$, "        if warnings:"
     appendFileLine: enginePath$, "            p(""warning=%s"" % ""; "".join(warnings))"
     appendFileLine: enginePath$, ""
@@ -1601,6 +1861,17 @@ procedure writeEngine
     appendFileLine: enginePath$, "    ap.add_argument(""--seed"",            type=int,   default=42)"
     appendFileLine: enginePath$, "    ap.add_argument(""--match-input-rms"", type=int,   default=1)"
     appendFileLine: enginePath$, "    ap.add_argument(""--safety-peak"",     type=float, default=0.99)"
+    appendFileLine: enginePath$, "    # Optional v0.5 controls. All v0.4 flags retain their semantics."
+    appendFileLine: enginePath$, "    ap.add_argument(""--activity-target"", type=float, default=0.78,"
+    appendFileLine: enginePath$, "                    help=""target fraction of output grains containing active material (0.05 to 1)"")"
+    appendFileLine: enginePath$, "    ap.add_argument(""--min-run-ms"", type=float, default=140.0,"
+    appendFileLine: enginePath$, "                    help=""minimum length of contiguous source microphrases"")"
+    appendFileLine: enginePath$, "    ap.add_argument(""--max-run-ms"", type=float, default=420.0,"
+    appendFileLine: enginePath$, "                    help=""maximum length of contiguous source microphrases"")"
+    appendFileLine: enginePath$, "    ap.add_argument(""--mfcc-weight"", type=float, default=0.12,"
+    appendFileLine: enginePath$, "                    help=""relative matching weight for non-primary MFCC descriptors"")"
+    appendFileLine: enginePath$, "    ap.add_argument(""--render-strength"", type=float, default=1.,"
+    appendFileLine: enginePath$, "                    help=""0 disables energy/brightness trajectory rendering; default 1"")"
     appendFileLine: enginePath$, "    return ap"
     appendFileLine: enginePath$, ""
     appendFileLine: enginePath$, ""
@@ -1625,6 +1896,11 @@ procedure writeEngine
     appendFileLine: enginePath$, "    args.repeat_penalty  = max(0.0, min(10.0, args.repeat_penalty))"
     appendFileLine: enginePath$, "    args.match_input_rms = 1 if args.match_input_rms else 0"
     appendFileLine: enginePath$, "    args.safety_peak     = max(0.0, min(1.0, args.safety_peak))"
+    appendFileLine: enginePath$, "    args.activity_target = max(.05, min(1.0, args.activity_target))"
+    appendFileLine: enginePath$, "    args.min_run_ms      = max(20., min(1500., args.min_run_ms))"
+    appendFileLine: enginePath$, "    args.max_run_ms      = max(args.min_run_ms, min(3000., args.max_run_ms))"
+    appendFileLine: enginePath$, "    args.mfcc_weight     = max(.0, min(3., args.mfcc_weight))"
+    appendFileLine: enginePath$, "    args.render_strength = max(0., min(2., args.render_strength))"
     appendFileLine: enginePath$, "    if args.trajectory == ""pitch_descent"":"
     appendFileLine: enginePath$, "        warnings.append(""pitch_descent is a legacy alias; using spectral_descent"")"
     appendFileLine: enginePath$, "        args.trajectory = ""spectral_descent"""
@@ -1633,7 +1909,7 @@ procedure writeEngine
     appendFileLine: enginePath$, "                        % (args.trajectory, TRAJECTORIES[0]))"
     appendFileLine: enginePath$, "        args.trajectory = TRAJECTORIES[0]"
     appendFileLine: enginePath$, ""
-    appendFileLine: enginePath$, "    log(""=== rf_engine.py -- Random Forest Concatenative Synthesis ==="")"
+    appendFileLine: enginePath$, "    log(""=== rf_engine.py v0.5 EXPERIMENTAL -- Random Forest Concatenative Synthesis ==="")"
     appendFileLine: enginePath$, "    log(""  [Py 1/6] Loading audio..."")"
     appendFileLine: enginePath$, "    audio, y, sr, analysis_source, analysis_channel = load_audio(args.input, log)"
     appendFileLine: enginePath$, "    n_channels, n_source_samples = audio.shape"
@@ -1674,11 +1950,17 @@ procedure writeEngine
     appendFileLine: enginePath$, ""
     appendFileLine: enginePath$, "    log(""  [Py 3/6] Training Random Forest (%d trees, depth %d, k=%d)..."""
     appendFileLine: enginePath$, "        % (args.trees, args.max_depth, args.lookahead))"
+    appendFileLine: enginePath$, "    blocked_skill = blocked_validation("
+    appendFileLine: enginePath$, "        Z, args.lookahead, args.trees, args.max_depth, args.seed,"
+    appendFileLine: enginePath$, "        frame_len, hop_len, log)"
     appendFileLine: enginePath$, "    rf, train_rows, oob, oob_skill = train_forest("
     appendFileLine: enginePath$, "        Z, args.lookahead, args.trees, args.max_depth, args.seed, log)"
     appendFileLine: enginePath$, "    if np.isfinite(oob_skill) and oob_skill < 0.0:"
-    appendFileLine: enginePath$, "        warnings.append(""forest OOB skill is below persistence: the RF does """
-    appendFileLine: enginePath$, "                        ""not beat Y=X on held-out bootstrap rows at k=%d"" % args.lookahead)"
+    appendFileLine: enginePath$, "        warnings.append(""bootstrap OOB skill is below persistence (overlap-biased): """
+    appendFileLine: enginePath$, "                        ""do not interpret OOB as independent validation"")"
+    appendFileLine: enginePath$, "    if np.isfinite(blocked_skill) and blocked_skill < 0.0:"
+    appendFileLine: enginePath$, "        warnings.append(""temporally held-out RF forecasting is below persistence; """
+    appendFileLine: enginePath$, "                        ""music quality still requires listening"")"
     appendFileLine: enginePath$, ""
     appendFileLine: enginePath$, "    out_samples = int(round(args.target_duration * sr))"
     appendFileLine: enginePath$, "    n_steps = max(1, 1 + int(np.ceil(max(0, out_samples - frame_len) / float(hop_len))))"
@@ -1690,15 +1972,19 @@ procedure writeEngine
     appendFileLine: enginePath$, "    T = make_trajectory(args.trajectory, n_steps, args.seed, log)"
     appendFileLine: enginePath$, ""
     appendFileLine: enginePath$, "    log(""  [Py 5/6] Matching trajectory against the grain pool..."")"
-    appendFileLine: enginePath$, "    chosen, dists, nn_scale, repeat_scale, immediate_repeat_pct = walk_pool("
-    appendFileLine: enginePath$, "        rf, Z, T, args.traj_weight, args.repeat_penalty, args.seed, log)"
+    appendFileLine: enginePath$, "    chosen, dists, nn_scale, repeat_scale, immediate_repeat_pct, extra = walk_pool("
+    appendFileLine: enginePath$, "        rf, Z, T, args.traj_weight, args.repeat_penalty, args.seed, log,"
+    appendFileLine: enginePath$, "        F=F, frame_len=frame_len, hop_len=hop_len, sr=sr,"
+    appendFileLine: enginePath$, "        activity_target=args.activity_target, min_run_ms=args.min_run_ms,"
+    appendFileLine: enginePath$, "        max_run_ms=args.max_run_ms, mfcc_weight=args.mfcc_weight,"
+    appendFileLine: enginePath$, "        trajectory_kind=args.trajectory)"
     appendFileLine: enginePath$, ""
     appendFileLine: enginePath$, "    distinct_pct = 100.0 * np.unique(chosen).size / float(chosen.size)"
     appendFileLine: enginePath$, "    log(""    Distinct grains used: %d of %d (%.1f%%)"""
     appendFileLine: enginePath$, "        % (np.unique(chosen).size, chosen.size, distinct_pct))"
     appendFileLine: enginePath$, "    if distinct_pct < 10.0:"
     appendFileLine: enginePath$, "        warnings.append(""only %.0f%% of the selected grains are distinct; """
-    appendFileLine: enginePath$, "                        ""raise Repeat penalty to reduce stuttering"" % distinct_pct)"
+    appendFileLine: enginePath$, "                        ""consider stronger novelty or shorter microphrases"" % distinct_pct)"
     appendFileLine: enginePath$, "    if args.repeat_penalty > 0 and immediate_repeat_pct > 25.0:"
     appendFileLine: enginePath$, "        warnings.append(""%.0f%% immediate grain repeats remain; raise Repeat penalty """
     appendFileLine: enginePath$, "                        ""for more variation"" % immediate_repeat_pct)"
@@ -1707,7 +1993,9 @@ procedure writeEngine
     appendFileLine: enginePath$, "    (out, peak_before, peak_after, input_rms, rms_before_match,"
     appendFileLine: enginePath$, "     rms_after_match, output_rms, rms_gain, rms_limited) = resynthesise("
     appendFileLine: enginePath$, "        audio, chosen, frame_len, hop_len, out_samples,"
-    appendFileLine: enginePath$, "        bool(args.match_input_rms), args.safety_peak, log)"
+    appendFileLine: enginePath$, "        bool(args.match_input_rms), args.safety_peak, log, sr=sr,"
+    appendFileLine: enginePath$, "        render_kind=args.trajectory, render_strength=args.render_strength)"
+    appendFileLine: enginePath$, "    extra[""render_strength""] = args.render_strength"
     appendFileLine: enginePath$, "    if rms_limited:"
     appendFileLine: enginePath$, "        warnings.append(""RMS level match hit the +12 dB gain cap; final RMS may remain below source"")"
     appendFileLine: enginePath$, "    sf.write(args.output, out, sr, subtype=""FLOAT"")"
@@ -1719,7 +2007,8 @@ procedure writeEngine
     appendFileLine: enginePath$, "                    peak_before, peak_after, input_rms, rms_before_match,"
     appendFileLine: enginePath$, "                    rms_after_match, output_rms, rms_gain, rms_limited,"
     appendFileLine: enginePath$, "                    train_rows, oob, oob_skill, nn_scale, repeat_scale,"
-    appendFileLine: enginePath$, "                    immediate_repeat_pct, hop_len, frame_len, elapsed, warnings)"
+    appendFileLine: enginePath$, "                    immediate_repeat_pct, hop_len, frame_len, elapsed, warnings,"
+    appendFileLine: enginePath$, "                    extra=extra, blocked_skill=blocked_skill)"
     appendFileLine: enginePath$, ""
     appendFileLine: enginePath$, "    for w in warnings:"
     appendFileLine: enginePath$, "        log(""    WARNING: "" + w)"

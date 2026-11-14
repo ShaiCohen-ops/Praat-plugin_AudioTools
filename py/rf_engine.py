@@ -5,9 +5,19 @@
 # Part of Praat AudioTools plugin
 # Author: Shai Cohen, Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4 (2026)
+# Version: 0.5 (2026)
 # License: MIT
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# v0.5 experimental:
+#   - Activity-aware selection: silence is scheduled, not accidentally preferred.
+#   - Source-contiguous microphrases replace isolated per-hop jumps.
+#   - Corpus-neighborhood novelty penalty and controllable feature weighting.
+#   - Unspecified MFCC goals follow the RF prediction instead of corpus zero.
+#   - Chronologically held-out evaluation with a leakage guard.
+#   - Offline optional trajectory rendering for energy and spectral tilt.
+#   - Backwards-compatible v0.4 command-line flags and output stats.
+#   - New tuning flags for Python and the v0.5 experimental Praat form.
 #
 # v0.4:
 #   - Calibrates Repeat penalty to corpus-scale pairwise distance so it remains effective with heavily overlapping grains.
@@ -93,6 +103,7 @@ MAX_PLOT_PTS   = 500      # cap on per-step series handed back to Praat
 MAX_RMS_MATCH_GAIN = 4.0   # +12.04 dB guard against pathological quiet selections
 
 TRAJECTORIES = ["crescendo_brightening", "spectral_descent", "random_walk"]
+ENGINE_VERSION = "0.5-experimental"
 
 
 # --------------------------------------------------------------------------
@@ -389,66 +400,260 @@ def median_pair_distance(Z, seed, sample=400):
     return float(np.median(tri))
 
 
-def walk_pool(rf, Z, T, traj_weight, repeat_penalty, seed, log):
+def estimate_activity(F):
+    """Find low-energy source frames by corpus-relative RMS, without a fixed dB gate.
+
+    A stationary, low-dynamic-range recording is treated as wholly active.
+    This is a coarse activity proxy, not a phoneme / voiced-unvoiced detector.
+    """
+    import numpy as np
+    r = np.asarray(F[:, IDX_RMS], dtype=float)
+    q10, q50, q90 = np.percentile(r, [10, 50, 90])
+    if q90 < 1.e-8 or q90 / max(q10, 1.e-8) < 3.5:
+        return np.ones(r.size, dtype=bool), 0.0
+    threshold = max(3.0 * q10, 0.08 * q90)
+    threshold = min(threshold, 0.4 * q50) if q50 > 0 else threshold
+    mask = r > threshold
+    if mask.mean() < 0.12:
+        return np.ones(r.size, dtype=bool), 0.0
+    return mask, float(threshold)
+
+
+def planned_activity(F, active, n_steps, target, hop_len, sr, trajectory_kind):
+    """Transfer the slow source activity contour to the new time scale.
+
+    Quantile thresholding controls the requested activity ratio. Smoothing
+    avoids alternating single-grain speech and silence decisions.
+    """
+    import numpy as np
+    from scipy.ndimage import gaussian_filter1d
+    if active.all() or target >= .999:
+        return np.ones(n_steps, dtype=bool)
+    n = active.size
+    src = np.log1p(F[:, IDX_RMS] / max(np.percentile(F[:, IDX_RMS], 90), 1.e-8))
+    xold = np.linspace(0., 1., n)
+    xnew = np.linspace(0., 1., n_steps)
+    smooth = gaussian_filter1d(np.interp(xnew, xold, src),
+                              sigma=max(1., 0.085 * sr / hop_len), mode="nearest")
+    if trajectory_kind == "crescendo_brightening":
+        # Gradually allocate more of the available rests to the beginning.
+        # This also lets the sustained ending support the requested crescendo.
+        smooth += 0.40 * (xnew - .5)
+    # Stable quantile threshold: exactly the requested duty fraction except ties.
+    k = int(np.clip(round((1.0 - target) * n_steps), 0, n_steps))
+    schedule = np.ones(n_steps, dtype=bool)
+    if k:
+        schedule[np.argsort(smooth, kind="stable")[:k]] = False
+    return schedule
+
+
+def forward_mean(A, width):
+    """Fixed-width *future* average for pool segment scoring."""
+    import numpy as np
+    width = max(1, min(int(width), len(A)))
+    ext = np.concatenate((A, np.repeat(A[-1:, :], width, axis=0)), axis=0)
+    cs = np.vstack((np.zeros((1, A.shape[1])), np.cumsum(ext, axis=0)))
+    return (cs[width:width + len(A)] - cs[:len(A)]) / width
+
+
+def blocked_validation(Z, lookahead, trees, max_depth, seed, frame_len, hop_len, log):
+    """Hold out the final chronological block; guard against STFT overlap leakage.
+
+    Reports skill over the persistence baseline on temporally unseen rows,
+    not a promise of perceptually better music. Final forest still uses all rows.
+    """
+    import numpy as np
+    from sklearn.ensemble import RandomForestRegressor
+    n = len(Z) - lookahead
+    if n < 80:
+        return float("nan")
+    split = int(n * .8)
+    guard = max(lookahead + 1, int(np.ceil(frame_len / float(hop_len))) + lookahead)
+    end = max(10, split - guard)
+    test = np.arange(split, n)
+    if test.size < 10:
+        return float("nan")
+    tr = np.arange(end)
+    if tr.size > MAX_TRAIN_ROWS:
+        tr = tr[::int(np.ceil(tr.size / MAX_TRAIN_ROWS))]
+    test = test[::max(1, int(np.ceil(test.size / 2500.0)))]
+    rf = RandomForestRegressor(n_estimators=min(100, trees),
+                               max_depth=None if max_depth <= 0 else max_depth,
+                               random_state=seed, n_jobs=-1)
+    rf.fit(Z[tr], Z[tr + lookahead])
+    pred = rf.predict(Z[test])
+    baseline = np.mean((Z[test + lookahead] - Z[test]) ** 2)
+    model_err = np.mean((Z[test + lookahead] - pred) ** 2)
+    skill = 1.0 - model_err / baseline if baseline > 1.e-15 else float("nan")
+    log("    Chronological held-out RF skill vs persistence: %.4f (%d test frames, guard %d)" %
+        (skill, len(test), guard))
+    return float(skill)
+
+
+def walk_pool(rf, Z, T, traj_weight, repeat_penalty, seed, log,
+              F=None, frame_len=None, hop_len=None, sr=None,
+              activity_target=.78, min_run_ms=140., max_run_ms=420.,
+              mfcc_weight=.12, trajectory_kind="crescendo_brightening"):
+
+    """RF-guided *microphrase* walk with activity-aware, novelty-aware selection.
+
+    Each new microphrase starts at a source index chosen by RF plus the target.
+    Subsequent grains advance one source hop at a time. Segment boundaries
+    or an activity transition trigger a new search. No pitch is fabricated.
+    """
     import numpy as np
     from scipy.spatial.distance import cdist
-
-    n_pool  = Z.shape[0]
-    n_steps = T.shape[0]
-
+    if F is None or frame_len is None or hop_len is None or sr is None:
+        raise ValueError("v0.5 walk_pool needs feature and timing metadata")
+    rng = np.random.RandomState(seed + 851)
+    n_pool, n_steps = Z.shape[0], T.shape[0]
     nn_scale = median_nn_distance(Z, seed)
-    if not np.isfinite(nn_scale) or nn_scale < 0:
-        nn_scale = 0.0
-
     repeat_scale = median_pair_distance(Z, seed)
-    if not np.isfinite(repeat_scale) or repeat_scale <= 0:
-        repeat_scale = 1.0
+    active, activity_threshold = estimate_activity(F)
+    plan = planned_activity(F, active, n_steps, activity_target, hop_len, sr, trajectory_kind)
 
-    # Penalty is expressed in units of the median pairwise corpus distance.
-    # This stays meaningful even when overlap makes adjacent grains almost
-    # identical. Only the exact grain is penalised, so natural j -> j+1 source
-    # continuity remains available to the forest.
-    hit_cost = repeat_penalty * repeat_scale
-    decay    = 0.5
+    min_run = max(1, int(round(min_run_ms * .001 * sr / hop_len)))
+    max_run = max(min_run, int(round(max_run_ms * .001 * sr / hop_len)))
+    # Brightness and amplitude drive the target; MFCC2-13 are timbral ties.
+    weights = np.full(Z.shape[1], mfcc_weight, dtype=float)
+    weights[IDX_RMS] = 2.6
+    weights[IDX_CENTROID] = 1.1
+    weights[IDX_FLATNESS] = .25
+    weights[IDX_ZCR] = .20
+    weights[IDX_MFCC1] = .60
+    wroot = np.sqrt(weights)
+    candidate_width = max(2, min_run // 2)
+    future = forward_mean(Z, candidate_width)
+    local_active = forward_mean(active[:, None].astype(float), candidate_width)[:, 0]
 
-    penalty = np.zeros(n_pool)
-    chosen, dists = [], []
-
-    # Seed on the grain closest to the first target point.
-    state_idx = int(np.argmin(cdist(T[0:1], Z)[0]))
-    state = Z[state_idx]
-
-    t0 = time.time()
+    recent = np.zeros(n_pool, dtype=float)
+    chosen = np.empty(n_steps, dtype=int)
+    dists = np.empty(n_steps, dtype=float)
+    jumps = []
+    last_j = -1
+    remaining = 0
+    target_kind = np.any(np.abs(T[:, IDX_MFCC1 + 1:]) > 1.e-7)
+    # Distinct grain ban is too weak; smear novelty cost around whole phrase.
+    neighborhood = max(1, int(round(.35 * sr / hop_len)))
     for t in range(n_steps):
-        pred = rf.predict(state.reshape(1, -1))[0]
-        goal = (1.0 - traj_weight) * pred + traj_weight * T[t]
+        wants_active = bool(plan[t])
+        continues = (last_j >= 0 and remaining > 0 and last_j + 1 < n_pool
+                     and bool(active[last_j + 1]) == wants_active)
+        if continues:
+            j = last_j + 1
+            remaining -= 1
+        else:
+            recent *= .86  # decay per phrase, not per grain
+            # Predict expected transition from last actual descriptor.
+            state = Z[last_j] if last_j >= 0 else Z[int(np.argmin(
+                np.sum((Z[:, :5] - T[0, :5]) ** 2, axis=1)))]
+            pred = rf.predict(state[None, :])[0]
+            goal = pred.copy()
+            goal[:IDX_MFCC1 + 1] = ((1.0 - traj_weight) * pred[:IDX_MFCC1 + 1] +
+                                      traj_weight * T[t, :IDX_MFCC1 + 1])
+            if target_kind:
+                goal[IDX_MFCC1 + 1:] = ((1.0 - traj_weight) * pred[IDX_MFCC1 + 1:] +
+                                      traj_weight * T[t, IDX_MFCC1 + 1:])
 
-        d = cdist(goal.reshape(1, -1), Z)[0]
-        j = int(np.argmin(d + penalty))
-
-        chosen.append(j)
-        dists.append(float(d[j]))
-
-        penalty *= decay
-        penalty[j] += hit_cost
-        state = Z[j]
-
-    chosen = np.asarray(chosen, dtype=int)
-    dists = np.asarray(dists)
-    immediate_repeat_pct = (100.0 * float(np.mean(chosen[1:] == chosen[:-1]))
-                            if chosen.size > 1 else 0.0)
-    log("    Walked %d steps in %.1f s" % (n_steps, time.time() - t0))
-    log("    Repeat scale %.4f; immediate repeats %.1f%%"
-        % (repeat_scale, immediate_repeat_pct))
-    return chosen, dists, nn_scale, repeat_scale, immediate_repeat_pct
+            diff = (Z - goal[None, :]) * wroot[None, :]
+            future_diff = (future - goal[None, :]) * wroot[None, :]
+            scores = .65 * np.sum(diff * diff, axis=1) + .35 * np.sum(future_diff * future_diff, axis=1)
+            # Avoid selecting runs dominated by the wrong activity class.
+            if wants_active:
+                scores += 17.0 * (1.0 - local_active) ** 2
+                scores[~active] += 30.0
+            else:
+                scores += 17.0 * local_active ** 2
+                scores[active] += 30.0
+            # Cost for recently visited neighborhoods of the recording.
+            scores += repeat_penalty * recent
+            # Do not start a phrase too close to the end of the source pool.
+            scores[max(0, n_pool - candidate_width):] += 20.0
+            if last_j >= 0:
+                # A shallow join mismatch penalty, never stronger than timbral choice.
+                scores += .10 * np.sum((Z - Z[last_j][None, :]) ** 2 * weights[None, :], axis=1)
+            j = int(np.argmin(scores))
+            # Variation in phrase length makes the result less grid-like.
+            run_cap = max_run if wants_active else max(min_run, int(max_run * .55))
+            remaining = int(rng.randint(min_run, run_cap + 1)) - 1
+            jumps.append(t)
+            # Neighborhood suppression includes adjacent overlapping frames.
+            lo, hi = max(0, j - neighborhood), min(n_pool, j + neighborhood + 1)
+            dx = (np.arange(lo, hi) - j) / float(max(1, neighborhood))
+            recent[lo:hi] += (1.3 * repeat_scale) * np.exp(-3.0 * dx * dx)
+        # Per-step feature mismatch, including source-contiguous steps.
+        current_goal = pred.copy()
+        current_goal[:IDX_MFCC1 + 1] = ((1. - traj_weight) * pred[:IDX_MFCC1 + 1] +
+                                           traj_weight * T[t, :IDX_MFCC1 + 1])
+        if target_kind:
+            current_goal[IDX_MFCC1 + 1:] = ((1. - traj_weight) * pred[IDX_MFCC1 + 1:] +
+                                               traj_weight * T[t, IDX_MFCC1 + 1:])
+        dists[t] = float(np.sqrt(np.sum(weights * (Z[j] - current_goal) ** 2)))
+        chosen[t] = j
+        last_j = j
+    immediate_repeat_pct = (100.0 * np.mean(chosen[1:] == chosen[:-1])) if n_steps > 1 else 0.0
+    adjacent_pct = (100.0 * np.mean(np.diff(chosen) == 1)) if n_steps > 1 else 0.0
+    selected_active_pct = 100.0 * float(np.mean(active[chosen]))
+    plan_active_pct = 100.0 * float(np.mean(plan))
+    mean_phrase_ms = 1000. * n_steps * hop_len / float(sr * max(1, len(jumps)))
+    extra = dict(activity_threshold=activity_threshold,
+                 source_active_pct=100.0 * active.mean(),
+                 target_active_pct=plan_active_pct,
+                 selected_active_pct=selected_active_pct,
+                 source_continuation_pct=adjacent_pct,
+                 n_phrases=len(jumps), mean_phrase_ms=mean_phrase_ms,
+                 min_run_ms=min_run * hop_len * 1000. / sr,
+                 max_run_ms=max_run * hop_len * 1000. / sr,
+                 match_metric="weighted_phrase_l2")
+    log("    Microphrases %d (mean %.0f ms); consecutive source hops %.1f%%" %
+        (len(jumps), mean_phrase_ms, adjacent_pct))
+    log("    Activity source %.1f%%, target %.1f%%, selected %.1f%% (gate %.5f RMS)" %
+        (extra["source_active_pct"], plan_active_pct, selected_active_pct,
+         activity_threshold))
+    log("    Corpus novelty neighborhood %.0f ms; immediate repeats %.1f%%" %
+        (neighborhood * hop_len * 1000. / sr, immediate_repeat_pct))
+    return chosen, dists, nn_scale, repeat_scale, immediate_repeat_pct, extra
 
 
 # ==========================================================================
 # Stage 6 -- Overlap-add resynthesis
 # ==========================================================================
 
+def apply_trajectory_render(out, sr, kind, strength, log):
+    """Conservative offline energy/spectral-tilt contour after concatenation.
+
+    RF and microphrase selection choose source material; this final stage
+    disambiguates independent amplitude and brightness goals that can be
+    negatively correlated in natural speech. It can be disabled with a flag.
+    """
+    import numpy as np
+    from scipy.signal import butter, sosfiltfilt
+    strength = float(strength)
+    if strength <= 0 or kind == "random_walk" or out.shape[1] < 100:
+        return out
+    u = smoothstep(np.linspace(0., 1., out.shape[1]))
+    if kind == "crescendo_brightening":
+        level_db = strength * (-4.5 + 9.0 * u)
+        tilt_db = strength * (-7.0 + 14.0 * u)
+    elif kind == "spectral_descent":
+        level_db = np.zeros_like(u)
+        tilt_db = strength * (7.0 - 14.0 * u)
+    else:
+        return out
+    cutoff = min(1800., sr * .2)
+    sos = butter(2, cutoff, btype="highpass", fs=sr, output="sos")
+    high = sosfiltfilt(sos, out, axis=1)
+    tilt = 10. ** (tilt_db / 20.) - 1.
+    out = out + high * tilt[None, :]
+    out = out * (10. ** (level_db / 20.))[None, :]
+    log("    Rendered %s: level %.1f to %.1f dB, high band %.1f to %.1f dB at %.0f Hz" %
+        (kind, level_db[0], level_db[-1], tilt_db[0], tilt_db[-1], cutoff))
+    return out
+
+
 def resynthesise(audio, chosen, frame_len, hop_len, out_samples,
-                 match_input_rms, safety_peak, log):
+                  match_input_rms, safety_peak, log, sr=None,
+                  render_kind="random_walk", render_strength=1.):
     import numpy as np
 
     n_channels, n_source = audio.shape
@@ -480,6 +685,8 @@ def resynthesise(audio, chosen, frame_len, hop_len, out_samples,
     # Fade the FINAL buffer. Fading before trimming can cut off the end of the
     # fade whenever target duration is not aligned to the hop grid.
     out = apply_edge_fades(out, frame_len)
+    if sr is not None:
+        out = apply_trajectory_render(out, sr, render_kind, render_strength, log)
 
     input_rms = float(np.sqrt(np.mean(audio * audio))) if audio.size else 0.0
     rms_before_match = float(np.sqrt(np.mean(out * out))) if out.size else 0.0
@@ -545,7 +752,7 @@ def write_stats(path, args, sr, n_source_samples, n_channels,
                 peak_before, peak_after, input_rms, rms_before_match,
                 rms_after_match, output_rms, rms_gain, rms_limited,
                 train_rows, oob, oob_skill, nn_scale, repeat_scale,
-                immediate_repeat_pct, hop_len, frame_len, elapsed, warnings):
+                immediate_repeat_pct, hop_len, frame_len, elapsed, warnings, extra=None, blocked_skill=float("nan")):
     import numpy as np
 
     distinct = int(np.unique(chosen).size)
@@ -600,6 +807,14 @@ def write_stats(path, args, sr, n_source_samples, n_channels,
         p("src_times=%s"         % ",".join("%.3f" % v for v in src_t))
         p("out_times=%s"         % ",".join("%.3f" % v for v in out_t))
         p("match_dists=%s"       % ",".join("%.3f" % v for v in mdist))
+        p("engine_version=%s" % ENGINE_VERSION)
+        p("rf_blocked_skill=%.4f" % blocked_skill)
+        if extra:
+            for key, val in extra.items():
+                if isinstance(val, (int, float, np.floating)):
+                    p("%s=%.5f" % (key, val))
+                else:
+                    p("%s=%s" % (key, str(val)))
         if warnings:
             p("warning=%s" % "; ".join(warnings))
 
@@ -627,6 +842,17 @@ def build_parser():
     ap.add_argument("--seed",            type=int,   default=42)
     ap.add_argument("--match-input-rms", type=int,   default=1)
     ap.add_argument("--safety-peak",     type=float, default=0.99)
+    # Optional v0.5 controls. All v0.4 flags retain their semantics.
+    ap.add_argument("--activity-target", type=float, default=0.78,
+                    help="target fraction of output grains containing active material (0.05 to 1)")
+    ap.add_argument("--min-run-ms", type=float, default=140.0,
+                    help="minimum length of contiguous source microphrases")
+    ap.add_argument("--max-run-ms", type=float, default=420.0,
+                    help="maximum length of contiguous source microphrases")
+    ap.add_argument("--mfcc-weight", type=float, default=0.12,
+                    help="relative matching weight for non-primary MFCC descriptors")
+    ap.add_argument("--render-strength", type=float, default=1.,
+                    help="0 disables energy/brightness trajectory rendering; default 1")
     return ap
 
 
@@ -651,6 +877,11 @@ def main():
     args.repeat_penalty  = max(0.0, min(10.0, args.repeat_penalty))
     args.match_input_rms = 1 if args.match_input_rms else 0
     args.safety_peak     = max(0.0, min(1.0, args.safety_peak))
+    args.activity_target = max(.05, min(1.0, args.activity_target))
+    args.min_run_ms      = max(20., min(1500., args.min_run_ms))
+    args.max_run_ms      = max(args.min_run_ms, min(3000., args.max_run_ms))
+    args.mfcc_weight     = max(.0, min(3., args.mfcc_weight))
+    args.render_strength = max(0., min(2., args.render_strength))
     if args.trajectory == "pitch_descent":
         warnings.append("pitch_descent is a legacy alias; using spectral_descent")
         args.trajectory = "spectral_descent"
@@ -659,7 +890,7 @@ def main():
                         % (args.trajectory, TRAJECTORIES[0]))
         args.trajectory = TRAJECTORIES[0]
 
-    log("=== rf_engine.py -- Random Forest Concatenative Synthesis ===")
+    log("=== rf_engine.py v0.5 EXPERIMENTAL -- Random Forest Concatenative Synthesis ===")
     log("  [Py 1/6] Loading audio...")
     audio, y, sr, analysis_source, analysis_channel = load_audio(args.input, log)
     n_channels, n_source_samples = audio.shape
@@ -700,11 +931,17 @@ def main():
 
     log("  [Py 3/6] Training Random Forest (%d trees, depth %d, k=%d)..."
         % (args.trees, args.max_depth, args.lookahead))
+    blocked_skill = blocked_validation(
+        Z, args.lookahead, args.trees, args.max_depth, args.seed,
+        frame_len, hop_len, log)
     rf, train_rows, oob, oob_skill = train_forest(
         Z, args.lookahead, args.trees, args.max_depth, args.seed, log)
     if np.isfinite(oob_skill) and oob_skill < 0.0:
-        warnings.append("forest OOB skill is below persistence: the RF does "
-                        "not beat Y=X on held-out bootstrap rows at k=%d" % args.lookahead)
+        warnings.append("bootstrap OOB skill is below persistence (overlap-biased): "
+                        "do not interpret OOB as independent validation")
+    if np.isfinite(blocked_skill) and blocked_skill < 0.0:
+        warnings.append("temporally held-out RF forecasting is below persistence; "
+                        "music quality still requires listening")
 
     out_samples = int(round(args.target_duration * sr))
     n_steps = max(1, 1 + int(np.ceil(max(0, out_samples - frame_len) / float(hop_len))))
@@ -716,15 +953,19 @@ def main():
     T = make_trajectory(args.trajectory, n_steps, args.seed, log)
 
     log("  [Py 5/6] Matching trajectory against the grain pool...")
-    chosen, dists, nn_scale, repeat_scale, immediate_repeat_pct = walk_pool(
-        rf, Z, T, args.traj_weight, args.repeat_penalty, args.seed, log)
+    chosen, dists, nn_scale, repeat_scale, immediate_repeat_pct, extra = walk_pool(
+        rf, Z, T, args.traj_weight, args.repeat_penalty, args.seed, log,
+        F=F, frame_len=frame_len, hop_len=hop_len, sr=sr,
+        activity_target=args.activity_target, min_run_ms=args.min_run_ms,
+        max_run_ms=args.max_run_ms, mfcc_weight=args.mfcc_weight,
+        trajectory_kind=args.trajectory)
 
     distinct_pct = 100.0 * np.unique(chosen).size / float(chosen.size)
     log("    Distinct grains used: %d of %d (%.1f%%)"
         % (np.unique(chosen).size, chosen.size, distinct_pct))
     if distinct_pct < 10.0:
         warnings.append("only %.0f%% of the selected grains are distinct; "
-                        "raise Repeat penalty to reduce stuttering" % distinct_pct)
+                        "consider stronger novelty or shorter microphrases" % distinct_pct)
     if args.repeat_penalty > 0 and immediate_repeat_pct > 25.0:
         warnings.append("%.0f%% immediate grain repeats remain; raise Repeat penalty "
                         "for more variation" % immediate_repeat_pct)
@@ -733,7 +974,9 @@ def main():
     (out, peak_before, peak_after, input_rms, rms_before_match,
      rms_after_match, output_rms, rms_gain, rms_limited) = resynthesise(
         audio, chosen, frame_len, hop_len, out_samples,
-        bool(args.match_input_rms), args.safety_peak, log)
+        bool(args.match_input_rms), args.safety_peak, log, sr=sr,
+        render_kind=args.trajectory, render_strength=args.render_strength)
+    extra["render_strength"] = args.render_strength
     if rms_limited:
         warnings.append("RMS level match hit the +12 dB gain cap; final RMS may remain below source")
     sf.write(args.output, out, sr, subtype="FLOAT")
@@ -745,7 +988,8 @@ def main():
                     peak_before, peak_after, input_rms, rms_before_match,
                     rms_after_match, output_rms, rms_gain, rms_limited,
                     train_rows, oob, oob_skill, nn_scale, repeat_scale,
-                    immediate_repeat_pct, hop_len, frame_len, elapsed, warnings)
+                    immediate_repeat_pct, hop_len, frame_len, elapsed, warnings,
+                    extra=extra, blocked_skill=blocked_skill)
 
     for w in warnings:
         log("    WARNING: " + w)
