@@ -2,7 +2,7 @@
 # Praat AudioTools Plugin
 # Script:      PerformanceLauncher.praat
 # Author:      Shai Cohen
-# Version:     1.7 (2026) — MIDI keyboard cue triggering (optional)
+# Version:     1.7.4 (2026) — MIDI-aware Python interpreter selection
 # License:     MIT License
 #
 # Description:
@@ -15,6 +15,12 @@
 #   Optional: python -m pip install python-rtmidi  to trigger cues
 #   from a MIDI keyboard (selection order = cue order = keys C3 upward
 #   by default; remap in the launcher window).
+#
+# Changelog v1.7.4:
+#   - Probe every available Python candidate and prefer one with all audio,
+#     GUI AND optional MIDI modules. Retain first audio-only Python as fallback.
+#   - Discover the standard per-user Windows Python 3.12 installation.
+#   - Report the selected Python path and MIDI support accurately.
 #
 # Changelog v1.7:
 #   - Version sync with performance_launcher.py MIDI input. The probe
@@ -87,17 +93,10 @@ for i from 1 to nSounds
     soundName'i'$ = selected$ ("Sound", i)
 endfor
 
-# ---- PYTHON INTERPRETER CANDIDATES (verified cascade) ----
-# v1.6: previously this picked ONE name per OS (bare "python" on Windows)
-# and never verified it had tkinter/numpy/sounddevice/soundfile until a
-# shell-based inline probe further down - fragile (same class of quoting
-# bug fixed across the library). Now matches the rest of the library: #1
-# is your known-good venv (edit THAT ONE LINE if yours lives elsewhere),
-# then an OS-appropriate fallback list. On Windows this includes
-# "python3" - on this machine that resolves to the Microsoft Store
-# Python, the one candidate confirmed to actually have tkinter (see
-# Spectral_Eraser.praat). EACH candidate is actually probed below via a
-# no-shell, file-based check before acceptance.
+# ---- PYTHON INTERPRETER CANDIDATES (MIDI-aware verified cascade) ----
+# A standard Windows Python 3.12 installation is explicitly considered;
+# all candidates are probed. A full audio+GUI+MIDI environment wins over
+# an earlier audio-only environment. MIDI remains optional.
 nPyCand = 1
 pyCandidate1$ = "C:/Users/user/praat_ddsp_env/Scripts/python.exe"
 
@@ -111,6 +110,10 @@ if macintosh
     nPyCand = nPyCand + 1
     pyCandidate'nPyCand'$ = "python3"
 elsif windows
+    # Standard python.org installation: often has tkinter + all pip modules.
+    # Check it explicitly because "python" and "python3" can target other runtimes.
+    nPyCand = nPyCand + 1
+    pyCandidate'nPyCand'$ = homeDirectory$ + "/AppData/Local/Programs/Python/Python312/python.exe"
     nPyCand = nPyCand + 1
     pyCandidate'nPyCand'$ = "python"
     nPyCand = nPyCand + 1
@@ -183,39 +186,52 @@ appendFileLine: probeScript$, "    open(r'" + replace_regex$(probeError$, "\\", 
 pythonCmd$ = ""
 pySource$  = ""
 pyTried$   = ""
+fallbackPython$ = ""
+fallbackSource$ = ""
+midiAvailable = 0
 
+# Inspect ALL candidates. Save the first complete audio/GUI environment as
+# fallback, but continue searching for one that also supports MIDI.
 for iPyCand to nPyCand
     thisPyCand$ = pyCandidate'iPyCand'$
     pyTried$ = pyTried$ + "  - " + thisPyCand$ + newline$
-    if pythonCmd$ = ""
-        isBarePyCmd = (thisPyCand$ = "python3") or (thisPyCand$ = "python") or (thisPyCand$ = "py")
-        if isBarePyCmd or fileReadable(thisPyCand$)
-            if fileReadable(probeOkFile$)
-                deleteFile: probeOkFile$
+    isBarePyCmd = (thisPyCand$ = "python3") or (thisPyCand$ = "python") or (thisPyCand$ = "py")
+    if isBarePyCmd or fileReadable(thisPyCand$)
+        if fileReadable(probeOkFile$)
+            deleteFile: probeOkFile$
+        endif
+        if fileReadable(probeError$)
+            deleteFile: probeError$
+        endif
+        if fileReadable(probeMidiFile$)
+            deleteFile: probeMidiFile$
+        endif
+        nocheck runSubprocess: thisPyCand$, probeScript$
+        if fileReadable(probeOkFile$)
+            thisSource$ = "auto-detected"
+            if iPyCand = 1
+                thisSource$ = "configured venv"
             endif
-            if fileReadable(probeError$)
-                deleteFile: probeError$
+            if fallbackPython$ = ""
+                fallbackPython$ = thisPyCand$
+                fallbackSource$ = thisSource$
             endif
-            if fileReadable(probeMidiFile$)
-                deleteFile: probeMidiFile$
-            endif
-            nocheck runSubprocess: thisPyCand$, probeScript$
-            if fileReadable(probeOkFile$)
+            if fileReadable(probeMidiFile$) and midiAvailable = 0
                 pythonCmd$ = thisPyCand$
-                if iPyCand = 1
-                    pySource$ = "configured venv"
-                else
-                    pySource$ = "auto-detected"
-                endif
+                pySource$ = thisSource$
+                midiAvailable = 1
             endif
         endif
     endif
 endfor
 
-# The last candidate probed is the accepted one (the loop stops probing
-# once pythonCmd$ is set), so the MIDI flag describes that interpreter.
-midiAvailable = fileReadable(probeMidiFile$)
-if midiAvailable
+# When no complete MIDI installation exists, audio-only operation remains valid.
+if pythonCmd$ = ""
+    pythonCmd$ = fallbackPython$
+    pySource$ = fallbackSource$
+endif
+
+if fileReadable(probeMidiFile$)
     deleteFile: probeMidiFile$
 endif
 
@@ -370,7 +386,7 @@ appendInfoLine: "Python:             ", pythonCmd$, " (", pySource$, ")"
 if midiAvailable
     appendInfoLine: "MIDI:               available (choose a port in the launcher)"
 else
-    appendInfoLine: "MIDI:               off - ", pythonCmd$, " -m pip install python-rtmidi"
+    appendInfoLine: "MIDI:               unavailable in selected Python (audio-only mode)"
 endif
 appendInfoLine: "Spawning Thread Engine..."
 
