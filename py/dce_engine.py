@@ -3,7 +3,7 @@
 # Part of Praat AudioTools | Author: Shai Cohen, Bar-Ilan University | MIT License
 """
 dce_engine.py — Distributed Corpus Ecology, Experimental Core
-Version : 0.1.7.1 (Praat AudioTools) — Persistent Sonic Processes + Final Fade
+Version : 0.1.7.2 (Praat AudioTools) — Safe Scratch Cleanup
 Scope   : conditions 0 (Independent), 1 (Centralized), 2 (Decentralized)
 Planned : v0.2 Collective Regulator (3) + Macro-Trajectory Replay (4)
           v0.3 batch metrics (SSM / novelty / entropy / lagged correlation)
@@ -168,6 +168,8 @@ import os
 import sys
 import tempfile
 import hashlib
+import re
+import shutil
 from collections import defaultdict
 
 import numpy as np
@@ -1948,6 +1950,23 @@ def selftest():
             states_content = [tuple(float(x) for x in r) for r in state_rows[1:]]
             return (events_content, states_content)
 
+        # Scratch cleanup: nested leftovers are removed; dangerous paths rejected.
+        scratch = os.path.join(tmp, "temp_DCE_123456")
+        os.makedirs(os.path.join(scratch, "nested"))
+        with open(os.path.join(scratch, "nested", "leftover.txt"), "w", encoding="utf-8") as f:
+            f.write("test")
+        clean_run_folder(scratch, tmp)
+        assert not os.path.exists(scratch), "successful cleanup left a run folder"
+        for bad_folder, bad_root in ((tmp, tmp),
+                                     (os.path.join(tmp, "important"), tmp),
+                                     (os.path.join(tmp, "nested", "temp_DCE_123456"), tmp)):
+            try:
+                clean_run_folder(bad_folder, bad_root)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("cleanup accepted an unsafe path")
+
         # Historical golden file: v0.1.4.1 (original engine, not this implementation)
         # Same 18-grain synthetic fixture, cfg above, condition 2, seed 1.
         # Hash the raw TSV including CRLF and header, to catch even small changes.
@@ -2467,6 +2486,35 @@ def run_study(corpus, cfg, conditions, seeds, couplings, out_tsv,
 
 
 # --------------------------------------------------------------------------
+# Safe scratch-folder cleanup. Called by the Praat wrapper ONLY after successful
+# import and visualization, and ONLY when Keep_intermediate_files is disabled.
+# The engine never removes failed runs or user-selected retention folders.
+# --------------------------------------------------------------------------
+def clean_run_folder(folder, temp_root):
+    """Delete exactly one DSE-created scratch directory under Praat's temp root.
+
+    Strict basename and immediate-parent checks defend against an accidental
+    or malformed recursive deletion. This action is deliberately explicit.
+    """
+    folder = os.path.abspath(os.path.normpath(folder))
+    temp_root = os.path.abspath(os.path.normpath(temp_root))
+    label = os.path.basename(folder)
+    if not re.fullmatch(r"temp_DCE_[0-9]{6}", label):
+        raise ValueError("Cleanup refused: not a DSE scratch folder: " + label)
+    if os.path.normcase(os.path.realpath(os.path.dirname(folder))) != os.path.normcase(os.path.realpath(temp_root)):
+        raise ValueError("Cleanup refused: folder is not directly inside Praat's temporary directory")
+    if os.path.islink(folder):
+        raise ValueError("Cleanup refused: scratch folder is a symbolic link")
+    if not os.path.exists(folder):
+        print("cleanup: scratch folder already absent")
+        return
+    if not os.path.isdir(folder):
+        raise ValueError("Cleanup refused: scratch path is not a directory")
+    shutil.rmtree(folder)
+    print("cleanup: removed scratch directory " + folder)
+
+
+# --------------------------------------------------------------------------
 # CLI
 # --------------------------------------------------------------------------
 def render_args(p):
@@ -2499,13 +2547,16 @@ def sustain_from_args(a):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Distributed Sound Ecology v0.1.7.1")
+    ap = argparse.ArgumentParser(description="Distributed Sound Ecology v0.1.7.2")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     def common(p):
         p.add_argument("--config", help="key=value file")
         p.add_argument("--set", action="append", default=[], metavar="key=value")
 
+    p = sub.add_parser("cleanup", help="remove one completed temporary DSE run safely")
+    p.add_argument("--folder", required=True)
+    p.add_argument("--temp-root", required=True)
     p = sub.add_parser("selftest", help="deterministic regression checks (no audio needed)")
     p = sub.add_parser("study", help="batch coupling/seed study from an existing corpus TSV (no audio)")
     p.add_argument("corpus"); common(p)
@@ -2542,7 +2593,9 @@ def main():
     p.add_argument("-o", default="dce_out")
 
     a = ap.parse_args()
-    if a.cmd == "selftest":
+    if a.cmd == "cleanup":
+        clean_run_folder(a.folder, a.temp_root)
+    elif a.cmd == "selftest":
         selftest()
     elif a.cmd == "study":
         run_study(a.corpus, load_config(a.config, a.set), a.conditions, a.seeds, a.couplings, a.o,

@@ -3,8 +3,9 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.1.7.1 (2026) - Persistent Sonic Processes + Final Fade
+# Version: 0.1.7.2 (2026) - Reliable Scratch Folder Cleanup
 # v0.1.5.2 restored artist-tested Legacy and corrected the Off label; v0.1.5.3 retains both.
+# v0.1.7.2: delete the entire temporary run folder after successful import.
 # v0.1.7.1: Persistent Processes now has a guaranteed final stereo fade-out.
 # v0.1.7: Rendering adds Persistent Processes: agent decisions update one persistent
 #         sound process per phrase (glide time Morph_s, articulation by phrases or attacks).
@@ -17,7 +18,7 @@
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
-# Front end for dce_engine.py EXACTLY version 0.1.7.1.
+# Front end for dce_engine.py EXACTLY version 0.1.7.2.
 # Three conditions, one engine: Independent / Centralized / Decentralized.
 # Selected Sound -> temporary float WAV -> Python corpus, agent simulation,
 # renderer -> 1 or 3 stereo Sounds, plus optional Praat Picture comparison.
@@ -88,14 +89,14 @@ endif
 
 # Guard against a silent .praat / .py version mismatch.
 engineText$ = readFile$(pythonScript$)
-if index(engineText$, "Version : 0.1.7.1 ") = 0 or index(engineText$, "final_fade_s") = 0
-    exitScript: "Distributed Sound Ecology v0.1.7.1 requires the matching dce_engine.py v0.1.7.1 (with Final Fade)." + newline$ + "Engine file: " + pythonScript$ + newline$ + "Replace plugin_AudioTools/py/dce_engine.py with the engine supplied in this ZIP."
+if index(engineText$, "Version : 0.1.7.2 ") = 0 or index(engineText$, "final_fade_s") = 0
+    exitScript: "Distributed Sound Ecology v0.1.7.2 requires the matching dce_engine.py v0.1.7.2 (with safe scratch cleanup)." + newline$ + "Engine file: " + pythonScript$ + newline$ + "Replace plugin_AudioTools/py/dce_engine.py with the engine supplied in this ZIP."
 endif
 
 # ---- COMPACT MAIN FORM ----
 # Library convention: TimeLine Composer uses optional beginPause dialogs.  Keep
 # the everyday listening controls here; reveal expert settings only on request.
-form Distributed Sound Ecology v0.1.7.1
+form Distributed Sound Ecology v0.1.7.2
     comment === Music / comparison ===
     optionmenu Architecture: 4
         option All three (comparison)
@@ -384,6 +385,7 @@ endfor
 pythonScriptJ$ = replace_regex$(pythonScript$, "\\", "/", 0)
 inputWavJ$ = replace_regex$(inputWav$, "\\", "/", 0)
 runFolderJ$ = replace_regex$(runFolder$, "\\", "/", 0)
+tempRootJ$ = replace_regex$(temporaryDirectory$, "\\", "/", 0)
 logPathJ$ = replace_regex$(logPath$, "\\", "/", 0)
 probePathJ$ = replace_regex$(probePath$, "\\", "/", 0)
 probeLogPathJ$ = replace_regex$(probeLogPath$, "\\", "/", 0)
@@ -400,35 +402,18 @@ endproc
 
 procedure cleanUpArtifacts
     if not keep_intermediate_files
-        if fileReadable(inputWav$)
-            deleteFile: inputWav$
+        # Praat deleteFile removes individual files but does not delete a
+        # directory. Invoke the SAME Python interpreter that rendered audio;
+        # its cleanup command only accepts temp_DCE_###### directly beneath
+        # Praat's temporary directory (no unguarded rmdir / rm / del).
+        .cleanupCommand$ = pythonCmd$ + " """ + pythonScriptJ$ + """ cleanup --folder """ + runFolderJ$ + """ --temp-root """ + tempRootJ$ + """"
+        runSystem_nocheck: .cleanupCommand$
+        if folderExists(runFolder$)
+            appendInfoLine: "WARNING: Could not remove temporary run folder: ", runFolder$
+            appendInfoLine: "The generated Sounds are already in Praat. You may remove this folder manually."
+        else
+            appendInfoLine: "Temporary run folder removed after successful import."
         endif
-        if fileReadable(corpusPath$)
-            deleteFile: corpusPath$
-        endif
-        if fileReadable(sustainPath$)
-            deleteFile: sustainPath$
-        endif
-        if fileReadable(logPath$)
-            deleteFile: logPath$
-        endif
-        for .c from 1 to 3
-            if fileReadable(resultWav$[.c])
-                deleteFile: resultWav$[.c]
-            endif
-            if fileReadable(resultStates$[.c])
-                deleteFile: resultStates$[.c]
-            endif
-            if fileReadable(resultEvents$[.c])
-                deleteFile: resultEvents$[.c]
-            endif
-            if fileReadable(resultRender$[.c])
-                deleteFile: resultRender$[.c]
-            endif
-            if fileReadable(resultRenderStats$[.c])
-                deleteFile: resultRenderStats$[.c]
-            endif
-        endfor
     endif
 endproc
 
@@ -1098,7 +1083,7 @@ endproc
 
 # ---- INITIAL INFORMATION ----
 clearinfo
-writeInfoLine: "=== Distributed Corpus Ecology v0.1.7 - Persistent Sonic Processes ==="
+writeInfoLine: "=== Distributed Sound Ecology v0.1.7.2 - Persistent Sonic Processes ==="
 appendInfoLine: "Source: ", sourceName$
 appendInfoLine: "Architecture: ", selectedLabel$
 appendInfoLine: "Network: ", networkLabel$
@@ -1320,8 +1305,6 @@ endfor
 appendInfoLine: "Created ", nResults, " stereo Sound object(s)."
 if keep_intermediate_files
     appendInfoLine: "Analysis corpus, state/event TSV, WAV and log retained: ", runFolder$
-else
-    appendInfoLine: "Scratch WAV/TSV files are removed on success."
 endif
 if architecture = 1 or architecture = 4
     appendInfoLine: "Fast event feedback affects Decentralized only, with one-tick latency."
@@ -1332,10 +1315,9 @@ if architecture = 1 or architecture = 3
     appendInfoLine: "Central_reference = Mean-centred G removes the mean central drive; it does NOT match event density or drive variance."
 endif
 appendInfoLine: "Play=1 plays the selected condition (Decentralized when all three are generated); the output Sounds remain selected."
-appendInfoLine: "Note: Regulator and Replay are planned for DCE v0.2, not part of v0.1.7."
-appendInfoLine: "Done."
-
+appendInfoLine: "Note: Regulator and Replay are not implemented in this release."
 @cleanUpArtifacts
+appendInfoLine: "Done."
 
 # Play=1: for a single condition, play that result; when comparing all three,
 # audition Decentralized and leave all generated Sounds selected afterward.
