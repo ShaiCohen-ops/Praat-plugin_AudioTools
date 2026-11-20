@@ -2,7 +2,7 @@
 # Praat AudioTools - Genetic_Recomposer.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
-# Version: 1.5 (2026)
+# Version: 1.7 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -14,6 +14,41 @@
 #   and silence insertion. Fitness rewards a preset-dependent
 #   combination of onset density, spectral similarity to input, and
 #   envelope regularity.
+#
+# Changelog v1.7 (2026) -- review-driven fixes; with the same seed the
+# output is bit-identical to v1.6 except where a fix below applies:
+#   - FIX (phase-cancelling stereo blinded the whole search): analysis
+#     summed the channels to mono, so a stereo source with L = -R
+#     (not silent: it passed the input-RMS check) gave a silent
+#     reference and silent candidate mixes. Every candidate then scored
+#     exactly w_spectral (both chunks "quiet" -> spectralSim 1, onset
+#     0, regularity 0), e.g. 0.700 for all of Subtle Texture, every
+#     generation, so selection had nothing to select on. Analysis now
+#     decides once, from the input: if the channel mix keeps less than
+#     10% of the strongest channel's RMS, the reference AND every
+#     candidate are analysed on that strongest channel instead (same
+#     rule as Causal Recomposer). Synthesis still keeps every channel.
+#   - FIX (genome left its search space): with a narrow segment range
+#     (e.g. Min 50 / Max 58 / strength 1 -> 48.5-59.74 ms) the
+#     initial segMax draw got a reversed range and landed above
+#     eff_max_seg_ms, and the v1.5 repair checked only the 10 ms gap,
+#     never the ceiling, so such genomes stayed out of range in EVERY
+#     generation (2-3 of 5 per generation measured) and could win.
+#     segMin's upper bound is now min(initSegUpper, eff_max - 10),
+#     so the gap always fits, and one repair procedure clamps all 8
+#     genes to their bounds after initialization and after
+#     crossover + mutation. For ordinary ranges every clamp is a no-op.
+#   - FIX (short inputs crashed): To Intensity with a 100 Hz floor
+#     needs at least 0.064 s, but the input check allowed 0.05 s
+#     (0.050 and 0.055 s inputs failed). The minimum is now 0.07 s, the
+#     shortest length verified to run (0.064 s is the hard limit).
+#   - ADDED Random_seed (0 = unpredictable, as before). A positive seed
+#     reproduces the WHOLE run: initial population, the per-generation
+#     seeds, selection, crossover, mutation and the final render.
+#   - VIZ FIX: the playback map drew the last (trimmed) part at its
+#     untrimmed length, and Draw line does not clip, so the line ran
+#     past the panel's right edge. It is now cut at the target length.
+#   - Version line in this header corrected (said 1.5; form said 1.6).
 #
 # Changelog v1.6 (2026) -- visualization uniformity pass; no change to
 # the GA, segmentation, synthesis or fitness evaluation:
@@ -310,7 +345,7 @@ endif
 inputSound = selected("Sound")
 soundName$ = selected$("Sound")
 
-form GA Segment Recombination v1.6
+form GA Segment Recombination v1.7
     comment === Presets ===
     optionmenu Preset: 1
         option Custom
@@ -326,6 +361,7 @@ form GA Segment Recombination v1.6
     comment === Quality / Speed ===
     positive Pop_size 10
     positive Generations 10
+    integer Random_seed 0
     comment === Segmentation (ms) ===
     positive Min_seg_ms 20
     positive Max_seg_ms 180
@@ -440,13 +476,16 @@ endif
 if target_duration_s < 0.2
     exitScript: "Target_duration_s is too short to be usable (got ", target_duration_s, " s)."
 endif
+if random_seed < 0
+    exitScript: "Random_seed must be 0 (unpredictable) or a positive integer (got ", random_seed, ")."
+endif
 
 ###############################################################################
 # SETUP
 ###############################################################################
 
 clearinfo
-writeInfoLine: "=== GA Segment Recomposer v1.6 ==="
+writeInfoLine: "=== GA Segment Recomposer v1.7 ==="
 appendInfoLine: "Input: ", soundName$
 appendInfoLine: "Target duration: ", target_duration_s, " s"
 appendInfoLine: "Preset: ", presetName$
@@ -465,8 +504,13 @@ inputChannels = Get number of channels
 # that is entirely (near-)silent, would produce an unusable segment
 # pool and/or undefined spectral reference features -- catch both
 # before any GA work starts.
-if inputDuration < 0.05
-    exitScript: "Input sound is too short to segment (", fixed$(inputDuration, 3), " s)."
+# v1.7: To Intensity with a 100 Hz floor (used on the input and on
+# every candidate) needs at least 6.4 / 100 = 0.064 s; 0.05 s inputs
+# used to pass this check and then fail. 0.07 s is the shortest length
+# verified to run, so no input that worked in v1.6 is now refused.
+if inputDuration < 0.07
+    exitScript: "Input sound is too short to analyse (", fixed$(inputDuration, 3),
+        ... " s; at least 0.07 s is needed)."
 endif
 inputRms = Get root-mean-square: 0, 0
 if inputRms < 1e-6
@@ -485,10 +529,50 @@ appendInfoLine: ""
 # here, once, rather than per-fitness-call.
 ###############################################################################
 
+# v1.7: choose the ANALYSIS channel once, from the input. Summing to
+# mono is kept whenever it is safe; if the channel mix cancels (keeps
+# less than 10% of the strongest channel's RMS, e.g. L = -R), the
+# reference and every candidate are analysed on the strongest channel
+# instead. Candidates are recombinations of the same channels, so one
+# decision made here is valid for all of them. analysisChannel = 0
+# means "channel mix" (the v1.6 behaviour).
+analysisChannel = 0
+analysisDesc$ = "channel mix"
+if inputChannels > 1
+    strongestCh = 1
+    strongestRms = -1
+    for .ch to inputChannels
+        selectObject: inputSound
+        .tmpCh = Extract one channel: .ch
+        .tmpRms = Get root-mean-square: 0, 0
+        if .tmpRms > strongestRms
+            strongestRms = .tmpRms
+            strongestCh = .ch
+        endif
+        removeObject: .tmpCh
+    endfor
+    selectObject: inputSound
+    .tmpMix = Convert to mono
+    mixRms = Get root-mean-square: 0, 0
+    removeObject: .tmpMix
+    if strongestRms > 0 and mixRms < 0.1 * strongestRms
+        analysisChannel = strongestCh
+        if mixRms > 1e-6 * strongestRms
+            mixLoss$ = fixed$(20 * log10(mixRms / strongestRms), 1) + " dB"
+        else
+            mixLoss$ = "below -120 dB"
+        endif
+        analysisDesc$ = "channel " + string$(strongestCh) + " (channel mix cancels: "
+            ... + mixLoss$ + " re strongest channel)"
+    endif
+endif
+
 selectObject: inputSound
 inputForRefFeats = Copy: "input_feats_tmp"
-# Convert to mono for feature consistency
-if inputChannels > 1
+if analysisChannel > 0
+    refMono = Extract one channel: analysisChannel
+    removeObject: inputForRefFeats
+elsif inputChannels > 1
     refMono = Convert to mono
     removeObject: inputForRefFeats
 else
@@ -557,6 +641,7 @@ endfor
 
 removeObject: refMono
 
+appendInfoLine: "Analysis signal: ", analysisDesc$, " (synthesis keeps all ", inputChannels, " channel(s))"
 appendInfoLine: "Input reference features:"
 appendInfoLine: "  Spectral centroid: ", fixed$(refCentroid, 1), " Hz"
 appendInfoLine: "  Spectral spread: ", fixed$(refSpread, 1), " Hz"
@@ -624,14 +709,30 @@ endif
 # INITIALIZE POPULATION
 ###############################################################################
 
+# v1.7: one seed reproduces the whole run. Every random draw from here
+# on (initial population, gaBaseSeed, and through it the per-generation
+# synthesis seeds, selection, crossover and mutation) follows from it.
+if random_seed > 0
+    random_initializeWithSeedUnsafelyButPredictably (random_seed)
+    seedLabel$ = string$(random_seed)
+else
+    seedLabel$ = "unpredictable"
+endif
+appendInfoLine: "Random seed: ", seedLabel$
+
 appendInfoLine: "Initializing population (", pop_size, " individuals)..."
 
 # v1.3: guard against a reversed randomUniform range when
 # eff_min_seg_ms > 0.4 * eff_max_seg_ms (e.g. min 100, max 200).
 initSegUpper = max(eff_min_seg_ms + 5, eff_max_seg_ms * 0.4)
+# v1.7: segMin may never sit closer than 10 ms below eff_max_seg_ms,
+# or segMax (>= segMin + 10) is forced above its own ceiling. For
+# ordinary ranges initSegUpper is already far below this and nothing
+# changes; validation guarantees eff_max - 10 >= eff_min.
+segMinUpper = min(initSegUpper, eff_max_seg_ms - 10)
 
 for ind to pop_size
-    segMinMs_'ind' = randomUniform(eff_min_seg_ms, initSegUpper)
+    segMinMs_'ind' = randomUniform(eff_min_seg_ms, segMinUpper)
     segMaxMs_'ind' = randomUniform(max(segMinMs_'ind' + 10, eff_max_seg_ms * 0.6), eff_max_seg_ms)
     segBias_'ind' = randomUniform(-0.8, 0.8)
     reorderProb_'ind' = randomUniform(0, 1)
@@ -639,6 +740,7 @@ for ind to pop_size
     silenceProb_'ind' = randomUniform(0, eff_silence_prob)
     silenceMin_'ind' = randomUniform(min_silence_ms, max_silence_ms * 0.5)
     silenceMax_'ind' = randomUniform(max(silenceMin_'ind' + 5, max_silence_ms * 0.5), max_silence_ms)
+    @repairGenome: ind
 endfor
 
 ###############################################################################
@@ -822,7 +924,7 @@ finalDuration = Get total duration
 appendInfoLine: "Final duration: ", fixed$(finalDuration, 2), " s (target was ", target_duration_s, " s)"
 # v1.4: previously only shown in the visualization summary strip, so
 # it was lost entirely when Draw_visualization was off.
-appendInfoLine: "Best fitness: ", fixed$(bestFitness, 3), "   Seed: ", bestGenomeSeed
+appendInfoLine: "Best fitness: ", fixed$(bestFitness, 3), "   Run seed: ", seedLabel$, "   Winner synthesis seed: ", bestGenomeSeed
 appendInfoLine: "Best genome: Seg ", fixed$(bestGenomeSegMin, 1), "-", fixed$(bestGenomeSegMax, 1),
     ... " ms | Bias ", fixed$(bestGenomeBias, 2),
     ... " | Reorder ", fixed$(bestGenomeReorder * 100, 0), "%",
@@ -860,7 +962,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##GA Segment Recomposer v1.6##"
+    Text: 0.5, "centre", 0.68, "half", "##GA Segment Recomposer v1.7##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.50}"
     Text: 0.5, "centre", 0.22, "half",
@@ -1111,6 +1213,12 @@ if draw_visualization
     for .p from 1 to finalOutputParts
         .ot = partOutputStart_'.p'
         .od = partDuration_'.p'
+        # v1.7: the last part is usually cut by the exact-length trim,
+        # and Draw line does not clip, so its line ran past the panel's
+        # right edge. Draw only the part of it that is in the output.
+        if .ot + .od > target_duration_s
+            .od = max(0, target_duration_s - .ot)
+        endif
         if partKind_'.p' = 1
             .ss = partSourceStart_'.p'
             Colour: "{0.20, 0.55, 0.30}"
@@ -1180,7 +1288,7 @@ if draw_visualization
         ... "##Evolution##   Pop: " + string$(pop_size)
         ... + "   Gens: " + string$(generations)
         ... + "   Best fitness: " + fixed$(bestFitness, 3)
-        ... + "   Seed: " + string$(bestGenomeSeed)
+        ... + "   Seed: " + seedLabel$ + " (winner " + string$(bestGenomeSeed) + ")"
         ... + "   Weights: onset=" + fixed$(w_onset, 2)
         ... + " spec=" + fixed$(w_spectral, 2)
         ... + " reg=" + fixed$(w_regular, 2)
@@ -1567,8 +1675,13 @@ procedure calculateFitnessFAST: .sound, .doExpensive, .typicalSegDur
 
     if .usable = 1
         # -- Component 1: spectral similarity to input ----------
+        # v1.7: same analysis signal as the reference (see
+        # analysisChannel): the channel mix, or the strongest input
+        # channel when the mix cancels.
         selectObject: .sound
-        if inputChannels > 1
+        if analysisChannel > 0
+            .cMono = Extract one channel: analysisChannel
+        elsif inputChannels > 1
             .cMono = Convert to mono
         else
             .cMono = Copy: "cand_mono_tmp"
@@ -1849,7 +1962,7 @@ procedure evolvePopulation
     
     for .i to pop_size
         if randomUniform(0, 1) < .mutRate
-            newSegMinMs_'.i' = max(eff_min_seg_ms, min(initSegUpper, newSegMinMs_'.i' + randomGauss(0, 10)))
+            newSegMinMs_'.i' = max(eff_min_seg_ms, min(segMinUpper, newSegMinMs_'.i' + randomGauss(0, 10)))
         endif
         if randomUniform(0, 1) < .mutRate
             newSegMaxMs_'.i' = max(newSegMinMs_'.i' + 10, min(eff_max_seg_ms, newSegMaxMs_'.i' + randomGauss(0, 15)))
@@ -1874,35 +1987,11 @@ procedure evolvePopulation
         endif
     endfor
 
-    # v1.5: mutation can re-break the min/max gene pairs even though
-    # crossover's repair (above) already fixed them -- each gene
-    # mutates independently, so e.g. silenceMin can mutate upward on
-    # its own with silenceMax untouched, landing back on min > max.
-    # Repair again here, right before the new generation replaces the
-    # old one. Prefer giving ground on the max side (raise it to
-    # min+gap) when that still fits under its own ceiling; only when
-    # the min is already too close to the ceiling do we instead pull
-    # the min down, so the repair itself can never be pushed out of
-    # the genome's allowed range.
-    for .i to pop_size
-        if newSegMaxMs_'.i' < newSegMinMs_'.i' + 10
-            if newSegMinMs_'.i' + 10 <= eff_max_seg_ms
-                newSegMaxMs_'.i' = newSegMinMs_'.i' + 10
-            else
-                newSegMaxMs_'.i' = eff_max_seg_ms
-                newSegMinMs_'.i' = max(eff_min_seg_ms, newSegMaxMs_'.i' - 10)
-            endif
-        endif
-        if newSilenceMax_'.i' < newSilenceMin_'.i' + 5
-            if newSilenceMin_'.i' + 5 <= max_silence_ms
-                newSilenceMax_'.i' = newSilenceMin_'.i' + 5
-            else
-                newSilenceMax_'.i' = max_silence_ms
-                newSilenceMin_'.i' = max(min_silence_ms, newSilenceMax_'.i' - 5)
-            endif
-        endif
-    endfor
-    
+    # v1.5 repaired the min/max pairs here after mutation, but only
+    # checked the GAP, never the ceiling, so a segMax pushed above
+    # eff_max_seg_ms stayed there. v1.7: the new generation is copied
+    # first and then every genome goes through the same @repairGenome
+    # used at initialization.
     for .i to pop_size
         segMinMs_'.i' = newSegMinMs_'.i'
         segMaxMs_'.i' = newSegMaxMs_'.i'
@@ -1912,5 +2001,24 @@ procedure evolvePopulation
         silenceProb_'.i' = newSilenceProb_'.i'
         silenceMin_'.i' = newSilenceMin_'.i'
         silenceMax_'.i' = newSilenceMax_'.i'
+        @repairGenome: .i
     endfor
+endproc
+
+# v1.7: one repair for every genome, used after initialization and
+# after crossover + mutation. Clamps each gene to the range it was
+# initialized in, then restores the ordered pairs (segMax >= segMin +
+# 10, silenceMax >= silenceMin + 5) WITHOUT leaving those ranges: the
+# min genes' upper bounds are chosen so the gap always fits under the
+# max genes' ceilings. A genome that is already valid is left exactly
+# as it is.
+procedure repairGenome: .g
+    segMinMs_'.g' = max(eff_min_seg_ms, min(segMinUpper, segMinMs_'.g'))
+    segMaxMs_'.g' = max(segMinMs_'.g' + 10, min(eff_max_seg_ms, segMaxMs_'.g'))
+    segBias_'.g' = max(-0.8, min(0.8, segBias_'.g'))
+    reorderProb_'.g' = max(0, min(1, reorderProb_'.g'))
+    crossfadeMs_'.g' = max(0, min(eff_max_crossfade_ms, crossfadeMs_'.g'))
+    silenceProb_'.g' = max(0, min(eff_silence_prob, silenceProb_'.g'))
+    silenceMin_'.g' = max(min_silence_ms, min(max_silence_ms * 0.5, silenceMin_'.g'))
+    silenceMax_'.g' = max(silenceMin_'.g' + 5, min(max_silence_ms, silenceMax_'.g'))
 endproc
