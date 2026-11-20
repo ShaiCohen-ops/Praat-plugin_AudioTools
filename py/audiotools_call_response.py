@@ -4,7 +4,7 @@
 # Script:      audiotools_call_response.py
 # Author:      Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
-# Version:     0.4.12 (2026) - Performer display (from v0.4.11)
+# Version:     0.4.14 (2026) - Automatic microphone and gate calibration (from v0.4.13)
 # License:     MIT License
 # Repository:  https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -30,6 +30,105 @@
 #
 #   Both paths share the same feature extraction, scoring, eligibility
 #   gates, parameter mapping and phrase detector.
+#
+# Changelog v0.4.14 - Automatic microphone and gate calibration (from v0.4.13):
+#   NEW --auto-calib 1 (Praat: Advanced settings > Auto_calibrate_gate; off
+#     by default; adaptive gate only - ignored with off / legacy).  Before
+#     phrase detection starts, three stages (details and the mathematical
+#     rules in the block comment above class AutoCalibrator):
+#       1/3 room noise (1.5 s): noise level, the floor the detector learns,
+#           the loudest 30 ms-held noise; digital silence / > -30 dBFS /
+#           > 20 dB spread = invalid
+#       2/3 speaker leakage: the v0.4.13 calibration_burst() and
+#           EchoGate.calibrate() unchanged, plus the received level per
+#           side on the frames where that side's pulses were on (delay
+#           applied, transitions excluded, noise subtracted), coupling and
+#           the leakage of an answer at the response level (reverberant
+#           energy included)
+#       3/3 live instrument (1 s get-ready + 5 s): typical and soft playing
+#           level from 30 ms-held 0.5 s passage peaks (gaps, decays and
+#           crescendo entries excluded), clipping, too little signal
+#     Sensitivity: S = clamp(original, S_lo, S_hi), S_lo = 4 + (noise peak
+#     - floor) + 1.5 (phrases can end), S_hi = soft - 6 - floor (soft
+#     playing 6 dB above the start threshold); S_lo if they cross (reported).
+#     The detector's floor is seeded from stage 1.  The gate's constants
+#     are NOT changed; during playback it decides as before (multiband
+#     model, double-talk, verdicts, live adaptation).  The report REPLAYS
+#     the recorded passages over an answer's measured leakage through the
+#     gate's own rules and says whether typical / soft playing stands out.
+#     --calib-burst is implied (the test sound is played once).
+#     FAILED / INTERRUPTED: nothing is applied (original sensitivity and
+#     floor), the session continues as v0.4.13; a valid stage 2/3 keeps its
+#     leakage model, as Calibration_sound did.
+#     Detection is held during the stages and until 0.3 s of quiet after
+#     stage 3/3 (at most 3 s); nothing recorded reaches a phrase, a corpus,
+#     the history or the level follower.
+#   Status: autocal, autocal_stage, autocal_left, autocal_age, autocal_ver,
+#     autocal_line, autocal_msg, autocal_<measurement>; the full report is
+#     calibration_report.txt (read by Praat, removed with the session); the
+#     summary and the debug log keep the report and the measurements.
+#   With --auto-calib 0 the engine is unchanged: identical phrases to the
+#     v0.4.13 file on the same scenes (verified, see the delivery notes).
+#   Self-test: 11 new tests (simulated rooms - preliminary) and a table
+#     comparing v0.4.13, v0.4.13 + calibration sound and v0.4.14.
+#
+# Changelog v0.4.13 - Adaptive envelope gate (from v0.4.12):
+#   PROBLEM: with loudspeakers and an open microphone the answers started
+#   phrases of their own.  The leakage guard (v0.2) looks for a delayed,
+#   scaled COPY of the output in the input waveform; loudspeaker
+#   colouration, reverberation and clock drift destroy that correlation,
+#   so in a real room its gain was rarely learned and its 75 % rule
+#   rarely fired.
+#   NEW: feedback protection has three modes (--gate-mode):
+#     off       no protection (the path is still estimated for the warning)
+#     legacy    the v0.4.12 leakage guard, unchanged
+#     adaptive  (default) the EchoGate - see the block comment above the
+#               class.  In short:
+#       1. A multiband ENVELOPE model predicts the leakage: 21 bands
+#          (~1/3 octave), 10 ms frames; per band non-negative gains for
+#          the left, right and mid reference plus two decaying terms
+#          (reverberation); the delay (0-0.8 s, device latency included)
+#          from the onsets.  Input and output are aligned by wall-clock
+#          time, so separate device clocks cannot drift apart; +-20 ms of
+#          jitter is tolerated and a changed delay is followed.
+#       2. The detector judges the RESIDUAL: the input minus 6 dB x the
+#          predicted leakage per band, which must also stand above the
+#          residual the model is known to leave with playback alone (a
+#          learned floor).  Without playback the residual is the input:
+#          detection is exactly v0.4.12.  The microphone is never closed
+#          - energy the playback does not explain opens the gate at any
+#          time (double-talk).
+#       3. Every phrase that overlaps playback is JUDGED when it ends, in
+#          hindsight, with a model fitted to that phrase and its
+#          surroundings: playback only -> discarded before the brain.
+#          A lead-in or tail that is only playback is left out of the
+#          phrase (the audio itself is never modified).
+#       4. The model learns only from playback heard OUTSIDE phrases and
+#          from phrases judged playback-only, changes slowly once
+#          established, and never from a phrase the performer may be in.
+#     --calib-burst 1 (off by default): a 1.35 s calibration sound at
+#       start (pulsed noise, left then right).  Never played otherwise.
+#   SONIC MEMORY / ANALYSIS: playback-only phrases never reach the brain
+#     (no Corpus A item, no influence history, no level follower).  Every
+#     job carries contam (share of its energy that is predicted leakage)
+#     and contam_state (clean / light / contaminated / heavy / unknown):
+#     written to the decision, stored with the Corpus A item, >= 25 %
+#     not counted by the follower, >= 50 % answered but not stored in
+#     Corpus A and not part of the influence history.
+#   DIAGNOSTICS: status fields gate_*; events for suppressed triggers,
+#     discarded phrases and phrases accepted over playback; a "gate"
+#     summary line; with a debug log one gate line per second.  The log
+#     is kept after STOP when Praat places it outside the session.
+#   With the adaptive gate the background layer no longer pauses on
+#     leakage (it is predicted like every other voice) and the "use
+#     headphones" warning is not raised.
+#   LIMITS (see the delivery notes): this is not echo cancellation - the
+#     recorded phrase still contains the playback under it; a gesture
+#     weaker than the leakage at the microphone is detected only where
+#     its bands are free; a performer who starts and stops exactly with
+#     every answer cannot be told from a loudspeaker.
+#   Self-test: 9 new tests drive the real engine chain offline through
+#     simulated rooms (preliminary - not a validation of a live room).
 #
 # Changelog v0.4.12 - Performer display (from v0.4.11):
 #   Engine unchanged except: det_event_age is reported with 0.1 s
@@ -378,6 +477,7 @@
 #   launch        <serve arguments>        start "serve" detached, return at once
 #   launch        --args-file FILE         the same, arguments read from FILE (v0.4.4)
 #   serve         --session DIR --script PRAAT_SCRIPT ...   continuous engine
+#                 (v0.4.14: --auto-calib 1 = automatic calibration at start)
 #   probe         --out FILE [--live]      dependency check, writes FILE
 #   devices       --out FILE               list audio input + output devices
 #   listen        --session DIR --cycle N  [capture options]   (v0.1.3)
@@ -427,7 +527,7 @@ import time
 import zlib
 
 T_PROCESS_START = time.perf_counter()
-VERSION = "0.4.12"
+VERSION = "0.4.14"
 
 TRANSFORM_IDS = ["paulstretch", "markov", "mds", "spiral", "speeddev", "groove"]
 TRANSFORM_NAMES = {
@@ -1448,6 +1548,7 @@ class PhraseDetector:
         self.ended_by = ""
         self.peak_db = -200.0
         self.last_db = -200.0
+        self.last_eff_db = -200.0
         self.quiet_above = 0
         self.carry = None
         self.cut_end = None
@@ -1477,7 +1578,16 @@ class PhraseDetector:
             del self.pre[:len(self.pre) - self.pre_max]
             del self.pre_db[:len(self.pre_db) - self.pre_max]
 
-    def _floor_update(self, db):
+    def _floor_update(self, db, hold=False):
+        if hold:
+            # v0.4.13: while playback is present the level is a RESIDUAL
+            # (input minus predicted leakage): the floor only follows it
+            # slowly when it is close, never down into an over-subtraction
+            # and never up with what the prediction left over
+            if abs(db - self.floor) < self.FLOOR_NEAR_DB:
+                self.floor += self.FLOOR_RISE * (db - self.floor)
+            self.quiet_above = 0
+            return
         if db < self.floor:
             self.floor += self.FLOOR_FALL * (db - self.floor)
             self.quiet_above = 0
@@ -1620,13 +1730,25 @@ class PhraseDetector:
         self.peak_db = -200.0
         self.state = "LISTENING"
 
-    def feed(self, block):
+    def feed(self, block, gate=None):
+        """gate (v0.4.13) = None, or (offset_db <= 0, playback_present,
+        lift_dbfs) from the EchoGate: the frame is judged by the level of
+        its RESIDUAL (input minus predicted speaker leakage), which must
+        also stand above `lift` (the residual the model leaves over with
+        playback alone).  The stored audio is the input, unchanged.
+        None, or offset 0 and lift -200 = exactly v0.4.12."""
         np = self.np
         self.frames_in += 1
         mono = block.mean(axis=1) if block.ndim == 2 else block
         e = float(np.sqrt(np.mean(mono.astype(np.float64) ** 2) + 1e-20))
         db = 20 * math.log10(e + 1e-12)
         self.last_db = db
+        hold, lift = False, -200.0
+        if gate is not None:
+            db = max(db + gate[0], -200.0)
+            hold = bool(gate[1])
+            lift = gate[2] if len(gate) > 2 else -200.0
+        self.last_eff_db = db
         if e > 1e-7:
             self.digital_silence = False
         if self.state == "CALIBRATING":
@@ -1643,6 +1765,7 @@ class PhraseDetector:
         if self.state == "LISTENING":
             self.pending_frames += 1
             on, _ = self.thresholds()
+            on = max(on, lift)
             if db > on:
                 self.above += 1
                 self._pre_push(block, db)
@@ -1664,13 +1787,14 @@ class PhraseDetector:
                     return "onset"
             else:
                 self.above = 0
-                self._floor_update(db)
+                self._floor_update(db, hold)
                 self._pre_push(block, db)
             return None
         if self.state == "PHRASE":
             self.buf.append(block)
             self.buf_db.append(db)
             _, off = self.thresholds()
+            off = max(off, lift - 3.0)
             if db > off:
                 self.last_active = len(self.buf) - 1
                 self.silent_run = 0
@@ -2381,6 +2505,36 @@ def cmd_self_test(args):
         print("[%s] %s: %s" % ("OK " if ok else "FAIL", name, detail))
         if not ok:
             failures += 1
+    print("\n" + "-" * 72 + "\nv0.4.13 adaptive envelope gate tests (real engine chain on a simulated "
+          "clock;\n  SIMULATED rooms - preliminary, not a validation of a live performance)")
+    for name, fn in V0413_TESTS:
+        try:
+            t0 = time.perf_counter()
+            ok, detail = fn(sr)
+            detail += "  [%.1f s]" % (time.perf_counter() - t0)
+        except Exception as ex:                              # noqa: BLE001
+            import traceback
+            ok, detail = False, "exception: %s %s" % (ex, traceback.format_exc()[-600:])
+        print("[%s] %s: %s" % ("OK " if ok else "FAIL", name, detail))
+        if not ok:
+            failures += 1
+    print("\n" + "-" * 72 + "\nv0.4.14 automatic calibration tests (real engine chain, simulated clock;\n"
+          "  SIMULATED rooms - preliminary, not a validation of a live performance)")
+    del AC_TABLE[:]
+    for name, fn in V0414_TESTS:
+        try:
+            t0 = time.perf_counter()
+            ok, detail = fn(sr)
+            detail += "  [%.1f s]" % (time.perf_counter() - t0)
+        except Exception as ex:                              # noqa: BLE001
+            import traceback
+            ok, detail = False, "exception: %s %s" % (ex, traceback.format_exc()[-600:])
+        print("[%s] %s: %s" % ("OK " if ok else "FAIL", name, detail))
+        if not ok:
+            failures += 1
+    print("\nComparison with v0.4.13 under identical simulated conditions (gestures detected\n"
+          "anywhere in an accepted phrase; missed = between answers + over answers):")
+    print(_ac_table())
     print("\n%d failure(s)" % failures)
     return 1 if failures else 0
 
@@ -3567,6 +3721,1032 @@ def _t_det_release(sr):
         ok &= n_sil == 5 and not any(p[2].startswith("max") for p in ph)
         res.append("%s: %d/5" % (name, n_sil))
     return ok, "phrases ended: " + ", ".join(res)
+
+
+# ---------------- v0.4.13 offline engine simulation (self-test only) ----------------
+class _SimClock:
+    """A settable clock standing in for the time module while the engine's
+    detection chain is driven offline (no audio device, no threads)."""
+
+    def __init__(self, real):
+        self._real = real
+        self.now = 1000.0
+
+    def time(self):
+        return self.now
+
+    def __getattr__(self, k):
+        return getattr(self._real, k)
+
+
+def _sim_room(sr, rng, drr_db=0.0, rt60=0.5, lag_s=0.12, gain_db=-15.0, colour=True):
+    """A speaker -> microphone impulse response: delay, direct sound,
+    exponentially decaying diffuse tail (direct-to-reverberant ratio
+    drr_db; 99 = none), small-loudspeaker band-pass (150 Hz - 7 kHz)."""
+    import numpy as np
+    import scipy.signal as ss
+    n = int((lag_s + rt60 * 1.3) * sr)
+    h = np.zeros(n)
+    d = int(lag_s * sr)
+    h[d] = 1.0
+    if drr_db < 90:
+        t = np.arange(n - d - int(0.004 * sr)) / sr
+        rev = rng.standard_normal(len(t)) * np.exp(-6.908 * t / rt60)
+        rev *= math.sqrt(10 ** (-drr_db / 10.0) / np.sum(rev ** 2))
+        h[d + int(0.004 * sr):] += rev
+    if colour:
+        b, a = ss.butter(2, [150 / (sr / 2), 7000 / (sr / 2)], "band")
+        h = ss.lfilter(b, a, h)
+    return h * 10 ** (gain_db / 20.0)
+
+
+def _sim_program(sr, total_s, events):
+    """events = [(start_s, mono audio, pan -1..1, peak)] -> (n, 2) float32."""
+    import numpy as np
+    out = np.zeros((int(total_s * sr), 2), np.float32)
+    for t0, a, pan, peak in events:
+        a = np.asarray(a, np.float64)
+        a = a / (np.max(np.abs(a)) + 1e-12) * peak
+        k = min(len(a), int(0.03 * sr))
+        a[:k] *= raised_cosine(k, True)
+        a[-k:] *= raised_cosine(k, False)
+        i = int(t0 * sr)
+        a = a[:max(0, len(out) - i)]
+        th = (pan + 1.0) * math.pi / 4.0
+        out[i:i + len(a), 0] += (a * math.cos(th)).astype(np.float32)
+        out[i:i + len(a), 1] += (a * math.sin(th)).astype(np.float32)
+    return out
+
+
+def _sim_run(sr, mode, out, mic, calib=0, live_room=None, memory=False, think=False,
+             autocal=0, hook=None, extra_args=(), stop_at=None):
+    """Drive a real Engine (detector, gate / legacy guard, finalize and
+    optionally the brain's _think) with a scripted output programme `out`
+    (n, 2) and a microphone signal `mic` (n,), 10 ms at a time, on a
+    simulated clock.  live_room = (hL, hR): what the engine's own mixer
+    plays (the calibration sound) also reaches the microphone.
+    v0.4.14: autocal = --auto-calib; hook(engine, frame) may return one
+    frame of extra microphone signal (a performer reacting to the
+    calibration prompts); stop_at = frame index at which the session is
+    stopped (the calibration is aborted as Engine.finish does).
+    Returns (engine, [accepted phrases: dict start, end, contam, state])."""
+    import numpy as np
+    import scipy.signal as ss
+    import tempfile
+    tmp = tempfile.mkdtemp(prefix=SESSION_PREFIX + "selftest_")
+    argv = ["serve", "--session", tmp, "--script", "none", "--plugin-root", "none",
+            "--sr", str(sr), "--gate-mode", mode, "--calib-burst", str(calib),
+            "--memory", "1" if memory else "0",
+            "--response-mode", "hybrid" if memory else "transform",
+            "--background", "0", "--follow-input", "1", "--max-pending", "50",
+            "--auto-calib", str(autocal)] + list(extra_args)
+    g = globals()
+    real = g["time"]
+    clk = _SimClock(real)
+    g["time"] = clk
+    jobs = []
+    try:
+        e = Engine(build_parser().parse_args(argv), None)
+        e.out_ch = 2
+        hop = e.det.hop
+        t0 = clk.now
+        extra = np.zeros(len(mic) + (len(live_room[0]) if live_room else 0) + hop)
+        for i in range(len(mic) // hop):
+            if stop_at is not None and i >= stop_at:
+                if e.autocal is not None:
+                    e.autocal.abort("stopped by the user")
+                break
+            clk.now = t0 + (i + 1) * hop / float(sr)
+            blk = out[i * hop:(i + 1) * hop]
+            if live_room is not None:
+                own = e.mixer.render(hop)
+                if float(np.max(np.abs(own))) > 0:
+                    blk = blk + own
+                    y = ss.fftconvolve(own[:, 0], live_room[0]) + ss.fftconvolve(own[:, 1],
+                                                                                 live_room[1])
+                    extra[i * hop:i * hop + len(y)] += y
+            e._ref_push(blk, clk.now)
+            m = mic[i * hop:(i + 1) * hop] + extra[i * hop:(i + 1) * hop]
+            if hook is not None:
+                x = hook(e, i)
+                if x is not None:
+                    m = m + x
+            e._process_block(m.astype(np.float32)[:, None], clk.now)
+            for job in e.phrase_q.drain():
+                jobs.append({"start": job.t["onset"] - t0, "end": job.t["end"] - t0,
+                             "contam": job.contam, "state": job.contam_state, "tag": job.tag})
+                if think:
+                    e._think(job)
+                    for j2 in e.render_q.drain():
+                        e._cleanup_job(j2)
+    finally:
+        g["time"] = real
+        shutil.rmtree(tmp, ignore_errors=True)
+    return e, jobs
+
+
+def _sim_score(jobs, performer):
+    """performer = [(start, end)] of the genuine gestures.  Returns
+    (false triggers, gestures detected, gestures detected cleanly):
+    false = accepted phrases that overlap no gesture; detected = gestures
+    overlapped by an accepted phrase; cleanly = by a phrase that also
+    BEGINS with the gesture (within 0.5 s), i.e. was not started by
+    playback and merely happened to contain it."""
+    hit = [False] * len(performer)
+    clean = [False] * len(performer)
+    false = 0
+    for j in jobs:
+        ok = False
+        for k, (a, b) in enumerate(performer):
+            if j["start"] < b - 0.1 and j["end"] > a + 0.1:
+                hit[k] = ok = True
+                if abs(j["start"] - a) <= 0.5:
+                    clean[k] = True
+        if not ok:
+            false += 1
+    return false, sum(hit), sum(clean)
+
+
+# ---------------- v0.4.13 adaptive envelope gate tests ----------------
+def _g_tone(sr, f, dur, fade=0.02, cres=0.0):
+    import numpy as np
+    t = np.arange(int(dur * sr)) / sr
+    x = sum((0.6 ** k) * np.sin(2 * np.pi * f * (k + 1) * t) for k in range(5))
+    env = np.minimum(1, t / max(fade, 1e-3)) * np.minimum(1, (dur - t) / 0.05)
+    if cres > 0:
+        env = env * np.minimum(1, t / cres) ** 2
+    return x * env
+
+
+def _g_perc(sr, dur, rng):
+    import numpy as np
+    x = np.zeros(int(dur * sr))
+    for k, tm in enumerate(np.arange(0.05, dur - 0.2, 0.28)):
+        L = int(0.12 * sr)
+        tt = np.arange(L) / sr
+        h = (np.sin(2 * np.pi * (900 + 300 * (k % 3)) * tt) + 0.5 * rng.standard_normal(L)) * \
+            np.exp(-tt * 35)
+        x[int(tm * sr):int(tm * sr) + L] += h / np.max(np.abs(h))
+    return x
+
+
+def _gate_scene(sr, room, seed=1, gestures=(), ppm=0.0, lag_step=None, total=26.0):
+    """A scripted session: five answers (noise texture, drum groove, held
+    harmonic tone, inharmonic swelling cluster, plucked notes) at
+    different stereo positions through a simulated room, plus performer
+    gestures [(start_s, audio, level in dB re the leakage under it or None
+    = absolute amplitude already)].  Returns (out, mic, [(start, end)])."""
+    import numpy as np
+    import scipy.signal as ss
+    rng = np.random.default_rng(seed)
+    c = synth_cases(sr)
+    ev = [(1.5, c["markov"], -0.5, 0.3), (5.5, c["groove"][:int(3.2 * sr)], 0.6, 0.35),
+          (9.5, np.tile(c["paulstretch"], 2)[:int(4.5 * sr)], 0.0, 0.3),
+          (15.0, c["speeddev"], -0.7, 0.3), (20.0, c["mds"], 0.4, 0.35)]
+    out = _sim_program(sr, total, ev)
+    n = len(out)
+
+    def leak(kw):
+        r = np.random.default_rng(seed + 100)
+        hl, hr = _sim_room(sr, r, **kw), _sim_room(sr, r, **kw) * 0.7
+        return (ss.fftconvolve(out[:, 0], hl) + ss.fftconvolve(out[:, 1], hr))[:n]
+    lk = leak(room)
+    if lag_step is not None:                 # the path delay changes mid-session
+        t_step, extra = lag_step
+        lk2 = leak(dict(room, lag_s=room.get("lag_s", 0.12) + extra))
+        i = int(t_step * sr)
+        lk = np.concatenate([lk[:i], lk2[i:]])
+    if ppm:                                  # the input device's clock runs fast
+        lk = np.interp(np.arange(n) * (1 + ppm * 1e-6), np.arange(n), lk)
+    mic = lk + 0.002 * rng.standard_normal(n)
+    perf = []
+    for t0, x, rel in gestures:
+        i = int(t0 * sr)
+        x = np.asarray(x, np.float64)[:max(0, n - i)]
+        if rel is not None:
+            act = np.abs(x) > 0.05 * np.max(np.abs(x))
+            lr = math.sqrt(float(np.mean(lk[i:i + len(x)] ** 2)) + 1e-20)
+            x = x * (lr * 10 ** (rel / 20.0) / math.sqrt(float(np.mean(x[act] ** 2))))
+        mic[i:i + len(x)] += x
+        perf.append((t0, t0 + len(x) / sr))
+    return out, mic, perf
+
+
+def _t_gate_transparent(sr):
+    """No playback: the adaptive gate changes NOTHING - the same phrases,
+    sample for sample, as with protection off (= v0.4.12 detection)."""
+    import numpy as np
+    rng = np.random.default_rng(2)
+    n = int(17 * sr)
+    mic = 0.002 * rng.standard_normal(n)
+    for t0, x in ((1.0, 0.05 * _g_tone(sr, 330, 1.2)), (3.5, 0.03 * _g_tone(sr, 440, 3.0, cres=2.0)),
+                  (8.0, 0.08 * _g_perc(sr, 2.0, rng)), (11.5, 0.012 * _g_tone(sr, 660, 1.0)),
+                  (13.5, 0.05 * _g_tone(sr, 220, 2.5, fade=0.3))):
+        mic[int(t0 * sr):int(t0 * sr) + len(x)] += x
+    out = np.zeros((n, 2), np.float32)
+    res = {}
+    for mode in ("off", "adaptive"):
+        e, jobs = _sim_run(sr, mode, out, mic)
+        res[mode] = [(round(j["start"], 4), round(j["end"], 4)) for j in jobs]
+    ok = res["off"] == res["adaptive"] and len(res["off"]) == 5
+    return ok, "5 gestures (attack, 2 s crescendo, percussion, quiet attack, soft entry): %d phrases " \
+               "off, %d adaptive, identical bounds: %s" % (len(res["off"]), len(res["adaptive"]),
+                                                           res["off"] == res["adaptive"])
+
+
+def _t_gate_playback_only(sr):
+    """Playback only (no performer) through coloured / reverberant rooms:
+    every accepted phrase is a false trigger."""
+    rooms = [("colouration only", dict(drr_db=99)), ("DRR 0 dB, RT60 0.5 s", dict(drr_db=0)),
+             ("DRR -6 dB, RT60 0.8 s, 300 ms latency", dict(drr_db=-6, rt60=0.8, lag_s=0.3))]
+    out_txt, ok = [], True
+    tot = {"legacy": 0, "adaptive": 0}
+    for name, kw in rooms:
+        out, mic, _ = _gate_scene(sr, kw)
+        r = {}
+        for mode in ("legacy", "adaptive"):
+            e, jobs = _sim_run(sr, mode, out, mic)
+            r[mode] = (len(jobs), e)
+            tot[mode] += len(jobs)
+        e = r["adaptive"][1]
+        ok &= r["adaptive"][0] == 0 and e.gate.learned and \
+            abs(e.gate.d * e.gate.hop_s - kw.get("lag_s", 0.12)) <= 0.021
+        out_txt.append("%s: legacy %d, adaptive %d false trigger(s) (%d suppressed at the "
+                       "threshold, %d phrase(s) discarded in hindsight; delay %.0f ms, coupling "
+                       "%.1f dB)" % (name, r["legacy"][0], r["adaptive"][0], e.c["gate_suppressed"],
+                                     e.c["gate_discarded"], 1000 * e.gate.d * e.gate.hop_s,
+                                     e.gate.coupling_db))
+    ok &= tot["legacy"] >= 3
+    return ok, "5 answers per room - " + "; ".join(out_txt)
+
+
+def _t_gate_drift(sr):
+    """Independent input / output clocks (100 ppm) and a path delay that
+    jumps by 40 ms mid-session (a device buffer change)."""
+    kw = dict(drr_db=0)
+    out, mic, _ = _gate_scene(sr, kw, ppm=100.0)
+    eL, jL = _sim_run(sr, "legacy", out, mic)
+    eA, jA = _sim_run(sr, "adaptive", out, mic)
+    out2, mic2, _ = _gate_scene(sr, kw, lag_step=(13.0, 0.04))
+    eB, jB = _sim_run(sr, "adaptive", out2, mic2)
+    d_end = eB.gate.d * eB.gate.hop_s
+    ok = len(jA) == 0 and len(jB) == 0 and abs(d_end - 0.16) <= 0.021
+    return ok, ("100 ppm drift: legacy %d, adaptive %d false trigger(s); delay step 120 -> 160 ms: "
+                "adaptive %d false trigger(s), delay followed to %.0f ms" % (
+                    len(jL), len(jA), len(jB), 1000 * d_end))
+
+
+def _gate_gestures(sr, rel):
+    import numpy as np
+    rng = np.random.default_rng(8)
+    return [(6.6, _g_tone(sr, 440, 1.2), rel), (10.5, _g_tone(sr, 330, 3.0, cres=2.0), rel),
+            (15.4, _g_tone(sr, 262, 3.0, fade=0.15), rel), (20.8, _g_perc(sr, 1.8, rng), rel)]
+
+
+def _t_gate_doubletalk(sr):
+    """Performer OVER playback (DRR 0 dB): attack, 2 s crescendo, 3 s held
+    tone, percussion, each during a different answer, at +12 / +6 / +3 dB
+    re the leakage under it.  All must be detected, the held tone whole."""
+    kw = dict(drr_db=0)
+    txt, ok = [], True
+    for rel in (12.0, 6.0, 3.0):
+        out, mic, perf = _gate_scene(sr, kw, gestures=_gate_gestures(sr, rel))
+        e, jobs = _sim_run(sr, "adaptive", out, mic)
+        false, hit, clean = _sim_score(jobs, perf)
+        held = [j["end"] - j["start"] for j in jobs if j["start"] < perf[2][1] and j["end"] > perf[2][0]]
+        ok &= false == 0 and hit == 4 and (rel < 6 or (held and max(held) >= 2.5))
+        ok &= e.c["doubletalk"] >= 4
+        txt.append("%+.0f dB: %d/4 detected (%d from their own onset), %d false, held tone "
+                   "captured %.1f of 3.0 s, double-talk events %d" % (
+                       rel, hit, clean, false, max(held) if held else 0.0, e.c["doubletalk"]))
+    out, mic, perf = _gate_scene(sr, kw, gestures=_gate_gestures(sr, 6.0))
+    eL, jL = _sim_run(sr, "legacy", out, mic)
+    fL, hL, cL = _sim_score(jL, perf)
+    txt.append("legacy at +6 dB: %d/4 inside a phrase but only %d from their own onset (the rest "
+               "inside phrases started by playback), %d false" % (hL, cL, fL))
+    return ok, "; ".join(txt)
+
+
+def _t_gate_quiet(sr):
+    """Quiet and gradual entries during playback at 0 and -6 dB re the
+    leakage: reported, not required (below the leakage a gesture can only
+    be told apart where its bands are free)."""
+    kw = dict(drr_db=0)
+    txt = []
+    for rel in (0.0, -6.0):
+        out, mic, perf = _gate_scene(sr, kw, gestures=_gate_gestures(sr, rel))
+        e, jobs = _sim_run(sr, "adaptive", out, mic)
+        false, hit, clean = _sim_score(jobs, perf)
+        txt.append("%+.0f dB: %d/4 detected, %d false" % (rel, hit, false))
+        ok = false == 0
+    return ok, "; ".join(txt) + " (no false trigger required; detection reported only)"
+
+
+def _t_gate_adapt_safe(sr):
+    """The performer plays OVER every answer from the first one on (entering
+    0.5-0.7 s after it, +6 dB, most of its length) - the model must not
+    learn that playing as leakage: the predicted leakage rises by less than
+    the gate margin over the playback-only model and a later gesture is
+    still detected.
+    (A performer who starts and stops exactly WITH every answer is, for
+    any envelope model, a second loudspeaker - see the limitations.)"""
+    import numpy as np
+    kw = dict(drr_db=0)
+    out, mic, _ = _gate_scene(sr, kw)
+    e0, _j = _sim_run(sr, "adaptive", out, mic)
+    along = [(2.1, _g_tone(sr, 392, 2.2), 6.0), (6.0, _g_tone(sr, 294, 2.5), 6.0),
+             (10.2, _g_tone(sr, 494, 3.5), 6.0), (15.5, _g_tone(sr, 349, 3.2), 6.0),
+             (21.0, _g_tone(sr, 523, 1.2), 6.0)]
+    out, mic, perf = _gate_scene(sr, kw, gestures=along)
+    e1, jobs = _sim_run(sr, "adaptive", out, mic)
+    false, hit, clean = _sim_score(jobs, perf)
+    # both models on the SAME reference (the programme is identical)
+    g0 = e0.gate
+    F = g0._feat(g0.p - 2000, g0.p - 10, "mean")
+    p0 = float(np.einsum("tbk,bk->", F, g0.g))
+    p1 = float(np.einsum("tbk,bk->", F, e1.gate.g))
+    dc = 10 * math.log10(p1 / p0)
+    last = any(j["start"] < perf[4][1] and j["end"] > perf[4][0] for j in jobs)
+    ok = -6.0 <= dc <= GATE_MARGIN_DB and last and hit >= 4
+    return ok, ("leakage predicted for the same 20 s of playback: %+.1f dB with the performer "
+                "playing along vs playback only (bound: the 6 dB gate margin); %d/5 gestures detected, "
+                "the last one (after 20 s of playing along): %s" % (dc, hit, "yes" if last else "NO"))
+
+
+def _t_gate_memory(sr):
+    """Sonic Memory / follower protection through the real brain (_think):
+    playback-only triggers never reach it; a phrase over playback carries
+    its contamination; a heavily contaminated phrase is answered but not
+    stored in Corpus A, not in the influence history, not in the follower."""
+    import numpy as np
+    kw = dict(drr_db=0)
+    g = [(6.6, _g_tone(sr, 440, 1.2), 12.0), (15.4, _g_tone(sr, 262, 2.0, fade=0.15), 3.0),
+         (24.6, 0.05 * _g_tone(sr, 330, 1.0), None)]
+    out, mic, perf = _gate_scene(sr, kw, gestures=g, total=26.5)
+    e, jobs = _sim_run(sr, "adaptive", out, mic, memory=True, think=True)
+    A = e.memory.items["A"]
+    false, hit, clean = _sim_score(jobs, perf)
+    states = [j["state"] for j in jobs]
+    stored = [(it.id, it.p.get("contamination_state")) for it in A]
+    n_before, h_before, f_before = len(A), len(e.history), e.follower.counted
+    # a heavily contaminated phrase, straight into the brain
+    j = Job(99, (0.05 * _g_tone(sr, 300, 1.0)).astype(np.float32)[:, None], sr,
+            {"onset": 0.0, "end": 1.0})
+    j.contam, j.contam_state = 0.7, "heavy"
+    e._think(j)
+    for j2 in e.render_q.drain():
+        e._cleanup_job(j2)
+    shutil.rmtree(e.session, ignore_errors=True)
+    ok = (false == 0 and hit == 3 and len(A) == n_before == 3 and len(e.history) == h_before
+          and e.follower.counted == f_before and e.c["contam_not_stored"] == 1
+          and states[-1] == "clean" and states[1] in ("contaminated", "light", "heavy")
+          and e.follower.counted + e.follower.excluded == 4
+          and all(it.p.get("contamination") is not None for it in A))
+    return ok, ("5 answers + 3 gestures: %d phrases reached the brain (false %d); Corpus A %s; "
+                "follower counted %d / excluded %d; heavy phrase (70 %% leakage): answered, "
+                "Corpus A still %d, history still %d, follower not updated" % (
+                    len(jobs), false, stored, e.follower.counted, e.follower.excluded,
+                    len(A), len(e.history)))
+
+
+def _t_gate_calibration(sr):
+    """Optional calibration sound: off by default (nothing is played);
+    when on, the delay and both speakers' paths are known before the first
+    answer, which then never starts a phrase."""
+    import numpy as np
+    import scipy.signal as ss
+    kw = dict(drr_db=0)
+    rng = np.random.default_rng(101)
+    hl, hr = _sim_room(sr, rng, **kw), _sim_room(sr, rng, **kw) * 0.7
+    out, mic, _ = _gate_scene(sr, kw, total=14.0)
+    out = np.roll(out, int(3.5 * sr), axis=0)
+    out[:int(3.5 * sr)] = 0                       # answers start after the calibration
+    lk = (ss.fftconvolve(out[:, 0], hl) + ss.fftconvolve(out[:, 1], hr))[:len(out)]
+    mic = lk + 0.002 * np.random.default_rng(1).standard_normal(len(lk))
+    e0, j0 = _sim_run(sr, "adaptive", out, mic, calib=0, live_room=(hl, hr))
+    e1, j1 = _sim_run(sr, "adaptive", out, mic, calib=1, live_room=(hl, hr))
+    b = calibration_burst(sr)
+    ok = (e0.cal == "off" and e0.mixer.peak_out == 0.0 and e1.cal == "done" and e1.gate.calibrated
+          and abs(e1.gate.d * e1.gate.hop_s - 0.12) <= 0.011 and len(j0) == 0 and len(j1) == 0
+          and e1.c["phrases"] == 0 and e0.c["phrases"] >= 1 and e1.mixer.peak_out > 0.1
+          and 1.2 < len(b) / sr < 1.5 and float(np.max(np.abs(b))) <= 0.31)
+    return ok, ("default: nothing played by the engine (peak %.2f), first answer starts %d "
+                "phrase(s), discarded in hindsight; with the calibration sound (%.2f s, peak "
+                "%.2f): delay %.0f ms (true 120), coupling %.1f dB, phrases started by playback: "
+                "%d" % (e0.mixer.peak_out, e0.c["phrases"], len(b) / sr, float(np.max(np.abs(b))),
+                        1000 * e1.gate.d * e1.gate.hop_s, e1.gate.coupling_db, e1.c["phrases"]))
+
+
+def _t_gate_modes(sr):
+    """Mode resolution and the Praat <-> Python argument interface."""
+    import tempfile
+    tmp = tempfile.mkdtemp(prefix=SESSION_PREFIX + "selftest_")
+    base = ["serve", "--session", tmp, "--script", "x", "--plugin-root", "x"]
+    got = []
+    try:
+        for extra, want in ((["--gate-mode", "off"], ("off", False, False)),
+                            (["--gate-mode", "legacy"], ("legacy", True, False)),
+                            (["--gate-mode", "adaptive"], ("adaptive", False, True)),
+                            ([], ("adaptive", False, True)),                 # old command line
+                            (["--leak-guard", "0"], ("off", False, False))):
+            e = Engine(build_parser().parse_args(base + extra), None)
+            got.append((e.gate_mode, e.det.leak_level is not None, e.gate is not None) == want
+                       and e.cal == "off")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    note = "Praat script not next to this file - form check skipped"
+    ok = all(got)
+    here = os.path.dirname(os.path.abspath(__file__))
+    for cand in (os.path.join(here, "AudioTools_CallResponse.praat"),
+                 os.path.join(here, "..", "Vector Chain", "AudioTools_CallResponse.praat")):
+        if os.path.isfile(cand):
+            with open(cand, encoding="utf-8", errors="replace") as fh:
+                txt = fh.read()
+            form = txt[txt.index("\nform:"):txt.index("\nendform")]
+            fields = [l for l in form.split("\n")[2:] if l.startswith("    ") and
+                      not l.startswith("     ") and not l.strip().startswith("comment")]
+            sent = set(l.strip().strip('"') for l in txt.split("\n")
+                       if l.strip().startswith('appendFileLine: argsFile$, "--'))
+            sent = set(x.split('"')[-2] if '"' in x else x for x in
+                       (l.strip() for l in txt.split("\n")
+                        if 'appendFileLine: argsFile$, "--' in l))
+            known = set(a.option_strings[0] for a in
+                        build_parser()._subparsers._group_actions[0].choices["serve"]._actions
+                        if a.option_strings)
+            ok &= len(fields) == len(RENDER_FORM_ARGS) and sent <= known and \
+                {"--gate-mode", "--calib-burst", "--auto-calib"} <= sent
+            note = ("Praat form %d fields = RENDER_FORM_ARGS %d; %d engine arguments written by "
+                    "Praat, all known to the engine (unknown: %s)" % (
+                        len(fields), len(RENDER_FORM_ARGS), len(sent), sorted(sent - known) or "none"))
+            break
+    return ok, "off / legacy / adaptive / old command lines resolved: %s; %s" % (got, note)
+
+
+# ---------------- v0.4.14 automatic calibration tests ----------------
+# Every session below is the REAL engine chain (detector, EchoGate,
+# AutoCalibrator, finalize) on the simulated clock.  The first AC_T0
+# seconds are the calibration period: v0.4.14 runs its three stages there
+# (the performer reacts to the prompts through a hook); the v0.4.13 runs
+# get the same room and noise but no calibration (or only the v0.4.13
+# calibration sound).  From AC_T0 on, all variants hear the SAME scene.
+# Simulated rooms - preliminary, not a validation of a live performance.
+AC_T0 = 12.0
+AC_TABLE = []
+
+
+def _ac_level(x, sr, L):
+    """Scale x so that its loudest 30 ms-held frame level is L dBFS (the
+    quantity the onset rule and the calibration both measure)."""
+    import numpy as np
+    x = np.asarray(x, np.float64)
+    hop = int(0.01 * sr)
+    n = len(x) // hop
+    if n < 3:
+        return x
+    db = 10 * np.log10(np.mean(x[:n * hop].reshape(n, hop) ** 2, axis=1) + 1e-30)
+    db = np.r_[-300.0, -300.0, db]                  # silence before it, as in a stream
+    return x * 10 ** ((L - float(_held3(db).max())) / 20.0)
+
+
+def _ac_tone(sr, f, dur, L, fade=0.02, cres=0.0):
+    return _ac_level(_g_tone(sr, f, dur, fade=fade, cres=cres), sr, L)
+
+
+def _ac_hit(sr, L, k=0, rng=None):
+    import numpy as np
+    rng = rng or np.random.default_rng(k)
+    n = int(0.12 * sr)
+    tt = np.arange(n) / sr
+    h = (np.sin(2 * np.pi * (900 + 300 * (k % 3)) * tt) + 0.5 * rng.standard_normal(n)) * \
+        np.exp(-tt * 35)
+    return _ac_level(h, sr, L)
+
+
+def _ac_perc(sr, dur, L, rng, step=0.28):
+    import numpy as np
+    x = np.zeros(int(dur * sr))
+    for k, tm in enumerate(np.arange(0.05, dur - 0.2, step)):
+        h = _ac_hit(sr, L, k, rng)
+        i = int(tm * sr)
+        x[i:i + len(h)] += h[:len(x) - i]
+    return x
+
+
+def _ac_calplay(sr, kind, T, S, seed=11):
+    """5 s of playing for stage C with soft (S) and normal (T) passages
+    (dBFS, 30 ms-held peak) and silent gaps."""
+    import numpy as np
+    rng = np.random.default_rng(seed)
+    z = lambda s: np.zeros(int(s * sr))
+    if kind == "tone":
+        parts = [_ac_tone(sr, 330, 1.0, S), z(0.4), _ac_tone(sr, 440, 1.5, T), z(0.3),
+                 _ac_tone(sr, 262, 1.2, S), z(0.6)]
+    elif kind == "cresc":
+        parts = [_ac_tone(sr, 294, 2.2, T, cres=2.0), z(0.3), _ac_tone(sr, 392, 2.2, T, cres=2.0),
+                 z(0.3)]
+    elif kind == "perc":
+        parts = []
+        for k in range(10):
+            parts += [_ac_hit(sr, T if k % 2 == 0 else S, k, rng), z(0.33)]
+    else:
+        raise ValueError(kind)
+    return np.concatenate(parts)
+
+
+def _ac_noise(sr, n, rng, amp=0.0005, swells_db=0.0):
+    """Room noise; swells_db > 0: surges (traffic / ventilation) of that
+    many dB, 0.3-0.7 s long, every 0.5-1.3 s, raised-cosine edges."""
+    import numpy as np
+    x = amp * rng.standard_normal(n)
+    if swells_db > 0:
+        env = np.zeros(n)
+        i = int(0.2 * sr)
+        while i < n:
+            L = int(rng.uniform(0.3, 0.7) * sr)
+            env[i:i + L] = 1.0
+            i += L + int(rng.uniform(0.5, 1.3) * sr)
+        w = np.hanning(int(0.06 * sr))
+        env = np.convolve(env, w / w.sum(), "same")
+        x *= 1.0 + (10 ** (swells_db / 20.0) - 1.0) * env
+    return x
+
+
+def _ac_scene(sr, room=None, gestures=(), noise_amp=0.0005, swells_db=0.0, answers=True,
+              total=26.0, seed=5, hr_gain=0.7, same_ir=False, zero_mic=False):
+    """AC_T0 s of calibration period, then the scene (scene-relative
+    times): answers 1.0-4.0, 6.5-9.7, 12.0-16.0, 18.5-22.5 s at different
+    pan positions through the room; gestures = [(t, audio, 'over' |
+    'between', level dB re the leakage under it or None = as given)].
+    Returns (out, mic, perf [(start, end, where)], (hl, hr))."""
+    import numpy as np
+    import scipy.signal as ss
+    room = dict(drr_db=0) if room is None else room
+    rng = np.random.default_rng(seed)
+    c = synth_cases(sr)
+    ev = [(1.0, c["markov"], -0.5, 0.3), (6.5, c["groove"][:int(3.2 * sr)], 0.6, 0.35),
+          (12.0, np.tile(c["paulstretch"], 2)[:int(4.0 * sr)], 0.0, 0.3),
+          (18.5, c["speeddev"], -0.7, 0.3)] if answers else []
+    sc = _sim_program(sr, total, ev)
+    n0 = int(AC_T0 * sr)
+    out = np.zeros((n0 + len(sc), 2), np.float32)
+    out[n0:] = sc
+    n = len(out)
+    r = np.random.default_rng(seed + 100)
+    hl = _sim_room(sr, r, **room)
+    hr = hl * hr_gain if same_ir else _sim_room(sr, r, **room) * hr_gain
+    lk = (ss.fftconvolve(out[:, 0], hl) + ss.fftconvolve(out[:, 1], hr))[:n]
+    mic = lk + _ac_noise(sr, n, rng, noise_amp, swells_db)
+    if zero_mic:
+        mic = np.zeros(n)
+    perf = []
+    for t0, x, where, rel in gestures:
+        i = int((AC_T0 + t0) * sr)
+        x = np.asarray(x, np.float64)[:max(0, n - i)]
+        if rel is not None:
+            act = np.abs(x) > 0.05 * np.max(np.abs(x))
+            lr = math.sqrt(float(np.mean(lk[i:i + len(x)] ** 2)) + 1e-20)
+            x = x * (lr * 10 ** (rel / 20.0) / math.sqrt(float(np.mean(x[act] ** 2))))
+        if not zero_mic:
+            mic[i:i + len(x)] += x
+        perf.append((AC_T0 + t0, AC_T0 + t0 + len(x) / sr, where))
+    return out, mic, perf, (hl, hr)
+
+
+def _ac_player(sr, calsig, also=None):
+    """The performer: plays calsig when stage C starts recording (after the
+    get-ready second).  also = (stage, signal): plays that during another
+    stage too (e.g. someone plays during the room-noise measurement)."""
+    import numpy as np
+    st = {"p": 0, "q": 0}
+    hop = int(0.01 * sr)
+
+    def take(sig, key):
+        p = st[key]
+        st[key] += hop
+        s = sig[p:p + hop]
+        return np.r_[s, np.zeros(hop - len(s))] if len(s) < hop else s
+
+    def hook(e, i):
+        ac = e.autocal
+        if ac is None:
+            return None
+        if ac.stage == "live" and ac.n >= ac.lead and calsig is not None:
+            return take(calsig, "p")
+        if also is not None and ac.stage == also[0]:
+            return take(also[1], "q")
+        return None
+    return hook
+
+
+def _ac_count(jobs, perf, t_from=AC_T0 - 0.3):
+    """(false triggers, missed between answers, missed over answers,
+    detected, false triggers BEFORE t_from - nobody plays then in the
+    v0.4.13 runs; v0.4.14 holds detection while it calibrates)."""
+    early = sum(1 for j in jobs if j["end"] <= t_from)
+    js = [j for j in jobs if j["end"] > t_from]
+    false, hit, clean = _sim_score(js, [(a, b) for a, b, w in perf])
+    miss_b = miss_o = 0
+    for a, b, w in perf:
+        got = any(j["start"] < b - 0.1 and j["end"] > a + 0.1 for j in js)
+        if not got:
+            if w == "over":
+                miss_o += 1
+            else:
+                miss_b += 1
+    return false, miss_b, miss_o, hit, early
+
+
+def _ac_compare(sr, name, scene, calsig, variants=("v13", "v13cal", "v14"), also=None,
+                extra_args=()):
+    """Run the variants on the identical scene; returns {variant: (engine,
+    counts)} and records a row for the comparison table."""
+    out, mic, perf, room = scene
+    res = {}
+    for v in variants:
+        kw = dict(live_room=room, extra_args=extra_args)
+        if v == "v13cal":
+            kw["calib"] = 1
+        if v == "v14":
+            kw.update(autocal=1, hook=_ac_player(sr, calsig, also))
+        e, jobs = _sim_run(sr, "adaptive", out, mic, **kw)
+        res[v] = (e, _ac_count(jobs, perf))
+    n_b = sum(1 for p in perf if p[2] != "over")
+    n_o = len(perf) - n_b
+    AC_TABLE.append((name, n_b, n_o, {v: res[v][1] for v in variants},
+                     res["v14"][0].autocal.status if "v14" in res else ""))
+    return res
+
+
+def _ac_txt(res):
+    nm = {"v13": "v0.4.13", "v13cal": "v0.4.13+cal.sound", "v14": "v0.4.14 auto"}
+    return "; ".join("%s: %d false%s, missed %d between / %d over" % (
+        nm[v], c[0], " (+%d before the scene)" % c[4] if c[4] else "", c[1], c[2])
+        for v, (e, c) in res.items())
+
+
+def _ac_gestures(sr, T, S, kind="tone", rng=None):
+    """Seven gestures: four between answers (T, S, S, T), three over
+    answers (T, T, S).  kind tone | cresc | perc."""
+    import numpy as np
+    rng = rng or np.random.default_rng(9)
+
+    def g(f, d, L):
+        if kind == "tone":
+            return _ac_tone(sr, f, d, L)
+        if kind == "cresc":
+            return _ac_tone(sr, f, max(d, 2.0), L, cres=1.6)
+        return _ac_perc(sr, max(d, 1.2), L, rng)
+    return [(4.6, g(392, 1.2, T), "between", None), (10.2, g(330, 1.3, S), "between", None),
+            (16.7, g(440, 1.2, S), "between", None), (23.2, g(294, 1.5, T), "between", None),
+            (1.8, g(523, 1.4, T), "over", None), (13.2, g(349, 1.8, T), "over", None),
+            (19.6, g(587, 1.5, S), "over", None)]
+
+
+def _t_ac_quiet_clear(sr):
+    """1. A quiet instrument clearly above the room noise (noise -66 dBFS,
+    playing -40 / soft -48): the measurements are right, the sensitivity
+    stays inside the safe range, nothing is lost against v0.4.13."""
+    sc = _ac_scene(sr, dict(drr_db=0, gain_db=-22), _ac_gestures(sr, -40, -48))
+    res = _ac_compare(sr, "1 quiet, clear of noise", sc, _ac_calplay(sr, "tone", -40, -48))
+    e = res["v14"][0]
+    ac = e.autocal
+    nz, lv = ac.noise, ac.live
+    ok = (ac.status in ("success", "limited") and abs(nz["level"] + 66.0) <= 1.0
+          and abs(lv["typ"] + 40.0) <= 1.5 and abs(lv["soft"] + 48.0) <= 1.5
+          and ac.s_lo <= e.det.sens <= ac.s_hi and res["v14"][1][0] == 0
+          and res["v14"][1][1] == 0 and res["v14"][1][1] <= res["v13"][1][1]
+          and res["v14"][1][2] <= res["v13"][1][2])
+    return ok, ("noise %.1f (true -66.0), playing %.1f (true -40), soft %.1f (true -48), "
+                "sensitivity %.1f in [%.1f, %.1f] (%s), status %s | %s" % (
+                    nz["level"], lv["typ"], lv["soft"], e.det.sens, ac.s_lo, ac.s_hi, ac.how,
+                    ac.status.upper(), _ac_txt(res)))
+
+
+def _t_ac_leak_over_quiet(sr):
+    """2. Loudspeaker leakage stronger than quiet playing (a loud room):
+    the limitation is reported explicitly (no claim of discrimination);
+    detection is no worse than v0.4.13."""
+    sc = _ac_scene(sr, dict(drr_db=0, gain_db=-10), _ac_gestures(sr, -42, -50))
+    res = _ac_compare(sr, "2 leakage > quiet playing", sc, _ac_calplay(sr, "tone", -42, -50))
+    e = res["v14"][0]
+    ac = e.autocal
+    sep = ac.live["soft"] - ac.leak["answer_db"]
+    lim = [n for n in ac.notes if "stand out of an answer" in n]
+    c14, c13 = res["v14"][1], res["v13"][1]
+    ok = (ac.status == "limited" and sep < 0 and lim and c14[0] == 0 and c14[1] == 0
+          and c14[0] <= c13[0] and c14[1] + c14[2] <= c13[1] + c13[2])
+    return ok, ("answer leakage %.1f dBFS, soft playing %.1f -> separation %.1f dB, status %s, "
+                "reported: '%s' | %s" % (ac.leak["answer_db"], ac.live["soft"], sep,
+                                         ac.status.upper(), lim[0][:70] + "..." if lim else "-",
+                                         _ac_txt(res)))
+
+
+def _t_ac_crescendo(sr):
+    """3. Soft crescendos (calibration AND performance): the rising entry
+    of a crescendo is not taken as the soft level (the sensitivity is not
+    driven down to the noise), and every crescendo is detected."""
+    sc = _ac_scene(sr, dict(drr_db=0, gain_db=-22), _ac_gestures(sr, -40, -46, "cresc"))
+    res = _ac_compare(sr, "3 soft crescendos", sc, _ac_calplay(sr, "cresc", -40, -46))
+    e = res["v14"][0]
+    ac = e.autocal
+    c14, c13 = res["v14"][1], res["v13"][1]
+    ok = (ac.status in ("success", "limited") and ac.s_hi >= ac.s_lo
+          and ac.live["soft"] - ac.noise["floor"] >= 12.0 and e.det.sens <= ac.sens_orig + 1e-9
+          and c14[0] == 0 and c14[1] == 0 and c14[1] + c14[2] <= c13[1] + c13[2])
+    return ok, ("crescendo calibration: playing %.1f, soft %.1f dBFS (%.0f dB above the floor), "
+                "%d passages, sensitivity %.1f (%s) | %s" % (
+                    ac.live["typ"], ac.live["soft"], ac.live["soft"] - ac.noise["floor"],
+                    ac.live["chunks"], e.det.sens, ac.how, _ac_txt(res)))
+
+
+def _t_ac_percussion(sr):
+    """4. Percussive gestures with silent gaps (hits at -36 / -44 dBFS):
+    gaps and decays are not read as the soft level."""
+    rng = __import__("numpy").random.default_rng(4)
+    sc = _ac_scene(sr, dict(drr_db=0, gain_db=-22), _ac_gestures(sr, -36, -44, "perc", rng))
+    res = _ac_compare(sr, "4 percussion with gaps", sc, _ac_calplay(sr, "perc", -36, -44))
+    e = res["v14"][0]
+    ac = e.autocal
+    lv = ac.live
+    c14, c13 = res["v14"][1], res["v13"][1]
+    ok = (ac.status in ("success", "limited") and abs(lv["typ"] + 36.0) <= 2.5
+          and abs(lv["soft"] + 44.0) <= 2.5 and e.det.sens <= ac.sens_orig + 1e-9
+          and c14[0] == 0 and c14[1] == 0 and c14[1] + c14[2] <= c13[1] + c13[2])
+    return ok, ("hits: playing %.1f (true -36), soft %.1f (true -44), activity %.1f of 5 s, "
+                "%d passages, sensitivity %.1f | %s" % (lv["typ"], lv["soft"], lv["active_s"],
+                                                       lv["chunks"], e.det.sens, _ac_txt(res)))
+
+
+def _t_ac_doubletalk(sr):
+    """5. Live playing during computer playback (+6 / +3 dB re the
+    leakage under it): double-talk is preserved exactly as in v0.4.13."""
+    txt, ok = [], True
+    for rel in (6.0, 3.0):
+        g = [(t, x, "over", rel) for t, x, w, r in _gate_gestures_ac(sr)]
+        sc = _ac_scene(sr, dict(drr_db=0), g)
+        lvl = [10 * math.log10(float(__import__("numpy").mean(sc[1][int(a * sr):int(b * sr)] ** 2)))
+               for a, b, w in sc[2]]
+        T = max(lvl)
+        res = _ac_compare(sr, "5 double-talk %+.0f dB" % rel, sc,
+                          _ac_calplay(sr, "tone", T, T - 6))
+        c14, c13 = res["v14"][1], res["v13"][1]
+        ok &= c14[0] == 0 and c14[2] <= c13[2] and res["v14"][0].c["doubletalk"] >= 3
+        txt.append("%+.0f dB: %s, double-talk events %d" % (rel, _ac_txt(res),
+                                                           res["v14"][0].c["doubletalk"]))
+    return ok, "; ".join(txt)
+
+
+def _gate_gestures_ac(sr):
+    """Four gestures over the four answers (attack, crescendo, held tone,
+    percussion) - the v0.4.13 double-talk set, moved to this scene."""
+    import numpy as np
+    rng = np.random.default_rng(8)
+    return [(1.6, _g_tone(sr, 440, 1.2), "over", 0), (6.9, _g_perc(sr, 1.8, rng), "over", 0),
+            (12.4, _g_tone(sr, 262, 3.0, fade=0.15), "over", 0),
+            (19.0, _g_tone(sr, 330, 2.5, cres=2.0), "over", 0)]
+
+
+def _t_ac_reverb_lr(sr):
+    """6. Strong reverberation (DRR -6 dB, RT60 1.2 s) and different L/R
+    leakage (right speaker +4.1 dB): both sides measured, the delay found,
+    no false trigger."""
+    import numpy as np
+    import scipy.signal as ss
+    room = dict(drr_db=-6, rt60=1.2)
+    sc = _ac_scene(sr, room, (), hr_gain=1.6, same_ir=True)
+    res = _ac_compare(sr, "6 reverb RT60 1.2 s, L/R differ", sc, _ac_calplay(sr, "tone", -40, -48))
+    e = res["v14"][0]
+    ac = e.autocal
+    lk = ac.leak
+    hl = sc[3][0]
+    b = calibration_burst(sr).astype(np.float64)
+    bl = b[:, 0][:int(0.6 * sr)]
+    true_l = 10 * math.log10(float(np.sum(ss.fftconvolve(bl, hl) ** 2)) / float(np.sum(bl ** 2)))
+    dlr = lk["R"]["db"] - lk["L"]["db"]
+    ok = (lk["L"]["heard"] and lk["R"]["heard"] and abs(dlr - 20 * math.log10(1.6)) <= 1.5
+          and abs(lk["L"]["coupling"] + lk["reverb_db"] - true_l) <= 1.5
+          and abs(e.gate.d * e.gate.hop_s - 0.12) <= 0.021
+          and all(r[1][0] == 0 for r in res.values()))
+    return ok, ("leakage L %.1f / R %.1f dBFS (R-L %.1f dB, true %.1f), coupling L %.1f dB on the "
+                "pulses %+.1f dB reverberation = %.1f (true %.1f), delay %.0f ms (true 120) | %s" % (
+                    lk["L"]["db"], lk["R"]["db"], dlr, 20 * math.log10(1.6), lk["L"]["coupling"],
+                    lk["reverb_db"], lk["L"]["coupling"] + lk["reverb_db"], true_l,
+                    1000 * e.gate.d * e.gate.hop_s, _ac_txt(res)))
+
+
+def _t_ac_invalid(sr):
+    """7. No microphone signal; a fluctuating (noisy) room; someone
+    playing during the room-noise stage."""
+    import numpy as np
+    txt, ok = [], True
+    # (a) digital silence: FAILED at once, nothing played, original kept
+    sc = _ac_scene(sr, None, _ac_gestures(sr, -40, -48), zero_mic=True)
+    e, jobs = _sim_run(sr, "adaptive", sc[0], sc[1], autocal=1, live_room=sc[3],
+                       hook=_ac_player(sr, None))
+    ac = e.autocal
+    ok &= (ac.status == "failed" and "no microphone" in ac.why and e.det.sens == 9.0
+           and ac.stage == "done" and e.c["phrases"] == 0)
+    txt.append("no signal: %s (%s), sensitivity %.1f kept, calibration sound not played: %s" % (
+        ac.status.upper(), ac.why[:40], e.det.sens, ac.leak is None))
+    # (b) a fluctuating room (+11 dB surges): the sensitivity is raised so
+    # that phrases can end and surges do not start phrases
+    sc = _ac_scene(sr, dict(drr_db=0, gain_db=-22), _ac_gestures(sr, -36, -42), swells_db=11.0)
+    res = _ac_compare(sr, "7b fluctuating room noise", sc, _ac_calplay(sr, "tone", -36, -42))
+    e = res["v14"][0]
+    ac = e.autocal
+    c14, c13 = res["v14"][1], res["v13"][1]
+    ok &= (ac.status in ("success", "limited") and e.det.sens > 9.0 and c14[0] < c13[0]
+           and c14[1] <= c13[1])
+    txt.append("surges +11 dB: sensitivity %.1f -> %.1f (%s) | %s" % (
+        ac.sens_orig, e.det.sens, ac.how, _ac_txt(res)))
+    # (c) a loud tone during the room-noise stage: FAILED, original kept
+    loud = np.r_[np.zeros(int(0.4 * sr)), _ac_tone(sr, 440, 0.7, -40)]
+    sc = _ac_scene(sr, dict(drr_db=0, gain_db=-22), _ac_gestures(sr, -40, -48))
+    res = _ac_compare(sr, "7c played during stage 1", sc, _ac_calplay(sr, "tone", -40, -48),
+                      variants=("v13cal", "v14"), also=("noise", loud))
+    e = res["v14"][0]
+    ac = e.autocal
+    ok &= (ac.status == "failed" and ac.why.startswith("room noise") and e.det.sens == 9.0
+           and e.gate.calibrated and res["v14"][1][0] == 0
+           and res["v14"][1][1] <= res["v13cal"][1][1])
+    txt.append("played during stage 1: %s (%s), sensitivity %.1f kept, leakage model still "
+               "calibrated | %s" % (ac.status.upper(), ac.why[:48], e.det.sens, _ac_txt(res)))
+    return ok, "; ".join(txt)
+
+
+def _t_ac_interrupted(sr):
+    """8. Interrupted (STOP during stage 2/3 and 3/3) and incomplete (the
+    performer does not play in stage 3/3): nothing applied, detection
+    released, the session continues as v0.4.13."""
+    import numpy as np
+    txt, ok = [], True
+    sc = _ac_scene(sr, dict(drr_db=0, gain_db=-22), _ac_gestures(sr, -40, -48))
+    calsig = _ac_calplay(sr, "tone", -40, -48)
+    for at, stg in ((300, "leak"), (800, "live")):
+        e, jobs = _sim_run(sr, "adaptive", sc[0], sc[1], autocal=1, live_room=sc[3],
+                           hook=_ac_player(sr, calsig), stop_at=at)
+        ac = e.autocal
+        ok &= (ac.status == "interrupted" and e.det.sens == 9.0 and not ac.holding()
+               and len(jobs) == 0 and ac.report and ac.sens_cal is None)
+        txt.append("STOP at %.1f s (%s): %s, sensitivity %.1f, phrases %d" % (
+            at * 0.01, stg, ac.status.upper(), e.det.sens, len(jobs)))
+    res = _ac_compare(sr, "8 no playing in stage 3", sc, None, variants=("v13cal", "v14"))
+    e = res["v14"][0]
+    ac = e.autocal
+    ok &= (ac.status == "failed" and "too little playing" in ac.why and e.det.sens == 9.0
+           and e.gate.calibrated and res["v14"][1][0] == 0
+           and res["v14"][1][1] + res["v14"][1][2] <= res["v13cal"][1][1] + res["v13cal"][1][2])
+    txt.append("not played: %s (%s) | %s" % (ac.status.upper(), ac.why[:30], _ac_txt(res)))
+    return ok, "; ".join(txt)
+
+
+def _t_ac_compat(sr):
+    """9. Enabled vs disabled: --auto-calib 0 (and every v0.4.13 command
+    line) = v0.4.13 exactly; auto-calibration with Off / Legacy is ignored;
+    with Play_response off stage 2 is skipped."""
+    import numpy as np
+    import tempfile
+    tmp = tempfile.mkdtemp(prefix=SESSION_PREFIX + "selftest_")
+    base = ["serve", "--session", tmp, "--script", "x", "--plugin-root", "x"]
+    got = []
+    try:
+        for extra, want in (([], (None, "off")), (["--auto-calib", "0"], (None, "off")),
+                            (["--auto-calib", "1"], ("AutoCalibrator", "off")),
+                            (["--auto-calib", "1", "--calib-burst", "1"], ("AutoCalibrator", "off")),
+                            (["--auto-calib", "1", "--gate-mode", "legacy"], (None, "off")),
+                            (["--auto-calib", "1", "--gate-mode", "off"], (None, "off"))):
+            e = Engine(build_parser().parse_args(base + extra), None)
+            got.append((type(e.autocal).__name__ if e.autocal else None, e.cal) == want and
+                       dict(e._gate_pairs()).get("autocal") in ("off", "running"))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    # identical phrases with the switch off (no playback, five gestures)
+    rng = np.random.default_rng(2)
+    n = int(17 * sr)
+    mic = 0.002 * rng.standard_normal(n)
+    for t0, x in ((1.0, 0.05 * _g_tone(sr, 330, 1.2)), (3.5, 0.03 * _g_tone(sr, 440, 3.0, cres=2.0)),
+                  (8.0, 0.08 * _g_perc(sr, 2.0, rng)), (11.5, 0.012 * _g_tone(sr, 660, 1.0))):
+        mic[int(t0 * sr):int(t0 * sr) + len(x)] += x
+    out = np.zeros((n, 2), np.float32)
+    b = {}
+    for k, kw in (("off", dict()), ("auto0", dict(autocal=0))):
+        e, jobs = _sim_run(sr, "adaptive", out, mic, **kw)
+        b[k] = [(round(j["start"], 4), round(j["end"], 4)) for j in jobs]
+    same = b["off"] == b["auto0"] and len(b["off"]) == 4
+    # Play_response off: stage 2 skipped, calibration completes
+    sc = _ac_scene(sr, dict(drr_db=0, gain_db=-22), (), answers=False)
+    e, jobs = _sim_run(sr, "adaptive", sc[0], sc[1], autocal=1, live_room=sc[3],
+                       hook=_ac_player(sr, _ac_calplay(sr, "tone", -40, -48)),
+                       extra_args=["--play", "0"])
+    ac = e.autocal
+    noplay = ac.status in ("success", "limited") and not ac.leak["measured"] and \
+        e.mixer.peak_out == 0.0
+    ok = all(got) and same and noplay and len(RENDER_FORM_ARGS) == 17
+    return ok, ("argument combinations resolved: %s; switch off: %d phrases, identical bounds: %s; "
+                "Play_response off: %s, leakage '%s', nothing played; main form unchanged "
+                "(RENDER_FORM_ARGS %d)" % (got, len(b["auto0"]), same, ac.status.upper(),
+                                           ac.leak["why"], len(RENDER_FORM_ARGS)))
+
+
+def _t_ac_very_quiet(sr):
+    """10. A very quiet player near the noise floor (soft -60.5, playing
+    -52, noise -66 dBFS): v0.4.13's 9 dB misses the soft gestures; the
+    calibration lowers the sensitivity only as far as phrase ends allow."""
+    sc = _ac_scene(sr, dict(drr_db=0, gain_db=-30), _ac_gestures(sr, -52, -60.5))
+    res = _ac_compare(sr, "10 very quiet player", sc, _ac_calplay(sr, "tone", -52, -60.5))
+    e = res["v14"][0]
+    ac = e.autocal
+    c14, c13 = res["v14"][1], res["v13"][1]
+    ok = (ac.status == "limited" and e.det.sens < 9.0 and c14[0] == 0 and c14[1] < c13[1])
+    return ok, ("sensitivity %.1f -> %.1f (%s), status %s | %s" % (
+        ac.sens_orig, e.det.sens, ac.how, ac.status.upper(), _ac_txt(res)))
+
+
+def _t_ac_margin(sr):
+    """The report's 'over an answer' margin is the gate's own rule: a
+    gesture over a steady answer is detected when the predicted margin is
+    clearly positive and not when it is clearly negative (2 rooms)."""
+    import numpy as np
+    import scipy.signal as ss
+    rows, ok = [], True
+    cal = _ac_calplay(sr, "tone", -38, -46)
+    for room in (dict(drr_db=0, gain_db=-15), dict(drr_db=-6, gain_db=-25)):
+        for lv in (-46.0, -40.0, -34.0, -28.0):
+            rng = np.random.default_rng(4)
+            n = int((AC_T0 + 12) * sr)
+            out = np.zeros((n, 2), np.float32)
+            X = np.fft.rfft(rng.standard_normal(int(9 * sr)))
+            f = np.fft.rfftfreq(int(9 * sr), 1.0 / sr)
+            X[1:] /= np.sqrt(f[1:])
+            X[f < 60] = 0
+            a = np.fft.irfft(X, int(9 * sr))
+            a *= 10 ** (-18 / 20.0) / math.sqrt(2 * float(np.mean(a ** 2)))
+            i0 = int((AC_T0 + 1) * sr)
+            out[i0:i0 + len(a), 0] = a
+            out[i0:i0 + len(a), 1] = a
+            r = np.random.default_rng(3)
+            hl = _sim_room(sr, r, **room)
+            hr = hl * 0.7
+            lk = (ss.fftconvolve(out[:, 0], hl) + ss.fftconvolve(out[:, 1], hr))[:n]
+            mic = lk + 0.0005 * rng.standard_normal(n)
+            leak = 10 * math.log10(float(np.mean(lk[int((AC_T0 + 3) * sr):int((AC_T0 + 9) * sr)] ** 2)))
+            g = _ac_tone(sr, 370, 1.2, lv)
+            i = int((AC_T0 + 5) * sr)
+            mic[i:i + len(g)] += g
+            e, jobs = _sim_run(sr, "adaptive", out, mic, autocal=1, live_room=(hl, hr),
+                               hook=_ac_player(sr, cal))
+            ac = e.autocal
+            mt = ac.margin("typ", leak)
+            pred = mt + (lv - ac.live["typ"]) if abs(mt) < AUTOCAL_OVER_MAX_DB else mt
+            det = any(j["start"] < AC_T0 + 6.2 and j["end"] > AC_T0 + 5.0 for j in jobs)
+            if pred >= 3.0:
+                ok &= det
+            elif pred <= -3.0:
+                ok &= not det
+            rows.append("%.0f/%.0f dBFS: %s %s" % (lv, leak, "%+.0f" % pred, "det" if det else "-"))
+    return ok, "gesture / leakage: predicted margin, detected - " + ", ".join(rows)
+
+
+def _ac_table():
+    """The comparison of v0.4.14 with v0.4.13 (identical simulated scenes)."""
+    nm = {"v13": "v0.4.13", "v13cal": "v0.4.13+cal", "v14": "v0.4.14"}
+    out = ["%-30s %-9s %-26s %-26s %-26s" % ("scenario (gestures between/over)", "v14 cal",
+                                             nm["v13"], nm["v13cal"], nm["v14"])]
+    for name, nb, no, cnt, st in AC_TABLE:
+        cells = []
+        for v in ("v13", "v13cal", "v14"):
+            c = cnt.get(v)
+            cells.append("-" if c is None else "false %d%s, missed %d+%d" % (
+                c[0], " (+%d before)" % c[4] if c[4] else "", c[1], c[2]))
+        out.append("%-30s %-9s %-26s %-26s %-26s" % ("%s (%d/%d)" % (name, nb, no), st.upper(),
+                                                     cells[0], cells[1], cells[2]))
+    return "\n".join(out)
+
+
+V0414_TESTS = [("1 quiet instrument clearly above the room noise", _t_ac_quiet_clear),
+               ("2 speaker leakage stronger than quiet playing", _t_ac_leak_over_quiet),
+               ("3 soft instrumental crescendo", _t_ac_crescendo),
+               ("4 percussive gestures with silent gaps", _t_ac_percussion),
+               ("5 live playing during computer playback", _t_ac_doubletalk),
+               ("6 strong reverberation, different left / right leakage", _t_ac_reverb_lr),
+               ("7 no microphone signal / noisy calibration", _t_ac_invalid),
+               ("8 incomplete or interrupted calibration", _t_ac_interrupted),
+               ("9 calibration enabled vs disabled (compatibility)", _t_ac_compat),
+               ("10 very quiet player near the noise floor", _t_ac_very_quiet),
+               ("gate-margin prediction = the gate's behaviour", _t_ac_margin)]
+
+
+V0413_TESTS = [("no playback: gate transparent (= v0.4.12 detection)", _t_gate_transparent),
+               ("playback only: colouration + reverberation, legacy vs adaptive",
+                _t_gate_playback_only),
+               ("clock drift and a changing path delay", _t_gate_drift),
+               ("performer over playback: attack, crescendo, held tone, percussion",
+                _t_gate_doubletalk),
+               ("quiet entries at / below the leakage level (reported)", _t_gate_quiet),
+               ("adaptation does not learn the performer", _t_gate_adapt_safe),
+               ("Corpus A, influence history and follower protection", _t_gate_memory),
+               ("optional calibration sound", _t_gate_calibration),
+               ("modes and argument interface", _t_gate_modes)]
 
 
 V041_TESTS = [("engine arguments via file (v0.4.4)", _t_args_file),
@@ -5218,6 +6398,1398 @@ def leak_path(x, y, max_lag_n, sr):
     return res
 
 
+# ============================================================
+# v0.4.13 ADAPTIVE ENVELOPE GATE  (speaker-aware phrase detection)
+#   The microphone hears the performer AND the answers the engine plays.
+#   The legacy guard looked for a delayed, scaled COPY of the output in the
+#   input waveform; loudspeaker colouration, reverberation and clock drift
+#   destroy that correlation.  This gate works on BAND-POWER ENVELOPES:
+#     mic[b, t]  ~  gL[b] * L[b, t-d] + gR[b] * R[b, t-d] + gM[b] * Mid[b, t-d]
+#                   + r1[b] * decay_40ms(L+R)[b, t-d] + r2[b] * decay_120ms(...)
+#   (8 bands, 10 ms frames, 40 ms Hann windows; all coefficients >= 0).
+#   - frequency-dependent attenuation: one coefficient set per band
+#   - acoustic + device delay d: envelope cross-correlation (0-0.8 s)
+#   - reverberant energy: the two decaying terms
+#   - timing jitter / moderate drift: the reference is dilated by +-20 ms
+#     for the gate, and d is re-estimated; the engine aligns input and
+#     output by wall-clock time, so different device clocks cannot drift apart
+#   - stereo: L, R and Mid (coherent sum of a panned mono voice)
+#   What the detector receives is the level of the RESIDUAL: the input
+#   minus GATE_MARGIN_DB x the predicted leakage, per band.  A performer
+#   who adds energy that the playback does not explain (in ANY band) opens
+#   the gate; playback alone does not.  Without playback the residual IS
+#   the input (offset 0 dB): detection is exactly v0.4.12.
+#   Adaptation never learns the performer as leakage by construction:
+#   leakage is the LOWER envelope of the relation (playing only ADDS
+#   energy), fitted by asymmetric least squares (expectile, non-negative),
+#   only from frames with playback, rate-limited once the model is mature.
+#   This is NOT echo cancellation: the recorded audio is never modified.
+# ============================================================
+GATE_BANDS_HZ = (60.0, 110.0, 160.0, 220.0, 280.0, 355.0, 450.0, 560.0, 710.0, 900.0, 1120.0,
+                 1400.0, 1800.0, 2240.0, 2800.0, 3550.0, 4500.0, 5600.0, 7100.0, 9000.0,
+                 11200.0, 16000.0)   # ~1/3 octave above 220 Hz (25 Hz bins below)
+GATE_SMOOTH = 3                # frames of input averaged for the residual (30 ms)
+GATE_WIN_HOPS = 4              # analysis window = 4 detector frames (40 ms)
+GATE_MAX_DELAY_S = 0.8         # speaker -> microphone delay search (device latency included)
+GATE_FIT_S = 10.0              # the model is fitted on the last 10 s
+GATE_FIT_EVERY_S = 0.5
+GATE_MARGIN_DB = 6.0           # residual = input - margin x predicted leakage
+GATE_JITTER = 2                # frames (+-20 ms) of timing tolerance
+GATE_TAUS_S = (0.04, 0.12)     # energy decay constants of the reverberant terms
+GATE_W_POS = 0.15              # weight of frames ABOVE the prediction recorded inside a
+                               #   phrase (the performer may be playing: lower envelope)
+GATE_YOUNG_FRAMES = 100        # ... until 1 s of playback WITHOUT a phrase was seen; then
+                               #   phrase frames are not used for the model at all
+GATE_W_POS_IDLE = 0.7          # ... outside a phrase (no residual activity was detected)
+GATE_TIE = 0.1                 # prior gL = gR (relative to the data term)
+GATE_MID_RIDGE = 0.02          # prior: little coherent (Mid) leakage
+GATE_RF0_DB = -6.0             # residual floor before it has been measured: leakage - 6 dB
+GATE_RF_PCT = 97.0             # residual floor = this percentile of (residual - leakage)
+GATE_HEADROOM_DB = 3.0         # a gesture's residual must stand this far above it
+GATE_TRIM_LEAD_S = 0.4         # a phrase over playback: leading / trailing stretches
+GATE_TRIM_TAIL_S = 0.6         #   without residual activity longer than this are cut
+GATE_MATURE_FITS = 10          # after this many fits the model changes slowly
+GATE_RISE_DB = 1.0             # ... at most +1 dB per fit (2 dB / s)
+GATE_FALL_DB = 3.0             # ... at most -3 dB per fit
+GATE_MIN_FIT_FRAMES = 40
+GATE_TAIL_S = 1.0              # playback counts as present this long after it stops
+GATE_NOVEL_RUN = 3             # residual frames in a row that count as activity
+GATE_NOVEL_MIN_S = 0.12        # a phrase with less residual activity is playback only
+GATE_PLAY_SHARE = 0.25         # ... if playback was present in this share of it
+GATE_SPARSE = 0.2              # ... or the activity fills less than this of its own span,
+GATE_SPARSE_MIN_S = 0.4        #   or lasts less than this in all,
+GATE_SPARSE_LEAK = 0.6         #   while this share of that span is predicted leakage
+GATE_SPAN_LEAK = 0.85          # ... or this share of the energy around that activity is
+                               #   predicted leakage (the gesture > 7.5 dB below the leakage)
+GATE_W_POS_LOCAL = 0.3         # the phrase verdict's local model: lower envelope
+GATE_LOCAL_MAX = 10.0          # ... no band more than 10 dB above the known strong bands
+CONTAM_LIGHT = 0.10            # share of the phrase energy that is predicted leakage
+CONTAM_FOLLOW = 0.25           # above: not counted by the live-level follower
+CONTAM_HEAVY = 0.50            # above: not stored in Corpus A / influence history
+
+
+class EchoGate:
+    """Multiband envelope predictor of speaker leakage + residual gate.
+    Fed once per detector frame with the microphone block and the two
+    output-channel blocks of the SAME wall-clock interval.  Owned by the
+    detect thread; the status writer reads plain attributes."""
+
+    def __init__(self, sr, hop, max_phrase_s=12.0, margin_db=GATE_MARGIN_DB):
+        import numpy as np
+        self.np = np
+        self.sr, self.hop = int(sr), int(hop)
+        self.hop_s = self.hop / float(sr)
+        self.N = GATE_WIN_HOPS * self.hop
+        self.win = np.hanning(self.N)
+        fq = np.fft.rfftfreq(self.N, 1.0 / sr)
+        top = min(GATE_BANDS_HZ[-1], 0.5 * sr)
+        self.edges = [f for f in GATE_BANDS_HZ[:-1] if f < 0.8 * top] + [top]
+        self.idx = np.searchsorted(fq, self.edges[:-1])
+        self.hi = int(np.searchsorted(fq, self.edges[-1]))
+        self.B = len(self.edges) - 1
+        self.norm = 2.0 / (self.N * float(np.sum(self.win ** 2)))
+        self.beta = 10 ** (margin_db / 10.0)
+        self.J = GATE_JITTER
+        self.Dmax = int(round(GATE_MAX_DELAY_S / self.hop_s))
+        self.fit_n = int(round(GATE_FIT_S / self.hop_s))
+        self.fit_every = max(1, int(round(GATE_FIT_EVERY_S / self.hop_s)))
+        self.H = int(round((max(GATE_FIT_S, max_phrase_s) + 10.0) / self.hop_s))
+        self.M, self.RL, self.RR, self.RM, self.E1, self.E2 = (
+            np.zeros((2 * self.H, self.B)) for _ in range(6))
+        self.LV = np.full(2 * self.H, -200.0)
+        self.PH = np.zeros(2 * self.H, bool)       # frame recorded inside a phrase
+        self.REL = np.full(2 * self.H, np.nan)     # residual - predicted leakage (dB)
+        self.rel_hist = collections.deque(maxlen=3000)   # ... of playback-only frames
+        self.rf = GATE_RF0_DB                      # residual floor rel. to the leakage
+        self.lift = -200.0
+        self.p = self.H
+        self.frames = 0
+        self.wm, self.wl, self.wr = (np.zeros(self.N) for _ in range(3))
+        self.ak = [1.0 - math.exp(-self.hop_s / t) for t in GATE_TAUS_S]
+        self.e1, self.e2 = np.zeros(self.B), np.zeros(self.B)
+        self.ref_idle = 10 ** 9
+        self.d, self.d_cand, self.d_corr = None, None, 0.0
+        self._corr_at_d = 0.0
+        self.g = np.zeros((self.B, 5))
+        self.learned = False
+        self.calibrated = False
+        self.band_seen = np.zeros(self.B, bool)
+        self.g_cal = None
+        self.n_idle = 0                # frames of playback seen outside phrases
+        self.nb = np.zeros(self.B)
+        self.nb_set = False
+        self.fits = 0
+        self.since_fit = 0
+        self.coupling_db = None
+        self.playing = False
+        self.frozen = False            # the detector is inside a phrase: do not adapt
+        self.raw_db, self.leak_db, self.resid_db, self.frac = -200.0, -200.0, -200.0, 1.0
+
+    # ---------------- analysis ----------------
+    def _bands(self, x):
+        np = self.np
+        X = np.fft.rfft(x * self.win)
+        return np.add.reduceat((X.real ** 2 + X.imag ** 2)[:self.hi], self.idx) * self.norm, X
+
+    def feed(self, mic, rl, rr, quiet=False, in_phrase=False):
+        """One frame.  Returns (offset_db <= 0, playback_present): the
+        detector adds the offset to the frame level (= level of the
+        residual) and holds its noise floor while playback is present."""
+        np = self.np
+        h = self.hop
+        self.frozen = bool(in_phrase)
+        mic = np.asarray(mic, np.float64)
+        rl = np.asarray(rl, np.float64)
+        rr = np.asarray(rr, np.float64)
+        raw = 20 * math.log10(math.sqrt(float(np.mean(mic * mic)) + 1e-20) + 1e-12)
+        ref_on = len(rl) == h and len(rr) == h and \
+            max(float(np.max(np.abs(rl))), float(np.max(np.abs(rr)))) > 1e-6
+        self.ref_idle = 0 if ref_on else self.ref_idle + 1
+        for w, x in ((self.wm, mic), (self.wl, rl), (self.wr, rr)):
+            w[:-h] = w[h:].copy()
+            w[-h:] = x if len(x) == h else 0.0
+        M, _ = self._bands(self.wm)
+        if self.ref_idle <= GATE_WIN_HOPS:
+            RL, XL = self._bands(self.wl)
+            RR, XR = self._bands(self.wr)
+            Xm = 0.5 * (XL + XR)
+            RM = np.add.reduceat((Xm.real ** 2 + Xm.imag ** 2)[:self.hi], self.idx) * self.norm
+            s = RL + RR
+        else:
+            RL = RR = RM = s = np.zeros(self.B)
+        self.e1 += self.ak[0] * (s - self.e1)
+        self.e2 += self.ak[1] * (s - self.e2)
+        if self.ref_idle > 500:
+            self.e1[:] = 0.0
+            self.e2[:] = 0.0
+        p = self.p
+        self.M[p], self.RL[p], self.RR[p], self.RM[p] = M, RL, RR, RM
+        self.E1[p], self.E2[p], self.LV[p] = self.e1, self.e2, raw
+        self.PH[p] = self.frozen
+        self.p += 1
+        if self.p == 2 * self.H:
+            for a in (self.M, self.RL, self.RR, self.RM, self.E1, self.E2, self.LV, self.PH,
+                      self.REL):
+                a[:self.H] = a[self.H:]
+            self.p = self.H
+        self.frames += 1
+        tail = (self.d if self.d is not None else self.Dmax) + int(GATE_TAIL_S / self.hop_s)
+        self.playing = self.ref_idle < tail
+        if quiet and not self.playing:
+            if not self.nb_set:
+                self.nb[:] = M
+                self.nb_set = True
+            else:
+                self.nb += np.where(M < self.nb, 0.2, 0.02) * (M - self.nb)
+        frac, leak = 1.0, 0.0
+        if self.playing and self.learned:
+            pred = self._pred_now()
+            Ms = self.M[self.p - GATE_SMOOTH:self.p].mean(axis=0)
+            # the leakage in a band cannot exceed what the microphone hears there
+            leak = float(np.minimum(pred, Ms).sum())
+            tot = float(Ms.sum())
+            if tot > 1e-30:
+                frac = min(1.0, float(np.maximum(Ms - self.beta * pred, 0.0).sum()) / tot)
+        off = 10 * math.log10(max(frac, 1e-20))
+        self.raw_db, self.frac = raw, frac
+        self.leak_db = 10 * math.log10(leak + 1e-20)
+        self.resid_db = max(raw + off, -200.0)
+        # RESIDUAL FLOOR: what the model leaves over when only playback
+        # sounds (measured outside phrases and on phrases judged playback
+        # only).  A gesture must stand above it - the gate is exactly as
+        # sensitive as the prediction is good in this room, for this material.
+        self.REL[p] = np.nan
+        self.lift = -200.0
+        if leak > 4.0 * max(float(self.nb.sum()), 1e-12):
+            rel = self.resid_db - self.leak_db
+            self.REL[p] = rel
+            if not self.frozen:
+                self.rel_hist.append(rel)
+                self.n_idle += 1
+            self.lift = self.leak_db + self.rf + GATE_HEADROOM_DB
+        if self.playing:
+            self.since_fit += 1
+            if self.since_fit >= self.fit_every and not (self.frozen and self.learned):
+                # the model is not adapted while a phrase is being recorded
+                # (the performer is probably playing); it is refitted, with
+                # that phrase in view, when the phrase is judged
+                self.fit()
+        return off, self.playing, self.lift
+
+    def young(self):
+        """True until the model has seen 1 s of playback outside any phrase
+        (or in a phrase judged playback-only)."""
+        return self.n_idle < GATE_YOUNG_FRAMES
+
+    def _update_rf(self):
+        if len(self.rel_hist) >= 50:
+            self.rf = clamp(float(self.np.percentile(self.rel_hist, GATE_RF_PCT)), -20.0, 0.0)
+
+    def _pred_now(self):
+        c = self.p - 1 - self.d
+        J = self.J
+        g = self.g
+        return (g[:, 0] * self.RL[c - J:c + J + 1].max(axis=0) +
+                g[:, 1] * self.RR[c - J:c + J + 1].max(axis=0) +
+                g[:, 2] * self.RM[c - J:c + J + 1].max(axis=0) +
+                g[:, 3] * self.E1[c] + g[:, 4] * self.E2[c])
+
+    def _feat(self, lo, hi, mode):
+        """(n, B, 5) features of frames [lo, hi): the delayed reference,
+        dilated (mode 'max', the gate) or smoothed (mode 'mean', the fit)
+        over +-GATE_JITTER frames, and the two decaying terms."""
+        np = self.np
+        from scipy.ndimage import maximum_filter1d, uniform_filter1d
+        f = maximum_filter1d if mode == "max" else uniform_filter1d
+        d, J = self.d, self.J
+        out = np.empty((hi - lo, self.B, 5))
+        for k, R in enumerate((self.RL, self.RR, self.RM)):
+            out[:, :, k] = f(R[lo - d - J:hi - d + J], size=2 * J + 1, axis=0,
+                             mode="nearest")[J:-J]
+        out[:, :, 3] = self.E1[lo - d:hi - d]
+        out[:, :, 4] = self.E2[lo - d:hi - d]
+        return out
+
+    # ---------------- adaptation ----------------
+    def _delay(self, lo, hi):
+        """Speaker -> microphone delay in frames: cross-correlation of the
+        ONSET functions (positive changes of the band amplitude envelopes;
+        reverberation smears a level, not the moment it rises), weighted by
+        the input's band energy.  Returns (lag, correlation at that lag)."""
+        np = self.np
+        D = self.Dmax
+        A = np.sqrt(self.RL[lo - D - 1:hi] + self.RR[lo - D - 1:hi])
+        A = np.maximum(np.diff(A, axis=0), 0.0)
+        Mx = np.sqrt(np.maximum(self.M[lo - 1:hi] - self.nb, 0.0))
+        Mx = np.maximum(np.diff(Mx, axis=0), 0.0)
+        n = hi - lo
+        Mc = Mx - Mx.mean(axis=0)
+        em = (Mc * Mc).sum(axis=0)
+        if float(em.sum()) <= 1e-30:
+            return None, 0.0
+        w = em / em.sum()
+        corr = np.zeros(D + 1)
+        for lag in range(D + 1):
+            S = A[D - lag:D - lag + n]
+            Sc = S - S.mean(axis=0)
+            den = np.sqrt((Sc * Sc).sum(axis=0) * em) + 1e-30
+            corr[lag] = float((w * (Sc * Mc).sum(axis=0) / den).sum())
+        b = int(np.argmax(corr))
+        self._corr_at_d = float(corr[self.d]) if self.d is not None and self.d <= D else 0.0
+        return b, float(corr[b])
+
+    def fit(self, calibration=False, frames=None):
+        """Refit the leakage model on the recent frames with playback."""
+        np = self.np
+        from scipy.optimize import nnls
+        from scipy.ndimage import uniform_filter1d
+        self.since_fit = 0
+        J = self.J
+        k = min(self.frames - J, frames or self.fit_n, self.H - self.Dmax - 4 * J - 4)
+        lo, hi = self.p - k - J, self.p - J
+        if k < GATE_MIN_FIT_FRAMES or float(self.E2[lo - self.Dmax:hi].sum()) <= 0.0:
+            return False
+        cand, c = self._delay(lo, hi)
+        self.d_corr = c
+        if cand is not None and (c >= 0.35 or (self.d is None and c >= 0.2)
+                                 or (calibration and c >= 0.2)):
+            cand = max(J, cand)
+            if self.d is None or calibration:
+                self.d = cand
+            elif abs(cand - self.d) >= 2 and self.d_cand is not None \
+                    and abs(cand - self.d_cand) <= 1 and c >= 0.5 \
+                    and c - self._corr_at_d >= 0.15:
+                # a changed delay: seen twice, clearly, and clearly better
+                # than the current one (a held tone has no onsets to go by)
+                self.d = cand
+            self.d_cand = cand
+        if self.d is None:
+            return False
+        F = self._feat(lo, hi, "mean")
+        Y = np.maximum(uniform_filter1d(self.M[lo - J:hi + J], size=2 * J + 1, axis=0,
+                                        mode="nearest")[J:-J] - self.nb, 0.0)
+        act = F.sum(axis=(1, 2))
+        sel = act > max(1e-11, 1e-4 * float(act.max()))
+        if int(sel.sum()) < GATE_MIN_FIT_FRAMES:
+            return False
+        # frames recorded inside a phrase: while the model is young they are
+        # fitted as a lower envelope (the first answer IS a phrase); later
+        # they are NOT used at all - the performer may be in them, and a
+        # lower envelope of fluctuating leakage would drag the model down.
+        # The model then learns from playback heard outside phrases and
+        # from phrases judged playback-only (which count as idle).
+        if not self.young() and not calibration:
+            sel &= ~self.PH[lo:hi]
+            if int(sel.sum()) < GATE_MIN_FIT_FRAMES:
+                return False
+        Fs, Ys = F[sel], Y[sel]
+        wpos = np.where(self.PH[lo:hi][sel], GATE_W_POS, GATE_W_POS_IDLE)
+        if calibration:
+            wpos = np.full(len(Fs), GATE_W_POS_IDLE)
+        g_new, fitted = self._solve(Fs, Ys, wpos, self.g if self.learned else None, True)
+        # bands without playback in this window keep what they had; bands
+        # never seen take the median of the known ones (a typical gain), so
+        # the first sound with energy there is neither ignored nor inflated
+        keep = ~fitted & self.band_seen
+        g_new[keep] = self.g[keep]
+        self.band_seen |= fitted
+        if self.band_seen.any() and not self.band_seen.all():
+            g_new[~self.band_seen] = np.median(g_new[self.band_seen], axis=0)
+        pn = np.einsum("tbk,bk->b", Fs, g_new) / len(Fs)
+        if self.learned and not calibration and self.fits >= GATE_MATURE_FITS:
+            # a mature model moves slowly: the room does not change in half a
+            # second, a performer playing along with the answer does
+            po = np.einsum("tbk,bk->b", Fs, self.g) / len(Fs)
+            for b in range(self.B):
+                if fitted[b] and po[b] > 1e-30 and pn[b] > 1e-30:
+                    r = pn[b] / po[b]
+                    lim = clamp(r, 10 ** (-GATE_FALL_DB / 10.0), 10 ** (GATE_RISE_DB / 10.0))
+                    g_new[b] *= lim / r
+                    pn[b] *= lim / r
+        if self.g_cal is not None and not calibration:
+            # a calibrated model is trusted: later fits may not predict more
+            # than +3 dB above what the calibration sound measured
+            pc = np.einsum("tbk,bk->b", Fs, self.g_cal) / len(Fs)
+            for b in range(self.B):
+                if fitted[b] and pc[b] > 1e-30 and pn[b] > 2.0 * pc[b]:
+                    g_new[b] *= 2.0 * pc[b] / pn[b]
+        self.g = g_new
+        self.learned = True
+        self.fits += 1
+        self._update_rf()
+        # broadband coupling = leakage power / output power for a white,
+        # uncorrelated stereo reference (independent of what was played)
+        gm = float(np.median((0.5 * (g_new[:, 0] + g_new[:, 1]) + 0.25 * g_new[:, 2] +
+                              g_new[:, 3] + g_new[:, 4])[self.band_seen]))
+        if gm > 1e-30:
+            self.coupling_db = 10 * math.log10(gm)
+        return True
+
+    def _solve(self, Fs, Ys, wpos, g0, strict):
+        """Per band: non-negative, asymmetric least squares of the input
+        band power Ys (n, B) on the reference features Fs (n, B, 5).
+        wpos = weight of frames ABOVE the fit (scalar or (n,)); g0 = a model
+        to start the weights from.  strict = the rules of the session model:
+        a band counts as fitted only where the playback had real energy
+        (within 20 dB of its strongest band - the skirts of a tone in the
+        neighbouring bands say nothing) and its leakage rose 6 dB above the
+        microphone noise (otherwise its gain is UNKNOWN, not zero).
+        Returns (g (B, 5), fitted (B,) bool)."""
+        np = self.np
+        from scipy.optimize import nnls
+        g_new = np.zeros((self.B, 5))
+        fitted = np.zeros(self.B, bool)
+        wpos = np.broadcast_to(np.asarray(wpos, float), (len(Fs),))
+        bref = np.sqrt(np.mean(Fs[:, :, 3] ** 2, axis=0))
+        bmin = (1e-2 if strict else 1e-3) * float(bref.max())
+        for b in range(self.B):
+            A, y = Fs[:, b, :], Ys[:, b]
+            sc = np.sqrt(np.mean(A * A, axis=0))
+            ok = sc > 1e-30
+            if bref[b] <= bmin or not ok.any():
+                continue
+            if strict and float(np.percentile(y, 95)) <= 3.0 * float(self.nb[b]):
+                continue
+            fitted[b] = True
+            if float(y.max()) <= 0.0:
+                continue
+            An = A[:, ok] / sc[ok]
+            w = np.ones(len(y))
+            if g0 is not None:
+                w = np.where(y - A @ g0[b] > 0, wpos, 1.0)
+            # PRIOR for what the data cannot tell: one voice at one pan
+            # position makes L, R and Mid proportional - then both speakers
+            # are assumed to leak alike (gL = gR) and incoherently (little
+            # Mid), so the model also holds for the next voice elsewhere in
+            # the stereo image.  Weak: independent L / R material overrides it.
+            idx = np.cumsum(ok) - 1
+            reg = []
+            if ok[0] and ok[1]:
+                s0 = 0.5 * (sc[0] + sc[1])
+                r = np.zeros(int(ok.sum()))
+                r[idx[0]], r[idx[1]] = s0 / sc[0], -s0 / sc[1]
+                reg.append(r * math.sqrt(GATE_TIE * len(y)))
+            if ok[2]:
+                r = np.zeros(int(ok.sum()))
+                r[idx[2]] = math.sqrt(GATE_MID_RIDGE * len(y))
+                reg.append(r)
+            R = np.array(reg) if reg else np.zeros((0, int(ok.sum())))
+            x = np.zeros(int(ok.sum()))
+            for _ in range(4):
+                sw = np.sqrt(w)
+                x, _r = nnls(np.vstack([An * sw[:, None], R]),
+                             np.concatenate([y * sw, np.zeros(len(R))]))
+                w = np.where(y - An @ x > 0, wpos, 1.0)
+            g_new[b, ok] = x / sc[ok]
+        return g_new, fitted
+
+    def calibrate(self, frames):
+        """Fit from the calibration sound (nothing else was playing)."""
+        ok = self.fit(calibration=True, frames=frames)
+        self.calibrated = bool(ok)
+        if ok:
+            self.n_idle = max(self.n_idle, GATE_YOUNG_FRAMES)
+            self.g_cal = self.g.copy()
+            self.fits = max(self.fits, GATE_MATURE_FITS)   # trusted from the start
+        return ok
+
+    # ---------------- phrase verdict ----------------
+    def verdict(self, n_start, n_end, off_db, trim=True, pre_s=0.25):
+        """Judge the phrase that covers frames [now - n_start, now - n_end)
+        with the CURRENT model (so a phrase that began before the model
+        existed is judged in hindsight).  off_db = the detector's end
+        threshold without playback.  Returns a dict:
+          playback_only  the residual never showed sustained activity
+          play_share     share of the phrase with playback at the microphone
+          leak_share     share of the phrase ENERGY that is predicted leakage
+          novel_s        seconds of residual activity (runs >= 30 ms)
+          trim           (first, last) frame of the phrase to keep, when a
+                         lead-in / tail without residual activity is cut"""
+        np = self.np
+        res = {"playback_only": False, "play_share": 0.0, "leak_share": 0.0,
+               "novel_s": None, "known": True}
+        span = self.H - self.Dmax - 4 * self.J - 4
+        lo, hi = self.p - min(n_start, span), self.p - max(n_end, 0)
+        if hi - lo < 1:
+            return res
+        if float(self.E2[max(lo - self.Dmax, 0):hi].sum()) <= 0.0:
+            return res                                  # no playback near this phrase
+        self.fit()
+        if self.d is None:
+            res["known"] = False
+            return res
+        # LOCAL model.  The session model is an average over what has been
+        # played; one sound - a few sinusoids, each on its own room
+        # resonance, in bands the model has hardly heard - can leak 20 dB
+        # more or less.  So the question is asked afresh for THIS phrase:
+        # can playback alone explain what the microphone heard?  The same
+        # non-negative fit, on the phrase and its surroundings (1.5 s
+        # before, 0.6 s after), as a lower envelope.  The surroundings hold
+        # playback without the performer, and a gesture has its own onsets
+        # and endings: neither can be explained by scaling the playback.
+        # The prediction used below is the larger of the two models.
+        from scipy.ndimage import uniform_filter1d
+        J = self.J
+        c_lo = max(lo - int(1.5 / self.hop_s), self.p - span)
+        c_hi = min(self.p - J, hi + int(0.6 / self.hop_s))
+        Fmax = self._feat(lo, hi, "max")
+        pred = np.einsum("tbk,bk->tb", Fmax, self.g) if self.learned else \
+            np.zeros((hi - lo, self.B))
+        if c_hi - c_lo >= GATE_MIN_FIT_FRAMES:
+            Fc = self._feat(c_lo, c_hi, "mean")
+            Yc = np.maximum(uniform_filter1d(self.M[c_lo - J:c_hi + J], size=2 * J + 1, axis=0,
+                                             mode="nearest")[J:-J] - self.nb, 0.0)
+            act = Fc.sum(axis=(1, 2))
+            sel = act > max(1e-11, 1e-4 * float(act.max()))
+            if int(sel.sum()) >= GATE_MIN_FIT_FRAMES:
+                g_loc, _f = self._solve(Fc[sel], Yc[sel], GATE_W_POS_LOCAL, None, False)
+                if self.learned and int(self.band_seen.sum()) >= 3:
+                    # physical bound: no band leaks more than 10 dB above
+                    # the strongest bands the session model knows
+                    tot_g = self.g[self.band_seen].sum(axis=1)
+                    cap = GATE_LOCAL_MAX * float(np.percentile(tot_g, 90))
+                    tl = g_loc.sum(axis=1)
+                    over = tl > cap
+                    g_loc[over] *= (cap / tl[over])[:, None]
+                pred = np.maximum(pred, np.einsum("tbk,bk->tb", Fmax, g_loc))
+        M = self.M[lo:hi]
+        Ms = uniform_filter1d(self.M[lo - GATE_SMOOTH:hi], size=GATE_SMOOTH, axis=0,
+                              origin=(GATE_SMOOTH - 1) // 2, mode="nearest")[GATE_SMOOTH:]
+        tot = np.maximum(Ms.sum(axis=1), 1e-30)
+        frac = np.minimum(np.maximum(Ms - self.beta * pred, 0.0).sum(axis=1) / tot, 1.0)
+        eff = self.LV[lo:hi] + 10 * np.log10(np.maximum(frac, 1e-20))
+        ptot = 10 * np.log10(np.minimum(pred, Ms).sum(axis=1) + 1e-20)
+        novel = eff > np.maximum(off_db, ptot + self.rf + GATE_HEADROOM_DB - 3.0)
+        run, n_novel, first, last = 0, 0, None, None
+        for i, v in enumerate(list(novel) + [False]):
+            if v:
+                run += 1
+            else:
+                if run >= GATE_NOVEL_RUN:
+                    n_novel += run
+                    first = i - run if first is None else first
+                    last = i
+                run = 0
+        present = pred.sum(axis=1) > max(float(self.nb.sum()), 1e-12)
+        res["play_share"] = float(present.mean())
+        res["novel_s"] = n_novel * self.hop_s
+        # the gesture, if there is one, is where the residual is active:
+        # [first, last] plus a little before and after.  If even there
+        # nearly all the energy is predicted leakage, whatever stood out is
+        # too weak to be told from what the model cannot predict.
+        res["span_leak"], res["density"] = 0.0, 1.0
+        if first is not None:
+            res["density"] = n_novel / float(max(last - first, 1))
+            sa = max(0, first - int(pre_s / self.hop_s))
+            sb = min(hi - lo, last + int(0.3 / self.hop_s))
+            res["span_leak"] = float(np.minimum(M[sa:sb], pred[sa:sb]).sum() /
+                                     max(float(M[sa:sb].sum()), 1e-30))
+        # ... and scattered or brief bits of residual in a span that is
+        # mostly leakage are the notes of an answer, each on its own room
+        # resonance, not a gesture
+        res["playback_only"] = res["play_share"] >= GATE_PLAY_SHARE and (
+            res["novel_s"] < GATE_NOVEL_MIN_S or res["span_leak"] >= GATE_SPAN_LEAK or
+            (res["span_leak"] >= GATE_SPARSE_LEAK and
+             (res["density"] < GATE_SPARSE or res["novel_s"] < GATE_SPARSE_MIN_S)))
+        if res["playback_only"]:
+            # what this phrase left over IS the residual floor: learn it
+            rel = eff - ptot
+            self.rel_hist.extend(float(v) for v in rel[present & np.isfinite(rel)])
+            self._update_rf()
+            self.PH[lo:hi] = False            # these frames are playback: learn from them
+            self.n_idle += int(present.sum())
+            self.fit()
+        a, b = 0, hi - lo
+        if first is not None and not res["playback_only"] and trim:
+            # the phrase is where the RESIDUAL is active: a lead-in or a tail
+            # that is only playback (the phrase was started, or kept alive,
+            # by leakage) is not part of the gesture
+            if first * self.hop_s > GATE_TRIM_LEAD_S and present[:first].mean() > 0.5:
+                a = max(0, first - int(pre_s / self.hop_s))
+            if (b - last) * self.hop_s > GATE_TRIM_TAIL_S and present[last:].mean() > 0.5:
+                b = min(b, last + int(0.3 / self.hop_s))
+            if a > 0 or b < hi - lo:
+                self.PH[lo:lo + a] = False
+                self.PH[lo + b:hi] = False
+                res["trim"] = (a, b)
+                res["play_share"] = float(present[a:b].mean())
+        res["leak_share"] = float(np.minimum(M[a:b], pred[a:b]).sum() /
+                                  max(float(M[a:b].sum()), 1e-30))
+        return res
+
+    def state(self, in_phrase=False):
+        if not self.playing:
+            return "idle (no playback)"
+        if not self.learned:
+            return "learning"
+        if in_phrase or self.frac >= 0.5:
+            return "open (residual activity)"
+        return "holding (playback explained)"
+
+
+def calibration_burst(sr, level=0.3, seed=20413):
+    """v0.4.13 optional start-up calibration sound, (n, 2) float32, 1.35 s:
+    0.6 s of pulsed pink noise from the LEFT channel, 0.15 s pause, 0.6 s
+    from the RIGHT.  Irregular pulses give the delay; the two halves give
+    each speaker's own path."""
+    import numpy as np
+    rng = np.random.default_rng(seed)
+    part, gap = int(0.6 * sr), int(0.15 * sr)
+
+    def noise(n):
+        X = np.fft.rfft(rng.standard_normal(n))
+        f = np.fft.rfftfreq(n, 1.0 / sr)
+        X[(f < 60) | (f > min(16000.0, 0.45 * sr))] = 0
+        X[1:] /= np.sqrt(np.maximum(f[1:], 60.0))
+        x = np.fft.irfft(X, n)
+        return x / np.max(np.abs(x))
+
+    def pulses(n, pattern):
+        env = np.zeros(n)
+        pos, k = 0, 0
+        e = int(0.004 * sr)
+        while pos < n:
+            on, off = pattern[k % len(pattern)]
+            a, b = pos, min(n, pos + int(on * sr))
+            if b - a > 2 * e:
+                env[a:b] = 1.0
+                env[a:a + e] = raised_cosine(e, True)
+                env[b - e:b] = raised_cosine(e, False)
+            pos = b + int(off * sr)
+            k += 1
+        return env
+    out = np.zeros((2 * part + gap, 2), np.float32)
+    out[:part, 0] = level * noise(part) * pulses(part, [(0.07, 0.03), (0.05, 0.04), (0.09, 0.03),
+                                                        (0.06, 0.05), (0.08, 0.04)])
+    out[part + gap:, 1] = level * noise(part) * pulses(part, [(0.06, 0.04), (0.09, 0.03),
+                                                              (0.05, 0.05), (0.08, 0.03),
+                                                              (0.07, 0.04)])
+    return out
+
+
+# ============================================================
+# v0.4.14 AUTOMATIC MICROPHONE AND GATE CALIBRATION  (--auto-calib 1,
+#   adaptive gate only).  Three stages before phrase detection starts,
+#   driven frame by frame from the detect thread (no extra thread, nothing
+#   blocks an audio callback):
+#     A  ROOM NOISE (1.5 s, nothing played): frame levels (10 ms) of the
+#        microphone -> noise level (trimmed power mean, 5-95 %), the noise
+#        FLOOR the detector itself would learn (30th percentile) and the
+#        highest noise level held for 30 ms (99.5th percentile of the
+#        3-frame running minimum = what the onset rule tests).  Digital
+#        silence, a noise level above -30 dBFS or a 5-95 % spread above
+#        20 dB (someone played or spoke) make the measurement invalid.
+#     B  SPEAKER LEAKAGE: the v0.4.13 calibration_burst() (pulsed pink
+#        noise, left then right) and EchoGate.calibrate() exactly as before
+#        (delay, per-band path gains).  In addition the received level per
+#        side: microphone power on the frames where THAT side's pulses were
+#        on at the measured delay (and on for +-20 ms: no transitions), the
+#        room noise power subtracted.  Coupling = leakage - test-sound
+#        level; the leakage of an ANSWER = the louder side's coupling +
+#        the response level (-18 dBFS, ROLE_TARGET_DB).
+#     C  LIVE INSTRUMENT (1 s get-ready + 5 s): the same frame levels.
+#        Activity = 30 ms-held level >= max(floor + 6, noise peak + 3) dB.
+#        Gestures (activity runs, gaps < 0.1 s merged) are cut into 0.5 s
+#        chunks; each chunk contributes its 30 ms-held PEAK - the quantity
+#        the onset rule compares with the start threshold.  Gaps never
+#        count; a chunk that only continues the decay of the previous one
+#        and the rising first chunk of a crescendo are left out (they are
+#        not levels the performer plays at).  Typical = upper quartile of
+#        the chunk peaks (the prompt asks for soft AND normal passages, so
+#        the median may be a soft one), soft = 15th percentile.
+#   SENSITIVITY (dB above the floor; start threshold = floor + S, end
+#   threshold 4 dB lower - PhraseDetector unchanged):
+#     S_lo = 4 (hysteresis) + (noise peak - floor) + 1.5   the END threshold
+#            clears the loudest held room noise: phrases can end
+#     S_hi = soft - 6 - floor     soft playing stays 6 dB above the START
+#            threshold
+#     S = clamp(original, S_lo, S_hi): the user's value is kept unless the
+#         measurements prove it unsafe on one side.  S_hi < S_lo (soft
+#         playing inside the room noise): S = S_lo - phrases must be able
+#         to end - and the limit is reported.
+#   NOT CHANGED by the calibration: the gate's operating constants (6 dB
+#   margin, 3 dB headroom, residual floor learning) - they were tuned for
+#   false-trigger safety in v0.4.13.  It seeds the detector's noise floor,
+#   the gate's room-noise bands (stage A) and its leakage path (stage B);
+#   during playback the gate decides as before.  The report PREDICTS with
+#   the gate's own rule whether typical / soft playing stands out of an
+#   answer's leakage (per band, perfect-model assumption).
+#   A failed or interrupted calibration changes nothing: the original
+#   sensitivity and floor stay and the session continues as in v0.4.13
+#   (a valid stage B keeps its leakage model, as Calibration_sound did).
+#   Nothing recorded here reaches a phrase, a corpus, the influence history
+#   or the level follower; the detector is held (no onset possible) until
+#   the input has been quiet for 0.3 s after stage C (at most 3 s).
+# ============================================================
+AUTOCAL_NOISE_S = 1.5
+AUTOCAL_LEAK_TAIL_S = 0.5          # stage B lasts burst + max delay + this
+AUTOCAL_LEAD_S = 1.0               # stage C: get ready, then ...
+AUTOCAL_LIVE_S = 5.0               # ... 5 s of playing
+AUTOCAL_SETTLE_QUIET_S = 0.3       # detection resumes after this much quiet
+AUTOCAL_SETTLE_MAX_S = 3.0         # ... or after this long in any case
+AUTOCAL_FLOOR_PCT = 30.0           # = the detector's own floor estimator
+AUTOCAL_NOISE_PEAK_PCT = 99.5
+AUTOCAL_NOISE_MAX_DB = -30.0
+AUTOCAL_NOISE_SPREAD_DB = 20.0
+AUTOCAL_ACT_FLOOR_DB = 6.0         # activity: 6 dB over the floor ...
+AUTOCAL_ACT_PEAK_DB = 3.0          # ... and 3 dB over the loudest held noise
+AUTOCAL_GAP_S = 0.1
+AUTOCAL_CHUNK_S = 0.5
+AUTOCAL_TAIL_DROP_DB = 6.0
+AUTOCAL_SOFT_PCT = 15.0           # soft passages = this percentile of the chunk peaks
+AUTOCAL_TYP_PCT = 75.0            # normal playing = the upper quartile (the prompt asks
+                                  #   for soft AND normal passages: the median can be soft)
+AUTOCAL_OVER_MAX_DB = 30.0        # gate-margin search range (+-30 dB)
+AUTOCAL_MIN_CHUNKS = 3
+AUTOCAL_MIN_ACTIVE_S = 0.3
+AUTOCAL_SOFT_MARGIN_DB = 6.0
+AUTOCAL_END_MARGIN_DB = 1.5
+AUTOCAL_LOW_SNR_DB = 12.0
+AUTOCAL_CLIP = 0.999
+AUTOCAL_CLIP_N = 3
+AUTOCAL_LEAK_MIN_DB = 3.0          # leakage below noise + 3 dB = not heard
+AUTOCAL_REF_ON = 0.1               # a test-sound frame is "on" above 10 % of its peak power
+AUTOCAL_MAX_DROPS = 5
+AUTOCAL_SENS_RANGE = (3.0, 40.0)
+
+
+def _held3(db):
+    """30 ms-held level: running minimum over 3 frames (the onset rule
+    needs 3 consecutive frames above the start threshold)."""
+    import numpy as np
+    db = np.asarray(db, float)
+    if len(db) < 3:
+        return db.copy()
+    return np.minimum.reduce([db, np.r_[db[:1], db[:-1]], np.r_[db[:2], db[:-2]]])
+
+
+def autocal_noise_stats(db, peak):
+    """Stage A.  db = frame levels (dBFS), peak = largest |sample|."""
+    import numpy as np
+    db = np.asarray(db, float)
+    r = {"valid": False, "fatal": False, "why": ""}
+    if len(db) < 10 or peak < 1e-7 or float(np.max(db)) < PhraseDetector.CALIB_MIN_DB:
+        r.update(fatal=True, why="no microphone signal (digital silence - is the input "
+                                 "connected, unmuted and selected?)")
+        return r
+    p5, floor, p95 = np.percentile(db, [5, AUTOCAL_FLOOR_PCT, 95])
+    pw = 10 ** (db / 10.0)
+    level = 10 * math.log10(float(np.mean(pw[(db >= p5) & (db <= p95)])) + 1e-30)
+    hi = float(np.percentile(_held3(db), AUTOCAL_NOISE_PEAK_PCT))
+    floor = max(float(floor), PhraseDetector.FLOOR_MIN_DB)
+    r.update(level=level, floor=floor, hi=max(hi, floor), spread=float(p95 - p5),
+             pow=10 ** (level / 10.0))
+    if level > AUTOCAL_NOISE_MAX_DB:
+        r["why"] = "the room noise (%.1f dBFS) is too loud - was something playing?" % level
+    elif p95 - p5 > AUTOCAL_NOISE_SPREAD_DB:
+        r["why"] = ("the room was not quiet (its level changed by %.0f dB - did someone play "
+                    "or speak?)" % (p95 - p5))
+    else:
+        r["valid"] = True
+    return r
+
+
+def autocal_live_stats(db, noise, hop_s):
+    """Stage C.  Returns typical / soft playing level (30 ms-held chunk
+    peaks, see the block comment), active RMS and the activity in seconds."""
+    import numpy as np
+    db = np.asarray(db, float)
+    held = _held3(db)
+    thr = max(noise["floor"] + AUTOCAL_ACT_FLOOR_DB, noise["hi"] + AUTOCAL_ACT_PEAK_DB)
+    act = held > thr
+    r = {"valid": False, "why": "", "thr": thr, "active_s": float(act.sum()) * hop_s}
+    gap = max(1, int(round(AUTOCAL_GAP_S / hop_s)))
+    runs, i, n = [], 0, len(act)
+    while i < n:
+        if act[i]:
+            j = i
+            while j + 1 < n and (act[j + 1] or (j + gap < n and act[j + 1:j + 1 + gap].any())):
+                j += 1
+            while j > i and not act[j]:
+                j -= 1
+            runs.append((i, j + 1))
+            i = j + 1
+        else:
+            i += 1
+    ck = max(3, int(round(AUTOCAL_CHUNK_S / hop_s)))
+    peaks, mask = [], np.zeros(n, bool)
+    for a, b in runs:
+        chunks = [(c0, min(c0 + ck, b)) for c0 in range(a, b, ck)]
+        for k, (c0, c1) in enumerate(chunks):
+            seg = held[c0:c1]
+            if int(act[c0:c1].sum()) < 3:
+                continue
+            m = int(np.argmax(seg))
+            if k > 0 and m == 0 and seg[-1] < seg[0] - AUTOCAL_TAIL_DROP_DB:
+                continue                       # only the decay of the chunk before
+            if k == 0 and len(chunks) > 1 and m >= len(seg) - 2 and \
+                    float(held[chunks[1][0]:chunks[1][1]].max()) > float(seg.max()):
+                continue                       # the rising entry of a crescendo
+            peaks.append(float(seg.max()))
+            r.setdefault("chunk_list", []).append((c0, c1, float(seg.max())))
+            mask[c0:c1] |= act[c0:c1]
+    r["chunks"] = len(peaks)
+    if r["active_s"] < AUTOCAL_MIN_ACTIVE_S or len(peaks) < AUTOCAL_MIN_CHUNKS:
+        r["why"] = ("too little playing was heard (%.1f s above the room noise, %d passage(s)) - "
+                    "was the instrument playing during the 5 s?" % (r["active_s"], len(peaks)))
+        return r
+    r.update(valid=True, typ=float(np.percentile(peaks, AUTOCAL_TYP_PCT)),
+             soft=float(np.percentile(peaks, AUTOCAL_SOFT_PCT)),
+             rms=10 * math.log10(float(np.mean(10 ** (db[act] / 10.0))) + 1e-30), active=act)
+    return r
+
+
+def autocal_sensitivity(noise, live, original, hyst, abs_min):
+    """The rule in the block comment.  Returns (S, S_lo, S_hi, how, notes)."""
+    s_lo = hyst + (noise["hi"] - noise["floor"]) + AUTOCAL_END_MARGIN_DB
+    s_hi = live["soft"] - AUTOCAL_SOFT_MARGIN_DB - noise["floor"]
+    notes = []
+    if s_hi >= s_lo:
+        s = clamp(original, s_lo, s_hi)
+        how = ("unchanged: inside the safe range" if abs(s - original) < 0.05 else
+               "raised: the room noise fluctuates" if s > original else
+               "lowered: soft passages would be missed")
+    else:
+        s = s_lo
+        how = "set to the lowest value at which phrases can still end"
+        notes.append("soft passages (%.1f dBFS) are only %.1f dB above the room-noise floor; the "
+                     "start threshold cannot go below %.1f dBFS without phrases failing to end, "
+                     "so they keep %.1f dB of margin (%.0f dB is safe: play above about %.0f "
+                     "dBFS or raise the input gain)" % (
+                         live["soft"], live["soft"] - noise["floor"], noise["floor"] + s_lo,
+                         live["soft"] - noise["floor"] - s_lo, AUTOCAL_SOFT_MARGIN_DB,
+                         noise["floor"] + s_lo + AUTOCAL_SOFT_MARGIN_DB))
+    s = clamp(s, *AUTOCAL_SENS_RANGE)
+    if live["soft"] - AUTOCAL_SOFT_MARGIN_DB < abs_min:
+        notes.append("soft playing is close to the detector's absolute minimum (%.0f dBFS): "
+                     "raise the input gain" % abs_min)
+    return s, s_lo, s_hi, how, notes
+
+
+class AutoCalibrator:
+    """v0.4.14: the three-stage calibration of one session (see above).
+    Owned by the detect thread; the main thread reads plain attributes."""
+
+    def __init__(self, eng):
+        import numpy as np
+        self.np = np
+        self.e = eng
+        h = eng.hop_s
+        self.hop_s = h
+        self.stage = "wait"          # wait noise leak live settle done
+        self.status = "running"      # running success limited failed interrupted
+        self.why = ""
+        self.n = 0
+        self.sens_orig = float(eng.det.sens)
+        self.sens_cal = None
+        self.s_lo = self.s_hi = None
+        self.how = ""
+        self.notes = []
+        self.nA = int(round(AUTOCAL_NOISE_S / h))
+        self.lead = int(round(AUTOCAL_LEAD_S / h))
+        self.nC = int(round(AUTOCAL_LIVE_S / h))
+        self.nB = 0
+        self.a_db, self.a_M, self.a_peak = [], [], 0.0
+        self.b_P, self.b_M, self.b_t = [], [], []
+        self.b_L = self.b_R = None
+        self.c_db, self.c_M, self.c_clip, self.c_peak = [], [], 0, 0.0
+        self.noise = self.leak = self.live = None
+        self.over = {}
+        self.drops0 = 0
+        self.quiet_run = 0
+        self.t_done = None
+        self.report, self.line = [], ""
+        self.ver, self.ver_written = 0, 0
+
+    # ---------------- driving ----------------
+    def holding(self):
+        return self.stage in ("noise", "leak", "live", "settle")
+
+    def left(self):
+        if self.stage == "noise":
+            return (self.nA - self.n) * self.hop_s
+        if self.stage == "leak":
+            return max(0, self.nB - self.n) * self.hop_s
+        if self.stage == "live":
+            return (self.lead + self.nC - self.n) * self.hop_s
+        return 0.0
+
+    def _drops(self):
+        return self.e.c["overruns"] + self.e.c["input_status"]
+
+    def begin(self):
+        self.stage, self.n = "noise", 0
+        self.drops0 = self._drops()
+        self.e.log("automatic calibration 1/3: room noise (%.1f s, nothing is played)" %
+                   AUTOCAL_NOISE_S, True)
+
+    @staticmethod
+    def _db(m):
+        import numpy as np
+        e = float(np.sqrt(np.mean(np.asarray(m, np.float64) ** 2) + 1e-20))
+        return 20 * math.log10(e + 1e-12)
+
+    def frame(self, blk, m, t):
+        """One detector frame while holding (called after EchoGate.feed);
+        t = wall-clock time of the frame's end."""
+        np = self.np
+        gt = self.e.gate
+        db = self._db(m)
+        if self.stage == "noise":
+            self.a_db.append(db)
+            self.a_M.append(gt.M[gt.p - 1].copy())
+            self.a_peak = max(self.a_peak, float(np.max(np.abs(blk))))
+            self.n += 1
+            if self.n >= self.nA:
+                self._end_noise()
+        elif self.stage == "leak":
+            if self.n == 0 and not self._start_leak():
+                return
+            self.b_P.append(float(np.mean(np.asarray(m, np.float64) ** 2)))
+            self.b_M.append(gt.M[gt.p - 1].copy())
+            self.b_t.append(t)
+            self.n += 1
+            if self.n >= self.nB:
+                self._end_leak()
+        elif self.stage == "live":
+            self.n += 1
+            if self.n > self.lead:
+                self.c_db.append(db)
+                self.c_M.append(gt.M[gt.p - 1].copy())
+                a = np.abs(blk)
+                self.c_peak = max(self.c_peak, float(np.max(a)))
+                self.c_clip += int(np.count_nonzero(a >= AUTOCAL_CLIP))
+            if self.n >= self.lead + self.nC:
+                self._end_live()
+        elif self.stage == "settle":
+            d = self.e.det
+            _, off = d.thresholds()
+            self.quiet_run = self.quiet_run + 1 if db < off else 0
+            self.n += 1
+            if self.quiet_run * self.hop_s >= AUTOCAL_SETTLE_QUIET_S or \
+                    self.n * self.hop_s >= AUTOCAL_SETTLE_MAX_S:
+                self._release()
+
+    # ---------------- stages ----------------
+    def _end_noise(self):
+        np = self.np
+        self.noise = r = autocal_noise_stats(self.a_db, self.a_peak)
+        r["bands"] = np.mean(self.a_M, axis=0) if self.a_M else None
+        if r["fatal"]:
+            self.e.log("automatic calibration: %s - stopped, original settings kept" % r["why"], True)
+            self._conclude("failed", r["why"])
+            self._release()
+            return
+        if not r["valid"]:
+            # the gate's room-noise bands may hold what was played: relearn them
+            gt = self.e.gate
+            gt.nb[:] = 0.0
+            gt.nb_set = False
+            self.e.log("automatic calibration 1/3: INVALID - %s" % r["why"], True)
+        else:
+            self.e.log("automatic calibration 1/3: room noise %.1f dBFS (floor %.1f, held peak "
+                       "%.1f, spread %.1f dB)" % (r["level"], r["floor"], r["hi"], r["spread"]))
+        self.stage, self.n = "leak", 0
+
+    def _start_leak(self):
+        e = self.e
+        if not e.a.play:
+            self.leak = {"measured": False, "why": "not measured (Play_response is off)"}
+            e.log("automatic calibration 2/3: skipped (Play_response is off)", True)
+            self.stage, self.n = "live", 0
+            self._live_msg()
+            return False
+        burst = calibration_burst(self.e.sr)
+        self.nB = int((len(burst) / float(e.sr) + GATE_MAX_DELAY_S + AUTOCAL_LEAK_TAIL_S)
+                      / self.hop_s)
+        e.cal = "playing"
+        e.mixer.add(Voice(burst, "fg", "Calibration sound", 0.0))
+        e.log("automatic calibration 2/3: speaker leakage - calibration sound started "
+              "(%.2f s, left then right)" % (len(burst) / float(e.sr)), True)
+        return True
+
+    def _ref_frames(self):
+        """The test sound as PLAYED, per frame of stage 2: read from the
+        output rings once the stage is over (in real time the output of
+        "now" is often not in the ring yet when the input frame arrives)."""
+        np = self.np
+        e = self.e
+        n, h = len(self.b_t), e.det.hop
+        out = []
+        for ring in (e.out_ring_l, e.out_ring_r):
+            x = ring.segment(self.b_t[-1], n * self.hop_s).astype(np.float64)
+            x = np.r_[np.zeros(max(0, n * h - len(x))), x][-n * h:]
+            out.append(np.mean(x.reshape(n, h) ** 2, axis=1))
+        return out
+
+    def _end_leak(self):
+        e, gt = self.e, self.e.gate
+        self.b_L, self.b_R = self._ref_frames()
+        ok = gt.calibrate(self.nB)
+        e.cal = "done" if ok else "failed"
+        e.log("calibration %s" % (
+            "done: delay %.0f ms, coupling %.1f dB" % (
+                1000 * gt.d * gt.hop_s, gt.coupling_db if gt.coupling_db is not None
+                else float("nan")) if ok else
+            "FAILED (the microphone did not hear the calibration sound) - the gate learns "
+            "from the first answers instead"), True)
+        self.leak = self._measure_leak()
+        self.stage, self.n = "live", 0
+        self._live_msg()
+
+    def _live_msg(self):
+        self.e.log("automatic calibration 3/3: LIVE INPUT CALIBRATION - play your instrument, "
+                   "including soft and normal passages, for %.0f seconds" % AUTOCAL_LIVE_S, True)
+
+    def _xcorr_delay(self, P, R):
+        np = self.np
+        a, b = np.sqrt(np.asarray(P)), np.sqrt(np.asarray(R))
+        n = len(a)
+        best, lag = 0.0, None
+        for k in range(0, min(self.e.gate.Dmax, n - 20) + 1):
+            x, y = a[k:], b[:n - k]
+            if float(np.std(x)) <= 0 or float(np.std(y)) <= 0:
+                continue
+            c = float(np.corrcoef(x, y)[0, 1])
+            if c > best:
+                best, lag = c, k
+        return lag if best >= 0.3 else None
+
+    def _measure_leak(self):
+        """Received test-sound level per side (see the block comment)."""
+        np = self.np
+        gt = self.e.gate
+        P = np.array(self.b_P)
+        RL, RR, MB = np.asarray(self.b_L), np.asarray(self.b_R), np.array(self.b_M)
+        nz = self.noise if self.noise and self.noise.get("valid") else None
+        npow = nz["pow"] if nz else float(np.percentile(P, 10))
+        nbands = nz["bands"] if nz else np.percentile(MB, 10, axis=0)
+        d = gt.d if (gt.calibrated and gt.d is not None) else self._xcorr_delay(P, RL + RR)
+        res = {"measured": True, "delay": d, "L": None, "R": None, "why": ""}
+        if d is None:
+            res["why"] = "the microphone did not hear the test sound"
+            return res
+        J = GATE_JITTER
+        for side, R in (("L", RL), ("R", RR)):
+            if len(R) == 0 or float(R.max()) <= 1e-12:
+                continue
+            on = R > AUTOCAL_REF_ON * float(R.max())
+            st = on.copy()
+            for k in range(1, J + 1):
+                st[k:] &= on[:-k]
+                st[:-k] &= on[k:]
+            ri = np.nonzero(st)[0]
+            ri = ri[ri + d < len(P)]
+            if len(ri) < 10:
+                continue
+            mi = ri + d
+            pm, pr = float(P[mi].mean()), float(R[ri].mean())
+            ent = {"ref_db": 10 * math.log10(pr + 1e-30), "frames": int(len(ri)), "heard": False}
+            if pm >= 10 ** (AUTOCAL_LEAK_MIN_DB / 10.0) * npow:
+                lk = pm - npow
+                mb = np.maximum(MB[mi].mean(axis=0) - nbands, 0.0)
+                ent.update(heard=True, db=10 * math.log10(lk), coupling=10 * math.log10(lk / pr),
+                           bands=mb / max(float(mb.sum()), 1e-30),
+                           kband=float(MB[mi].sum(axis=1).mean()) / pm)
+            res[side] = ent
+        heard = [res[s] for s in ("L", "R") if res[s] and res[s]["heard"]]
+        if heard:
+            # the pulses are short: their reverberation has not built up on
+            # the "on" frames.  A continuous answer gets the whole of it, so
+            # the answer's coupling is scaled to the ENERGY of the stage
+            # (received energy, tail included / played energy), 0..+6 dB
+            emic = float(np.maximum(P - npow, 0.0).sum())
+            eref = sum(10 ** (res[s]["coupling"] / 10.0) * float(R.sum())
+                       for s, R in (("L", RL), ("R", RR)) if res[s] and res[s]["heard"])
+            res["reverb_db"] = clamp(10 * math.log10(emic / eref), 0.0, 6.0) \
+                if eref > 1e-30 and emic > 0 else 0.0
+            top = max(heard, key=lambda x: x["coupling"])
+            res["answer_db"] = top["coupling"] + res["reverb_db"] + ROLE_TARGET_DB["fg"]
+            res["top"] = top
+        elif res["L"] or res["R"]:
+            res["why"] = "below the room noise (the microphone barely hears the speakers)"
+        else:
+            res["why"] = "the test sound did not reach the reference"
+        return res
+
+    def _replay(self, sel, shift_db, ans_db):
+        """Share of the stage-3 passages `sel` [(first, end, peak)] that the
+        gate would detect if they had been played `shift_db` louder over a
+        steady answer whose leakage at the microphone is ans_db (dBFS): the
+        RECORDED frames (gate bands and levels, room noise kept) plus the
+        answer's leakage (spectrum measured in stage 2), through EchoGate's
+        own rules with a perfect leakage prediction - residual vs start
+        threshold / lift (onset: 3 frames, in the passage itself) and the
+        hindsight verdict's playback-only rules, applied to the PHRASE the
+        passage belongs to (passages closer than End_silence_s together, as
+        the detector would join them)."""
+        np = self.np
+        gt, d = self.e.gate, self.e.det
+        lk, nz = self.leak, self.noise
+        top = lk["top"]
+        Pl = 10 ** (ans_db / 10.0)
+        leak_b = top["bands"] * top["kband"] * Pl
+        nb = np.maximum(nz["bands"], 0.0)
+        g = 10 ** (shift_db / 10.0)
+        M = g * np.maximum(self._cM - nb, 0.0) + nb + leak_b
+        P = g * np.maximum(self._cP - nz["pow"], 0.0) + nz["pow"] + Pl
+        Mp = np.vstack([M[:1], M[:1], M])
+        Ms = (Mp[2:] + Mp[1:-1] + Mp[:-2]) / float(GATE_SMOOTH)
+        frac = np.minimum(np.maximum(Ms - gt.beta * leak_b, 0.0).sum(axis=1) /
+                          np.maximum(Ms.sum(axis=1), 1e-30), 1.0)
+        eff = 10 * np.log10(P) + 10 * np.log10(np.maximum(frac, 1e-20))
+        lsum = np.minimum(leak_b, Ms).sum(axis=1)
+        ptot = 10 * np.log10(lsum + 1e-20)
+        lift = np.where(lsum > 4.0 * max(float(nb.sum()), 1e-12),
+                        ptot + gt.rf + GATE_HEADROOM_DB, -200.0)
+        sens = self.sens_cal if self.sens_cal is not None else d.sens
+        on = max(nz["floor"] + sens, d.abs_min)
+        start = eff > np.maximum(on, lift)
+        novel = eff > np.maximum(on - d.hyst, ptot + gt.rf + GATE_HEADROOM_DB - 3.0)
+        ML = np.minimum(M, leak_b).sum(axis=1)
+        MT = M.sum(axis=1)
+
+        def runs(v, k):
+            out, r = [], 0
+            for i, x in enumerate(list(v) + [False]):
+                if x:
+                    r += 1
+                else:
+                    if r >= k:
+                        out.append((i - r, i))
+                    r = 0
+            return out
+        def accepted(p0, p1):
+            rr = runs(novel[p0:p1], GATE_NOVEL_RUN)
+            if not rr:
+                return False
+            n_nov = sum(b - a for a, b in rr)
+            first, last = rr[0][0], rr[-1][1]
+            nov_s = n_nov * self.hop_s
+            dens = n_nov / float(max(last - first, 1))
+            sa = p0 + max(0, first - int(0.25 / self.hop_s))
+            sb = min(p1, p0 + last + int(0.3 / self.hop_s))
+            sl = float(ML[sa:sb].sum() / max(float(MT[sa:sb].sum()), 1e-30))
+            return not (nov_s < GATE_NOVEL_MIN_S or sl >= GATE_SPAN_LEAK or
+                        (sl >= GATE_SPARSE_LEAK and (dens < GATE_SPARSE or
+                                                     nov_s < GATE_SPARSE_MIN_S)))
+        gap = int(round(d.end_silence / self.hop_s))
+        phr = []
+        for c0, c1, _pk in self.live["chunk_list"]:
+            if phr and c0 - phr[-1][1] < gap:
+                phr[-1][1] = c1
+            else:
+                phr.append([c0, c1])
+        verdict = {}
+        ok = 0
+        for c0, c1, _pk in sel:
+            if not runs(start[c0:c1], d.on_frames):
+                continue
+            p = next((q for q in phr if q[0] <= c0 < q[1]), [c0, c1])
+            key = tuple(p)
+            if key not in verdict:
+                verdict[key] = accepted(p[0], p[1])
+            ok += verdict[key]
+        return ok / float(len(sel)) if sel else 0.0
+
+    def margin(self, which, ans_db=None):
+        """How many dB the typical / soft passages stand out of an answer's
+        leakage for the gate (negative: that much louder would be needed);
+        +-AUTOCAL_OVER_MAX_DB at the ends of the search.  None when no
+        leakage or no playing was measured."""
+        lk, lv = self.leak or {}, self.live or {}
+        if lk.get("answer_db") is None or not lv.get("valid"):
+            return None
+        ans = lk["answer_db"] if ans_db is None else ans_db
+        ch = lv["chunk_list"]
+        sel = [c for c in ch if c[2] >= lv["typ"] - 1.5] if which == "typ" else \
+            [c for c in ch if c[2] <= lv["soft"] + 1.5]
+        lim = int(AUTOCAL_OVER_MAX_DB)
+        for s in range(-lim, lim + 1):
+            if self._replay(sel, float(s), ans) >= 0.5:
+                return float(-s)
+        return -AUTOCAL_OVER_MAX_DB - 1.0
+
+    def _end_live(self):
+        np = self.np
+        e, d = self.e, self.e.det
+        nz = self.noise
+        if not (nz and nz["valid"]):
+            self.live = {"valid": False, "why": "no valid room-noise measurement"}
+            self._conclude("failed", "room noise: " + (nz["why"] if nz else "not measured"))
+            self._enter_settle()
+            return
+        lv = autocal_live_stats(self.c_db, nz, self.hop_s)
+        self.live = lv
+        self._cM = np.array(self.c_M)
+        self._cP = 10 ** (np.array(self.c_db) / 10.0)
+        if lv["valid"]:
+            M = self._cM[lv["active"]]
+            sh = np.maximum(M.mean(axis=0) - nz["bands"], 0.0)
+            lv["shape"] = sh / max(float(sh.sum()), 1e-30)
+            act_pow = float(np.mean(10 ** (np.array(self.c_db)[lv["active"]] / 10.0)))
+            lv["kband"] = float(M.sum(axis=1).mean()) / max(act_pow, 1e-30)
+        lv["clip"] = self.c_clip
+        lv["peak"] = self.c_peak
+        drops = self._drops() - self.drops0
+        if drops > AUTOCAL_MAX_DROPS:
+            self._conclude("failed", "the audio input dropped %d block(s) during the calibration"
+                           % drops)
+        elif not lv["valid"]:
+            self._conclude("failed", "live input: " + lv["why"])
+        else:
+            s, s_lo, s_hi, how, notes = autocal_sensitivity(nz, lv, self.sens_orig, d.hyst,
+                                                            d.abs_min)
+            self.sens_cal, self.s_lo, self.s_hi, self.how = s, s_lo, s_hi, how
+            self.notes = list(notes)
+            if self.c_clip >= AUTOCAL_CLIP_N:
+                self.notes.append("the microphone CLIPPED (%d samples at full scale): lower the "
+                                  "input gain - the typical level reads too low" % self.c_clip)
+            if lv["typ"] - nz["floor"] < AUTOCAL_LOW_SNR_DB:
+                self.notes.append("typical playing is only %.1f dB above the room noise: raise "
+                                  "the input gain or move the microphone closer" % (
+                                      lv["typ"] - nz["floor"]))
+            lk = self.leak or {}
+            if lk.get("answer_db") is not None:
+                self.over = {"typ": self.margin("typ"), "soft": self.margin("soft")}
+                mt, ms = self.over["typ"], self.over["soft"]
+                if mt is not None and mt < 0:
+                    self.notes.append("even typical playing does not stand out of an answer's "
+                                      "leakage (%s): gestures are reliably detected only between "
+                                      "answers" % self._under(mt))
+                elif ms is not None and ms < 0:
+                    self.notes.append("soft playing does not stand out of an answer's leakage "
+                                      "(%s): soft gestures are reliably detected only between "
+                                      "answers" % self._under(ms))
+            # APPLY: sensitivity and the measured floor (the gate keeps its
+            # own constants; its noise bands and leakage path are already seeded)
+            d.sens = s
+            d.floor = max(nz["floor"], d.FLOOR_MIN_DB)
+            self._conclude("limited" if self.notes else "success", "")
+        self._enter_settle()
+
+    @staticmethod
+    def _under(v):
+        return "not even %.0f dB louder" % AUTOCAL_OVER_MAX_DB if v < -AUTOCAL_OVER_MAX_DB else \
+            "about %.0f dB louder would be needed" % -v
+
+    def _enter_settle(self):
+        self.stage, self.n, self.quiet_run = "settle", 0, 0
+
+    def _release(self):
+        """Detection resumes: nothing recorded during the calibration may
+        become the pre-roll of the first phrase."""
+        d = self.e.det
+        d.pre, d.pre_db = [], []
+        d.above = 0
+        d.pending_cont = False
+        self.stage = "done"
+        self.t_done = time.time()
+        self.e.log("automatic calibration finished (%s) - phrase detection on" %
+                   self.status.upper(), True)
+
+    def abort(self, reason):
+        """Stopped while calibrating (stages wait..live): nothing is
+        applied.  In the settle stage the result is already final."""
+        st = self.stage
+        if st == "done":
+            return
+        if st == "settle":
+            self._release()
+            return
+        self.stage = "done"
+        self.t_done = time.time()
+        self._conclude("interrupted", "%s (during %s)" % (reason, {
+            "wait": "start-up", "noise": "stage 1/3", "leak": "stage 2/3",
+            "live": "stage 3/3"}.get(st, st)))
+
+    # ---------------- result ----------------
+    def _conclude(self, status, why):
+        self.status, self.why = status, why
+        if status in ("failed", "interrupted"):
+            self.sens_cal = None
+            self.e.det.sens = self.sens_orig
+        self._build_report()
+        for l in self.report:
+            self.e.log("CALIBRATION " + l)
+        self.e.log("automatic calibration %s: %s" % (status.upper(), self.line), True)
+
+    def fields(self):
+        def f(v):
+            return "" if v is None else fnum(v, 1)
+        nz, lk, lv = self.noise or {}, self.leak or {}, self.live or {}
+        side = lambda s: (lk.get(s) or {}).get("db") if (lk.get(s) or {}).get("heard") else None
+        typ, soft, ans = lv.get("typ"), lv.get("soft"), lk.get("answer_db")
+        return [("noise_db", f(nz.get("level"))), ("floor_db", f(nz.get("floor"))),
+                ("leak_l_db", f(side("L"))), ("leak_r_db", f(side("R"))),
+                ("leak_answer_db", f(ans)), ("inst_db", f(typ)), ("soft_db", f(soft)),
+                ("sep_typ_db", f(typ - ans if typ is not None and ans is not None else None)),
+                ("sep_soft_db", f(soft - ans if soft is not None and ans is not None else None)),
+                ("over_typ_db", f(self.over.get("typ"))), ("over_soft_db", f(self.over.get("soft"))),
+                ("sens_orig", f(self.sens_orig)), ("sens_db", f(self.e.det.sens)),
+                ("clip", lv.get("clip", 0))]
+
+    def _status_txt(self):
+        """limited = applied, with stated limits (shown as SUCCESS so a
+        normal loudspeaker set-up does not read as an error)."""
+        if self.status == "limited":
+            n = len(self.notes)
+            return "SUCCESS - with %d limit%s (below)" % (n, "" if n == 1 else "s")
+        return self.status.upper()
+
+    def _build_report(self):
+        nz, lk, lv = self.noise or {}, self.leak or {}, self.live or {}
+        W = 26
+
+        def row(label, txt):
+            return "%-*s%s" % (W, label, txt)
+
+        def lev(v, unit="dBFS"):
+            return "%7.1f %s" % (v, unit)
+        L = ["AUDIO INPUT / GATE CALIBRATION", "-" * 45]
+        if nz.get("level") is not None:
+            L.append(row("Room noise:", lev(nz["level"]) + "   (floor %.1f, held peak %.1f)" % (
+                nz["floor"], nz["hi"])))
+        else:
+            L.append(row("Room noise:", "    n/a   " + nz.get("why", "not measured")))
+        for s in ("L", "R"):
+            ent = lk.get(s)
+            if ent and ent.get("heard"):
+                L.append(row("Speaker leakage %s:" % s, lev(ent["db"]) +
+                             "   (test sound %.1f dBFS, coupling %.1f dB)" % (ent["ref_db"],
+                                                                           ent["coupling"])))
+            elif ent:
+                L.append(row("Speaker leakage %s:" % s, "    below the room noise"))
+            else:
+                L.append(row("Speaker leakage %s:" % s, "    n/a   " + (
+                    lk.get("why") or "not measured")))
+        ans = lk.get("answer_db")
+        if ans is not None:
+            L.append(row("Leakage of an answer:", lev(ans) + "   (answer at %.0f dBFS, louder "
+                         "speaker, reverberation %+.1f dB)" % (ROLE_TARGET_DB["fg"],
+                                                               lk.get("reverb_db", 0.0))))
+        if self.e.out_ch == 1 and lk.get("measured"):
+            L.append("  (mono output: left and right are the same loudspeaker)")
+        if lv.get("valid"):
+            L.append(row("Live instrument:", lev(lv["typ"])))
+            L.append(row("Soft live passages:", lev(lv["soft"])))
+        elif lv:
+            L.append(row("Live instrument:", "    n/a   (see the status below)"))
+        else:
+            L.append(row("Live instrument:", "    n/a   not measured"))
+        if lv.get("valid") and ans is not None:
+            L += ["", "Instrument / leakage separation:",
+                  row("Typical:", lev(lv["typ"] - ans, "dB")),
+                  row("Soft:", lev(lv["soft"] - ans, "dB"))]
+            if self.over.get("typ") is not None:
+                def ov(v):
+                    if v < -AUTOCAL_OVER_MAX_DB:
+                        return "    hidden (not even %.0f dB louder)" % AUTOCAL_OVER_MAX_DB
+                    if v >= AUTOCAL_OVER_MAX_DB:
+                        return "  >%4.0f dB    stands out" % AUTOCAL_OVER_MAX_DB
+                    return lev(v, "dB") + ("   stands out" if v >= 0 else "   hidden")
+                L += ["Over an answer (gate replay of your passages):",
+                      row("Typical:", ov(self.over["typ"])), row("Soft:", ov(self.over["soft"]))]
+        elif lv.get("valid") and lk.get("measured"):
+            L += ["", "Instrument / leakage separation: no measurable leakage (%s)" %
+                  (lk.get("why") or "-")]
+        L.append("")
+        if self.s_lo is not None:
+            L.append(row("Safe sensitivity range:", "%7.1f .. %.1f dB" % (self.s_lo, self.s_hi)
+                         if self.s_hi >= self.s_lo else "%7.1f dB minimum (soft playing "
+                         "overlaps the room noise)" % self.s_lo))
+        L.append(row("Original sensitivity:", lev(self.sens_orig, "dB")))
+        if self.sens_cal is not None:
+            L.append(row("Calibrated sensitivity:", lev(self.sens_cal, "dB") + "   (" + self.how + ")"))
+        else:
+            L.append(row("Calibrated sensitivity:", "    -     original kept"))
+        gt = self.e.gate
+        L += ["", "Gate mode: Adaptive envelope (leakage model: %s%s)" % (
+            "calibrated by the test sound" if gt.calibrated else "learns from the first answers",
+            "" if gt.d is None else ", delay %.0f ms" % (1000 * gt.d * gt.hop_s)),
+              "Calibration status: " + self._status_txt() + ("" if not self.why else
+                                                             " - " + self.why)]
+        if self.status == "failed":
+            L.append("Original settings kept; the gate continues as in v0.4.13.")
+        elif self.status == "interrupted":
+            L.append("Nothing was applied.")
+        for nt in self.notes:
+            L.append("LIMIT: " + nt)
+        L.append("-" * 45)
+        self.report = L
+        sens = "%.1f -> %.1f dB" % (self.sens_orig, self.sens_cal) if self.sens_cal is not None \
+            else "%.1f dB (kept)" % self.sens_orig
+        parts = ["CALIBRATION %s" % self._status_txt().replace(" (below)", ""),
+                 "sensitivity " + sens]
+        if nz.get("level") is not None:
+            parts.append("noise %.0f" % nz["level"])
+        if ans is not None:
+            parts.append("answer leakage %.0f" % ans)
+        if lv.get("valid"):
+            parts.append("playing %.0f / soft %.0f dBFS" % (lv["typ"], lv["soft"]))
+        if self.notes:
+            parts.append("limits: see the Info window")
+        if self.why:
+            parts.append(self.why.split(" (")[0].split(" - ")[0][:70])
+        self.line = "  |  ".join(parts)
+        self.ver += 1
+
+
+def prune_logs(path, keep=20):
+    """v0.4.13: the retained diagnostic logs - keep the newest `keep`."""
+    try:
+        d = os.path.dirname(path)
+        names = sorted(n for n in os.listdir(d)
+                       if n.startswith("CallResponse_") and n.endswith(".log"))
+        for n in names[:-keep] if len(names) > keep else []:
+            try:
+                os.remove(os.path.join(d, n))
+            except OSError:
+                pass
+    except OSError:
+        pass
+
+
 def praat_candidates(hint):
     c = []
     if hint and hint.lower() not in ("", "none", "auto"):
@@ -5443,6 +8015,8 @@ class Job:
         self.leak_expected = None     # v0.4.1 expected leakage dBFS at phrase end
         self.influences = []          # v0.4.8 (label, weight, phrase id) of earlier phrases
         self.contrib = []             # v0.4.9 (label, share of the chosen score, phrase id)
+        self.contam = 0.0             # v0.4.13 share of the phrase energy that is speaker leakage
+        self.contam_state = "clean"   #   clean | light | contaminated | heavy | unknown
         self.action_name = ""
 
 
@@ -5558,8 +8132,9 @@ def remove_tree(path, attempts=40, delay=0.25):
 
 # files the Praat GUI still needs after the engine has finished; everything
 # else in the session folder belongs to the engine and is deleted by it
+AUTOCAL_REPORT_FILE = "calibration_report.txt"      # v0.4.14
 PRAAT_OWNED = ("status.txt", "summary.txt", "praat_alive.txt", "stop.request", "launch.txt",
-               "cleanup.pending")
+               "cleanup.pending", AUTOCAL_REPORT_FILE)
 
 
 class Engine:
@@ -5579,9 +8154,28 @@ class Engine:
         self.b_q = queue.Queue(maxsize=8)               # Praat results -> Corpus B
         self.det = PhraseDetector(self.sr, self.ch, args.sensitivity, args.min_phrase,
                                   args.end_silence, args.max_phrase, args.preroll)
+        # v0.4.13 feedback protection: off | legacy (v0.2-v0.4.12 leakage
+        # guard) | adaptive (envelope gate).  "auto" = old command lines:
+        # --leak-guard 1 -> adaptive, 0 -> off.
+        gm = getattr(args, "gate_mode", "auto")
+        if gm not in ("off", "legacy", "adaptive"):
+            gm = "adaptive" if args.leak_guard else "off"
+        self.gate_mode = gm
+        args.leak_guard = 1 if gm == "legacy" else 0
         if args.leak_guard:
             self.det.leak_level = self._expected_leak_db
         self.hop_s = self.det.hop_s
+        self.gate = EchoGate(self.sr, self.det.hop, args.max_phrase) if gm == "adaptive" else None
+        # v0.4.14 automatic calibration (adaptive gate only): it includes the
+        # calibration sound, so --calib-burst then plays nothing of its own
+        self.autocal = AutoCalibrator(self) if (self.gate is not None and
+                                                getattr(args, "auto_calib", 0)) else None
+        self.cal = "pending" if (self.gate is not None and getattr(args, "calib_burst", 0)
+                                 and args.play and self.autocal is None) else "off"
+        self._cal_wait, self._cal_n, self._cal_frames = 0, 0, 0
+        self._pending = None
+        self._t_leak = 0.0
+        self._sup_run, self._sup_gap, self._sup_open, self._sup_valid = 0, 0, False, False
         self.in_ring = Ring(self.sr, 3.0)
         self.out_ring = Ring(self.sr, args.max_phrase + LEAK_MAX_LAG_S + 2.0)
         # v0.4.0: the two output channels too (stereo leakage check)
@@ -5606,6 +8200,8 @@ class Engine:
         self.t_activity = time.time()
         self.log_fh = None
         if args.debug_log and args.debug_log.lower() != "none":
+            if os.path.basename(args.debug_log).startswith("CallResponse_"):
+                prune_logs(args.debug_log, 19)          # v0.4.13 retained logs: newest 20
             try:
                 self.log_fh = open(args.debug_log, "a", encoding="utf-8")
             except OSError:
@@ -5731,8 +8327,11 @@ class Engine:
             outdata[:, :2] = mix
             if outdata.shape[1] > 2:
                 outdata[:, 2:] = 0
+        self._ref_push(mix, time.time())
+
+    def _ref_push(self, mix, t):
+        """What was just played -> the reference rings (leakage estimate)."""
         mono = mix.mean(axis=1)
-        t = time.time()
         self.out_ring.append(mono, t)
         self.out_ring_l.append(mix[:, 0], t)
         self.out_ring_r.append(mix[:, 1], t)
@@ -5762,55 +8361,139 @@ class Engine:
 
     # ---------------- DETECT thread (detection only; never searches memory) ----
     def _detect_loop(self):
-        np = self.np
-        hop = self.det.hop
-        pending = np.zeros((0, self.ch), np.float32)
-        t_leak = 0.0
         try:
             while not self.stop_ev.is_set():
                 try:
                     block, tb = self.in_q.get(timeout=0.2)
                 except queue.Empty:
                     continue
-                mono = block[:, 0] if block.shape[1] == 1 else block.mean(axis=1)
-                self.in_ring.append(mono, tb)
-                pending = np.concatenate([pending, block], axis=0) if len(pending) else block
-                while len(pending) >= hop:
-                    ev = self.det.feed(pending[:hop])
-                    # v0.4.10: the meter shows the detector's own frame level
-                    self.lv_hist.append(self.det.last_db)
-                    self.input_db = max(self.lv_hist)
-                    pending = pending[hop:]
-                    if self.det.state == "PHRASE":
-                        self.t_performer = tb
-                    if ev == "onset":
-                        self.log("onset (floor %.1f dBFS, thr %.1f)" %
-                                 (self.det.floor, self.det.thresholds()[0]))
-                    elif ev == "discarded":
-                        if self.det.last_discard == "noise":
-                            self.det_event = ("noise ignored, background learned", time.time())
-                            self.log("background noise mistaken for a phrase - ignored, floor "
-                                     "%.1f dBFS" % self.det.floor, True)
-                        else:
-                            self.det_event = ("too short, ignored", time.time())
-                            self.log("short trigger discarded (< %.2f s)" % self.a.min_phrase)
-                    elif ev == "end":
-                        self.det_event = ({"silence": "phrase end (silence)",
-                                           "background": "phrase end (background learned)",
-                                           "max_duration": "split at Max_phrase_s (continues)",
-                                           "max_duration_steady": "steady noise learned as "
-                                                                  "background"}.get(
-                            self.det.ended_by, self.det.ended_by), time.time())
-                        self._finalize(tb)
-                        self.det.rearm()
-                if tb - t_leak >= 1.0:
-                    t_leak = tb
-                    self._update_leak(tb)
+                self._process_block(block, tb)
         except Exception as ex:                              # noqa: BLE001
             import traceback
             self.fatal = "detector failed: %s" % ex
             self.log(self.fatal + " | " + traceback.format_exc().replace("\n", " | "), True)
             self.stop_ev.set()
+
+    def _process_block(self, block, tb):
+        """One input block (v0.4.13: split from the loop so the whole
+        detection chain can be driven offline by the self-test)."""
+        np = self.np
+        hop = self.det.hop
+        mono = block[:, 0] if block.shape[1] == 1 else block.mean(axis=1)
+        self.in_ring.append(mono, tb)
+        pending = self._pending
+        pending = np.concatenate([pending, block], axis=0) \
+            if pending is not None and len(pending) else block
+        while len(pending) >= hop:
+            g = None
+            if self.gate is not None:
+                g = self._gate_frame(pending[:hop], tb - (len(pending) - hop) / float(self.sr))
+            ev = self.det.feed(pending[:hop], g)
+            # v0.4.10: the meter shows the detector's own frame level
+            self.lv_hist.append(self.det.last_db)
+            self.input_db = max(self.lv_hist)
+            pending = pending[hop:]
+            if self.det.state == "PHRASE":
+                self.t_performer = tb
+            if ev == "onset":
+                self.log("onset (floor %.1f dBFS, thr %.1f)" %
+                         (self.det.floor, self.det.thresholds()[0]))
+            elif ev == "discarded":
+                if self.det.last_discard == "noise":
+                    self.det_event = ("noise ignored, background learned", time.time())
+                    self.log("background noise mistaken for a phrase - ignored, floor "
+                             "%.1f dBFS" % self.det.floor, True)
+                else:
+                    self.det_event = ("too short, ignored", time.time())
+                    self.log("short trigger discarded (< %.2f s)" % self.a.min_phrase)
+            elif ev == "end":
+                self.det_event = ({"silence": "phrase end (silence)",
+                                   "background": "phrase end (background learned)",
+                                   "max_duration": "split at Max_phrase_s (continues)",
+                                   "max_duration_steady": "steady noise learned as "
+                                                          "background"}.get(
+                    self.det.ended_by, self.det.ended_by), time.time())
+                self._finalize(tb)
+                self.det.rearm()
+        self._pending = pending
+        if tb - self._t_leak >= 1.0:
+            self._t_leak = tb
+            if self.gate is None:
+                self._update_leak(tb)
+            else:
+                gt = self.gate
+                self.leak_db = gt.coupling_db
+                if gt.playing and self.log_fh:
+                    self.log("gate: %s | delay %s | coupling %s | leak est %.1f dBFS | input "
+                             "%.1f | residual %.1f | fits %d (delay corr %.2f)" % (
+                                 gt.state(self.det.state == "PHRASE"),
+                                 "?" if gt.d is None else "%.0f ms" % (1000 * gt.d * gt.hop_s),
+                                 "?" if gt.coupling_db is None else "%.1f dB" % gt.coupling_db,
+                                 gt.leak_db, gt.raw_db, gt.resid_db, gt.fits, gt.d_corr))
+
+    def _gate_frame(self, blk, t):
+        """v0.4.13 adaptive envelope gate, one detector frame: the reference
+        of the same wall-clock interval, the optional calibration sound and
+        the bookkeeping of suppressed triggers."""
+        d = self.det
+        gt = self.gate
+        m = blk[:, 0] if blk.shape[1] == 1 else blk.mean(axis=1)
+        rl = self.out_ring_l.segment(t, self.hop_s)
+        rr = self.out_ring_r.segment(t, self.hop_s)
+        # v0.4.14 automatic calibration: it starts once the detector has its
+        # first floor and HOLDS detection (no onset is possible) until done
+        ac = self.autocal
+        if ac is not None and ac.stage == "wait" and d.state == "LISTENING":
+            ac.begin()
+        hold = ac is not None and ac.holding()
+        quiet = (ac.stage == "noise") if hold else (d.state == "LISTENING" and d.above == 0)
+        off, playing, lift = gt.feed(m, rl, rr, quiet=quiet, in_phrase=(d.state == "PHRASE"))
+        if hold:
+            ac.frame(blk, m, t)
+            return -200.0, True, -200.0            # never a phrase
+        if self.cal == "pending" and d.state == "LISTENING":
+            self._cal_wait += 1
+            if self._cal_wait >= int(0.3 / self.hop_s):
+                burst = calibration_burst(self.sr)
+                self._cal_frames = int((len(burst) / float(self.sr) + GATE_MAX_DELAY_S + 0.5)
+                                       / self.hop_s)
+                self._cal_n = 0
+                self.cal = "playing"
+                self.mixer.add(Voice(burst, "fg", "Calibration sound", 0.0))
+                self.log("calibration sound started (%.2f s)" % (len(burst) / float(self.sr)), True)
+        if self.cal == "playing":
+            self._cal_n += 1
+            if self._cal_n >= self._cal_frames:
+                ok = gt.calibrate(self._cal_frames)
+                self.cal = "done" if ok else "failed"
+                self.log("calibration %s" % (
+                    "done: delay %.0f ms, coupling %.1f dB" % (
+                        1000 * gt.d * gt.hop_s, gt.coupling_db if gt.coupling_db is not None
+                        else float("nan")) if ok else
+                    "FAILED (the microphone did not hear the calibration sound) - the gate "
+                    "learns from the first answers instead"), True)
+            return -200.0, True, -200.0            # never a phrase
+        # suppressed triggers: the input stood above the start threshold with
+        # playback, the residual did not, and no phrase followed
+        if d.floor is not None:
+            on = max(d.floor + d.sens, d.abs_min)
+            if playing and off < -1.0 and d.state == "LISTENING" and gt.raw_db > on:
+                self._sup_run += 1
+                if self._sup_run == GATE_NOVEL_RUN and not self._sup_open:
+                    self._sup_open, self._sup_valid, self._sup_gap = True, True, 0
+            else:
+                self._sup_run = 0
+            if self._sup_open:
+                if d.state == "PHRASE":
+                    self._sup_valid = False
+                self._sup_gap = self._sup_gap + 1 if gt.raw_db <= on else 0
+                if self._sup_gap >= int(0.6 / self.hop_s) or not playing:
+                    if self._sup_valid:
+                        self.c["gate_suppressed"] += 1
+                        self.log("gate: playback above the start threshold did not trigger "
+                                 "(suppressed trigger %d)" % self.c["gate_suppressed"], True)
+                    self._sup_open = False
+        return off, playing, lift
 
     def _update_leak(self, t_end):
         """A leakage level is trusted only for a VALIDATED path: a sharp PHAT
@@ -5878,6 +8561,47 @@ class Engine:
         self.log("phrase %s: %.2f s, ended by %s, detection delay %.3f s" %
                  (job.tag, dur, d.ended_by, time.time() - t_end))
         mono = audio[:, 0] if audio.shape[1] == 1 else audio.mean(axis=1)
+        if self.gate is not None and d.floor is not None:
+            # v0.4.13: judge the phrase in hindsight with the current model
+            off_base = max(d.floor + d.sens, d.abs_min) - d.hyst
+            v = self.gate.verdict(len(d.buf) - d.start_active, len(d.buf) - end_idx, off_base)
+            job.contam = v["leak_share"]
+            job.contam_state = ("unknown" if not v["known"] else
+                                "clean" if v["leak_share"] < CONTAM_LIGHT else
+                                "light" if v["leak_share"] < CONTAM_FOLLOW else
+                                "contaminated" if v["leak_share"] < CONTAM_HEAVY else "heavy")
+            if "trim" in v:
+                # keep the part with residual activity (the audio itself is
+                # never modified - only where the phrase begins and ends)
+                f0, f1 = v["trim"]
+                s0 = (d.start_active + f0) * d.hop if f0 > 0 else 0
+                s1 = min(len(audio), (d.start_active + f1) * d.hop)
+                self.c["gate_trimmed"] += 1
+                self.log("phrase %s: bounds follow the residual activity - %.2f s of playback "
+                         "before and %.2f s after the gesture left out" % (
+                             job.tag, s0 / float(self.sr), (len(audio) - s1) / float(self.sr)))
+                job.t["onset"] = t_audio_start + s0 / float(self.sr) + \
+                    (d.start_active * d.hop_s if f0 == 0 else self.a.preroll)
+                job.t["end"] = min(job.t["end"], t_audio_start + s1 / float(self.sr))
+                audio = audio[s0:s1]
+                job.audio = audio.astype(np.float32)
+                dur = len(audio) / self.sr
+                mono = audio[:, 0] if audio.shape[1] == 1 else audio.mean(axis=1)
+            if v["playback_only"]:
+                self.c["gate_discarded"] += 1
+                self.log("phrase %s DISCARDED as playback only: residual activity %.2f s, "
+                         "playback present %.0f %% of it, %.0f %% of its energy is predicted "
+                         "leakage" % (job.tag, v["novel_s"], 100 * v["play_share"],
+                                      100 * v["leak_share"]), True)
+                return
+            if v["play_share"] >= 0.2:
+                self.c["doubletalk"] += 1
+                self.c["contam_" + job.contam_state] += 1
+                self.log("phrase %s accepted OVER PLAYBACK (double-talk %d): residual activity "
+                         "%s, playback present %.0f %%, leakage %.0f %% of its energy (%s)" % (
+                             job.tag, self.c["doubletalk"],
+                             "?" if v["novel_s"] is None else "%.2f s" % v["novel_s"],
+                             100 * v["play_share"], 100 * v["leak_share"], job.contam_state), True)
         if self.a.leak_guard and self.leak_lag is not None and self._out_level_now() > -70:
             x = self.out_ring.segment(t_audio_end, dur + LEAK_MAX_LAG_S)
             if db_of(x) > -55:
@@ -6006,6 +8730,10 @@ class Engine:
             ld = active_loudness_db(job.audio, self.sr)
             le = job.leak_expected
             excl = le is not None and le > ld - 15.0
+            if self.gate is not None:
+                # v0.4.13: a phrase recorded over playback is not a measure
+                # of how loud the performer plays
+                excl = job.contam >= CONTAM_FOLLOW or job.contam_state == "unknown"
             off = self.follower.update(ld, excl)
             self.log("phrase %s loudness %.1f dB%s -> level offset %+.1f dB" %
                      (job.tag, ld, " (not counted: speaker leakage)" if excl else "", off))
@@ -6049,7 +8777,10 @@ class Engine:
             self.log("phrase %s: share of the chosen sound's score - last %.2f, %s" % (
                 job.tag, chosen["parts"][0] / tot,
                 ", ".join("%s %.2f" % (lab, sh) for lab, sh, pid in job.contrib)))
-        if desc is not None:
+        heavy = job.contam >= CONTAM_HEAVY
+        if desc is not None and not heavy:
+            # v0.4.13: a phrase that is mostly the system's own playback does
+            # not shape the influence history
             self.history.append((job.phrase_id, desc, job.t.get("end", time.time())))
         job.kind = action
         if action == "silence":
@@ -6076,6 +8807,7 @@ class Engine:
             job.pairs = decision_pairs(it.F, dec, iP, [
                 ("status", "ok"), ("message", "ok"), ("source", "corpus %s" % it.id),
                 ("duration", fnum(it.F["duration"], 4)), ("sr", it.sr), ("seed", iseed),
+                ("contamination", fnum(job.contam, 3)), ("contamination_state", job.contam_state),
                 ("t_phrase_end_epoch", "%.4f" % job.t["end"])])
             self._write_input(job, ia_in.astype(np.float32), it.sr, "c")
             job.selected, job.match = dec["selected"], rt["match"]
@@ -6094,15 +8826,19 @@ class Engine:
                 ("status", "ok"), ("message", "ok"), ("source", "live continuous"),
                 ("duration", fnum(F["duration"], 4)), ("sr", self.sr), ("channels", nch),
                 ("seed", seed), ("t_features", fnum(t1 - t0, 4)), ("t_select", fnum(t2 - t1, 4)),
+                ("contamination", fnum(job.contam, 3)), ("contamination_state", job.contam_state),
                 ("t_phrase_end_epoch", "%.4f" % job.t["end"])])
             if not self.mcfg["enabled"]:
                 self.last_recall, self.last_match = "", ""
         self.last_action = job.action_name
         if self.mcfg["enabled"] and self.mcfg["response_mode"] != "corpus_only":
             self._plan_secondary(job, F, cand, top if self.mcfg["enabled"] else [])
-        self.log("phrase %s (%s) -> %s (%s)%s  [analysis %.0f ms, memory search %.0f ms over %d "
+        self.log("phrase %s (%s) -> %s (%s)%s%s  [analysis %.0f ms, memory search %.0f ms over %d "
                  "sounds]" % (job.tag, job.phrase_id, job.action_name, why,
                               "" if job.match is None else "  match %.2f" % job.match,
+                              "" if job.contam_state == "clean" else
+                              "  recorded over playback: %s (%.0f %% leakage)" % (
+                                  job.contam_state, 100 * job.contam),
                               1000 * (t2 - t0), 1000 * t_mem, sum(mem.counts().values())), True)
         if self.log_fh:
             rep = build_report(F, info, P, "Phrase %s - live continuous, %.2f s" %
@@ -6110,11 +8846,18 @@ class Engine:
             self.log("analysis %s (features %.3f s, selection %.3f s)\n%s" %
                      (job.tag, t1 - t0, t2 - t1, rep.rstrip()))
         # the live phrase enters Corpus A only AFTER its own retrieval
-        if self.mcfg["enabled"] and self.mcfg["use_A"]:
+        if self.mcfg["enabled"] and self.mcfg["use_A"] and heavy:
+            self.c["contam_not_stored"] += 1
+            self.log("phrase %s: %.0f %% of its energy is speaker leakage - answered, but not "
+                     "stored in Corpus A and not part of the influence history" %
+                     (job.tag, 100 * job.contam), True)
+        elif self.mcfg["enabled"] and self.mcfg["use_A"]:
             a_store, _ = trim_quiet(job.audio, self.sr, self.mcfg["max_item_s"])
             mem.add(CorpusItem(job.phrase_id, "A", a_store, self.sr, F, desc, info, time.time(),
                                {"root": job.phrase_id, "parent": None, "method": None,
-                                "generation": 0, "source": "live phrase %s" % job.tag}))
+                                "generation": 0, "source": "live phrase %s" % job.tag,
+                                "contamination": job.contam,
+                                "contamination_state": job.contam_state}))
         if self.graph is not None:
             g = self.graph
             g.phrase(job.phrase_id, time.time(), info["selected"])
@@ -6564,6 +9307,9 @@ class Engine:
                 time.sleep(0.1)
                 self._check_fault("ambient")
                 self.mixer.sweep()
+                if self.cal in ("pending", "playing") or (self.autocal is not None and
+                                                          self.autocal.holding()):
+                    continue                   # v0.4.13/14: nothing else during the calibration
                 act = self.mixer.active()
                 fg = [v for v in act if v.role == "fg"]
                 bg = [v for v in act if v.role == "bg"]
@@ -6576,9 +9322,12 @@ class Engine:
                 # the microphone hears the speakers strongly (the leakage
                 # warning level): a continuous background would be heard as a
                 # performer - it pauses (2 s fade), resumes below -23 dB
-                if self.leak_db is not None and self.leak_db > -20:
+                # v0.4.13: with the adaptive gate the background is predicted
+                # and subtracted like every other voice - it does not pause
+                lk = None if self.gate is not None else self.leak_db
+                if lk is not None and lk > -20:
                     self.bg_paused = True
-                elif self.leak_db is None or self.leak_db < -23:
+                elif lk is None or lk < -23:
                     self.bg_paused = False
                 if self.bg_paused:
                     for v in bg:
@@ -6643,7 +9392,7 @@ class Engine:
             ("bg_gain", fnum(max([v.gain for v in act if v.role == "bg"] or [0.0]), 3)),
             ("polyphony", "on" if self.pcfg["polyphony"] else "off"),
             ("level_offset", "off" if self.follower is None else fnum(self.follower.offset, 1)),
-        ] + self._det_pairs() + [
+        ] + self._det_pairs() + self._gate_pairs() + [
             ("graph", "off" if self.graph is None else self.graph_file_ver),
             ("pending", len(self.phrase_q) + len(self.render_q) + len(self.play_q)),
             ("pending_render", len(self.render_q)), ("pending_play", len(self.play_q)),
@@ -6652,7 +9401,8 @@ class Engine:
             ("leak_discarded", self.c["leak_discarded"]), ("overruns", self.c["overruns"]),
             ("input_status", self.c["input_status"]), ("output_status", self.c["output_status"]),
             ("input_db", fnum(self.input_db, 1)), ("leak_db", lk),
-            ("leak_warning", 1 if (self.leak_db is not None and self.leak_db > -20) else 0),
+            ("leak_warning", 1 if (self.leak_db is not None and self.leak_db > -20
+                                   and self.gate is None) else 0),
             ("mem_live", mc["A"]), ("mem_processed", mc["B"]), ("mem_preloaded", mc["C"]),
             ("mem_audio_min", fnum(self.memory.ram_seconds() / 60.0, 1)),
             ("recall", self.last_recall), ("match", self.last_match),
@@ -6673,6 +9423,51 @@ class Engine:
                 ("on_db", fnum(on, 1)), ("off_db", fnum(off, 1)),
                 ("quiet_s", fnum(quiet, 1)), ("end_silence", fnum(d.end_silence, 1)),
                 ("det_event", lab), ("det_event_age", fnum(time.time() - t, 1) if lab else "")]
+
+    def _gate_pairs(self):
+        """v0.4.13: feedback protection, for the display."""
+        gt = self.gate
+        if gt is None:
+            return [("gate_mode", self.gate_mode),
+                    ("leak_discarded_legacy", self.c["leak_discarded"]), ("autocal", "off")]
+        st = "calibration sound" if self.cal == "playing" else gt.state(self.det.state == "PHRASE")
+        if self.autocal is not None and self.autocal.holding():
+            st = "calibrating (detection held)"
+        return [("gate_mode", "adaptive"), ("gate_state", st),
+                ("gate_cal", self.cal), ("gate_learned", 1 if gt.learned else 0),
+                ("gate_delay_ms", "" if gt.d is None else "%.0f" % (1000 * gt.d * gt.hop_s)),
+                ("gate_coupling_db", "" if gt.coupling_db is None else fnum(gt.coupling_db, 1)),
+                ("gate_leak_db", fnum(gt.leak_db if gt.playing and gt.learned else -200.0, 1)),
+                ("gate_resid_db", fnum(gt.resid_db, 1)),
+                ("gate_suppressed", self.c["gate_suppressed"]),
+                ("gate_discarded", self.c["gate_discarded"]),
+                ("gate_doubletalk", self.c["doubletalk"])] + self._autocal_pairs()
+
+    def _autocal_pairs(self):
+        """v0.4.14: the automatic calibration, for the display (the report
+        itself is calibration_report.txt, announced by autocal_ver)."""
+        ac = self.autocal
+        if ac is None:
+            return [("autocal", "off")]
+        return [("autocal", ac.status), ("autocal_stage", ac.stage),
+                ("autocal_left", fnum(ac.left(), 1)),
+                ("autocal_age", "" if ac.t_done is None else fnum(time.time() - ac.t_done, 1)),
+                ("autocal_ver", ac.ver_written), ("autocal_line", ac.line),
+                ("autocal_msg", ac.why)] + [("autocal_" + k, v) for k, v in ac.fields()]
+
+    def _autocal_publish(self):
+        """v0.4.14 (main thread): write the calibration report for Praat
+        whenever it changed; a locked file is retried with the next update."""
+        ac = self.autocal
+        if ac is None or ac.ver == ac.ver_written:
+            return
+        ver = ac.ver
+        try:
+            write_text_atomic(os.path.join(self.session, AUTOCAL_REPORT_FILE),
+                              "\n".join(ac.report) + "\n")
+            ac.ver_written = ver
+        except OSError:
+            pass
 
     def write_status(self, final=False):
         """v0.3.2: status.txt is replaced atomically.  On Windows the rename
@@ -6775,6 +9570,14 @@ class Engine:
                               "on" if a.leak_guard else "off",
                               "on" if self.mcfg["enabled"] else "off", a.response_mode,
                               a.sim_mode, self.memory.seed), True)
+        self.log("feedback protection: %s%s" % (
+            {"off": "off", "legacy": "legacy leakage guard (v0.4.12)",
+             "adaptive": "adaptive envelope gate (%d bands, margin %.0f dB)" % (
+                 self.gate.B if self.gate else 0, GATE_MARGIN_DB)}[self.gate_mode],
+            "" if self.cal == "off" else ", calibration sound at start") + (
+            "" if self.autocal is None else ", automatic calibration at start (room noise, "
+            "speaker leakage, live instrument; sensitivity %.1f dB before)" % self.autocal.sens_orig),
+            True)
         pc = self.pcfg
         self.log("playback: polyphony %s, max voices %d, density %.2f, width %.2f, movement %.2f, "
                  "pan variation %.2f, fades %.0f/%.0f ms, transients %s, level matching %s, "
@@ -6830,6 +9633,7 @@ class Engine:
                     break
                 if now - t_last_status >= 0.1:
                     self._graph_write(now)
+                    self._autocal_publish()
                     self.write_status()
                     t_last_status = now
         except KeyboardInterrupt:
@@ -6894,6 +9698,10 @@ class Engine:
         created is removed here; only the small hand-over files the Praat GUI
         still reads remain, and Praat's cleanup removes those and the folder."""
         self.state, self.message = state, reason
+        if self.autocal is not None:
+            # v0.4.14: stopped during the calibration -> nothing applied
+            self.autocal.abort(reason)
+            self._autocal_publish()
         self.log("%s: %s" % (state.upper(), reason), True)
         np = self.np
         mc = self.memory.counts()
@@ -6925,6 +9733,29 @@ class Engine:
                              fo.offset, fo.counted, fo.excluded),
                          self.pcfg["corpus_c_db"], self.c["voices_trimmed"],
                          self.c["layers_excerpt"], self.c["voices_peak_trimmed"]))
+        gt = self.gate
+        if gt is None:
+            lines.append("gate mode=%s leak_discarded=%d" % (self.gate_mode,
+                                                              self.c["leak_discarded"]))
+        else:
+            lines.append("gate mode=adaptive learned=%d calibration=%s delay_ms=%s coupling_db=%s "
+                         "fits=%d suppressed_triggers=%d discarded_phrases=%d "
+                         "doubletalk_accepted=%d contaminated=%d heavy=%d not_stored_in_A=%d" % (
+                             1 if gt.learned else 0, self.cal,
+                             "none" if gt.d is None else "%.0f" % (1000 * gt.d * gt.hop_s),
+                             "none" if gt.coupling_db is None else "%.1f" % gt.coupling_db,
+                             gt.fits, self.c["gate_suppressed"], self.c["gate_discarded"],
+                             self.c["doubletalk"],
+                             self.c["contam_light"] + self.c["contam_contaminated"],
+                             self.c["contam_heavy"], self.c["contam_not_stored"]))
+        ac = self.autocal
+        if ac is not None:
+            lines.append("autocal status=%s %s" % (ac.status, " ".join(
+                "%s=%s" % (k, v if v != "" else "none") for k, v in ac.fields())))
+            lines.append("calibration " + ac.line)
+        if self.log_fh and os.path.dirname(os.path.abspath(self.log_fh.name)) != \
+                os.path.abspath(self.session):
+            lines.append("log_kept=" + os.path.abspath(self.log_fh.name))
         if self.delays:
             d = np.array(self.delays)
             lines.append("delay phrase end -> answer: mean %.2f s, min %.2f s, max %.2f s" %
@@ -6943,8 +9774,9 @@ class Engine:
         # release memory and every handle we own
         self.memory.clear()
         if self.log_fh:
-            for l in lines[:5]:
-                self.log("SUMMARY " + l)
+            for l in lines:
+                if not l.startswith("event "):
+                    self.log("SUMMARY " + l)
             try:
                 self.log_fh.close()
             except OSError:
@@ -7050,7 +9882,7 @@ def cmd_serve(args):
 
 
 # ============================================================
-def main(argv=None):
+def build_parser():
     ap = argparse.ArgumentParser(description="AudioTools Call & Response engine")
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("probe")
@@ -7159,6 +9991,16 @@ def main(argv=None):
     p.add_argument("--influence-depth", dest="influence_depth", type=int, default=3)
     p.add_argument("--influence-decay", dest="influence_decay", type=float, default=0.5)
     p.add_argument("--trend-weight", dest="trend_weight", type=float, default=0.0)
+    # ---- v0.4.13 feedback protection ----
+    p.add_argument("--gate-mode", dest="gate_mode", default="auto",
+                   choices=["auto", "off", "legacy", "adaptive"],
+                   help="auto = adaptive when --leak-guard is 1, else off")
+    p.add_argument("--calib-burst", dest="calib_burst", type=int, default=0,
+                   help="1 = play the 1.35 s calibration sound at start (adaptive mode)")
+    # ---- v0.4.14 automatic calibration ----
+    p.add_argument("--auto-calib", dest="auto_calib", type=int, default=0,
+                   help="1 = room noise, speaker leakage (includes the calibration sound) and "
+                        "5 s of live playing measured before detection starts (adaptive mode)")
     p = sub.add_parser("cleanup")
     p.add_argument("--session", required=True)
     p.add_argument("--wait", type=float, default=15.0)
@@ -7169,7 +10011,11 @@ def main(argv=None):
     p.add_argument("--report", action="store_true")
     p = sub.add_parser("self-test")
     p.add_argument("--write-dir", dest="write_dir", default="")
-    args = ap.parse_args(argv)
+    return ap
+
+
+def main(argv=None):
+    args = build_parser().parse_args(argv)
     if getattr(args, "force", "auto") not in ["auto", ""] + TRANSFORM_IDS:
         args.force = "auto"
     fn = {"probe": cmd_probe, "devices": cmd_devices, "listen": cmd_listen, "serve": cmd_serve,

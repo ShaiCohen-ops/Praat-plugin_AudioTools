@@ -3,7 +3,7 @@
 # Script:      AudioTools_CallResponse.praat
 # Author:      Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
-# Version:     0.4.12 (2026) - Performer display (from v0.4.11)
+# Version:     0.4.14 (2026) - Automatic microphone and gate calibration (from v0.4.13)
 # License:     MIT License
 # Repository:  https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -38,6 +38,61 @@
 #     Unchanged v0.1.3 behaviour: one blocking listen, render, Play.
 #   Selected Sound(s) / Test all six / List audio devices
 #     As in v0.1.3 (List now shows output devices too).
+#
+# Changelog v0.4.14 - Automatic microphone and gate calibration (from v0.4.13):
+#   Advanced_settings, under Feedback_protection: Auto_calibrate_gate
+#   (OFF by default; works only with "Adaptive envelope gate", ignored
+#   with a note otherwise).  When ticked, three stages run before phrase
+#   detection starts (about 11 s; detection is held throughout):
+#     CALIBRATION 1/3 - ROOM NOISE         1.5 s, stay quiet
+#     CALIBRATION 2/3 - SPEAKER LEAKAGE    the v0.4.13 calibration sound
+#                                          (left, then right) + its tail
+#     CALIBRATION 3/3 - PLAY YOUR INSTRUMENT  1 s to get ready, then 5 s of
+#                                          soft and normal playing
+#     CALIBRATION COMPLETE - PLAY WHEN READY  after a short silence
+#   Auto_calibrate_gate INCLUDES the calibration sound: with both boxes
+#   ticked it is played once (stage 2/3), never twice.
+#   The engine measures room noise, left / right leakage and the typical /
+#   soft playing level, sets Sensitivity_dB only as far as the measurements
+#   require (room-noise peaks below the end threshold; soft playing 6 dB
+#   above the start threshold) and predicts, with the gate's own rules,
+#   whether typical / soft playing stands out of an answer's leakage - and
+#   says so when it does not.  The gate's constants are not changed.
+#   A failed or interrupted calibration keeps the form's settings; the
+#   session continues as in v0.4.13.
+#   Display: the four stage messages (with a countdown), then a
+#   CALIBRATION line; the full report stays in the Info window for the
+#   whole session and in the final Info text.  The main form is unchanged
+#   (RENDER_FORM_ARGS unchanged).  Engine argument: --auto-calib.
+#
+# Changelog v0.4.13 - Adaptive envelope gate (from v0.4.12):
+#   Speaker-aware phrase detection: answers that reach the microphone
+#   through the loudspeakers no longer start phrases of their own, while
+#   the performer can still play over them (details and limits in
+#   audiotools_call_response.py).  The main form is unchanged.
+#   Advanced_settings: Leakage_guard (on / off) is replaced by
+#     Feedback_protection:  Off
+#                           Legacy leakage guard (v0.4.12)
+#                           Adaptive envelope gate   (default)
+#     Calibration_sound (OFF by default): plays 1.4 s of noise bursts,
+#       left speaker then right, when the session starts, so the gate knows
+#       the room before the first answer.  The display says CALIBRATION
+#       SOUND while it plays.  Without it the gate learns from the first
+#       answers (the first one may start a phrase that is then discarded).
+#   Display: a GATE line (state, estimated leakage, residual level,
+#     suppressed triggers, phrases discarded as playback, phrases accepted
+#     over playback).  The "use headphones" warning is shown only without
+#     the adaptive gate.
+#   Debug_log: the log is now KEPT after STOP, in
+#     <home>/AudioTools_CR_logs/CallResponse_<session>.log (the newest 20
+#     are kept); its path is shown in the Info window at the end.  The
+#     session folder itself is still removed completely.
+#   Sonic memory: phrases that are only playback never reach the memory,
+#     the influence history or the level follower; a phrase played over an
+#     answer carries its contamination (share of speaker leakage) into the
+#     decision and into Corpus A; above 50 % it is answered but not stored.
+#   Engine arguments: --gate-mode, --calib-burst (new); --leak-guard is
+#     still written (1 only for the legacy guard).
 #
 # Changelog v0.4.12 - Performer display (from v0.4.11):
 #   The display now separates what the PERFORMER can do from what the
@@ -336,15 +391,19 @@
 # Notes:
 #   - Praat 7: askForTrust() is requested once (temporary files, Python,
 #     headless Praat).  Render children run with --FULL-TRUST.
-#   - Use headphones or route the answers away from the microphone: the
-#     engine estimates speaker->mic leakage and warns, but it does NOT
-#     cancel echo.
+#   - Loudspeakers and an open microphone: the adaptive envelope gate
+#     (v0.4.13, default) keeps the answers from triggering phrases.  It
+#     does NOT cancel echo - the recorded phrase still contains what the
+#     speakers played under it.  Headphones remain the cleanest set-up.
+#   - Auto_calibrate_gate (v0.4.14): play from the moment the display says
+#     CALIBRATION 3/3 - PLAY YOUR INSTRUMENT, soft and normal passages,
+#     with the microphone where it will stay for the performance.
 #   - Unattended runs: set AUDIOTOOLS_CR_HEADLESS=1 to skip the Demo window
 #     (stop by creating stop.request in the session folder, or via the
 #     session / idle limits).
 # ============================================================
 
-form: "AudioTools Call & Response 0.4.12"
+form: "AudioTools Call & Response 0.4.14"
     optionmenu: "Preset", 1
         option: "Custom (form and dialogs)"
         option: "Classic transform (v0.2)"
@@ -407,7 +466,7 @@ praatExe$ = ""
 # ------------------------------------------------------------------------
 waitTimeout = 30
 preroll = 0.25
-version$ = "0.4.12"
+version$ = "0.4.14"
 diagnostics = 0
 
 # ---- Advanced settings: defaults (also used when the dialog is skipped) ----
@@ -419,7 +478,9 @@ overflow_policy = 1
 max_response_s = 20
 session_minutes = 60
 idle_stop_s = 300
-leakage_guard = 1
+feedback_protection = 3
+calibration_sound = 0
+auto_calibrate_gate = 0
 play_response = 1
 maxResponse = max_response_s
 
@@ -759,7 +820,7 @@ endif
 
 # ---- Advanced dialog (GUI only; keep the box unticked for batch runs) ----
 if advanced_settings
-    beginPause: "Call & Response 0.4.12 - advanced"
+    beginPause: "Call & Response 0.4.14 - advanced"
         comment: "Audio"
         positive: "Sample_rate", string$ (sample_rate)
         natural: "Channels", string$ (channels)
@@ -773,7 +834,14 @@ if advanced_settings
         positive: "Max_response_s", string$ (max_response_s)
         positive: "Session_minutes", string$ (session_minutes)
         real: "Idle_stop_s", string$ (idle_stop_s)
-        boolean: "Leakage_guard", leakage_guard
+        optionmenu: "Feedback_protection", feedback_protection
+            option: "Off"
+            option: "Legacy leakage guard (v0.4.12)"
+            option: "Adaptive envelope gate"
+        comment: "Calibration sound: 1.4 s of noise bursts from the speakers at start"
+        boolean: "Calibration_sound", calibration_sound
+        comment: "Auto calibration: room noise, the calibration sound (once), 5 s of your playing"
+        boolean: "Auto_calibrate_gate", auto_calibrate_gate
     clicked = endPause: "Cancel", "Start", 2, 1
     if clicked = 1
         exitScript: "Cancelled."
@@ -784,7 +852,7 @@ endif
 # ---- Sonic memory dialog (continuous mode) ----
 # ---- Playback dialog (v0.4.0, continuous mode) ----
 if playback_settings and source = 1
-    beginPause: "Call & Response 0.4.12 - playback"
+    beginPause: "Call & Response 0.4.14 - playback"
         comment: "Polyphony"
         boolean: "Polyphony", polyphony
         natural: "Max_voices", string$ (max_voices)
@@ -818,7 +886,7 @@ if memory_settings and sonic_memory and source = 1
     memPage = 1
     while memPage > 0
         if memPage = 1
-            beginPause: "Call & Response 0.4.12 - sonic memory"
+            beginPause: "Call & Response 0.4.14 - sonic memory"
                 comment: "Corpora (C also needs Corpus_C_folder in the main form)"
                 boolean: "Use_live_corpus_A", use_live_corpus_A
                 boolean: "Use_processed_corpus_B", use_processed_corpus_B
@@ -847,7 +915,7 @@ if memory_settings and sonic_memory and source = 1
             endif
             memPage = if memClicked = 2 then 2 else 0 fi
         else
-            beginPause: "Call & Response 0.4.12 - memory limits and influence"
+            beginPause: "Call & Response 0.4.14 - memory limits and influence"
                 natural: "Max_generation", string$ (max_generation)
                 natural: "Max_live_phrases", string$ (max_live_phrases)
                 natural: "Max_processed_responses", string$ (max_processed_responses)
@@ -1688,8 +1756,35 @@ procedure continuousSession
         exitScript: "Cannot locate AudioTools_CallResponse.praat for headless rendering." + newline$
             ... + "Keep this script in plugin_AudioTools/Vector Chain/ under its original name."
     endif
-    # v0.3.0: the debug log lives INSIDE the session and is deleted with it
-    debugPath$ = if debug_log then session$ + "/engine_debug.log" else "none" fi
+    # v0.4.13: the debug log is KEPT after STOP, outside the session folder
+    # (<home>/AudioTools_CR_logs, newest 20).  If that folder cannot be made
+    # it falls back to the session (deleted with it, as before).
+    debugPath$ = "none"
+    if debug_log
+        logDir$ = homeDirectory$ + "/AudioTools_CR_logs"
+        nocheck createFolder: logDir$
+        if folderExists (logDir$)
+            debugPath$ = logDir$ + "/CallResponse_" + sessionId$ + ".log"
+        else
+            debugPath$ = session$ + "/engine_debug.log"
+        endif
+    endif
+    # v0.4.13 feedback protection
+    .gm$ = "adaptive"
+    if feedback_protection = 1
+        .gm$ = "off"
+    elsif feedback_protection = 2
+        .gm$ = "legacy"
+    endif
+    .legacyGuard = feedback_protection = 2
+    # v0.4.14: the automatic calibration includes the calibration sound -
+    # with both boxes ticked it is played once, by the calibration
+    .autoCal = auto_calibrate_gate and feedback_protection = 3
+    .calSound = calibration_sound and feedback_protection = 3 and not .autoCal
+    if auto_calibrate_gate and feedback_protection <> 3
+        autoCalNote$ = "NOTE: Auto_calibrate_gate needs Feedback_protection = Adaptive envelope gate - not run"
+        @log: autoCalNote$
+    endif
     # ---- sonic memory arguments ----
     .rm$ = "hybrid"
     if not sonic_memory or response_mode = 2
@@ -1780,7 +1875,13 @@ procedure continuousSession
     appendFileLine: argsFile$, "--idle-stop"
     appendFileLine: argsFile$, fixed$ (idle_stop_s, 3)
     appendFileLine: argsFile$, "--leak-guard"
-    appendFileLine: argsFile$, string$ (leakage_guard)
+    appendFileLine: argsFile$, string$ (.legacyGuard)
+    appendFileLine: argsFile$, "--gate-mode"
+    appendFileLine: argsFile$, .gm$
+    appendFileLine: argsFile$, "--calib-burst"
+    appendFileLine: argsFile$, string$ (.calSound)
+    appendFileLine: argsFile$, "--auto-calib"
+    appendFileLine: argsFile$, string$ (.autoCal)
     appendFileLine: argsFile$, "--play"
     appendFileLine: argsFile$, string$ (play_response)
     appendFileLine: argsFile$, "--debug-log"
@@ -1968,6 +2069,17 @@ procedure continuousSession
             stopNote$ = "the engine did not confirm the stop within 15 s"
             .running = 0
         endif
+        # v0.4.14: the calibration report, read once per new version
+        if .got
+            @stField: "autocal_ver"
+            if stField.v$ <> "" and stField.v$ <> "0" and stField.v$ <> calVer$
+                @safeRead: session$ + "/calibration_report.txt"
+                if safeRead.ok
+                    calReport$ = safeRead.text$
+                    calVer$ = stField.v$
+                endif
+            endif
+        endif
         if not headless
             @stField: "graph"
             if stField.v$ <> "" and stField.v$ <> "off" and stField.v$ <> "0"
@@ -2099,6 +2211,9 @@ procedure buildDisplay: .stopping
     .msg$ = stField.v$
     display$ = "AudioTools Call & Response v" + version$ + newline$ + newline$
         ... + "MODE: CONTINUOUS   PRESET: " + presetName$ + newline$
+    if autoCalNote$ <> ""
+        display$ = display$ + autoCalNote$ + newline$
+    endif
     if engineState$ = "starting"
         display$ = display$ + "STARTING: " + .msg$ + newline$
     elsif engineState$ = "running" and .stopping
@@ -2127,6 +2242,14 @@ procedure buildDisplay: .stopping
         endif
         if detLine.last$ <> ""
             display$ = display$ + detLine.last$ + newline$
+        endif
+        @gateLine
+        if gateLine.txt$ <> ""
+            display$ = display$ + gateLine.txt$ + newline$
+        endif
+        # v0.4.14: the calibration report stays for the whole session
+        if calReport$ <> ""
+            display$ = display$ + newline$ + calReport$
         endif
     elsif not cleanupDone
         # v0.3.0: never report STOPPED before the temporary files are gone
@@ -2196,6 +2319,125 @@ procedure perfState
         .sub$ = "Background noise was ignored - play when ready."
     elsif index (.ev$, "too short") = 1 and .age <= 2
         .sub$ = "That was too short for a phrase - play when ready."
+    endif
+    # v0.4.13: the optional calibration sound is announced, never a surprise
+    @stField: "gate_cal"
+    if stField.v$ = "playing"
+        .head$ = "CALIBRATION SOUND"
+        .sub$ = "A short test sound is playing from the speakers - stay quiet for two seconds."
+        .short$ = "test sound - stay quiet"
+        .col$ = "{0.35, 0.35, 0.50}"
+        .kind$ = "calibrating"
+    endif
+    # v0.4.14: the automatic calibration, stage by stage
+    @stField: "autocal_stage"
+    .acs$ = stField.v$
+    @stField: "autocal_left"
+    .acl = number (stField.v$)
+    if .acl = undefined
+        .acl = 0
+    endif
+    if .acs$ = "wait" or .acs$ = "noise"
+        .head$ = "CALIBRATION 1/3 – ROOM NOISE"
+        .sub$ = "Stay quiet - measuring the room noise (" + fixed$ (.acl, 1) + " s)."
+        .short$ = "stay quiet"
+        .col$ = "{0.35, 0.35, 0.50}"
+        .kind$ = "calibrating"
+    elsif .acs$ = "leak"
+        .head$ = "CALIBRATION 2/3 – SPEAKER LEAKAGE"
+        .sub$ = "A test sound plays from the speakers, left then right - stay quiet."
+        .short$ = "test sound - stay quiet"
+        .col$ = "{0.35, 0.35, 0.50}"
+        .kind$ = "calibrating"
+    elsif .acs$ = "live"
+        .head$ = "CALIBRATION 3/3 – PLAY YOUR INSTRUMENT"
+        if .acl > 5.05
+            .sub$ = "LIVE INPUT CALIBRATION – get ready: start playing in " + fixed$ (.acl - 5, 1) + " s."
+            .short$ = "get ready to play"
+        else
+            .sub$ = "LIVE INPUT CALIBRATION – Play your instrument, including soft and normal passages, for 5 seconds.  ("
+                ... + fixed$ (.acl, 1) + " s)"
+            .short$ = "play soft and normal passages (" + fixed$ (.acl, 1) + " s)"
+        endif
+        .col$ = "{0.85, 0.38, 0.18}"
+        .kind$ = "calibrating"
+    elsif .acs$ = "settle"
+        .head$ = "CALIBRATION 3/3 – FINISHING"
+        .sub$ = "Stop playing for a moment - listening starts after a short silence."
+        .short$ = "pause for a moment"
+        .col$ = "{0.35, 0.35, 0.50}"
+        .kind$ = "calibrating"
+    elsif .acs$ = "done"
+        @stField: "autocal_age"
+        .aca = number (stField.v$)
+        if .aca <> undefined
+            if .aca <= 6
+                @stField: "autocal"
+                .acst$ = stField.v$
+                .head$ = "CALIBRATION COMPLETE – PLAY WHEN READY"
+                .short$ = "play when ready"
+                if .acst$ = "success" or .acst$ = "limited"
+                    @stField: "autocal_sens_db"
+                    .sub$ = "Calibrated: sensitivity " + stField.v$ + " dB - the report is in the Info window."
+                    .col$ = "{0.15, 0.55, 0.25}"
+                else
+                    .sub$ = "Calibration " + .acst$ + " - original settings kept (see the Info window)."
+                    .col$ = "{0.85, 0.38, 0.18}"
+                endif
+                .kind$ = "ready"
+            endif
+        endif
+    endif
+endproc
+
+procedure calLine
+    # v0.4.14: one line with the result of the automatic calibration
+    .txt$ = ""
+    @stField: "autocal_line"
+    if stField.v$ <> ""
+        .txt$ = stField.v$
+    endif
+endproc
+
+procedure gateLine
+    # v0.4.13 feedback protection: state, estimated leakage and residual
+    # (3 dB steps, so the windows are not rewritten on every change),
+    # triggers suppressed at the threshold + phrases discarded as playback,
+    # phrases accepted over playback
+    .txt$ = ""
+    @stField: "gate_mode"
+    .mode$ = stField.v$
+    if .mode$ = "adaptive"
+        @stField: "gate_state"
+        .st$ = stField.v$
+        @stField: "gate_leak_db"
+        .lk = number (stField.v$)
+        @stField: "gate_resid_db"
+        .rs = number (stField.v$)
+        @stField: "gate_suppressed"
+        .sup$ = stField.v$
+        @stField: "gate_discarded"
+        .dis$ = stField.v$
+        @stField: "gate_doubletalk"
+        .dt$ = stField.v$
+        .lk$ = "-"
+        if .lk <> undefined
+            if .lk > -99
+                .lk$ = fixed$ (3 * round (.lk / 3), 0) + " dB"
+            endif
+        endif
+        .rs$ = "-"
+        if .rs <> undefined
+            if .rs > -99
+                .rs$ = fixed$ (3 * round (.rs / 3), 0) + " dB"
+            endif
+        endif
+        .txt$ = "GATE: " + .st$ + "  |  est. leakage " + .lk$ + "  |  residual " + .rs$
+            ... + "  |  suppressed " + .sup$ + " + " + .dis$ + "  |  over playback " + .dt$
+    elsif .mode$ = "legacy"
+        .txt$ = "GATE: legacy leakage guard"
+    elsif .mode$ = "off"
+        .txt$ = "GATE: off"
     endif
 endproc
 
@@ -2573,8 +2815,21 @@ procedure drawStatusView: .stopping
         if memoryLines.act$ <> ""
             @dtext: 50, 22.5, 13, "{0.30, 0.30, 0.42}", "ACTION: " + memoryLines.act$
         endif
+        @gateLine
+        if gateLine.txt$ <> ""
+            @dtext: 50, 19.3, 10, "{0.45, 0.45, 0.52}", gateLine.txt$
+        endif
         if .leak$ = "1"
             @dtext: 50, 81, 12, "{0.85, 0.38, 0.18}", "The microphone hears the answers - use headphones"
+        endif
+        # v0.4.14: the result of the automatic calibration (kept on screen)
+        @calLine
+        if calLine.txt$ <> "" and perfState.kind$ <> "calibrating"
+            .cl$ = calLine.txt$
+            if length (.cl$) > 150
+                .cl$ = left$ (.cl$, 147) + "..."
+            endif
+            @dtext: 50, 81, 10, "{0.30, 0.30, 0.42}", .cl$
         endif
     elsif .stopping or not cleanupDone
         @dtext: 50, 60, 30, "{0.85, 0.38, 0.18}", "STOPPING..."
@@ -2635,6 +2890,10 @@ endif
 summary$ = ""
 nDone = 0
 force$ = "auto"
+# v0.4.14 automatic calibration (continuous mode)
+autoCalNote$ = ""
+calReport$ = ""
+calVer$ = ""
 if transformation >= 2 and transformation <= 7
     force$ = tId$[transformation - 1]
 endif
@@ -2642,6 +2901,13 @@ endif
 if continuous
     @continuousSession
     # ---- read the hand-over files, THEN delete everything, THEN report ----
+    # v0.4.14: the calibration report (if it was never read while running)
+    if calReport$ = ""
+        @safeRead: session$ + "/calibration_report.txt"
+        if safeRead.ok
+            calReport$ = safeRead.text$
+        endif
+    endif
     sumFile$ = session$ + "/summary.txt"
     sm$ = ""
     @safeRead: sumFile$
@@ -2660,6 +2926,9 @@ if continuous
         @drawDemo: 0
     endif
     final$ = display$
+    if calReport$ <> ""
+        final$ = final$ + newline$ + calReport$ + newline$
+    endif
     if sm$ <> ""
         final$ = final$ + "phrases=" + extractLine$ (sm$, newline$ + "phrases=") + newline$
         mm$ = extractLine$ (sm$, newline$ + "memory ")
@@ -2681,6 +2950,14 @@ if continuous
         lk$ = extractLine$ (sm$, newline$ + "leakage estimate ")
         if lk$ <> ""
             final$ = final$ + "leakage estimate " + lk$ + newline$
+        endif
+        gt$ = extractLine$ (sm$, newline$ + "gate ")
+        if gt$ <> ""
+            final$ = final$ + "gate " + gt$ + newline$
+        endif
+        lg$ = extractLine$ (sm$, newline$ + "log_kept=")
+        if lg$ <> ""
+            final$ = final$ + "Diagnostic log kept: " + lg$ + newline$
         endif
     endif
     if sm$ <> "" and (debug_log or engineState$ = "error")
