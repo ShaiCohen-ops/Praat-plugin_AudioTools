@@ -17,10 +17,20 @@
 #       R(t)    = C(t) - Chat(t)
 #
 #   and uses one quantity derived from that model as a stable
-#   sort key. The source is then reduced to one protected mono
-#   grain pool and recomposed TWICE: left and right use the same
-#   primary causal sort plus a few channel-specific local swaps.
-#   That controlled difference creates stereo from recomposition itself.
+#   sort key. The ranked grains are then laid out along a
+#   compositional TRAJECTORY through the ranked pool (v1.5):
+#
+#       Linear sweep     one pass, start extreme -> opposite extreme
+#       Out and back     start -> opposite -> start      (2N - 1 grains)
+#       Oscillating      C such arcs in a row          (2C(N - 1) + 1)
+#       Guided random    drifting walk over ranks, bounded jumps (N)
+#
+#   An optional Temporal continuity blends the causal rank with the
+#   source's chronological rank before the trajectory is built.
+#   The source is reduced to one protected mono grain pool and the
+#   trajectory is rendered TWICE: left and right follow the same
+#   trajectory plus a few channel-specific local swaps. That
+#   controlled difference creates stereo from recomposition itself.
 #
 #   IMPORTANT INTERPRETATION
 #   The polynomial is a causal-model reading, not causal
@@ -56,6 +66,82 @@
 #   - Synthesis_overlap controls temporal density/output length.
 #     Crossfade_ms controls the actual raised-cosine edge taper
 #     and is capped to the available overlap and half a grain.
+#   - Temporal continuity is an ORDERING control only. At 100% the
+#     grain order is the source chronology, but every grain is still
+#     cut, tapered and overlap-added at the synthesis hop; it does not
+#     promise phase continuity or a click-free splice, and the output
+#     is not the source unless the synthesis geometry matches it.
+#   - Stereo_divergence_percent is a local-swap AMOUNT, not the share
+#     of differing L/R positions: it requests up to
+#     floor(divergence/100 * nOutputGrains / 4) non-overlapping
+#     adjacent swaps, so 100 changes at most about half of the
+#     positions. The measured L/R difference is reported separately.
+#   - Presets set only the analysis/sort/splice character (sort key,
+#     direction, model order, grain, overlaps, fade). Trajectory,
+#     cycles, random variation, seed, continuity, stereo divergence,
+#     visualization and playback always come from the form.
+#
+# Changelog v1.5 (2026) - trajectory engine
+#   COMPATIBILITY: Linear sweep + Temporal continuity 0 reproduces
+#   v1.4 BIT-FOR-BIT (audio and L/R order; 18 cases: all presets,
+#   keys, directions, overlaps, fade caps, divergence 0/20/100, mono,
+#   stereo, anti-phase and constant sources), on Praat 6.1.38 and 7.0,
+#   EXCEPT where v1.4 hit the intensity defect in item 5 below.
+#   Disabling only that repair restores bit-identity in those cases
+#   too. Note that v1.4's own 70 ms presets (Lawful/Anomalous) hit the
+#   defect on ordinary material: one edge grain was undefined.
+#
+#   1 - Trajectory_mode: Linear sweep (v1.4), Out and back (2N - 1
+#     grains), Oscillating (2C(N - 1) + 1 grains, Number_of_cycles
+#     1-8), Guided random walk (N grains). Arcs are a triangle wave
+#     over positions in ONE ordering, so returns read that ordering
+#     backwards and turning-point grains are never duplicated.
+#   2 - Guided random walk: drift +1 rank per grain, a bounded
+#     nonzero jump with probability v (|jump| <= round(v * max(2,
+#     ceil(0.1 (N - 1))))), a 25% pull toward the linear target, and
+#     reflection at both ends. v = 0 draws no random numbers and is
+#     exactly the Linear sweep. Random_seed > 0 is reproducible; the
+#     generator is returned to its safe state afterwards. Measured,
+#     N = 149: v 25% -> 9% backward / 12% repeated steps, max jump 5,
+#     rank-order correlation 1.00; v 100% -> 44% backward, max jump 15,
+#     correlation 0.97.
+#   3 - Temporal_continuity_percent: stable sort of
+#     (1 - w)(causal rank) + w(chronological rank), both normalized to
+#     0..1. 0% = causal order exactly, 100% = source chronology
+#     (verified). Measured rank correlation with chronology / with the
+#     causal order: 25% 0.46 / 0.96, 50% 0.76 / 0.77, 75% 0.96 / 0.45.
+#   4 - Sort_key 5: Measured spectral centroid C, distinct from the
+#     predicted Chat (key 2), which the Brightness Sweep preset keeps.
+#   5 - FIX: intensity. v1.4 wrote -300 dB for undefined Intensity
+#     readings, and Praat reports digital silence as a DEFINED -300 dB,
+#     so both planted extreme points in the regression (on a test with
+#     silent gaps, R^2 0.337 -> 0.386 once removed; with 10 ms grains
+#     0.286 -> 0.403). Grains are now classified from their own RMS:
+#     measured / repaired (time-interpolated between measured
+#     neighbours, edge-held at the ends; signal-RMS dB if no reading
+#     exists at all) / silent (placed at the quietest sounding
+#     intensity and excluded from the fit). Counts go to the Info
+#     window; a too-small fit set caps the model order with a note.
+#   6 - Stereo for any sequence: eligible swaps are adjacent output
+#     positions holding DIFFERENT grains, smallest primary-key gap
+#     first. This is v1.4's selection exactly on a permutation, at
+#     O(L log L) instead of O(L^2). Requested amount and measured L/R
+#     difference are both reported.
+#   7 - Sorting: v1.4's insertion sort (O(N^2)) replaced by a stable
+#     bottom-up merge sort; identical permutation.
+#   8 - Rendering uses nOutputGrains throughout; output is capped at
+#     600 s (cycles are reduced with a note, other modes exit with a
+#     message). Formulas address temporary Sounds by object ID, not
+#     by name. Measured on Praat 7.0, 30 s source with drawing:
+#     Linear 1.5 s, Out and back 2.4 s, 4 cycles (239 s out) 8.6 s.
+#   9 - Visualization: panel B is now TRAJECTORY. A dark line shows the
+#     common path through the ranked pool (where arcs and walks read as
+#     shapes), and dots show the source-time position of each L and R
+#     grain, with dotted turning points. Panel A no longer draws silent
+#     grains and states the fitted order and repair counts. Title and
+#     summary carry the trajectory, continuity, N -> L grains, the swap
+#     amount against the measured L/R difference, and the output
+#     duration.
 #
 # ============================================================
 
@@ -68,7 +154,7 @@ endif
 snd = selected("Sound")
 sndName$ = selected$("Sound")
 
-form Causal Recomposer v1.4
+form Causal Recomposer v1.5
     optionmenu Preset: 1
         option Custom
         option Lawful to Anomalous
@@ -79,9 +165,19 @@ form Causal Recomposer v1.4
         option Predicted brightness Chat  (dark -> bright)
         option Signed model residual      (darker -> brighter than predicted)
         option Intensity                  (quiet -> loud)
+        option Measured spectral centroid (dark -> bright)
     optionmenu Sort_direction: 1
         option Ascending
         option Descending
+    optionmenu Trajectory_mode: 1
+        option Linear sweep
+        option Out and back
+        option Oscillating (multi-arc)
+        option Guided random walk
+    natural Number_of_cycles 2
+    real Random_walk_variation 25
+    integer Random_seed 0
+    real Temporal_continuity_percent 0
     positive Grain_size_ms 80
     real Analysis_overlap 0.5
     natural Causal_model_order 2
@@ -141,11 +237,22 @@ elsif sort_key = 3
     sortKeyName$ = "Signed model residual"
 elsif sort_key = 4
     sortKeyName$ = "Intensity"
+elsif sort_key = 5
+    sortKeyName$ = "Measured centroid C"
 endif
 
 sortDirName$ = "Ascending"
 if sort_direction = 2
     sortDirName$ = "Descending"
+endif
+
+trajName$ = "Linear sweep"
+if trajectory_mode = 2
+    trajName$ = "Out and back"
+elsif trajectory_mode = 3
+    trajName$ = "Oscillating"
+elsif trajectory_mode = 4
+    trajName$ = "Guided random walk"
 endif
 
 # ============================================================
@@ -181,6 +288,37 @@ if stereo_divergence_percent > 100
     stereo_divergence_percent = 100
     warnLines$ = warnLines$ + "  ! Stereo divergence > 100 -> 100" + newline$
 endif
+if number_of_cycles > 8
+    number_of_cycles = 8
+    warnLines$ = warnLines$ + "  ! Number of cycles > 8 -> 8" + newline$
+endif
+if random_walk_variation < 0
+    random_walk_variation = 0
+    warnLines$ = warnLines$ + "  ! Random walk variation < 0 -> 0" + newline$
+endif
+if random_walk_variation > 100
+    random_walk_variation = 100
+    warnLines$ = warnLines$ + "  ! Random walk variation > 100 -> 100" + newline$
+endif
+if temporal_continuity_percent < 0
+    temporal_continuity_percent = 0
+    warnLines$ = warnLines$ + "  ! Temporal continuity < 0 -> 0" + newline$
+endif
+if temporal_continuity_percent > 100
+    temporal_continuity_percent = 100
+    warnLines$ = warnLines$ + "  ! Temporal continuity > 100 -> 100" + newline$
+endif
+if random_seed < 0
+    random_seed = 0
+    warnLines$ = warnLines$ + "  ! Random seed < 0 -> 0 (unpredictable)" + newline$
+endif
+
+# Resource guard (v1.5): trajectories can be up to 16x longer than the
+# grain pool. The render holds the stereo buffer, a window buffer and,
+# with visualization, four more mono copies of the output, all at double
+# precision, so the output is capped rather than allowed to grow without
+# limit.
+maxOutputSec = 600
 
 selectObject: snd
 dur = Get total duration
@@ -268,15 +406,27 @@ if nChannels > 1 and strongestRms > 0 and monoRms < 0.1 * strongestRms
 endif
 
 clearinfo
-writeInfoLine: "=== Causal Recomposer v1.4 ==="
+writeInfoLine: "=== Causal Recomposer v1.5 ==="
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Sound: ", sndName$, "  (", fixed$(dur, 2), " s, ", nChannels, " ch)"
 appendInfoLine: "Mono grain pool: ", monoMethod$, " | RMS ", fixed$(monoRms,4)
 appendInfoLine: "Grain: ", fixed$(effectiveGrainMs, 3), " ms effective | Analysis overlap: ", fixed$(analysis_overlap * 100, 0), "%"
 appendInfoLine: "Requested model order: ", causal_model_order
 appendInfoLine: "Sort key: ", sortKeyName$, " | Direction: ", sortDirName$
+trajDetail$ = ""
+if trajectory_mode = 3
+    trajDetail$ = " | cycles " + string$(number_of_cycles)
+elsif trajectory_mode = 4
+    trajDetail$ = " | variation " + fixed$(random_walk_variation, 0) + "% | seed "
+    if random_seed > 0
+        trajDetail$ = trajDetail$ + string$(random_seed)
+    else
+        trajDetail$ = trajDetail$ + "unpredictable"
+    endif
+endif
+appendInfoLine: "Trajectory: ", trajName$, trajDetail$, " | Temporal continuity: ", fixed$(temporal_continuity_percent, 0), "%"
 appendInfoLine: "Synthesis overlap: ", fixed$(synthesis_overlap * 100, 0), "% | Crossfade: ", fixed$(effectiveFadeMs, 1), " ms effective"
-appendInfoLine: "Generated stereo divergence: ", fixed$(stereo_divergence_percent,1), "% (nearest-rank local swaps)"
+appendInfoLine: "Stereo divergence (local-swap amount): ", fixed$(stereo_divergence_percent,1), "% requested"
 appendInfoLine: "Interpretation: model-guided residual, not causal identification from a single recording."
 if warnLines$ <> ""
     appendInfoLine: ""
@@ -302,7 +452,25 @@ endif
 grain_time# = zero#(nGrains)
 feat_I# = zero#(nGrains)
 feat_C# = zero#(nGrains)
-undefinedIntensityCount = 0
+
+# v1.5 intensity repair. v1.4 wrote -300 dB for every undefined
+# Intensity reading, and Praat itself reports digital silence as a
+# DEFINED -300 dB, so both cases planted artificial extremes in the
+# regression. Each grain is now classified from its own audio:
+#   1 measured  - Intensity defined and above intensityFloorDb
+#   2 repaired  - the grain has signal, but the Intensity reading is
+#                 undefined or at the floor (file edges, interpolation
+#                 across a silence boundary): interpolated in time
+#                 between the nearest measured grains, or held at the
+#                 nearest one at the edges
+#   3 silent    - the grain's own RMS is below silenceRms: placed at
+#                 the quietest measured intensity and EXCLUDED from
+#                 the model fit (its centroid is not measurable)
+# Units: dB re 2e-5, the reference of Praat's Intensity object.
+intensityFloorDb = -100
+silenceRms = 2e-5 * 10 ^ (intensityFloorDb / 20)
+intClass# = zero#(nGrains)
+grainRms# = zero#(nGrains)
 
 for i from 1 to nGrains
     t = grainSec / 2 + (i - 1) * analysisStepSec
@@ -311,13 +479,25 @@ for i from 1 to nGrains
     endif
     grain_time#[i] = t
 
+    selectObject: workSnd
+    gr = Get root-mean-square: max(0, t - grainSec / 2), min(dur, t + grainSec / 2)
+    if gr = undefined
+        gr = 0
+    endif
+    grainRms#[i] = gr
+
     selectObject: intensityObj
     ii = Get value at time: t, "Cubic"
-    if ii = undefined
-        ii = -300
-        undefinedIntensityCount += 1
+    if gr < silenceRms
+        intClass#[i] = 3
+    elsif ii = undefined
+        intClass#[i] = 2
+    elsif ii <= intensityFloorDb
+        intClass#[i] = 2
+    else
+        intClass#[i] = 1
+        feat_I#[i] = ii
     endif
-    feat_I#[i] = ii
 
     selectObject: workSnd
     g1 = Extract part: max(0, t - grainSec / 2), min(dur, t + grainSec / 2), "Hanning", 1, "no"
@@ -331,9 +511,98 @@ for i from 1 to nGrains
 endfor
 
 appendInfoLine: "  ", nGrains, " grains analyzed"
-if undefinedIntensityCount > 0
-    appendInfoLine: "  Note: ", undefinedIntensityCount, " undefined intensity values were floored to -300 dB."
+
+# --- Repair pass: nearest measured grain on each side (O(N)) ---
+prevValid# = zero#(nGrains)
+nextValid# = zero#(nGrains)
+lastValid = 0
+for i from 1 to nGrains
+    if intClass#[i] = 1
+        lastValid = i
+    endif
+    prevValid#[i] = lastValid
+endfor
+lastValid = 0
+for back from 1 to nGrains
+    i = nGrains - back + 1
+    if intClass#[i] = 1
+        lastValid = i
+    endif
+    nextValid#[i] = lastValid
+endfor
+
+nMeasuredI = 0
+nRepairedI = 0
+nSignalI = 0
+nSilentI = 0
+for i from 1 to nGrains
+    if intClass#[i] = 1
+        nMeasuredI += 1
+    elsif intClass#[i] = 3
+        nSilentI += 1
+    endif
+endfor
+
+for i from 1 to nGrains
+    if intClass#[i] = 2
+        p = prevValid#[i]
+        n = nextValid#[i]
+        if p > 0 and n > 0
+            tp = grain_time#[p]
+            tn = grain_time#[n]
+            if tn > tp
+                feat_I#[i] = feat_I#[p] + (feat_I#[n] - feat_I#[p]) * (grain_time#[i] - tp) / (tn - tp)
+            else
+                feat_I#[i] = feat_I#[p]
+            endif
+            nRepairedI += 1
+        elsif p > 0
+            feat_I#[i] = feat_I#[p]
+            nRepairedI += 1
+        elsif n > 0
+            feat_I#[i] = feat_I#[n]
+            nRepairedI += 1
+        else
+            # No measured Intensity anywhere: fall back to the grain's
+            # own RMS, in the same dB re 2e-5 units.
+            feat_I#[i] = 20 * log10(grainRms#[i] / 2e-5)
+            nSignalI += 1
+        endif
+    endif
+endfor
+
+# Silent grains sit at the quietest NON-silent intensity, so they never
+# extend the regression's domain.
+nSoundingI = nGrains - nSilentI
+if nSilentI > 0
+    if nSoundingI > 0
+        quietI = 1e300
+        for i from 1 to nGrains
+            if intClass#[i] <> 3 and feat_I#[i] < quietI
+                quietI = feat_I#[i]
+            endif
+        endfor
+    else
+        quietI = 0
+        warnLines$ = warnLines$ + "  ! Source is digital silence -> constant model, chronological ties" + newline$
+    endif
+    for i from 1 to nGrains
+        if intClass#[i] = 3
+            feat_I#[i] = quietI
+        endif
+    endfor
 endif
+
+fitMask# = zero#(nGrains)
+for i from 1 to nGrains
+    if intClass#[i] <> 3
+        fitMask#[i] = 1
+    endif
+endfor
+nFit = nSoundingI
+
+appendInfoLine: "  intensity: ", nMeasuredI, " measured | ", nRepairedI, " repaired (time-interpolated/edge-held) | ",
+    ... nSignalI, " signal-RMS fallback | ", nSilentI, " silent (excluded from fit)"
 
 # ------------------------------------------------------------
 # PHASE 2: STANDARDIZED POLYNOMIAL MODEL
@@ -349,8 +618,10 @@ maxI = feat_I#[1]
 minC = feat_C#[1]
 maxC = feat_C#[1]
 for i from 1 to nGrains
-    meanI += feat_I#[i]
-    meanC += feat_C#[i]
+    if fitMask#[i] = 1
+        meanI += feat_I#[i]
+        meanC += feat_C#[i]
+    endif
     if feat_I#[i] < minI
         minI = feat_I#[i]
     endif
@@ -364,17 +635,44 @@ for i from 1 to nGrains
         maxC = feat_C#[i]
     endif
 endfor
-meanI = meanI / nGrains
-meanC = meanC / nGrains
+# v1.5: the fit uses sounding grains only (fitMask#). With no silent
+# grains nFit = nGrains and every sum below is the v1.4 sum, in the
+# same order.
+if nFit > 0
+    meanI = meanI / nFit
+    meanC = meanC / nFit
+else
+    meanI = 0
+    meanC = 0
+    for i from 1 to nGrains
+        meanI += feat_I#[i]
+        meanC += feat_C#[i]
+    endfor
+    meanI = meanI / nGrains
+    meanC = meanC / nGrains
+endif
 
 varI = 0
 for i from 1 to nGrains
-    varI += (feat_I#[i] - meanI)^2
+    if fitMask#[i] = 1
+        varI += (feat_I#[i] - meanI)^2
+    endif
 endfor
-if nGrains > 1
-    varI = varI / (nGrains - 1)
+if nFit > 1
+    varI = varI / (nFit - 1)
 endif
 sdI = sqrt(max(0, varI))
+
+# Too few sounding grains for the requested order: cap it (the
+# singular-fit fallback below still applies on top of this).
+if nFit < causal_model_order + 3
+    cappedOrder = max(0, nFit - 3)
+    if cappedOrder < causal_model_order
+        warnLines$ = warnLines$ + "  ! Only " + string$(nFit) + " sounding grains -> model order capped to "
+            ... + string$(cappedOrder) + newline$
+        causal_model_order = cappedOrder
+    endif
+endif
 
 zI# = zero#(nGrains)
 if sdI > 1e-9
@@ -387,7 +685,7 @@ requestedOrder = causal_model_order
 effectiveOrder = requestedOrder
 fitSolved = 0
 
-if sdI <= 1e-9
+if sdI <= 1e-9 or requestedOrder < 1
     effectiveOrder = 0
 else
     while effectiveOrder >= 1 and fitSolved = 0
@@ -399,13 +697,17 @@ else
                 p = (row - 1) + (col - 1)
                 s = 0
                 for i from 1 to nGrains
-                    s += zI#[i] ^ p
+                    if fitMask#[i] = 1
+                        s += zI#[i] ^ p
+                    endif
                 endfor
                 aug##[row, col] = s
             endfor
             s = 0
             for i from 1 to nGrains
-                s += zI#[i] ^ (row - 1) * feat_C#[i]
+                if fitMask#[i] = 1
+                    s += zI#[i] ^ (row - 1) * feat_C#[i]
+                endif
             endfor
             aug##[row, nCoef + 1] = s
         endfor
@@ -494,8 +796,10 @@ for i from 1 to nGrains
     endif
     feat_Chat#[i] = val
     feat_R#[i] = feat_C#[i] - val
-    sumSqRes += feat_R#[i]^2
-    sumSqTot += (feat_C#[i] - meanC)^2
+    if fitMask#[i] = 1
+        sumSqRes += feat_R#[i]^2
+        sumSqTot += (feat_C#[i] - meanC)^2
+    endif
 endfor
 
 if sumSqTot > 0
@@ -503,19 +807,22 @@ if sumSqTot > 0
 else
     rSquared = 0
 endif
-residualRms = sqrt(sumSqRes / nGrains)
+residualRms = sqrt(sumSqRes / max(1, nFit))
 
 appendInfoLine: "  effective model order = ", effectiveOrder
 appendInfoLine: "  fit R^2 = ", fixed$(rSquared, 3), " | residual RMS = ", fixed$(residualRms, 1), " Hz"
 
 # ------------------------------------------------------------
-# PHASE 3: PRIMARY SORT + CONTROLLED DUAL-STEREO LOCAL SWAPS
-# Both channels first receive EXACTLY the same stable causal order.
-# Stereo divergence then swaps only adjacent grains with the smallest
-# primary-key gaps. This keeps the primary law intact globally while
-# allowing a small number of near-equivalent grains to differ L/R.
+# PHASE 3: CAUSAL ORDER -> CONTINUITY -> TRAJECTORY -> STEREO VARIANTS
+# 3a  one stable causal ranking of the grain pool
+# 3b  optional blend with chronological rank (Temporal continuity)
+# 3c  trajectory through that ordering (linear, arcs or guided walk)
+# 3d  both channels get EXACTLY that trajectory; stereo divergence then
+#     swaps only adjacent grains with the smallest primary-key gaps, so
+#     the global shape is kept while near-equivalent grains differ L/R
+# 3e  measured statistics
 # ------------------------------------------------------------
-appendInfoLine: "Phase 3: computing base causal order + subtle stereo divergence..."
+appendInfoLine: "Phase 3: causal order -> continuity -> trajectory -> stereo variants..."
 
 sortKey# = zero#(nGrains)
 for i from 1 to nGrains
@@ -525,6 +832,8 @@ for i from 1 to nGrains
         sortKey#[i] = feat_Chat#[i]
     elsif sort_key = 3
         sortKey#[i] = feat_R#[i]
+    elsif sort_key = 5
+        sortKey#[i] = feat_C#[i]
     else
         sortKey#[i] = feat_I#[i]
     endif
@@ -565,61 +874,201 @@ if secMaxAbs < 1e-12 and sort_key <> 3
     endfor
 endif
 
-# Stable base sort.
-permBase# = zero#(nGrains)
+# ---- 3a. Stable base causal sort ----
+# v1.5: bottom-up merge sort (O(N log N)) instead of v1.4's insertion
+# sort (O(N^2)). Both are stable, so equal keys keep chronological
+# order and the permutation is identical. Descending sorts the negated
+# key, which is the same stable descending order.
+sortVal# = zero#(nGrains)
+sortIdx# = zero#(nGrains)
 for i from 1 to nGrains
-    permBase#[i] = i
+    if sort_direction = 1
+        sortVal#[i] = sortKey#[i]
+    else
+        sortVal#[i] = -sortKey#[i]
+    endif
+    sortIdx#[i] = i
 endfor
-for i from 2 to nGrains
-    currentIdx = permBase#[i]
-    currentVal = sortKey#[currentIdx]
-    j = i
-    keepMoving = 1
-    while j > 1 and keepMoving = 1
-        previousIdx = permBase#[j - 1]
-        previousVal = sortKey#[previousIdx]
-        shouldShift = 0
-        if sort_direction = 1
-            if previousVal > currentVal
-                shouldShift = 1
-            endif
-        else
-            if previousVal < currentVal
-                shouldShift = 1
-            endif
-        endif
-        if shouldShift = 1
-            permBase#[j] = previousIdx
-            j -= 1
-        else
-            keepMoving = 0
-        endif
-    endwhile
-    permBase#[j] = currentIdx
-endfor
+@stableArgsort: nGrains
+permBase# = sortIdx#
 
-permL# = zero#(nGrains)
-permR# = zero#(nGrains)
 baseRank# = zero#(nGrains)
 for g from 1 to nGrains
-    permL#[g] = permBase#[g]
-    permR#[g] = permBase#[g]
     baseRank#[permBase#[g]] = g
 endfor
 
-# Candidate swap gaps in causal-rank order. Smaller gap means the
-# two adjacent grains are more interchangeable under the chosen law.
-pairGap# = zero#(nGrains - 1)
-for g from 1 to nGrains - 1
-    a = permBase#[g]
-    b = permBase#[g + 1]
-    pairGap#[g] = abs(sortKey#[a] - sortKey#[b])
+# ---- 3b. Temporal continuity ----
+# Blend of two NORMALIZED ranks, both in 0..1, then a stable sort:
+#   blend = (1 - w) * (causalRank - 1)/(N - 1) + w * (sourceIndex - 1)/(N - 1)
+# Raw intensity, residual, centroid and time are never mixed.
+# w = 0 keeps the causal order exactly; w = 1 gives the chronology.
+contW = temporal_continuity_percent / 100
+if contW <= 0
+    ordered# = permBase#
+else
+    for i from 1 to nGrains
+        sortVal#[i] = (1 - contW) * (baseRank#[i] - 1) / (nGrains - 1)
+            ... + contW * (i - 1) / (nGrains - 1)
+        sortIdx#[i] = i
+    endfor
+    @stableArgsort: nGrains
+    ordered# = sortIdx#
+endif
+
+# ---- 3c. Trajectory through the ordered pool ----
+# The trajectory is a sequence of POSITIONS in ordered#[1..N]; the
+# grains are ordered#[trajPos#[k]]. Return paths read the same
+# ordering backwards, never a re-sort.
+nCyclesUsed = 0
+if trajectory_mode = 2
+    nCyclesUsed = 1
+elsif trajectory_mode = 3
+    nCyclesUsed = number_of_cycles
+endif
+
+if nCyclesUsed > 0
+    # Cap the cycle count so the render stays under maxOutputSec.
+    maxCycles = floor((maxOutputSec - grainSec) / (2 * (nGrains - 1) * synthStepSec))
+    if maxCycles < 1
+        removeObject: workSnd, intensityObj
+        exitScript: "Out-and-back output would exceed " + string$(maxOutputSec)
+            ... + " s. Use a shorter sound, a larger grain or a lower synthesis overlap."
+    endif
+    if nCyclesUsed > maxCycles
+        warnLines$ = warnLines$ + "  ! " + string$(nCyclesUsed) + " cycles exceed the "
+            ... + string$(maxOutputSec) + " s output cap -> " + string$(maxCycles) + " cycles" + newline$
+        nCyclesUsed = maxCycles
+    endif
+    nOutputGrains = 2 * nCyclesUsed * (nGrains - 1) + 1
+else
+    nOutputGrains = nGrains
+endif
+
+outDur = (nOutputGrains - 1) * synthStepSec + grainSec
+if outDur > maxOutputSec
+    removeObject: workSnd, intensityObj
+    exitScript: "Output would be " + fixed$(outDur, 1) + " s, above the " + string$(maxOutputSec)
+        ... + " s cap. Use a shorter sound, a larger grain or a lower synthesis overlap."
+endif
+
+trajPos# = zero#(nOutputGrains)
+walkJump = 0
+if trajectory_mode = 1
+    for k from 1 to nOutputGrains
+        trajPos#[k] = k
+    endfor
+elsif trajectory_mode = 2 or trajectory_mode = 3
+    # Triangle wave over positions 1..N..1..N..1, period 2(N - 1):
+    # turning points appear once, never duplicated.
+    period = 2 * (nGrains - 1)
+    for k from 1 to nOutputGrains
+        m = (k - 1) mod period
+        if m <= nGrains - 1
+            trajPos#[k] = m + 1
+        else
+            trajPos#[k] = period - m + 1
+        endif
+    endfor
+else
+    # Guided random walk on rank positions.
+    #   drift   +1 position per output grain (one full pass in N grains)
+    #   jumps   with probability v, an extra nonzero step in
+    #           [-J, +J], J = round(v * max(2, ceil(0.1 (N - 1))))
+    #   guide   the candidate is pulled 25% of the way toward the linear
+    #           target 1 + (N - 1)(k - 1)/(L - 1), which keeps the large-
+    #           scale direction and stops the walk parking at an edge
+    #   bounds  reflection at 1 and N, then clamped
+    # v = 0 draws no random numbers and gives exactly the linear sweep.
+    walkV = random_walk_variation / 100
+    walkJump = max(1, round(walkV * max(2, ceiling(0.1 * (nGrains - 1)))))
+    walkPull = 0.25
+    if walkV > 0 and random_seed > 0
+        random_initializeWithSeedUnsafelyButPredictably (random_seed)
+    endif
+    pos = 1
+    trajPos#[1] = 1
+    for k from 2 to nOutputGrains
+        target = 1 + (nGrains - 1) * (k - 1) / (nOutputGrains - 1)
+        stepW = 1
+        if walkV > 0
+            if randomUniform (0, 1) < walkV
+                d = randomInteger (-walkJump, walkJump - 1)
+                if d >= 0
+                    d += 1
+                endif
+                stepW += d
+            endif
+        endif
+        cand = pos + stepW
+        cand = round(cand + walkPull * (target - cand))
+        if cand < 1
+            cand = 2 - cand
+        endif
+        if cand > nGrains
+            cand = 2 * nGrains - cand
+        endif
+        cand = max(1, min(nGrains, cand))
+        pos = cand
+        trajPos#[k] = pos
+    endfor
+    if walkV > 0 and random_seed > 0
+        random_initializeSafelyAndUnpredictably ()
+    endif
+endif
+
+traj# = zero#(nOutputGrains)
+for k from 1 to nOutputGrains
+    traj#[k] = ordered#[trajPos#[k]]
+endfor
+
+# Turning points of the common trajectory (direction reversals).
+nTurns = 0
+nBackSteps = 0
+nRepeatSteps = 0
+for k from 2 to nOutputGrains
+    if trajPos#[k] < trajPos#[k - 1]
+        nBackSteps += 1
+    elsif trajPos#[k] = trajPos#[k - 1]
+        nRepeatSteps += 1
+    endif
+endfor
+turnAt# = zero#(max(1, nOutputGrains))
+for k from 2 to nOutputGrains - 1
+    if (trajPos#[k] - trajPos#[k - 1]) * (trajPos#[k + 1] - trajPos#[k]) < 0
+        nTurns += 1
+        turnAt#[nTurns] = k
+    endif
+endfor
+distinctUsed# = zero#(nGrains)
+nDistinct = 0
+for k from 1 to nOutputGrains
+    if distinctUsed#[traj#[k]] = 0
+        distinctUsed#[traj#[k]] = 1
+        nDistinct += 1
+    endif
+endfor
+
+# ---- 3d. Channel variants by controlled local swaps ----
+# Both channels start from the SAME trajectory. Eligible swaps are
+# adjacent output positions holding two DIFFERENT grains (a repeated
+# grain swapped with itself changes nothing), ranked by the gap in the
+# primary causal key, smallest first, ties by earliest position. They
+# are taken greedily without overlap. On a permutation this is exactly
+# v1.4's repeated minimum scan, but O(L log L) instead of O(L^2).
+seqL# = traj#
+seqR# = traj#
+
+nCand = 0
+for g from 1 to nOutputGrains - 1
+    if traj#[g] <> traj#[g + 1]
+        nCand += 1
+    endif
 endfor
 
 # Maximum design: at divergence=100, swap up to one quarter of the
-# grains (non-overlapping pairs). Default 20 stays deliberately subtle.
-targetPairs = floor((stereo_divergence_percent / 100) * nGrains / 4)
-maxPairs = floor(nGrains / 2)
+# output grains as pairs (so at most about half the positions differ).
+targetPairs = floor((stereo_divergence_percent / 100) * nOutputGrains / 4)
+maxPairs = floor(nOutputGrains / 2)
 if targetPairs > maxPairs
     targetPairs = maxPairs
 endif
@@ -627,82 +1076,101 @@ if targetPairs < 0
     targetPairs = 0
 endif
 
-usedRank# = zero#(nGrains)
 actualPairs = 0
-for swapNo from 1 to targetPairs
-    bestPos = 0
-    bestGap = 1e300
-    for g from 1 to nGrains - 1
-        if usedRank#[g] = 0 and usedRank#[g + 1] = 0
-            if pairGap#[g] < bestGap
-                bestGap = pairGap#[g]
-                bestPos = g
+if nCand > 0 and targetPairs > 0
+    sortVal# = zero#(nOutputGrains - 1)
+    sortIdx# = zero#(nCand)
+    c = 0
+    for g from 1 to nOutputGrains - 1
+        sortVal#[g] = abs(sortKey#[traj#[g]] - sortKey#[traj#[g + 1]])
+        if traj#[g] <> traj#[g + 1]
+            c += 1
+            sortIdx#[c] = g
+        endif
+    endfor
+    @stableArgsort: nCand
+
+    usedPos# = zero#(nOutputGrains)
+    for c from 1 to nCand
+        if actualPairs < targetPairs
+            bestPos = sortIdx#[c]
+            if usedPos#[bestPos] = 0 and usedPos#[bestPos + 1] = 0
+                actualPairs += 1
+                swapNo = actualPairs
+                a = traj#[bestPos]
+                b = traj#[bestPos + 1]
+
+                # Deterministic channel choice from the secondary feature.
+                # Ties alternate by swap number to keep the field balanced.
+                swapLeft = 0
+                if secondary#[a] < secondary#[b]
+                    swapLeft = 1
+                elsif secondary#[a] = secondary#[b]
+                    if swapNo mod 2 = 1
+                        swapLeft = 1
+                    endif
+                endif
+
+                if swapLeft = 1
+                    seqL#[bestPos] = b
+                    seqL#[bestPos + 1] = a
+                else
+                    seqR#[bestPos] = b
+                    seqR#[bestPos + 1] = a
+                endif
+
+                usedPos#[bestPos] = 1
+                usedPos#[bestPos + 1] = 1
             endif
         endif
     endfor
+endif
 
-    if bestPos > 0
-        a = permBase#[bestPos]
-        b = permBase#[bestPos + 1]
-
-        # Deterministic channel choice from the secondary feature.
-        # Ties alternate by swap number to keep the field balanced.
-        swapLeft = 0
-        if secondary#[a] < secondary#[b]
-            swapLeft = 1
-        elsif secondary#[a] = secondary#[b]
-            if swapNo mod 2 = 1
-                swapLeft = 1
-            endif
-        endif
-
-        if swapLeft = 1
-            permL#[bestPos] = b
-            permL#[bestPos + 1] = a
-        else
-            permR#[bestPos] = b
-            permR#[bestPos + 1] = a
-        endif
-
-        usedRank#[bestPos] = 1
-        usedRank#[bestPos + 1] = 1
-        actualPairs += 1
-    endif
-endfor
-
-# Measured dual-permutation statistics.
+# ---- 3e. Measured sequence statistics ----
+# Generalized from v1.4 for sequences of any length with repeats:
+# source positions and output positions are both normalized to 0..1,
+# so for a Linear permutation every figure equals v1.4's.
 dispSum = 0
 adjBreaksL = 0
 adjBreaksR = 0
 stereoDifferent = 0
 stereoRankSepSum = 0
-for g from 1 to nGrains
-    if nGrains > 1
-        dispSum += 0.5 * (abs(permL#[g] - g) + abs(permR#[g] - g)) / (nGrains - 1)
-        stereoRankSepSum += abs(baseRank#[permL#[g]] - baseRank#[permR#[g]]) / (nGrains - 1)
+for g from 1 to nOutputGrains
+    if nGrains > 1 and nOutputGrains > 1
+        outFrac = (g - 1) / (nOutputGrains - 1)
+        dispSum += 0.5 * (abs((seqL#[g] - 1) / (nGrains - 1) - outFrac)
+            ... + abs((seqR#[g] - 1) / (nGrains - 1) - outFrac))
     endif
-    if permL#[g] <> permR#[g]
+    if nGrains > 1
+        stereoRankSepSum += abs(baseRank#[seqL#[g]] - baseRank#[seqR#[g]]) / (nGrains - 1)
+    endif
+    if seqL#[g] <> seqR#[g]
         stereoDifferent += 1
     endif
     if g > 1
-        if abs(permL#[g] - permL#[g - 1]) <> 1
+        if abs(seqL#[g] - seqL#[g - 1]) <> 1
             adjBreaksL += 1
         endif
-        if abs(permR#[g] - permR#[g - 1]) <> 1
+        if abs(seqR#[g] - seqR#[g - 1]) <> 1
             adjBreaksR += 1
         endif
     endif
 endfor
-meanDisplacementPct = 100 * dispSum / nGrains
-stereoDifferentPct = 100 * stereoDifferent / nGrains
-stereoOrderSeparationPct = 100 * stereoRankSepSum / nGrains
-if nGrains > 1
-    adjacencyBreakPct = 50 * (adjBreaksL + adjBreaksR) / (nGrains - 1)
+meanDisplacementPct = 100 * dispSum / nOutputGrains
+stereoDifferentPct = 100 * stereoDifferent / nOutputGrains
+stereoOrderSeparationPct = 100 * stereoRankSepSum / nOutputGrains
+if nOutputGrains > 1
+    adjacencyBreakPct = 50 * (adjBreaksL + adjBreaksR) / (nOutputGrains - 1)
 else
     adjacencyBreakPct = 0
 endif
 
-appendInfoLine: "  stereo cue = ", secondaryName$, " | local swap pairs = ", actualPairs
+appendInfoLine: "  trajectory = ", trajName$, " | ", nGrains, " source -> ", nOutputGrains, " output grains | ",
+    ... nDistinct, " distinct | ", nTurns, " turning points"
+if trajectory_mode = 4
+    appendInfoLine: "  walk: jump bound +/-", walkJump, " | backward steps ", nBackSteps, " | repeats ", nRepeatSteps
+endif
+appendInfoLine: "  stereo cue = ", secondaryName$, " | local swap pairs = ", actualPairs, " of ", targetPairs, " requested"
 appendInfoLine: "  L/R differing positions = ", fixed$(stereoDifferentPct,1), "% | mean causal-rank separation = ", fixed$(stereoOrderSeparationPct,3), "%"
 
 # ------------------------------------------------------------
@@ -712,16 +1180,20 @@ appendInfoLine: "  L/R differing positions = ", fixed$(stereoDifferentPct,1), "%
 # ------------------------------------------------------------
 appendInfoLine: "Phase 4: recomposing mono source pool into generated stereo..."
 
-outDur = (nGrains - 1) * synthStepSec + grainSec
+# outDur was set in Phase 3 from the generated length:
+#   outDur = (nOutputGrains - 1) * synthStepSec + grainSec
+# v1.5: formulas address the temporary Sounds by object ID rather than
+# by name ("Sound cr_grainL"), so a same-named object already in the
+# list can never be picked up. Interpolation is unchanged.
 outBuf = Create Sound from formula: "cr_out", 2, 0, outDur, fs, "0"
 outWin = Create Sound from formula: "cr_win", 1, 0, outDur, fs, "0"
 
-for g from 1 to nGrains
+for g from 1 to nOutputGrains
     outStart = (g - 1) * synthStepSec
     outEnd = outStart + grainSec
 
     # LEFT process
-    srcIdx = permL#[g]
+    srcIdx = seqL#[g]
     srcT = grain_time#[srcIdx]
     t1src = max(0, srcT - grainSec / 2)
     t2src = min(dur, srcT + grainSec / 2)
@@ -736,10 +1208,10 @@ for g from 1 to nGrains
     Shift times to: "start time", outStart
     selectObject: outBuf
     Formula (part): max(0, outStart), min(outDur, outEnd), 1, 1,
-        ... "self + object (""Sound cr_grainL"", x, 1)"
+        ... "self + object (" + string$(grainL) + ", x, 1)"
 
     # RIGHT process
-    srcIdx = permR#[g]
+    srcIdx = seqR#[g]
     srcT = grain_time#[srcIdx]
     t1src = max(0, srcT - grainSec / 2)
     t2src = min(dur, srcT + grainSec / 2)
@@ -754,7 +1226,7 @@ for g from 1 to nGrains
     Shift times to: "start time", outStart
     selectObject: outBuf
     Formula (part): max(0, outStart), min(outDur, outEnd), 2, 2,
-        ... "self + object (""Sound cr_grainR"", x, 1)"
+        ... "self + object (" + string$(grainR) + ", x, 1)"
 
     # The overlap geometry is identical on both sides, so one
     # measured denominator normalizes both channels.
@@ -770,7 +1242,8 @@ for g from 1 to nGrains
 endfor
 
 selectObject: outBuf
-Formula: "if object (""Sound cr_win"", x, 0) > 1e-6 then self / object (""Sound cr_win"", x, 0) else 0 fi"
+winId$ = string$(outWin)
+Formula: "if object (" + winId$ + ", x, 0) > 1e-6 then self / object (" + winId$ + ", x, 0) else 0 fi"
 Rename: sndName$ + "_causal_recomposed_stereo"
 removeObject: outWin
 
@@ -840,10 +1313,12 @@ if draw_visualization
     vizR = Extract one channel: 2
     Rename: "cr_viz_right"
 
+    vizLid$ = string$(vizL)
+    vizRid$ = string$(vizR)
     vizMid = Create Sound from formula: "cr_viz_mid", 1, 0, outDur, fs,
-        ... "(object (""Sound cr_viz_left"", x, 1) + object (""Sound cr_viz_right"", x, 1)) / 2"
+        ... "(object (" + vizLid$ + ", x, 1) + object (" + vizRid$ + ", x, 1)) / 2"
     vizSide = Create Sound from formula: "cr_viz_side", 1, 0, outDur, fs,
-        ... "(object (""Sound cr_viz_left"", x, 1) - object (""Sound cr_viz_right"", x, 1)) / 2"
+        ... "(object (" + vizLid$ + ", x, 1) - object (" + vizRid$ + ", x, 1)) / 2"
 
     selectObject: vizMid
     vizOutPeak = Get absolute extremum: 0, 0, "None"
@@ -965,12 +1440,13 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##Causal Recomposer v1.4##"
+    Text: 0.5, "centre", 0.68, "half", "##Causal Recomposer v1.5##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.50}"
     Text: 0.5, "centre", 0.22, "half",
         ... "[" + presetName$ + "]  " + sortKeyName$ + " / " + sortDirName$
-        ... + "  |  " + string$(nGrains) + " grains"
+        ... + "  |  " + trajName$
+        ... + "  |  " + string$(nGrains) + " -> " + string$(nOutputGrains) + " grains"
         ... + "  |  grain " + fixed$(grain_size_ms, 0) + " ms"
         ... + "  |  fade " + fixed$(effectiveFadeMs, 1) + " ms"
         ... + "  |  " + fixed$(outDur, 2) + " s"
@@ -986,7 +1462,14 @@ if draw_visualization
     Text: 0.01, "left", 0.72, "half", "A  MODEL - measured intensity -> centroid law"
     Font size: 6
     Colour: "{0.35, 0.35, 0.50}"
-    Text: 0.01, "left", 0.18, "half", "R2 " + fixed$(rSquared,3) + " | residual RMS " + fixed$(residualRms,0) + " Hz"
+    modelSub$ = "order " + string$(effectiveOrder) + " | R2 " + fixed$(rSquared,3) + " | residual RMS " + fixed$(residualRms,0) + " Hz"
+    if nSilentI > 0
+        modelSub$ = modelSub$ + " | " + string$(nSilentI) + " silent grains not fitted or drawn"
+    endif
+    if nRepairedI + nSignalI > 0
+        modelSub$ = modelSub$ + " | " + string$(nRepairedI + nSignalI) + " intensity repaired"
+    endif
+    Text: 0.01, "left", 0.18, "half", modelSub$
 
     iPad = max(1, 0.04 * (maxI - minI))
     cPad = max(50, 0.08 * (maxC - minC))
@@ -1048,7 +1531,9 @@ if draw_visualization
         pointStride = 1
     endif
     for i from 1 to nGrains
-        if (i - 1) mod pointStride = 0
+        # silent grains are not part of the fit and have no measurable
+        # centroid, so they are not drawn (v1.5)
+        if (i - 1) mod pointStride = 0 and fitMask#[i] = 1
             Paint circle (mm): "{0.26, 0.48, 0.78}", feat_I#[i], feat_C#[i], 0.48
         endif
     endfor
@@ -1066,48 +1551,67 @@ if draw_visualization
     Text left: "yes", "centroid (Hz)"
 
     # ========================================================
-    # B  ORDER
+    # B  TRAJECTORY
+    # v1.5: output position -> position, for sequences of ANY length
+    # (repeats and arcs included). Grey = the common trajectory through
+    # the ranked pool (rank space, where arcs and walks read as shapes);
+    # blue/red = the source-time position of the grain actually placed
+    # in each channel. Dotted verticals mark turning points.
     # ========================================================
     Select outer viewport: 4, 8, 0.64, 0.90
     Select inner viewport: 4.18, 7.70, 0.64, 0.90
     Axes: 0, 1, 0, 1
     Font size: 9
     Colour: "Black"
-    Text: 0.01, "left", 0.72, "half", "B  STEREO ORDER - actual L/R output -> source position"
+    Text: 0.01, "left", 0.72, "half", "B  TRAJECTORY - " + trajName$ + " | " + string$(nGrains) + " -> " + string$(nOutputGrains) + " grains"
     Font size: 6
     Colour: "{0.35, 0.35, 0.50}"
-    Text: 0.01, "left", 0.18, "half", "blue L | red R | positions differ " + fixed$(stereoDifferentPct,1) + "\%  | rank separation " + fixed$(stereoOrderSeparationPct,3) + "\%  "
+    Text: 0.01, "left", 0.18, "half", "dark line = rank path | dots = source time (blue L, red R) | L/R differ "
+        ... + fixed$(stereoDifferentPct,1) + "\%  | " + string$(actualPairs) + " swaps | " + string$(nTurns) + if nTurns = 1 then " turn" else " turns" fi
 
+    Font size: 6
     Select outer viewport: 4, 8, 0.90, 3.03
     Select inner viewport: 4.45, 7.70, 1.01, 2.86
     Axes: 0, 100, 0, 100
     Paint rectangle: "{0.97, 0.97, 0.97}", 0, 100, 0, 100
 
-    # Grey diagonal = unchanged chronology.
-    Colour: "{0.76, 0.76, 0.79}"
-    Line width: 1
-    Draw line: 0, 0, 100, 100
+    if nOutputGrains > 1
+        xScale = 100 / (nOutputGrains - 1)
+    else
+        xScale = 100
+    endif
 
-    # LEFT actual permutation.
-    Colour: "{0.26, 0.48, 0.78}"
-    Line width: 1.5
-    for g from 2 to nGrains
-        x0 = 100 * (g - 2) / (nGrains - 1)
-        x1 = 100 * (g - 1) / (nGrains - 1)
-        y0 = 100 * (permL#[g - 1] - 1) / (nGrains - 1)
-        y1 = 100 * (permL#[g] - 1) / (nGrains - 1)
-        Draw line: x0, y0, x1, y1
+    # Turning points (arc modes only; a random walk has too many).
+    if trajectory_mode = 2 or trajectory_mode = 3
+        Colour: "{0.70, 0.70, 0.72}"
+        Dotted line
+        for q from 1 to nTurns
+            xt = xScale * (turnAt#[q] - 1)
+            Draw line: xt, 0, xt, 100
+        endfor
+        Solid line
+    endif
+
+    # Source-time position of the grain actually placed in each channel,
+    # as dots: a causal order is scrambled in time, and joined lines
+    # would bury the trajectory shape. Blue L underneath, smaller red R
+    # on top, so a position where L and R differ shows both colours.
+    for g from 1 to nOutputGrains
+        Paint circle (mm): "{0.26, 0.48, 0.78}", xScale * (g - 1), 100 * (seqL#[g] - 1) / (nGrains - 1), 0.32
+    endfor
+    for g from 1 to nOutputGrains
+        Paint circle (mm): "{0.78, 0.28, 0.22}", xScale * (g - 1), 100 * (seqR#[g] - 1) / (nGrains - 1), 0.20
     endfor
 
-    # RIGHT actual permutation.
-    Colour: "{0.78, 0.28, 0.22}"
-    Line width: 1.3
-    for g from 2 to nGrains
-        x0 = 100 * (g - 2) / (nGrains - 1)
-        x1 = 100 * (g - 1) / (nGrains - 1)
-        y0 = 100 * (permR#[g - 1] - 1) / (nGrains - 1)
-        y1 = 100 * (permR#[g] - 1) / (nGrains - 1)
-        Draw line: x0, y0, x1, y1
+    # Common trajectory in rank space, drawn last so its shape (sweep,
+    # arcs, walk) is always readable.
+    Select inner viewport: 4.45, 7.70, 1.01, 2.86
+    Axes: 0, 100, 0, 100
+    Colour: "{0.25, 0.25, 0.30}"
+    Line width: 2
+    for g from 2 to nOutputGrains
+        Draw line: xScale * (g - 2), 100 * (trajPos#[g - 1] - 1) / (nGrains - 1),
+            ... xScale * (g - 1), 100 * (trajPos#[g] - 1) / (nGrains - 1)
     endfor
     Line width: 1
 
@@ -1120,7 +1624,7 @@ if draw_visualization
     Marks left every: 1, 20, "yes", "yes", "no"
     Font size: 7
     Text bottom: "yes", "output position (\% )"
-    Text left: "yes", "source position (\% )"
+    Text left: "yes", "rank / source position (\% )"
 
     # ========================================================
     # C  SPLICE
@@ -1315,20 +1819,34 @@ if draw_visualization
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
     Font size: 6
     Colour: "{0.25, 0.25, 0.35}"
+    if trajectory_mode = 3
+        trajSum$ = trajName$ + " x" + string$(nCyclesUsed)
+    elsif trajectory_mode = 4
+        trajSum$ = trajName$ + " " + fixed$(random_walk_variation, 0) + "\%  seed "
+        if random_seed > 0
+            trajSum$ = trajSum$ + string$(random_seed)
+        else
+            trajSum$ = trajSum$ + "free"
+        endif
+    else
+        trajSum$ = trajName$
+    endif
     Text: 0.02, "left", 0.80, "half",
         ... "##Sort##  " + sortKeyName$ + " / " + sortDirName$
-        ... + "   ##Grains##  " + string$(nGrains)
-        ... + "   ##Stereo##  " + fixed$(stereo_divergence_percent, 0) + "\%  generated"
-        ... + "   ##Fade##  " + fixed$(effectiveFadeMs, 1) + " ms"
+        ... + "   ##Trajectory##  " + trajSum$
+        ... + "   ##Continuity##  " + fixed$(temporal_continuity_percent, 0) + "\%  "
+        ... + "   ##Grains##  " + string$(nGrains) + " -> " + string$(nOutputGrains)
+        ... + "   ##Out##  " + fixed$(outDur, 2) + " s"
     Text: 0.02, "left", 0.50, "half",
-        ... "##Pool##  mono " + monoMethod$
+        ... "##Stereo##  " + fixed$(stereo_divergence_percent, 0) + "\%  swap amount -> L/R differ "
+        ... + fixed$(stereoDifferentPct, 1) + "\%  (" + string$(actualPairs) + " pairs)"
         ... + "   rank sep " + fixed$(stereoOrderSeparationPct, 3) + "\%  "
-        ... + "   L/R differ " + fixed$(stereoDifferentPct, 1) + "\%  "
         ... + "   SIDE/MID " + sideMidLabel$
-        ... + "   fit R^2 " + fixed$(rSquared, 3)
+        ... + "   ##Model##  order " + string$(effectiveOrder) + "   R^2 " + fixed$(rSquared, 3)
+        ... + "   fade " + fixed$(effectiveFadeMs, 1) + " ms"
     Text: 0.02, "left", 0.20, "half",
-        ... "##Chain##  mono grain pool -> one causal sort"
-        ... + " -> subtle L/R local swaps -> stereo overlap-add"
+        ... "##Chain##  mono grain pool (" + monoMethod$ + ") -> causal rank -> continuity blend"
+        ... + " -> trajectory -> local L/R swaps -> stereo overlap-add"
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
 
@@ -1350,8 +1868,18 @@ appendInfoLine: ""
 appendInfoLine: "=== COMPLETE ==="
 appendInfoLine: "Effective model order: ", effectiveOrder, " (requested ", requestedOrder, ")"
 appendInfoLine: "Fit R^2: ", fixed$(rSquared, 3), " | residual RMS: ", fixed$(residualRms, 1), " Hz"
-appendInfoLine: "Mean permutation displacement (L/R average): ", fixed$(meanDisplacementPct, 1), "%"
-appendInfoLine: "L/R differing output positions: ", fixed$(stereoDifferentPct,1), "% | mean causal-rank separation: ", fixed$(stereoOrderSeparationPct,3), "%"
+appendInfoLine: "Trajectory: ", trajName$, trajDetail$, " | continuity ", fixed$(temporal_continuity_percent, 0), "%"
+if trajectory_mode = 3 and nCyclesUsed <> number_of_cycles
+    appendInfoLine: "  cycles used: ", nCyclesUsed, " (requested ", number_of_cycles, ")"
+endif
+appendInfoLine: "Grains: ", nGrains, " source -> ", nOutputGrains, " output (", nDistinct, " distinct, ",
+    ... nTurns, " turning points)"
+appendInfoLine: "Intensity readings: ", nMeasuredI, " measured, ", nRepairedI, " repaired, ",
+    ... nSignalI, " signal-RMS fallback, ", nSilentI, " silent (excluded from fit, ", nFit, " grains fitted)"
+appendInfoLine: "Mean displacement from source chronology (L/R average): ", fixed$(meanDisplacementPct, 1), "%"
+appendInfoLine: "Stereo divergence: ", fixed$(stereo_divergence_percent, 1), "% requested swap amount -> ",
+    ... actualPairs, " swap pairs (", targetPairs, " requested)"
+appendInfoLine: "L/R differing output positions (measured): ", fixed$(stereoDifferentPct,1), "% | mean causal-rank separation: ", fixed$(stereoOrderSeparationPct,3), "%"
 appendInfoLine: "Broken source adjacencies: ", fixed$(adjacencyBreakPct, 1), "%"
 appendInfoLine: "Effective crossfade: ", fixed$(effectiveFadeMs, 1), " ms"
 appendInfoLine: "Output channels: ", outChannels, " generated from mono grain pool (source had ", nChannels, " ch)"
@@ -1370,3 +1898,45 @@ if play_result
     appendInfoLine: "Playing..."
     Play
 endif
+
+# ============================================================
+# PROCEDURES
+# ============================================================
+
+# Stable argsort (v1.5). Sorts the item ids in sortIdx#[1..n]
+# ascending by sortVal#[id]; items with equal values keep their input
+# order. Bottom-up merge sort, O(n log n). sortVal# is indexed by item
+# id, so it may be longer than n (a subset of items can be sorted).
+procedure stableArgsort: .n
+    .width = 1
+    while .width < .n
+        .tmp# = zero#(.n)
+        .lo = 1
+        while .lo <= .n
+            .mid = min(.lo + .width - 1, .n)
+            .hi = min(.lo + 2 * .width - 1, .n)
+            .a = .lo
+            .b = .mid + 1
+            for .k from .lo to .hi
+                .takeA = 0
+                if .a <= .mid
+                    if .b > .hi
+                        .takeA = 1
+                    elsif sortVal#[sortIdx#[.a]] <= sortVal#[sortIdx#[.b]]
+                        .takeA = 1
+                    endif
+                endif
+                if .takeA = 1
+                    .tmp#[.k] = sortIdx#[.a]
+                    .a += 1
+                else
+                    .tmp#[.k] = sortIdx#[.b]
+                    .b += 1
+                endif
+            endfor
+            .lo = .lo + 2 * .width
+        endwhile
+        sortIdx# = .tmp#
+        .width = .width * 2
+    endwhile
+endproc
