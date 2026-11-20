@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.5.1 (2026) - QA terminology/reporting fixes
+# Version: 0.6.0 (2026) - DSP audit against SuperCollider / gen~ references
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -35,18 +35,98 @@
 #   - The quantizer sets a STEP of 1/N, which is not N levels:
 #     over -1..+1 a step of 1/8 gives 17 distinct values, and over
 #     the -2..+2 that a sum of two normalized Sounds can reach, 33.
+#     Since v0.6, N = round(4 / intensity): MORE intensity means a
+#     COARSER step (0.5 still gives 1/8).
 #   - "Logistic chaos" is not the recursive logistic map x_{n+1} =
-#     r*x*(1-x). It is a product (s1+s2) * (3.5 - 3.5*|s1|*|s2|),
+#     r*x*(1-x). It is a memoryless product
+#       (s1+s2) * 3.5 * (1 - k*|s1|*|s2|),  k = 2 * intensity
+#     (k = 1 at intensity 0.5, which is the v0.3-v0.5.1 formula),
 #     which produces audio-rate amplitude shaping but no
 #     recursive iteration.
 #   - "Hard sync sim" is an audio-effect pseudo-sync, not a
 #     phase-reset oscillator-style hard sync.
+#   - "AM depth control" (Nonlinear 3) computes exactly the same
+#     expression as Tremolo (Modulation 9) with depth = intensity.
+#     Both are kept so menu indices and saved settings stay valid.
 #
 # Citation:
 #   Cohen, S. (2025). Praat AudioTools: An Offline Analysis-Resynthesis
 #   Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
+#
+# Changelog v0.6.0 (2026):
+#   DSP audit against SuperCollider (sc_fold, sc_pow, BinaryOpUGen)
+#   and Max gen~ (genlib fold, safediv, quant). Runtime-tested in
+#   Praat 6.4.06, 6.4.63 and 7.0 (bit-identical across the three) and
+#   6.1.38 (last-ulp libm differences only). Every changed operation was checked
+#   against v0.5.1 with Output_mode = Preserve, so gain cannot hide a
+#   difference.
+#   DSP CHANGES (output differs from v0.5.1 only where stated):
+#   - Wavefold: closed-form triangle fold, as in SC Fold / gen~ fold.
+#     The repeated reflection only folded inputs up to (2N+1)*T and let
+#     anything louder through unbounded and linear. Fold_passes = 0 (new
+#     default) is the complete fold; 1..N keeps the v0.5.1 reflections
+#     bit-for-bit. Output is unchanged wherever v0.5.1 had already
+#     folded completely, which includes the Wavefold preset on inputs
+#     that stay within +/-1.
+#   - Power mod: removed the 1e-6 base floor. With the exponent clamped
+#     at >= 0.05, 0^e is defined (= 0), so the floor guarded nothing but
+#     created a jump: any |S1| below 1e-6 came out at about +/-0.5
+#     (1e-6^0.05 = 0.501). Now sgn(S1)*|S1|^max(1+S2*depth, 0.05), which
+#     is SC's sign-preserving pow. Continuous, and exact zero stays 0.
+#     Changes only samples with 0 < |S1| < 1e-6. No preset uses it.
+#   - Logistic-style: intensity was a pure output gain (r = 7*intensity),
+#     so it did nothing after normalization. It now sets the fold-back
+#     depth k = 2*intensity in (S1+S2)*3.5*(1 - k*|S1|*|S2|). Intensity
+#     0.5 (the preset) is bit-identical; other values change the
+#     transfer-function shape, not just the level.
+#   - Quantizer: intensity direction inverted, N = round(4/intensity),
+#     so more intensity is a coarser step, like every other intensity
+#     control here. Intensity 0.5 still gives 1/8. Rounding is now
+#     odd-symmetric (half away from zero): Praat's round() is
+#     floor(x+0.5), so -1.5 went to -1 but +1.5 went to 2. The preset
+#     differs from v0.5.1 only at samples landing exactly on a negative
+#     half-step, by one step.
+#   - XOR-like: uses the three-valued sign. v0.5.1 treated an exact zero
+#     as "same sign", so a digitally silent Sound 1 turned Sound 2 into
+#     +|S2|/2, a full-wave-rectified copy with heavy DC. Differs only at
+#     samples where an input is exactly 0.
+#   - COST (30 s stereo, 44.1 kHz, whole script): Wavefold 0.57 -> 0.37 s,
+#     Power 0.61 -> 0.43 s, signed magnitude product 0.24 -> 0.12 s;
+#     the symmetric quantizer 0.16 -> 0.28 s and XOR-like 0.26 -> 0.31 s
+#     are slower (an extra branch per sample).
+#   - Magnitude products: algebraically simplified. Signed and unsigned
+#     |S1|*|S2| are bit-identical (S1*|S2|, |S1*S2|); the geometric
+#     product uses one sqrt instead of two and differs by rounding only
+#     (about 1e-16).
+#   CRASH FIX (channels, not DSP):
+#   - "Sound 1 defines layout" with Sound 1 having more channels than a
+#     MULTICHANNEL Sound 2 (3ch + 2ch) aborted Praat with an internal
+#     assertion (rc 134 on 6.4.06, 6.4.63 and 7.0; v0.5.1 too) instead
+#     of processing the extra channels against silence as the NOTE says.
+#     Sound 2 is now padded with silent channels. Mono Sound 2 (broadcast)
+#     and every other layout are unchanged.
+#   REPORTING / UI:
+#   - Form shortened from 31 to 17 rows so it fits on screen: the section
+#     headers and per-field hint comments were removed (the field order,
+#     names and defaults are unchanged, so runScript callers and Matrix
+#     Chain are unaffected). The hints now live here:
+#       Nonlinear_intensity - used by Nonlinear 2-8 and Advanced 4-8
+#       Fold_passes   - Wavefold only: 0 = complete fold, 1..N = v0.5.1
+#       Divide_epsilon - Divide only: |S2| at or below it yields 0
+#       Geometric_polarity - the two magnitude products only
+#       Random_seed   - Random scatter only; 0 = unpredictable
+#     The Info window and Panel B report which controls the run used.
+#   - Fold_passes is now `integer`, 0 = complete fold (default).
+#   - Wavefold, quantizer, logistic and Mod depth reports state what the
+#     parameter does for the operation that ran.
+#   - Random scatter warns when intensity > 1 (the gain crosses zero and
+#     flips polarity on some samples).
+#   - Removed the unused `intensityUsed$` variable.
+#   UNCHANGED, AFTER REVIEW: Divide (see the comment at the operation),
+#   and every other operation, the presets' numeric values, priority
+#   order, time alignment, channel policies, output modes, visualization.
 #
 # Changelog v0.5.1 (2026):
 #   - QA/TERMINOLOGY/REPORTING ONLY; DSP formulas and preset numeric
@@ -250,11 +330,8 @@
 #   - Added info output
 # ============================================================
 
-form Math Operations Between Sounds v0.5.1
-    comment Select exactly 2 Sound objects first
-    comment Sound 1 / Sound 2 = Praat Objects-list order (top to bottom), not click order
-    
-    comment === Preset ===
+form Math Operations Between Sounds v0.6.0
+    comment Select 2 Sounds (Sound 1 / 2 = Objects-list order). Details: header and Info window.
     optionmenu Preset: 1
         option Custom (manual settings)
         option Clean Add
@@ -274,8 +351,6 @@ form Math Operations Between Sounds v0.5.1
         option Geometric Product (sqrt magnitudes)
         option Vector Morph
         option Rectify Distortion
-    
-    comment === Basic Operations ===
     optionmenu Operation: 2
         option Add (+)
         option Subtract (-)
@@ -286,8 +361,6 @@ form Math Operations Between Sounds v0.5.1
         option Maximum
         option Absolute difference
         option XOR-like (sign mixing)
-    
-    comment === Modulation ===
     optionmenu Modulation_operation: 1
         option None
         option AM (unipolar): S1 * (0.5 + 0.5*sin(S2))
@@ -298,8 +371,6 @@ form Math Operations Between Sounds v0.5.1
         option Soft clip: arctan(S1 * S2)
         option Power mod (exponent floored at 0.05)
         option Tremolo: S1 * (1 + S2*depth) [bipolar if depth>1]
-    
-    comment === Nonlinear ===
     optionmenu Nonlinear_operation: 1
         option None
         option Cosine cross-waveshape (not a freq shift)
@@ -309,8 +380,6 @@ form Math Operations Between Sounds v0.5.1
         option Quantize to 1/N amplitude steps
         option Amplitude-dependent blend
         option Soft normalize mix
-    
-    comment === Advanced ===
     optionmenu Advanced_operation: 1
         option None
         option Geometric product (sqrt magnitudes)
@@ -320,29 +389,18 @@ form Math Operations Between Sounds v0.5.1
         option Rectify and mix
         option Cross-phase waveshaper
         option Random amplitude scatter
-    
-    comment === Parameters ===
     positive Modulation_depth 1.0
     positive Nonlinear_intensity 0.5
-    comment (was unused by 7 operations; 5 now use it - the report says which)
-    natural Fold_passes 4
-    comment (Wavefold only: one pass leaves loud input still past threshold)
+    integer Fold_passes 0
     positive Divide_epsilon 0.001
-    comment (Divide only: |denominator| at or below this yields 0)
     optionmenu Geometric_polarity: 1
         option Restore sign of Sound 1
         option Unsigned magnitude product (v0.2/v0.3)
-    comment (the two magnitude-product operations only)
     integer Random_seed 0
-    comment (Random scatter only; 0 = unpredictable)
-    
-    comment === Channels ===
     optionmenu Channel_policy: 1
         option Sound 1 defines layout (v0.2/v0.3)
         option Require matching channel counts
         option Mix both to mono
-    
-    comment === Output ===
     optionmenu Output_mode: 1
         option Normalize to 0.95 (v0.2/v0.3; scaling inert)
         option Normalize to 0.95, then apply scaling
@@ -354,8 +412,8 @@ form Math Operations Between Sounds v0.5.1
 endform
 
 divEps$ = string$(divide_epsilon)
-if fold_passes < 1
-    exitScript: "Fold_passes must be at least 1."
+if fold_passes < 0
+    exitScript: "Fold_passes must be 0 (complete fold) or a positive number of reflections."
 endif
 
 # === Apply Presets ===
@@ -523,7 +581,7 @@ if advanced_operation = 8
 endif
 
 # === Info ===
-writeInfoLine: "=== Math Operations v0.5.1 ==="
+writeInfoLine: "=== Math Operations v0.6.0 ==="
 appendInfoLine: "Sound 1: ", name1$, " (", fixed$(dur1, 2), " s, ", n_ch_1, " ch)"
 appendInfoLine: "Sound 2: ", name2$, " (", fixed$(dur2, 2), " s, ", n_ch_2, " ch)"
 appendInfoLine: "Using duration: ", fixed$(min_dur, 2), " s"
@@ -553,6 +611,29 @@ sound1_part = selected("Sound")
 selectObject: sound2
 Extract part: start2, start2 + min_dur, "rectangular", 1, "no"
 sound2_part = selected("Sound")
+
+# v0.6 (crash fix): with "Sound 1 defines layout", a Sound 1 with MORE
+# channels than a multichannel Sound 2 (e.g. 3ch + 2ch) made every
+# object[sound2, row, col] read for row 3 hit an internal assertion -
+# "Crashing bug: Praat will crash", and the process aborts. Verified on
+# Praat 6.4.06, 6.4.63 and 7.0, for v0.5.1 as well. The NOTE above
+# documents that the extra channels are processed against SILENCE; that
+# is now what happens: Sound 2 is padded with silent channels. (A mono
+# Sound 2 is broadcast by Praat itself and needs no padding.) Praat's
+# formula `if` is lazy, so the missing rows are never read.
+if channel_policy = 1 and n_ch_2 > 1 and n_ch_2 < n_ch_1
+    selectObject: sound2_part
+    padSamples = Get number of samples
+    padDur = Get total duration
+    padded = Create Sound from formula: "s2pad", n_ch_1, 0, padDur, sr2,
+        ... "if row <= " + string$(n_ch_2) + " then object[" + string$(sound2_part) + ", row, col] else 0 fi"
+    padCheck = Get number of samples
+    removeObject: sound2_part
+    sound2_part = padded
+    if padCheck <> padSamples
+        exitScript: "Internal error: channel padding changed the sample count (" + string$(padSamples) + " -> " + string$(padCheck) + ")."
+    endif
+endif
 
 if channel_policy = 3
     if n_ch_1 > 1
@@ -601,12 +682,16 @@ if advanced_operation > 1
         # always positive - a unipolar signal with substantial DC. The
         # sign of S1 is restored to keep it bipolar; set
         # Geometric_polarity to "unsigned" for the v0.3 shape.
+        # v0.6: sqrt(|a|)*sqrt(|b|) = sqrt(|a*b|) - one sqrt instead of
+        # two. Differs from v0.5.1 by rounding only (~1e-16 relative); the
+        # product a*b could only underflow for |a*b| < 1e-308, far below
+        # any audio sample.
         if geometric_polarity = 1
             ranLabel$ = ranLabel$ + " [signed by S1]"
-            Formula: ~ ((self>0) - (self<0)) * sqrt(abs(self)) * sqrt(abs(object[sound2_part]))
+            Formula: ~ ((self>0) - (self<0)) * sqrt(abs(self * object[sound2_part]))
         else
             ranLabel$ = ranLabel$ + " [unsigned]"
-            Formula: ~ sqrt(abs(self)) * sqrt(abs(object[sound2_part]))
+            Formula: ~ sqrt(abs(self * object[sound2_part]))
         endif
         appendInfoLine: "Applying: ", ranLabel$
     elsif advanced_operation = 3
@@ -617,12 +702,16 @@ if advanced_operation > 1
         # also removes the 1e-10 floors that made two silent inputs
         # produce a constant 1e-21 that `Scale peak` then lifted to
         # 0.95 DC.
+        # v0.6: sgn(a)*|a|*|b| = a*|b| and |a|*|b| = |a*b| exactly in IEEE
+        # arithmetic (the sign of a product is handled separately from its
+        # rounding), so these are bit-identical to v0.5.1 with fewer
+        # operations.
         if geometric_polarity = 1
             ranLabel$ = ranLabel$ + " [signed by S1]"
-            Formula: ~ ((self>0) - (self<0)) * abs(self) * abs(object[sound2_part])
+            Formula: ~ self * abs(object[sound2_part])
         else
             ranLabel$ = ranLabel$ + " [unsigned]"
-            Formula: ~ abs(self) * abs(object[sound2_part])
+            Formula: ~ abs(self * object[sound2_part])
         endif
         appendInfoLine: "Applying: ", ranLabel$
     elsif advanced_operation = 4
@@ -637,13 +726,24 @@ if advanced_operation > 1
         appendInfoLine: "Applying: ", ranLabel$
         Formula: "self * (1 - " + depth_str$ + ") + object[" + s2_str$ + "] * " + depth_str$
     elsif advanced_operation = 5
-        # v0.4 (item 7): intensity was reported but unused here. It now
-        # sets the shaping coefficient; 0.5 gives the v0.3 constant 3.5.
-        chaosR = 7 * nonlinear_intensity
-        chaosR$ = string$(chaosR)
-        ranLabel$ = "Logistic-style shaping (non-recursive, r=" + fixed$(chaosR, 2) + ")"
+        # v0.6: in v0.4-v0.5.1 intensity set r in (S1+S2)*(r - r*|S1||S2|),
+        # i.e. it only multiplied the whole output by r/3.5 - a gain that
+        # peak normalization divides straight back out. It now sets the
+        # fold-back depth k of the amplitude-dependent factor:
+        #   out = (S1+S2) * 3.5 * (1 - k*|S1|*|S2|),   k = 2*intensity
+        # k = 0 is a plain (scaled) sum, k = 1 (intensity 0.5) is exactly
+        # the v0.3-v0.5.1 formula, and k > 1 makes the factor go negative
+        # where |S1||S2| > 1/k, folding loud coincident peaks back through
+        # zero - the x(1-x) hump of the logistic map. Memoryless, no
+        # recursion; for inputs within +/-1 the output is bounded by
+        # 7*max(1, k-1). The coefficient string is 3.5*k = 7*intensity,
+        # so at intensity 0.5 the formula text, and the output, are the
+        # same as v0.5.1.
+        chaosK = 2 * nonlinear_intensity
+        chaosC$ = string$(3.5 * chaosK)
+        ranLabel$ = "Logistic-style shaping (non-recursive, r=3.5, k=" + fixed$(chaosK, 2) + ")"
         appendInfoLine: "Applying: ", ranLabel$
-        Formula: "(self + object[" + s2_str$ + "]) * (" + chaosR$ + " - " + chaosR$ + " * abs(self) * abs(object[" + s2_str$ + "]))"
+        Formula: "(self + object[" + s2_str$ + "]) * (3.5 - " + chaosC$ + " * abs(self) * abs(object[" + s2_str$ + "]))"
     elsif advanced_operation = 6
         # v0.4 (item 7): intensity was reported but unused. It now sets
         # how much of Sound 2's magnitude is subtracted; 0.5 doubled to 1
@@ -675,6 +775,12 @@ if advanced_operation > 1
         scatDepth$ = string$(0.8 * nonlinear_intensity)
         ranLabel$ = "Random amplitude scatter (gain 0.8 +/- " + fixed$(0.8 * nonlinear_intensity, 2) + ")"
         appendInfoLine: "Applying: ", ranLabel$
+        # v0.6: above intensity 1 the gain range 0.8*(1 +/- intensity)
+        # includes negative values, so some samples are polarity-flipped.
+        # Allowed (it is still per-sample random AM), but no longer silent.
+        if nonlinear_intensity > 1
+            appendInfoLine: "  NOTE: intensity ", fixed$(nonlinear_intensity, 2), " > 1 - the random gain spans ", fixed$(0.8 * (1 - nonlinear_intensity), 2), "..", fixed$(0.8 * (1 + nonlinear_intensity), 2), " and flips polarity on some samples."
+        endif
         Formula: "(self + object[" + s2_str$ + "]) * (0.8 + " + scatDepth$ + " * randomUniform(-1, 1))"
     endif
 
@@ -689,10 +795,10 @@ elsif nonlinear_operation > 1
     elsif nonlinear_operation = 3
         ranLabel$ = "AM depth control"
         appendInfoLine: "Applying: ", ranLabel$
+        # v0.6 note: this is the same expression as Modulation 9 (Tremolo)
+        # with depth = intensity. Kept for menu-index compatibility.
         Formula: "self * (1 + object[" + s2_str$ + "] * " + intensity_str$ + ")"
     elsif nonlinear_operation = 4
-        ranLabel$ = "Wavefold"
-        appendInfoLine: "Applying: ", ranLabel$
         # v0.4 (item 11/12): the threshold used to be 0.5 + intensity, so
         # RAISING "intensity" produced LESS folding - the opposite of what
         # the name implies. Intensity now sets the fold amount directly and
@@ -700,16 +806,41 @@ elsif nonlinear_operation > 1
         thresh = 1.0 / (0.5 + nonlinear_intensity)
         thresh_str$ = string$(thresh)
         sum$ = "(self + object[" + s2_str$ + "])"
-        sgnSum$ = "((" + sum$ + ">0) - (" + sum$ + "<0))"
-        # v0.4 (item 12): a single reflection leaves anything past 3T
-        # outside the threshold again, so this is repeated folding now -
-        # foldPasses reflections, which is what "wavefold" describes.
-        # (One pass remains available by setting Fold_passes to 1.)
-        Formula: "if abs(" + sum$ + ") > " + thresh_str$ + " then 2 * " + thresh_str$ + " * " + sgnSum$ + " - " + sum$ + " else " + sum$ + " fi"
-        for foldPass from 2 to fold_passes
-            sgnSelf$ = "((self>0) - (self<0))"
-            Formula: "if abs(self) > " + thresh_str$ + " then 2 * " + thresh_str$ + " * " + sgnSelf$ + " - self else self fi"
-        endfor
+        if fold_passes = 0
+            # v0.6: closed-form triangle fold of x = S1+S2 into [-T, T],
+            # the same transfer function as SC Fold.ar(x, -T, T) / sc_fold
+            # and gen~ fold(x, -T, T):
+            #   u = x + T;  m = u - 4T*floor(u / 4T);  out = T - |m - 2T|
+            # m is u reduced to one fold period [0, 4T); T - |m - 2T| is the
+            # triangle that runs -T -> T -> -T over that period, so
+            # x = -T, 0, T, 2T, 3T map to -T, 0, T, 0, -T. It is continuous
+            # (slope +/-1 everywhere, corners exactly at the thresholds),
+            # odd-symmetric, branch-free, and bounded for ANY input - the
+            # repeated reflection below only covers |x| <= (2N+1)T and lets
+            # louder input through linearly. Where the reflection had
+            # already folded completely the two agree (to rounding), so
+            # the Wavefold preset is unchanged for inputs within +/-1.
+            period$ = string$(4 * thresh)
+            half$ = string$(2 * thresh)
+            u$ = "(" + sum$ + " + " + thresh_str$ + ")"
+            ranLabel$ = "Wavefold (complete, T=" + fixed$(thresh, 3) + ")"
+            appendInfoLine: "Applying: ", ranLabel$
+            Formula: thresh_str$ + " - abs(" + u$ + " - " + period$ + " * floor(" + u$ + " / " + period$ + ") - " + half$ + ")"
+        else
+            ranLabel$ = "Wavefold (" + string$(fold_passes) + " reflections, T=" + fixed$(thresh, 3) + ")"
+            appendInfoLine: "Applying: ", ranLabel$
+            sgnSum$ = "((" + sum$ + ">0) - (" + sum$ + "<0))"
+            # v0.4 (item 12): a single reflection leaves anything past 3T
+            # outside the threshold again, so this is repeated folding -
+            # foldPasses reflections. v0.6 keeps it, bit-identical, as the
+            # Fold_passes >= 1 option: |x| up to (2N+1)T is folded, and
+            # anything louder leaves outside [-T, T].
+            Formula: "if abs(" + sum$ + ") > " + thresh_str$ + " then 2 * " + thresh_str$ + " * " + sgnSum$ + " - " + sum$ + " else " + sum$ + " fi"
+            for foldPass from 2 to fold_passes
+                sgnSelf$ = "((self>0) - (self<0))"
+                Formula: "if abs(self) > " + thresh_str$ + " then 2 * " + thresh_str$ + " * " + sgnSelf$ + " - self else self fi"
+            endfor
+        endif
     elsif nonlinear_operation = 5
         ranLabel$ = "Hard sync sim"
         appendInfoLine: "Applying: ", ranLabel$
@@ -724,14 +855,32 @@ elsif nonlinear_operation > 1
         # Sounds. The label is corrected, and Nonlinear_intensity now
         # drives the step size instead of being displayed while doing
         # nothing (intensity 0.5 reproduces the v0.3 step of 1/8).
-        crushSteps = round(16 * nonlinear_intensity)
+        # v0.6 (direction): v0.4's N = round(16*intensity) made MORE
+        # intensity give a FINER step, i.e. less quantization - the same
+        # inverted sense v0.4 already corrected for Wavefold. Now
+        # N = round(4/intensity): 0.5 -> 1/8 (unchanged, preset-safe),
+        # 1 -> 1/4, 2 -> 1/2, 0.25 -> 1/16. Severity rises with intensity.
+        # v0.6 (rounding): Praat's round(x) is floor(x + 0.5) - the same
+        # rule as gen~'s quant macro and SC's round - which sends -1.5 to
+        # -1 but +1.5 to 2, so the quantizer was not odd-symmetric at exact
+        # half-steps (which 16-bit sources do hit). It is now
+        # sgn(x)*floor(|x|*N + 0.5)/N, rounding half away from zero, so
+        # q(-x) = -q(x) for every x. Still mid-tread: 0 is a level, so
+        # silence stays silence. No sample-rate reduction (not a bitcrusher).
+        crushSteps = round(4 / nonlinear_intensity)
         if crushSteps < 1
             crushSteps = 1
         endif
         crush_str$ = string$(crushSteps)
         ranLabel$ = "Quantize to 1/" + crush_str$ + " steps"
         appendInfoLine: "Applying: ", ranLabel$
-        Formula: "round((self + object[" + s2_str$ + "]) * " + crush_str$ + ") / " + crush_str$
+        # Written as an if/else rather than sgn(x)*floor(|x|*N + 0.5)/N:
+        # same values bit-for-bit, but x = S1+S2 is evaluated twice instead
+        # of three times (measured 0.25 s vs 0.36 s on 30 s of stereo;
+        # v0.5.1's asymmetric round() took 0.14 s).
+        qx$ = "(self + object[" + s2_str$ + "])"
+        Formula: "if " + qx$ + " < 0 then -floor(0.5 - " + qx$ + " * " + crush_str$ + ") / " + crush_str$
+            ... + " else floor(" + qx$ + " * " + crush_str$ + " + 0.5) / " + crush_str$ + " fi"
     elsif nonlinear_operation = 7
         ranLabel$ = "Amplitude-dependent blend"
         appendInfoLine: "Applying: ", ranLabel$
@@ -780,18 +929,21 @@ elsif modulation_operation > 1
         # to prevent, so the clamp stays and the label changes.
         ranLabel$ = "Clamped power waveshaping (exponent >= 0.05)"
         appendInfoLine: "Applying: ", ranLabel$
-        # v0.4 (items 1 and 13): sign() is not a Praat function, and the
-        # old guard tested the MODULATOR for being near zero, which has
-        # nothing to do with the singularity. The real hazard is a base at
-        # or near zero raised to a negative exponent: with S2 = -1 and
-        # depth 2 the exponent is -1, so 0^-1 is undefined and small bases
-        # explode. The guard now tests the exponent and the base, which is
-        # where the danger actually is. The menu label said S1^(S2/2); the
-        # exponent is really 1 + S2*depth, and the label now says so.
+        # v0.4 (items 1 and 13): sign() is not a Praat function; the
+        # exponent is 1 + S2*depth (the menu used to say S1^(S2/2)).
+        # v0.6: v0.5.1 also floored the BASE at 1e-6. Because the exponent
+        # is already clamped to >= 0.05, |S1|^e is defined for every |S1|
+        # including 0 (0^0.05 = 0), so the floor protected nothing - but
+        # it created a plateau: every 0 < |S1| < 1e-6 came out as
+        # +/-(1e-6)^e, which is +/-0.501 at e = 0.05, while |S1| = 0 gave 0.
+        # A near-silent sample therefore jumped to half scale. Removed.
+        # The result is SC's sign-preserving pow (sc_pow: "pow(a, b),
+        # retaining the sign of a"), continuous at 0 for every exponent
+        # >= 0.05. Small exponents are still very steep near zero
+        # (0.001^0.05 = 0.71) - that is the transfer function, not a bug.
         sgnSelf$ = "((self>0) - (self<0))"
         expo$ = "(1 + object[" + s2_str$ + "] * " + mod_str$ + ")"
-        Formula: "if " + expo$ + " < 0.05 and abs(self) < 1e-6 then 0 else "
-            ... + sgnSelf$ + " * (max(abs(self), 1e-6) ^ max(" + expo$ + ", 0.05)) fi"
+        Formula: sgnSelf$ + " * (abs(self) ^ max(" + expo$ + ", 0.05))"
     elsif modulation_operation = 9
         ranLabel$ = "Tremolo"
         appendInfoLine: "Applying: ", ranLabel$
@@ -826,6 +978,16 @@ else
         # entirely - abs(0) < 0 is false - so an exact zero divided and
         # returned NaN again. The field is `positive` now and the test
         # is `<=`, so an exact zero is caught whatever the setting.
+        # v0.6 review, NOT changed: inside the guard band the output is 0,
+        # just outside it is S1/S2 ~ +/-S1/eps, so there is a jump of up to
+        # |S1|/eps at |S2| = eps. Two alternatives were measured and
+        # rejected. Clamping the denominator to sgn(S2)*max(|S2|, eps)
+        # only moves the jump to the zero crossing of S2 and doubles it.
+        # Tikhonov regularisation S1*S2/(S2^2 + eps^2) is continuous, but
+        # it is no longer the quotient: 1% low at |S2| = 10*eps, 50% low
+        # at |S2| = eps. gen~'s safediv is narrower still (0 only when the
+        # denominator is exactly 0). Exact division outside the band is
+        # the operation's identity, so the guard stays as it is.
         Formula: "if abs(object[" + s2_str$ + "]) <= " + divEps$ + " then 0 else self / object[" + s2_str$ + "] fi"
     elsif operation = 5
         ranLabel$ = "Average"
@@ -846,7 +1008,17 @@ else
     elsif operation = 9
         ranLabel$ = "XOR-like (sign mixing)"
         appendInfoLine: "Applying: ", ranLabel$
-        Formula: ~ if self * object[sound2_part] < 0 then -(abs(self) + abs(object[sound2_part])) / 2 else (abs(self) + abs(object[sound2_part])) / 2 fi
+        # v0.6: v0.5.1 tested `S1*S2 < 0`, so an exact zero in EITHER input
+        # counted as "same sign" and returned +(|S1|+|S2|)/2. With Sound 1
+        # digitally silent, the output was +|S2|/2 - a full-wave-rectified
+        # Sound 2 with a large positive DC - and q(-S1,S2) = -q(S1,S2)
+        # failed at S1 = 0. The three-valued sign (SC `sign`, gen~ `sign`:
+        # 0 at 0) makes a zero input give 0. Bit-identical wherever both
+        # inputs are nonzero. Written as v0.5.1's test plus an explicit zero
+        # branch, which gives the same values as
+        # sgn(S1)*sgn(S2)*(|S1|+|S2|)/2 at 0.28 s instead of 0.37 s on
+        # 30 s of stereo (v0.5.1: 0.22 s).
+        Formula: ~ if self * object[sound2_part] < 0 then -(abs(self) + abs(object[sound2_part])) / 2 else if self = 0 or object[sound2_part] = 0 then 0 else (abs(self) + abs(object[sound2_part])) / 2 fi fi
     endif
 endif
 
@@ -908,36 +1080,42 @@ else
     endif
 endif
 
-# v0.4 (item 7): Nonlinear_intensity was displayed in the form and in
-# the parameter report for every run, but seven operations never read it
-# - the two magnitude products, Logistic-style, Rectify and mix, cross-
-# phase waveshaping, Random scatter and quantization. Five of those now use it
-# (see above); Magnitude product is a plain magnitude product with
-# nothing for it to scale. The report states which, so the panel never
-# implies a live control that is inert.
-# v0.4b: this tested only advanced_operation = 3, so Geometric
-# magnitude product (= 2) reported "[in use]" while ignoring the
-# control. Both magnitude products are plain products with no natural
-# parameter for intensity to scale.
-if advanced_operation = 2 or advanced_operation = 3
-    intensityUsed$ = "not used by this operation"
-else
-    intensityUsed$ = "in use"
-endif
-
 # v0.5.1: report controls that actually affect the selected operation.
 # Keep this compact so the visualization explains the running transform
 # rather than listing inactive form fields.
+# v0.6: removed the `intensityUsed$` flag (computed, never displayed since
+# v0.5.1), and each line now says what the control does for the
+# operation that ran - "Mod depth" scales an angle index for six of the
+# eight modulation operations, not an AM depth.
 activeParam1$ = "(none)"
 activeParam2$ = ""
 activeParam3$ = "Channel policy: " + chanDesc$
 
 if ranTier$ = "Modulation"
     activeParam1$ = "Mod depth: " + fixed$(modulation_depth, 3)
+    if modulation_operation = 2 or modulation_operation = 3
+        activeParam2$ = "(S2 angle index 10 pi x depth; AM depth fixed 100 pct)"
+    elsif modulation_operation = 4 or modulation_operation = 5
+        activeParam2$ = "(S1 angle index 5 pi x depth)"
+    elsif modulation_operation = 6
+        activeParam2$ = "(both angle indices 5 pi x depth)"
+    elsif modulation_operation = 7
+        activeParam2$ = "(drive into arctan: 10 x depth)"
+    elsif modulation_operation = 8
+        activeParam2$ = "(exponent 1 + S2 x depth, floored at 0.05)"
+    else
+        activeParam2$ = "(gain 1 + S2 x depth)"
+    endif
 elsif ranTier$ = "Nonlinear"
     activeParam1$ = "Intensity: " + fixed$(nonlinear_intensity, 3)
     if nonlinear_operation = 4
-        activeParam2$ = "Fold passes: " + string$(fold_passes)
+        if fold_passes = 0
+            activeParam2$ = "Fold: complete, T = " + fixed$(thresh, 3)
+        else
+            activeParam2$ = "Fold: " + string$(fold_passes) + " reflections (v0.5.1), T = " + fixed$(thresh, 3)
+        endif
+    elsif nonlinear_operation = 6
+        activeParam2$ = "Step 1/" + crush_str$ + " (step = intensity / 4, rounded)"
     endif
 elsif ranTier$ = "Advanced"
     if advanced_operation = 2 or advanced_operation = 3
@@ -948,7 +1126,9 @@ elsif ranTier$ = "Advanced"
         endif
     else
         activeParam1$ = "Intensity: " + fixed$(nonlinear_intensity, 3)
-        if advanced_operation = 8
+        if advanced_operation = 5
+            activeParam2$ = "Fold-back depth k = " + fixed$(chaosK, 3) + " (k = 2 x intensity)"
+        elsif advanced_operation = 8
             if random_seed > 0
                 activeParam2$ = "Random seed: " + string$(random_seed)
             else
@@ -1021,7 +1201,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##Math Operations Between Sounds v0.5.1##"
+    Text: 0.5, "centre", 0.68, "half", "##Math Operations Between Sounds v0.6.0##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
     Text: 0.5, "centre", 0.22, "half",
