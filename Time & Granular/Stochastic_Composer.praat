@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.1 (2026)
+# Version: 1.3 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -44,8 +44,9 @@
 #   5. ACCEPT appends the candidate, REJECT discards this proposal only
 #      (the file stays eligible for later positions), UNDO LAST removes
 #      the most recent acceptance.
-#   6. FINISH keeps the exact accepted sequence as a single Sound in
-#      Praat Objects. It never exports a WAV or log automatically.
+#   6. FINISH keeps the accepted sequence as a single Sound in Praat.
+#      Optional Live Bridge handoff sends only an Arrangement JSON
+#      referencing the ORIGINAL source recordings, not rendered audio.
 #
 # Audio handling:
 #   - Source files are only ever read, never written.
@@ -64,16 +65,18 @@
 #
 # Safety of the accepted sequence:
 #   - A temporary Table records the accepted sequence during the session.
-#     FINISH leaves the completed Sound ready to play. CLOSE (or confirmed
-#     QUIT) cleans the script's transient Praat objects and leaves only
-#     Sound Stochastic_Composition.
-#   - The source audio files are read-only, and the script does not write
-#     any files to the disk. To save a result later, use Praat's normal
-#     File > Save commands manually.
+#     FINISH now closes the Demo session, cleans all transient Praat
+#     objects immediately, and leaves only Sound Stochastic_Composition.
+#     Confirmed QUIT also cleans the session and preserves accepted audio.
+#   - By default the script writes no files. When the optional Send to
+#     Ableton Live checkbox is enabled, FINISH queues one small JSON
+#     handoff in the same private Live Bridge inbox as TimeLine Composer.
+#     No audio or log is exported, and source files remain read-only.
+#     To save a Sound manually, use Praat's regular File > Save menu.
 #   - CLOSING THE DEMO WINDOW with its operating-system close box can
-#     stop Praat scripting before the cleanup handler runs. Use QUIT (Q)
-#     or CLOSE in the Demo UI to ensure a clean Objects window. The
-#     previously documented Praat 6.x restart caveat still applies.
+#     stop Praat scripting before the cleanup handler runs. Use FINISH
+#     (F) or QUIT (Q) in the Demo UI to ensure a clean Objects window.
+#     The previously documented Praat 6.x restart caveat still applies.
 
 # Interaction (Demo window):
 #   Mouse: the buttons. Keys: A accept, R reject, U undo, F finish,
@@ -84,6 +87,17 @@
 #   Verified on Praat 6.1.38, 6.4.06 and 7.0 (Linux builds). Pure Praat:
 #   no Python, no external programs.
 #
+# Changelog v1.3 (2026):
+#   - FINISH exits the Demo session and immediately removes the Table,
+#     playback buffers and stop-silence Sound, keeping only the result.
+#   - Live Bridge handoff follows cleanup, so even a Praat 7 trust
+#     refusal cannot strand temporary Objects. Optional final playback
+#     uses the retained Sound directly (no extra playback copy).
+# Changelog v1.2 (2026):
+#   - Optional form checkbox: Send arrangement to Ableton Live via the
+#     same background Live Bridge inbox and TimeLineArrangement 1.0
+#     JSON schema as TimeLine Composer, with no audio file export.
+#   - Existing in-Praat result and cleanup behavior are unchanged.
 # Changelog v1.1 (2026):
 #   - In-memory result only; removed disk export and log.
 #   - Normal CLOSE/QUIT cleanup leaves one composition Sound.
@@ -91,7 +105,7 @@
 #   - Initial release.
 # ============================================================
 
-form Stochastic Composer v1.1
+form Stochastic Composer v1.3
     comment Corpus folder (leave empty to choose it in a dialog)
     sentence Corpus_folder
     optionmenu Audition_mode: 1
@@ -103,6 +117,8 @@ form Stochastic Composer v1.1
     real Edge_fade_ms 0
     integer Random_seed 0
     boolean Play_result 1
+    comment Optional: queue the accepted sequence when FINISH is pressed (Live Bridge must be running)
+    boolean Send_arrangement_to_Ableton_Live 0
 endform
 
 ####################################################################
@@ -154,7 +170,7 @@ vy2 = 100
 
 clearinfo
 writeInfoLine: "=================================================="
-appendInfoLine: "  STOCHASTIC COMPOSER v1.0"
+appendInfoLine: "  STOCHASTIC COMPOSER v1.3"
 appendInfoLine: "  Human-Guided Composition by Chance"
 appendInfoLine: "=================================================="
 appendInfoLine: ""
@@ -253,7 +269,23 @@ while running
     endif
 endwhile
 
+# Clean Objects before external bridge permission prompts. In Praat 7
+# refusing trust can abort the script without returning control here.
+# The final Sound must therefore already be the only retained object.
 @finalCleanup
+
+if state$ = "finished" and compSnd > 0
+    if send_arrangement_to_Ableton_Live
+        @scSendLive
+    endif
+    # Audition the retained result directly, without creating a new
+    # SC_play_composition Sound. This leaves exactly one Praat object.
+    if play_result
+        selectObject: compSnd
+        asynchronous Play
+    endif
+    selectObject: compSnd
+endif
 
 ####################################################################
 # PROCEDURES — corpus
@@ -818,7 +850,7 @@ procedure autoAudition
 endproc
 
 ####################################################################
-# PROCEDURES — finish and quit (no disk output)
+# PROCEDURES — finish and quit (optional JSON bridge only)
 ####################################################################
 
 procedure doFinish
@@ -836,11 +868,11 @@ procedure doFinish
             endif
             selectObject: compSnd
             Rename: "Stochastic_Composition"
-            message$ = "Composition complete. The result is in Praat Objects; PLAY or CLOSE."
+            message$ = "Composition complete. Leaving only Sound Stochastic_Composition in Praat."
             @reportFinal
-            if play_result
-                @playComposition
-            endif
+            # Exiting the event loop runs finalCleanup immediately. The
+            # optional bridge send and final audition occur AFTER cleanup.
+            running = 0
         endif
     endif
 endproc
@@ -848,7 +880,7 @@ endproc
 procedure reportFinal
     @compositionSamples
     appendInfoLine: ""
-    appendInfoLine: "=== Composition complete (Praat Objects only) ==="
+    appendInfoLine: "=== Composition complete (Sound kept in Praat Objects) ==="
     appendInfoLine: "Sound: Stochastic_Composition (no WAV or log written to disk)"
     appendInfoLine: "Accepted: ", nAcc, " | Proposals: ", nProposals, " | Rejected: ", nRejected,
         ... " | Undos: ", nUndos
@@ -856,8 +888,365 @@ procedure reportFinal
     appendInfoLine: "Duration: ", fmt.result$, " (",
         ... fixed$ (compositionSamples.result / internalSr, 3), " s)"
     appendInfoLine: "Seed: ", seedLabel$
-    appendInfoLine: "Use CLOSE in the Demo window to remove temporary Praat objects."
+    appendInfoLine: "FINISH closes the Demo and removes temporary Praat objects automatically."
 endproc
+
+
+####################################################################
+# OPTIONAL ABLETON LIVE BRIDGE (same inbox and arrangement schema as
+# TimeLine Composer, no audio render/copy/export)
+####################################################################
+
+# The M4L watcher reads files named *_arrangement.json from:
+#   Windows: %LOCALAPPDATA%/PraatAudioTools/LiveBridge/inbox
+#   macOS/Linux: ~/.praataudiotools/LiveBridge/inbox
+# This is one opt-in JSON handoff, not an ordinary disk export. The
+# source files are referenced by absolute paths, never copied or
+# modified. A successful write means QUEUED; Ableton import is not
+# acknowledged by this script. For accuracy the receiving Live device
+# must apply the source fades described by the events; in particular,
+# direct source-file import cannot reproduce Praat's >2-channel downmix
+# or its exact resampling interpolation sample-for-sample.
+
+procedure scHex4: .v
+    .s$ = ""
+    for .i from 1 to 4
+        .digit = .v mod 16
+        .v = floor(.v / 16)
+        .s$ = mid$("0123456789abcdef", .digit + 1, 1) + .s$
+    endfor
+    scHex4.out$ = .s$
+endproc
+
+# JSON string: always plain ASCII, including arbitrary Unicode paths.
+# Same escaping algorithm as TimeLine Composer.
+procedure scJsonStr: .s$
+    if index_regex(.s$, "[^ -~]") = 0 and index(.s$, """") = 0 and index(.s$, "\") = 0
+        scJsonStr.out$ = """" + .s$ + """"
+    else
+        .out$ = ""
+        for .i from 1 to length(.s$)
+            .ch$ = mid$(.s$, .i, 1)
+            .u = unicode(.ch$)
+            if .u = 34
+                .out$ = .out$ + "\"""
+            elsif .u = 92
+                .out$ = .out$ + "\\"
+            elsif .u = 10
+                .out$ = .out$ + "\n"
+            elsif .u = 13
+                .out$ = .out$ + "\r"
+            elsif .u = 9
+                .out$ = .out$ + "\t"
+            elsif .u = 8
+                .out$ = .out$ + "\b"
+            elsif .u = 12
+                .out$ = .out$ + "\f"
+            elsif .u >= 32 and .u <= 126
+                .out$ = .out$ + .ch$
+            elsif .u > 65535
+                .pair = .u - 65536
+                @scHex4: 55296 + floor(.pair / 1024)
+                .out$ = .out$ + "\u" + scHex4.out$
+                @scHex4: 56320 + (.pair mod 1024)
+                .out$ = .out$ + "\u" + scHex4.out$
+            else
+                @scHex4: .u
+                .out$ = .out$ + "\u" + scHex4.out$
+            endif
+        endfor
+        scJsonStr.out$ = """" + .out$ + """"
+    endif
+endproc
+
+procedure scJsonNum: .v
+    if .v = undefined
+        scJsonNum.out$ = "null"
+    else
+        scJsonNum.out$ = string$(.v)
+    endif
+endproc
+
+procedure scAbsPath: .p$
+    if left$(.p$, 1) = "/" or left$(.p$, 1) = "\" or mid$(.p$, 2, 1) = ":"
+        scAbsPath.out$ = .p$
+    else
+        .sep$ = "/"
+        if index(defaultDirectory$, "\") > 0
+            .sep$ = "\"
+        endif
+        scAbsPath.out$ = defaultDirectory$ + .sep$ + .p$
+    endif
+endproc
+
+# Build a TimeLineArrangement 1.0 document with one musical layer,
+# one event per accepted recording and explicit silence events for
+# configured gaps. All offsets are computed from the actual sample
+# counts in the in-Praat composition. This routine uses no RNG.
+procedure scBuildArrangement
+    scArrangement$ = ""
+    .nl$ = newline$
+    @compositionSamples
+    .total = compositionSamples.result / internalSr
+    .lastOn = .total - accSamples[nAcc] / internalSr
+    for .i to nAcc
+        scUniqueId[.i] = 0
+    endfor
+    .nUnique = 0
+    for .i to nAcc
+        .idx = accIdx[.i]
+        .seen = 0
+        for .k from 1 to .nUnique
+            if scUniqueIdx[.k] = .idx
+                .seen = .k
+            endif
+        endfor
+        if .seen = 0
+            .nUnique += 1
+            scUniqueIdx[.nUnique] = .idx
+            .seen = .nUnique
+        endif
+        scUniqueId[.i] = .seen
+    endfor
+
+    @scAbsPath: corpus$
+    @scJsonStr: scAbsPath.out$
+    .folderJ$ = scJsonStr.out$
+    @scJsonStr: seedLabel$
+    .seedJ$ = scJsonStr.out$
+    @scJsonNum: .total
+    .totalJ$ = scJsonNum.out$
+    @scJsonNum: internalSr
+    .rateJ$ = scJsonNum.out$
+    @scJsonNum: internalCh
+    .channelsJ$ = scJsonNum.out$
+    @scJsonNum: nAcc
+    .nAccJ$ = scJsonNum.out$
+    .nSil = if gapSamples > 0 then max(0, nAcc - 1) else 0 fi
+    @scJsonNum: .nSil
+    .nSilJ$ = scJsonNum.out$
+    @scJsonNum: .lastOn
+    .lastOnJ$ = scJsonNum.out$
+
+    scArrangement$ = "{" + .nl$
+        ... + "  ""format"": ""PraatAudioTools.TimeLineArrangement""," + .nl$
+        ... + "  ""schema_version"": ""1.0""," + .nl$
+        ... + "  ""generator"": {""name"": ""Stochastic Composer"", ""version"": ""1.3"", ""script"": ""Stochastic_Composer.praat""}," + .nl$
+        ... + "  ""composition"": {" + .nl$
+        ... + "    ""name"": ""Stochastic_Composition"", ""preset"": ""Human approval"", ""random_seed"": " + string$(random_seed) + "," + .nl$
+        ... + "    ""time_unit"": ""seconds"", ""target_duration_seconds"": " + .totalJ$ + "," + .nl$
+        ... + "    ""musical_end_seconds"": " + .totalJ$ + ", ""last_onset_seconds"": " + .lastOnJ$ + "," + .nl$
+        ... + "    ""last_event_end_seconds"": " + .totalJ$ + ", ""natural_tail_extension_seconds"": 0," + .nl$
+        ... + "    ""actual_end_seconds"": " + .totalJ$ + ", ""event_count"": " + .nAccJ$ + "," + .nl$
+        ... + "    ""planned_silence_count"": " + .nSilJ$ + ", ""output_channels"": " + .channelsJ$ + "," + .nl$
+        ... + "    ""sample_rate"": " + .rateJ$ + ", ""natural_ending"": true," + .nl$
+        ... + "    ""ending_silence"": {""start_seconds"": " + .totalJ$ + ", ""end_seconds"": " + .totalJ$ + ", ""duration_seconds"": 0}," + .nl$
+        ... + "    ""organization"": ""Human-approved sequential composition"", ""random_seed_description"": " + .seedJ$ + .nl$
+        ... + "  }," + .nl$
+        ... + "  ""rendering"": {""normalization"": ""none"", ""target_peak_dbfs"": 0, ""applied_mix_gain"": null, ""final_fade_seconds"": 0," + .nl$
+        ... + "    ""panning"": ""source stereo / mono centered"", ""channel_routing"": ""spatial""}," + .nl$
+        ... + "  ""libraries"": [{""id"": 1, ""name"": ""Stochastic corpus"", ""folder"": " + .folderJ$ + "," + .nl$
+        ... + "    ""usable_files"": " + string$(nUsable) + ", ""reference_level_db"": 0, ""balance_db"": 0, ""manual_gain_db"": 0}]," + .nl$
+        ... + "  ""layers"": [{""id"": 1, ""name"": ""Accepted sequence"", ""library_id"": 1," + .nl$
+        ... + "    ""source_pool"": ""accepted corpus files"", ""stream"": 0, ""temporal_preset"": ""Sequential""," + .nl$
+        ... + "    ""density_factor"": 1, ""entry_seconds"": 0}]," + .nl$
+        ... + "  ""sources"": [" + .nl$
+
+    for .u to .nUnique
+        .idx = scUniqueIdx[.u]
+        .uses = 0
+        for .i to nAcc
+            if accIdx[.i] = .idx
+                .uses += 1
+            endif
+        endfor
+        @scJsonStr: cName$[.idx]
+        .nameJ$ = scJsonStr.out$
+        @scAbsPath: cPath$[.idx]
+        @scJsonStr: scAbsPath.out$
+        .pathJ$ = scJsonStr.out$
+        @scJsonNum: cDur[.idx]
+        .durJ$ = scJsonNum.out$
+        .comma$ = if .u < .nUnique then "," else "" fi
+        scArrangement$ = scArrangement$ + "    {""id"": " + string$(.u)
+            ... + ", ""name"": " + .nameJ$ + ", ""path"": " + .pathJ$
+            ... + ", ""library_id"": 1, ""duration_seconds"": " + .durJ$
+            ... + ", ""sample_rate"": " + string$(cSr[.idx]) + ", ""channels"": " + string$(cCh[.idx])
+            ... + ", ""energy"": null, ""uses"": " + string$(.uses) + "}" + .comma$ + .nl$
+    endfor
+
+    scArrangement$ = scArrangement$ + "  ]," + .nl$ + "  ""events"": [" + .nl$
+    .startSample = 0
+    for .i to nAcc
+        .idx = accIdx[.i]
+        if .i > 1
+            .startSample += gapSamples
+        endif
+        .endSample = .startSample + accSamples[.i]
+        .on = .startSample / internalSr
+        .en = .endSample / internalSr
+        .dur = accSamples[.i] / internalSr
+        .fade = min(fadeSec, .dur / 2)
+        @scJsonNum: .on
+        .onJ$ = scJsonNum.out$
+        @scJsonNum: .en
+        .enJ$ = scJsonNum.out$
+        @scJsonNum: .dur
+        .durJ$ = scJsonNum.out$
+        @scJsonNum: .fade
+        .fadeJ$ = scJsonNum.out$
+        @scJsonStr: cName$[.idx]
+        .nameJ$ = scJsonStr.out$
+        @scAbsPath: cPath$[.idx]
+        @scJsonStr: scAbsPath.out$
+        .pathJ$ = scJsonStr.out$
+        .id$ = "event_" + right$("000000" + string$(.i), 6)
+        @scJsonStr: .id$
+        .idJ$ = scJsonStr.out$
+        .comma$ = if .i < nAcc then "," else "" fi
+        scArrangement$ = scArrangement$ + "    {""id"": " + .idJ$ + ", ""index"": " + string$(.i)
+            ... + ", ""library_id"": 1, ""library_name"": ""Stochastic corpus"", ""layer_id"": 1"
+            ... + ", ""source_id"": " + string$(scUniqueId[.i]) + ", ""source_name"": " + .nameJ$
+            ... + ", ""source_path"": " + .pathJ$ + ", ""onset_seconds"": " + .onJ$
+            ... + ", ""source_offset_seconds"": 0, ""duration_seconds"": " + .durJ$
+            ... + ", ""end_seconds"": " + .enJ$ + ", ""gain_db"": 0"
+            ... + ", ""gain_components"": {""balance_db"": 0, ""manual_db"": 0, ""file_db"": 0, ""conductor_db"": 0, ""random_db"": 0}"
+            ... + ", ""position"": 0, ""width"": 1, ""fade_in_seconds"": " + .fadeJ$
+            ... + ", ""fade_out_seconds"": " + .fadeJ$ + ", ""source_sample_rate"": " + string$(cSr[.idx])
+            ... + ", ""source_channels"": " + string$(cCh[.idx]) + ", ""conductor"": 0"
+            ... + ", ""energy"": null, ""phrase"": " + string$(.i)
+            ... + ", ""closing"": " + if .i = nAcc then "true" else "false" fi + "}" + .comma$ + .nl$
+        .startSample = .endSample
+    endfor
+
+    scArrangement$ = scArrangement$ + "  ]," + .nl$ + "  ""silences"": [" + .nl$
+    .posSample = 0
+    if gapSamples > 0
+        for .i from 1 to nAcc - 1
+            .posSample += accSamples[.i]
+            .start = .posSample / internalSr
+            .end = (.posSample + gapSamples) / internalSr
+            @scJsonNum: .start
+            .startJ$ = scJsonNum.out$
+            @scJsonNum: .end
+            .endJ$ = scJsonNum.out$
+            @scJsonNum: gapSamples / internalSr
+            .durJ$ = scJsonNum.out$
+            .id$ = "silence_" + right$("000" + string$(.i), 3)
+            @scJsonStr: .id$
+            .comma$ = if .i < nAcc - 1 then "," else "" fi
+            scArrangement$ = scArrangement$ + "    {""id"": " + scJsonStr.out$
+                ... + ", ""type"": ""planned"", ""start_seconds"": " + .startJ$
+                ... + ", ""end_seconds"": " + .endJ$ + ", ""duration_seconds"": " + .durJ$
+                ... + ", ""after_phrase"": " + string$(.i) + "}" + .comma$ + .nl$
+            .posSample += gapSamples
+        endfor
+    endif
+    scArrangement$ = scArrangement$ + "  ]," + .nl$ + "  ""incidental_gaps"": []," + .nl$
+        ... + "  ""settings"": {""algorithm"": ""uniform random proposals with human acceptance""," + .nl$
+        ... + "    ""transition_gap_ms"": """ + string$(transition_gap_ms) + """," + .nl$
+        ... + "    ""edge_fade_ms"": """ + string$(edge_fade_ms) + """," + .nl$
+        ... + "    ""random_seed"": """ + string$(random_seed) + """}" + .nl$
+        ... + "}" + .nl$
+endproc
+
+procedure scSendLive
+    scSendLive.ok = 0
+    @scBuildArrangement
+    .canSend = 1
+
+    # Match the M4L watcher path, exactly as TimeLine Composer does.
+    .local$ = environment$("LOCALAPPDATA")
+    if .local$ <> ""
+        .root$ = replace$(.local$, "\", "/", 0) + "/PraatAudioTools"
+    else
+        .home$ = replace$(homeDirectory$, "\", "/", 0)
+        while right$(.home$, 1) = "/" and length(.home$) > 1
+            .home$ = left$(.home$, length(.home$) - 1)
+        endwhile
+        if .home$ = "" or folderExists(.home$) = 0
+            appendInfoLine: "Ableton handoff not queued: home folder unavailable."
+            .canSend = 0
+        else
+            .root$ = .home$ + "/.praataudiotools"
+        endif
+    endif
+
+    if .canSend
+        .bridge$ = .root$ + "/LiveBridge"
+        .inbox$ = .bridge$ + "/inbox"
+
+        # On Praat 7 refusal of trust can abort the script immediately.
+        # Sound Stochastic_Composition is already finalized in Objects.
+        if praatVersion >= 7000
+            appendInfoLine: "Ableton handoff: Praat may ask for permission to write a local bridge JSON."
+            if askForTrust() = 0
+                appendInfoLine: "Ableton handoff not authorized; the Sound remains in Objects."
+                .canSend = 0
+            endif
+        endif
+    endif
+
+    if .canSend
+        if folderExists(.root$) = 0
+            nocheck createFolder: .root$
+        endif
+        if folderExists(.bridge$) = 0
+            nocheck createFolder: .bridge$
+        endif
+        if folderExists(.inbox$) = 0
+            nocheck createFolder: .inbox$
+        endif
+        if folderExists(.inbox$) = 0
+            appendInfoLine: "Ableton handoff failed: cannot create the Live Bridge inbox: ", .inbox$
+            .canSend = 0
+        endif
+    endif
+
+    if .canSend
+        # Collision-safe name: never overwrite an earlier arrangement,
+        # never call RNG while writing (seed behavior remains unchanged).
+        .stem$ = .inbox$ + "/Stochastic_Composition_"
+        .path$ = ""
+        .counter = 0
+        while .path$ = "" and .counter < 100000
+            .counter += 1
+            .try$ = .stem$ + right$("000000" + string$(.counter), 6) + "_arrangement.json"
+            if fileReadable(.try$) = 0
+                .path$ = .try$
+            endif
+        endwhile
+        if .path$ = ""
+            appendInfoLine: "Ableton handoff failed: no free inbox file name."
+            .canSend = 0
+        endif
+    endif
+
+    if .canSend
+        # One ASCII JSON write and verification; never save a WAV.
+        nocheck writeFile: .path$, scArrangement$
+        .ok = 0
+        if fileReadable(.path$)
+            .check$ = readFile$(.path$)
+            if .check$ = scArrangement$
+                .ok = 1
+            endif
+        endif
+        if .ok
+            scSendLive.ok = 1
+            appendInfoLine: "Ableton Live arrangement queued (one Audio Track; no audio copied):"
+            appendInfoLine: "  ", .path$
+            appendInfoLine: "  Live Bridge must be running; queueing does not confirm import."
+        else
+            if fileReadable(.path$)
+                nocheck deleteFile: .path$
+            endif
+            appendInfoLine: "Ableton handoff failed: JSON write/read-back verification failed."
+            appendInfoLine: "  Sound Stochastic_Composition remains available in Praat Objects."
+        endif
+    endif
+endproc
+
 
 procedure doQuit: .confirmed
     if nAcc = 0 or .confirmed
@@ -1232,11 +1621,15 @@ procedure drawUI
         @rect: "{0.20, 0.55, 0.32}", 84, 96, 84.3, 87.7
         @txt: 90, "centre", 86, 10, "White", "##READY##"
         @txt: 38, "left", 79.5, 16, "{0.10, 0.10, 0.18}", "##Stochastic_Composition##"
-        @txt: 38, "left", 74.5, 10, .labC$, "Available as a Sound in Praat Objects; no file was saved."
+        if send_arrangement_to_Ableton_Live
+            @txt: 38, "left", 74.5, 10, .labC$, "Sound kept in Praat Objects; Live Bridge uses source files (no WAV export)."
+        else
+            @txt: 38, "left", 74.5, 10, .labC$, "Available as a Sound in Praat Objects; no file was saved."
+        endif
         .d$ = string$ (nAcc) + (if nAcc = 1 then " recording" else " recordings" fi) + "   ·   " + .durStr$ + "   ·   " + string$ (internalSr) + " Hz, "
             ... + string$ (internalCh) + " ch"
         @txt: 38, "left", 70.5, 11, .valC$, .d$
-        @txt: 38, "left", 66.5, 10, .labC$, "PLAY to audition; CLOSE to remove temporary Praat objects."
+        @txt: 38, "left", 66.5, 10, .labC$, "FINISH completed: the output is ready in Praat Objects."
     elsif candIdx = 0
         @txt: 38, "left", 86, 12, "Black", "##B##  CURRENT CANDIDATE"
         @txt: 38, "left", 77, 13, .labC$, "No readable recording is left to propose."
