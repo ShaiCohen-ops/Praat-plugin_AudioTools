@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.3 (2026)
+# Version: 1.4 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -48,6 +48,31 @@
 #      Optional Live Bridge handoff sends only an Arrangement JSON
 #      referencing the ORIGINAL source recordings, not rendered audio.
 #
+# Compose Against Existing Voice (Composition_mode 2, optional):
+#   Select ONE finished Sound (e.g. a viola composition) in the Objects
+#   window, then run the script with a folder of new material (e.g.
+#   cello). The selected Sound is a LOCKED REFERENCE for listening only:
+#   it is never renamed, edited, resampled in place, removed or mixed
+#   into the result. Proposals, ACCEPT, REJECT, UNDO and the random draw
+#   are exactly those of Solo mode and touch the new voice only.
+#   Audition is stereo on one sample-aligned timeline that starts at 0
+#   for both voices: Left = reference, Right = new voice (both as mono
+#   listening streams, at the session rate, in temporary buffers):
+#     Candidate   - the candidate alone (as in Solo mode);
+#     Local       - from the start of the last accepted clip to the end
+#                   of the candidate at its real future position, with
+#                   the reference over the same span (first proposal:
+#                   against the beginning of the reference);
+#     Global      - whole reference + all accepted clips + candidate;
+#     Composition - whole reference + accepted clips, no candidate.
+#   Past the end of the shorter voice, that side is silent. Nothing is
+#   stretched or cut. If a preview would exceed 0.999 it is scaled down
+#   for listening only. FINISH keeps ONE new Sound with the accepted
+#   new-voice material only, named Stochastic_Composition_<New_voice_name>
+#   (a suffix _2, _3 ... avoids clashing with an existing object name);
+#   the reference stays in the Objects window, unchanged. Live Bridge
+#   receives the new voice's arrangement only.
+#
 # Audio handling:
 #   - Source files are only ever read, never written.
 #   - Direct concatenation by default: no crossfade, no normalization,
@@ -87,6 +112,12 @@
 #   Verified on Praat 6.1.38, 6.4.06 and 7.0 (Linux builds). Pure Praat:
 #   no Python, no external programs.
 #
+# Changelog v1.4 (2026):
+#   - Composition_mode: Solo Composition (default, unchanged) | Compose
+#     Against Existing Voice (locked reference Sound, stereo audition
+#     Reference L / New Voice R on a common timeline, output = new voice
+#     only). New_voice_name names the result. Both fields are appended
+#     at the end of the form, so positional runScript calls still work.
 # Changelog v1.3 (2026):
 #   - FINISH exits the Demo session and immediately removes the Table,
 #     playback buffers and stop-silence Sound, keeping only the result.
@@ -105,7 +136,7 @@
 #   - Initial release.
 # ============================================================
 
-form Stochastic Composer v1.3
+form Stochastic Composer v1.4
     comment Corpus folder (leave empty to choose it in a dialog)
     sentence Corpus_folder
     optionmenu Audition_mode: 1
@@ -119,7 +150,50 @@ form Stochastic Composer v1.3
     boolean Play_result 1
     comment Optional: queue the accepted sequence when FINISH is pressed (Live Bridge must be running)
     boolean Send_arrangement_to_Ableton_Live 0
+    comment Compose against an existing voice: select that Sound first (it is only listened to)
+    optionmenu Composition_mode: 1
+        option Solo Composition
+        option Compose Against Existing Voice
+    sentence New_voice_name New_Voice
 endform
+
+####################################################################
+# REFERENCE VOICE (Compose Against Existing Voice only). Captured
+# before any object is created or the selection changes.
+####################################################################
+
+againstMode = composition_mode = 2
+refSnd = 0
+refListen = 0
+refListenN = 0
+outName$ = "Stochastic_Composition"
+if againstMode
+    if numberOfSelected ("Sound") <> 1 or numberOfSelected () <> 1
+        exitScript: "Compose Against Existing Voice needs exactly ONE Sound selected in the Objects window"
+            ... + " (the finished voice to listen against), and nothing else." + newline$ + newline$
+            ... + "Currently selected: " + string$ (numberOfSelected ()) + " object(s), "
+            ... + string$ (numberOfSelected ("Sound")) + " of them Sound(s)." + newline$
+            ... + "Open or select the reference Sound alone, then run the script again;"
+            ... + " or choose Solo Composition."
+    endif
+    refSnd = selected ("Sound")
+    refName$ = selected$ ("Sound")
+    refN = Get number of samples
+    refDur = Get total duration
+    refSr = Get sampling frequency
+    refCh = Get number of channels
+    if refN < 1
+        exitScript: "The selected reference Sound has no samples."
+    endif
+    # result name: letters, digits, _ and - only
+    newVoice$ = replace_regex$ (new_voice_name$, "[^A-Za-z0-9_\-]+", "_", 0)
+    newVoice$ = replace_regex$ (newVoice$, "^_+|_+$", "", 0)
+    if newVoice$ = ""
+        newVoice$ = "New_Voice"
+    endif
+    outBase$ = "Stochastic_Composition_" + newVoice$
+    outName$ = outBase$
+endif
 
 ####################################################################
 # PARAMETERS AND VALIDATION
@@ -170,11 +244,15 @@ vy2 = 100
 
 clearinfo
 writeInfoLine: "=================================================="
-appendInfoLine: "  STOCHASTIC COMPOSER v1.3"
+appendInfoLine: "  STOCHASTIC COMPOSER v1.4"
 appendInfoLine: "  Human-Guided Composition by Chance"
 appendInfoLine: "=================================================="
 appendInfoLine: ""
 appendInfoLine: "Corpus folder: ", corpus$
+if againstMode
+    appendInfoLine: "Mode: Compose Against Existing Voice | reference (locked, listening only): Sound ", refName$,
+        ... " | ", fixed$ (refDur, 3), " s, ", refSr, " Hz, ", refCh, " ch"
+endif
 appendInfoLine: "Transition gap: ", fixed$ (transition_gap_ms, 1), " ms | Edge fade: ",
     ... fixed$ (edge_fade_ms, 1), " ms | Seed: ", seedLabel$
 
@@ -222,6 +300,27 @@ endif
 
 gapSamples = round (gapSec * internalSr)
 gapSec = gapSamples / internalSr
+
+if againstMode
+    # Temporary mono listening copy at the session rate; the reference
+    # object itself is only read.
+    selectObject: refSnd
+    if refCh > 1
+        refListen = Convert to mono
+    else
+        refListen = Copy: "SC_reference_listen"
+    endif
+    Rename: "SC_reference_listen"
+    if refSr <> internalSr
+        refTmp = Resample: internalSr, 50
+        removeObject: refListen
+        refListen = refTmp
+        Rename: "SC_reference_listen"
+    endif
+    refListenN = Get number of samples
+    appendInfoLine: "Audition: stereo, Reference L | New Voice R (mono listening streams at ", internalSr, " Hz",
+        ... if refSr <> internalSr then "; reference resampled for listening only" else "" fi, ")"
+endif
 
 ####################################################################
 # SESSION STATE
@@ -757,7 +856,9 @@ procedure playCandidate
 endproc
 
 procedure playLocal
-    if candIdx > 0
+    if againstMode
+        @duoLocal
+    elsif candIdx > 0
         if nAcc = 0
             selectObject: candSnd
             .b = Copy: "SC_play_local"
@@ -796,7 +897,9 @@ procedure playLocal
 endproc
 
 procedure playGlobal
-    if candIdx > 0
+    if againstMode
+        @duoGlobal
+    elsif candIdx > 0
         if nAcc = 0
             selectObject: candSnd
             .b = Copy: "SC_play_global"
@@ -829,13 +932,136 @@ procedure playGlobal
 endproc
 
 procedure playComposition
-    if nAcc > 0
+    if againstMode
+        @duoComposition
+    elsif nAcc > 0
         @renderComposition
         if renderComposition.ok
             selectObject: compSnd
             .b = Copy: "SC_play_composition"
             @startPlayback: .b, "Composition"
         endif
+    endif
+endproc
+
+####################################################################
+# PROCEDURES — two-voice audition (Compose Against Existing Voice)
+# One temporary stereo buffer per audition: row 1 = reference, row 2 =
+# new voice, both on the composition timeline (0-based samples). Never
+# touches compSnd, candSnd or the reference object.
+####################################################################
+
+# Copy .src (mono, or stereo averaged) into row .row of .dst, where
+# sample 1 of .src sits at timeline sample .offset (0-based) and
+# column 1 of .dst is timeline sample .s0 (0-based).
+procedure duoAdd: .dst, .row, .src, .offset, .s0
+    selectObject: .src
+    .srcN = Get number of samples
+    .srcCh = Get number of channels
+    selectObject: .dst
+    .bn = Get number of samples
+    .c1 = max (1, .offset - .s0 + 1)
+    .c2 = min (.bn, .offset - .s0 + .srcN)
+    if .c2 >= .c1
+        .sh$ = string$ (.s0 - .offset)
+        if .srcCh = 1
+            .e$ = "object[" + string$ (.src) + ", 1, col + " + .sh$ + "]"
+        else
+            .e$ = "(object[" + string$ (.src) + ", 1, col + " + .sh$ + "] + object[" + string$ (.src)
+                ... + ", 2, col + " + .sh$ + "]) / 2"
+        endif
+        Formula (part): (.c1 - 0.75) / internalSr, (.c2 - 0.25) / internalSr, .row, .row, "self + " + .e$
+    endif
+endproc
+
+procedure duoPlay: .s0, .s1, .withComp, .withCand, .label$
+    duoPlay.ok = 1
+    if .withComp
+        @renderComposition
+        duoPlay.ok = renderComposition.ok
+    endif
+    if duoPlay.ok
+        @compositionSamples
+        .candStart = compositionSamples.result
+        if nAcc > 0
+            .candStart += gapSamples
+        endif
+        .n = max (1, .s1 - .s0)
+        .b = Create Sound from formula: "SC_play_duo", 2, 0, .n / internalSr, internalSr, "0"
+        @duoAdd: .b, 1, refListen, 0, .s0
+        if .withComp and compSnd > 0
+            @duoAdd: .b, 2, compSnd, 0, .s0
+        endif
+        if .withCand and candSnd > 0
+            @duoAdd: .b, 2, candSnd, .candStart, .s0
+        endif
+        selectObject: .b
+        .pk = Get absolute extremum: 0, 0, "None"
+        if .pk > 0.999
+            # listening safety only; never applied to the result
+            Formula: "self * " + string$ (0.999 / .pk)
+            .label$ = .label$ + " (preview " + fixed$ (20 * log10 (0.999 / .pk), 1) + " dB)"
+        endif
+        Rename: "SC_play_duo"
+        @startPlayback: .b, .label$
+    endif
+endproc
+
+procedure duoLocal
+    if candIdx > 0
+        @compositionSamples
+        .cStart = compositionSamples.result
+        .s0 = 0
+        if nAcc > 0
+            .cStart += gapSamples
+            .s0 = compositionSamples.result - accSamples[nAcc]
+        endif
+        @duoPlay: .s0, .cStart + candSamples, nAcc > 0, 1, "Local L ref | R new"
+    endif
+endproc
+
+procedure duoGlobal
+    if candIdx > 0
+        @compositionSamples
+        .cEnd = compositionSamples.result + candSamples
+        if nAcc > 0
+            .cEnd += gapSamples
+        endif
+        @duoPlay: 0, max (.cEnd, refListenN), nAcc > 0, 1, "Global L ref | R new"
+    endif
+endproc
+
+procedure duoComposition
+    if nAcc > 0
+        @compositionSamples
+        @duoPlay: 0, max (compositionSamples.result, refListenN), 1, 0, "Composition L ref | R new"
+    endif
+endproc
+
+# Collision-safe result name (Against mode); Solo keeps its fixed name.
+procedure resolveOutName
+    if againstMode
+        select all
+        .n = numberOfSelected ()
+        for .i to .n
+            .id[.i] = selected (.i)
+            .nm$[.i] = selected$ (.i)
+        endfor
+        outName$ = outBase$
+        .k = 1
+        .clash = 1
+        while .clash
+            .clash = 0
+            for .i to .n
+                if .id[.i] <> compSnd and .nm$[.i] = "Sound " + outName$
+                    .clash = 1
+                endif
+            endfor
+            if .clash
+                .k += 1
+                outName$ = outBase$ + "_" + string$ (.k)
+            endif
+        endwhile
     endif
 endproc
 
@@ -866,9 +1092,14 @@ procedure doFinish
                 candSnd = 0
                 candIdx = 0
             endif
+            @resolveOutName
             selectObject: compSnd
-            Rename: "Stochastic_Composition"
-            message$ = "Composition complete. Leaving only Sound Stochastic_Composition in Praat."
+            Rename: outName$
+            if againstMode
+                message$ = "New voice complete: Sound " + outName$ + " (the reference stays unchanged in Praat)."
+            else
+                message$ = "Composition complete. Leaving only Sound Stochastic_Composition in Praat."
+            endif
             @reportFinal
             # Exiting the event loop runs finalCleanup immediately. The
             # optional bridge send and final audition occur AFTER cleanup.
@@ -881,7 +1112,7 @@ procedure reportFinal
     @compositionSamples
     appendInfoLine: ""
     appendInfoLine: "=== Composition complete (Sound kept in Praat Objects) ==="
-    appendInfoLine: "Sound: Stochastic_Composition (no WAV or log written to disk)"
+    appendInfoLine: "Sound: ", outName$, " (no WAV or log written to disk)"
     appendInfoLine: "Accepted: ", nAcc, " | Proposals: ", nProposals, " | Rejected: ", nRejected,
         ... " | Undos: ", nUndos
     @fmt: compositionSamples.result / internalSr
@@ -889,6 +1120,28 @@ procedure reportFinal
         ... fixed$ (compositionSamples.result / internalSr, 3), " s)"
     appendInfoLine: "Seed: ", seedLabel$
     appendInfoLine: "FINISH closes the Demo and removes temporary Praat objects automatically."
+    if againstMode
+        @reportAgainst
+    endif
+endproc
+
+procedure reportAgainst
+    @compositionSamples
+    .newDur = compositionSamples.result / internalSr
+    appendInfoLine: ""
+    appendInfoLine: "COMPOSE AGAINST EXISTING VOICE"
+    appendInfoLine: "  Reference (locked, listening only): Sound ", refName$, " | ", fixed$ (refDur, 3), " s | ",
+        ... refSr, " Hz | ", refCh, " ch"
+    appendInfoLine: "  New corpus folder: ", corpus$
+    appendInfoLine: "  New voice: ", nAcc, " accepted recording(s) | ", fixed$ (.newDur, 3), " s | ",
+        ... internalSr, " Hz | ", internalCh, " ch"
+    appendInfoLine: "  Audition routing: Reference Left | New Voice Right (temporary previews only)"
+    appendInfoLine: "  Proposals: ", nProposals, " | Rejections: ", nRejected, " | Undos: ", nUndos
+    appendInfoLine: "  Result: Sound ", outName$, " - new-voice material only; the reference was NOT mixed into it"
+    if abs (.newDur - refDur) > 0.5 / internalSr
+        appendInfoLine: "  Durations differ (new voice ", fixed$ (.newDur, 3), " s, reference ", fixed$ (refDur, 3),
+            ... " s): expected, nothing was stretched or cut."
+    endif
 endproc
 
 
@@ -1031,9 +1284,9 @@ procedure scBuildArrangement
     scArrangement$ = "{" + .nl$
         ... + "  ""format"": ""PraatAudioTools.TimeLineArrangement""," + .nl$
         ... + "  ""schema_version"": ""1.0""," + .nl$
-        ... + "  ""generator"": {""name"": ""Stochastic Composer"", ""version"": ""1.3"", ""script"": ""Stochastic_Composer.praat""}," + .nl$
+        ... + "  ""generator"": {""name"": ""Stochastic Composer"", ""version"": ""1.4"", ""script"": ""Stochastic_Composer.praat""}," + .nl$
         ... + "  ""composition"": {" + .nl$
-        ... + "    ""name"": ""Stochastic_Composition"", ""preset"": ""Human approval"", ""random_seed"": " + string$(random_seed) + "," + .nl$
+        ... + "    ""name"": """ + outName$ + """, ""preset"": ""Human approval"", ""random_seed"": " + string$(random_seed) + "," + .nl$
         ... + "    ""time_unit"": ""seconds"", ""target_duration_seconds"": " + .totalJ$ + "," + .nl$
         ... + "    ""musical_end_seconds"": " + .totalJ$ + ", ""last_onset_seconds"": " + .lastOnJ$ + "," + .nl$
         ... + "    ""last_event_end_seconds"": " + .totalJ$ + ", ""natural_tail_extension_seconds"": 0," + .nl$
@@ -1177,7 +1430,7 @@ procedure scSendLive
         .inbox$ = .bridge$ + "/inbox"
 
         # On Praat 7 refusal of trust can abort the script immediately.
-        # Sound Stochastic_Composition is already finalized in Objects.
+        # The result Sound is already finalized in Objects.
         if praatVersion >= 7000
             appendInfoLine: "Ableton handoff: Praat may ask for permission to write a local bridge JSON."
             if askForTrust() = 0
@@ -1206,7 +1459,7 @@ procedure scSendLive
     if .canSend
         # Collision-safe name: never overwrite an earlier arrangement,
         # never call RNG while writing (seed behavior remains unchanged).
-        .stem$ = .inbox$ + "/Stochastic_Composition_"
+        .stem$ = .inbox$ + "/" + outName$ + "_"
         .path$ = ""
         .counter = 0
         while .path$ = "" and .counter < 100000
@@ -1242,7 +1495,7 @@ procedure scSendLive
                 nocheck deleteFile: .path$
             endif
             appendInfoLine: "Ableton handoff failed: JSON write/read-back verification failed."
-            appendInfoLine: "  Sound Stochastic_Composition remains available in Praat Objects."
+            appendInfoLine: "  Sound ", outName$, " remains available in Praat Objects."
         endif
     endif
 endproc
@@ -1273,17 +1526,25 @@ procedure finalCleanup
         removeObject: candSnd
         candSnd = 0
     endif
+    if refListen > 0
+        removeObject: refListen
+        refListen = 0
+    endif
     if state$ = "finished"
         selectObject: compSnd
-        Rename: "Stochastic_Composition"
+        Rename: outName$
     elsif preserved
         @renderComposition
         appendInfoLine: ""
         appendInfoLine: "=== Composition left in Praat Objects ==="
         if compSnd > 0
+            @resolveOutName
             selectObject: compSnd
-            Rename: "Stochastic_Composition"
-            appendInfoLine: "Sound Stochastic_Composition contains ", nAcc, " accepted recordings."
+            Rename: outName$
+            appendInfoLine: "Sound ", outName$, " contains ", nAcc, " accepted recordings."
+            if againstMode
+                @reportAgainst
+            endif
         else
             appendInfoLine: "The source audio for an accepted clip is unavailable; no result could be rendered."
         endif
@@ -1581,7 +1842,11 @@ procedure drawUI
 
     # ---------------- Title ----------------
     @txt: 50, "centre", 96.6, 22, "Black", "##Stochastic Composer##"
-    @txt: 50, "centre", 92.4, 12, "{0.35, 0.35, 0.50}", "%%Human-Guided Composition by Chance%%"
+    if againstMode
+        @txt: 50, "centre", 92.4, 12, "{0.35, 0.35, 0.50}", "%%Human-Guided Composition by Chance%%  ·  ##Compose Against Existing Voice##"
+    else
+        @txt: 50, "centre", 92.4, 12, "{0.35, 0.35, 0.50}", "%%Human-Guided Composition by Chance%%"
+    endif
     if state$ = "finished"
         @button: "close", 89, 98, 93, 97.6, "Close", 5, 1, 10
     else
@@ -1594,7 +1859,11 @@ procedure drawUI
     # ---------------- A  STATUS ----------------
     @rect: "{0.97, 0.97, 0.97}", 2, 33, 63, 89
     @frame: "{0.55, 0.55, 0.60}", 2, 33, 63, 89, 1
-    @txt: 4, "left", 86, 12, "Black", "##A##  STATUS"
+    if againstMode
+        @txt: 4, "left", 86, 11, "Black", "##A##  NEW VOICE — UNDER CONSTRUCTION"
+    else
+        @txt: 4, "left", 86, 12, "Black", "##A##  STATUS"
+    endif
     @fmt: compDur
     .durStr$ = fmt.result$
     .labC$ = "{0.35, 0.35, 0.50}"
@@ -1607,6 +1876,12 @@ procedure drawUI
     @txt: 15.5, "left", 71.5, 11, .valC$, "##" + string$ (nRejected) + "##  of " + string$ (nProposals) + " proposals"
     @txt: 4, "left", 67, 11, .labC$, "Corpus"
     .corp$ = "##" + string$ (nUsable) + "##  recordings"
+    if againstMode
+        .slash = max (rindex (corpus$, "/"), rindex (corpus$, "\"))
+        .folder$ = mid$ (corpus$, .slash + 1, length (corpus$) - .slash)
+        @clean: .folder$, 14
+        .corp$ = "##" + clean.result$ + "##  (" + string$ (nUsable) + ")"
+    endif
     if nSkipped > 0
         .corp$ = .corp$ + "  (" + string$ (nSkipped) + " skipped)"
     endif
@@ -1620,7 +1895,8 @@ procedure drawUI
         @txt: 38, "left", 86, 12, "Black", "##B##  COMPOSITION COMPLETE"
         @rect: "{0.20, 0.55, 0.32}", 84, 96, 84.3, 87.7
         @txt: 90, "centre", 86, 10, "White", "##READY##"
-        @txt: 38, "left", 79.5, 16, "{0.10, 0.10, 0.18}", "##Stochastic_Composition##"
+        @clean: outName$, 46
+        @txt: 38, "left", 79.5, 16, "{0.10, 0.10, 0.18}", "##" + clean.result$ + "##"
         if send_arrangement_to_Ableton_Live
             @txt: 38, "left", 74.5, 10, .labC$, "Sound kept in Praat Objects; Live Bridge uses source files (no WAV export)."
         else
@@ -1629,7 +1905,12 @@ procedure drawUI
         .d$ = string$ (nAcc) + (if nAcc = 1 then " recording" else " recordings" fi) + "   ·   " + .durStr$ + "   ·   " + string$ (internalSr) + " Hz, "
             ... + string$ (internalCh) + " ch"
         @txt: 38, "left", 70.5, 11, .valC$, .d$
-        @txt: 38, "left", 66.5, 10, .labC$, "FINISH completed: the output is ready in Praat Objects."
+        if againstMode
+            @clean: refName$, 40
+            @txt: 38, "left", 66.5, 10, .labC$, "New voice only. Reference " + clean.result$ + " unchanged, not mixed in."
+        else
+            @txt: 38, "left", 66.5, 10, .labC$, "FINISH completed: the output is ready in Praat Objects."
+        endif
     elsif candIdx = 0
         @txt: 38, "left", 86, 12, "Black", "##B##  CURRENT CANDIDATE"
         @txt: 38, "left", 77, 13, .labC$, "No readable recording is left to propose."
@@ -1653,7 +1934,11 @@ procedure drawUI
             ... + " Hz   ·   would start at ##" + .st$ + "##"
         @txt: 38, "left", 73.5, 11, .valC$, .d$
         if nAcc = 0
-            @txt: 38, "left", 67.5, 10, .labC$, "First sound: Local and Global audition play the candidate alone."
+            if againstMode
+                @txt: 38, "left", 67.5, 10, .labC$, "First sound: Local and Global play it against the start of the reference."
+            else
+                @txt: 38, "left", 67.5, 10, .labC$, "First sound: Local and Global audition play the candidate alone."
+            endif
         else
             @clean: cName$[accIdx[nAcc]], 52
             @txt: 38, "left", 67.5, 10, .labC$, "follows  " + clean.result$
@@ -1668,7 +1953,12 @@ procedure drawUI
 
     .hasC = candIdx > 0 and state$ = "compose"
     .hasA = nAcc > 0
-    @txt: 4, "left", 53.5, 10, .labC$, "Playback   (last played: " + lastPlayed$ + ")"
+    if againstMode
+        @txt: 4, "left", 53.5, 10, .labC$, "Playback  ##stereo: Reference L | New Voice R##   (last: " + lastPlayed$ + ")"
+        @txt: 96, "right", 58, 10, "{0.62, 0.16, 0.14}", "##FINISH outputs the new voice only — not the audition mix.##"
+    else
+        @txt: 4, "left", 53.5, 10, .labC$, "Playback   (last played: " + lastPlayed$ + ")"
+    endif
     @button: "candidate", 4, 12.8, 43, 50.5, "Candidate", 1, .hasC, 11
     @button: "local", 13.6, 22.4, 43, 50.5, "Local", 1, .hasC, 11
     @button: "global", 23.2, 32, 43, 50.5, "Global", 1, .hasC, 11
@@ -1715,6 +2005,11 @@ procedure drawTimeline
     .x1 = 96
     .y0 = 15
     .y1 = 21.5
+    if againstMode
+        # new voice lane below a locked reference lane
+        .y0 = 14.6
+        .y1 = 18.6
+    endif
     .showCand = candIdx > 0 and state$ = "compose"
     .candDur = 0
     .gapBefore = 0
@@ -1725,6 +2020,10 @@ procedure drawTimeline
         endif
     endif
     .total = compDur + .gapBefore + .candDur
+    .newTotal = .total
+    if againstMode
+        .total = max (.total, refListenN / internalSr)
+    endif
     @rect: "{0.90, 0.90, 0.92}", .x0, .x1, .y0, .y1
 
     @fmt: compDur
@@ -1734,7 +2033,21 @@ procedure drawTimeline
         .info$ = .info$ + "   +   candidate " + fmt.result$
     endif
     .info$ = .info$ + "     blue = accepted   ·   orange = pending"
+    if againstMode
+        @fmt: refListenN / internalSr
+        .info$ = "reference ##" + fmt.result$ + "##   ·   new voice " + .info$
+    endif
     @txt: 96, "right", 25, 10, "{0.35, 0.35, 0.50}", .info$
+    if againstMode and .total > 0
+        .rx2 = .x0 + (refListenN / internalSr) * (.x1 - .x0) / .total
+        @rect: "{0.90, 0.90, 0.92}", .x0, .x1, 19.4, 23.2
+        @rect: "{0.45, 0.45, 0.50}", .x0, .rx2, 19.4, 23.2
+        @clean: refName$, 40
+        @txt: .x0 + 0.8, "left", 21.3, 9, if .rx2 - .x0 > 45 then "White" else "{0.20, 0.20, 0.28}" fi, "##REFERENCE — LOCKED##   " + clean.result$ + "  ·  " + fmt.result$
+        @frame: "{0.40, 0.40, 0.45}", .x0, .x1, 19.4, 23.2, 1
+        @txt: .x1 - 0.8, "right", 21.3, 9, if .rx2 > 80 then "White" else "{0.35, 0.35, 0.50}" fi, "L"
+        @txt: .x1 - 0.8, "right", (.y0 + .y1) / 2, 9, "{0.35, 0.35, 0.50}", "R"
+    endif
 
     if .total <= 0
         @txt: 50, "centre", (.y0 + .y1) / 2, 10, "{0.45, 0.45, 0.55}", "The timeline grows as recordings are accepted."
@@ -1767,7 +2080,7 @@ procedure drawTimeline
         endfor
         if .showCand
             .cx1 = .x0 + (compDur + .gapBefore) * .sc
-            .cx2 = .x1
+            .cx2 = .x0 + .newTotal * .sc
             if .cx2 - .cx1 < 0.4
                 .cx1 = .cx2 - 0.4
             endif
