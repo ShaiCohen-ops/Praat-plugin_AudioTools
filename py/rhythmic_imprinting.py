@@ -122,7 +122,7 @@ import traceback
 
 import numpy as np
 
-VERSION = "1.2"
+VERSION = "1.3"
 
 HOP_S = 0.010            # analysis hop
 T_FIXED = 64             # gesture trajectory length (CNN input)
@@ -1385,10 +1385,70 @@ def audio_hash(cfg):
     return h.hexdigest()
 
 
-def feat_key(ah, P):
+def feat_key(ah, P, cfg=None):
     import hashlib
-    return hashlib.sha1((ah + json.dumps([VERSION, "feat", P["sens"], P["min_dur"], P["max_dur"]])).encode()
+    extra = ""
+    # v1.3: an authoritative driver schedule (optional) is part of the analysis key
+    if cfg is not None and cfg.get("a_events"):
+        with open(cfg["a_events"], "rb") as f:
+            extra = hashlib.sha1(f.read()).hexdigest()
+    return hashlib.sha1((ah + extra + json.dumps([VERSION, "feat", P["sens"], P["min_dur"], P["max_dur"]])).encode()
                         ).hexdigest()[:20]
+
+
+def read_schedule(path):
+    """v1.3: optional authoritative driver events (tab-separated, header row,
+    columns onset_s and dur_s; other columns ignored). Returns [(onset, dur)]."""
+    with open(path, encoding="utf-8") as f:
+        lines = [l.rstrip("\r\n") for l in f if l.strip()]
+    if not lines:
+        raise RIError("The driver event schedule is empty.")
+    head = lines[0].split("\t")
+    try:
+        io, idur = head.index("onset_s"), head.index("dur_s")
+    except ValueError:
+        raise RIError("The driver event schedule needs columns onset_s and dur_s.")
+    ev = []
+    for l in lines[1:]:
+        c = l.split("\t")
+        ev.append((float(c[io]), float(c[idur])))
+    ev.sort()
+    return ev
+
+
+def schedule_segments(sched, hop_s, n_frames, a_total):
+    """Convert scheduled (onset, dur) to analysis-frame segments WITHOUT a second
+    segmentation pass. Exact times are kept for placement. Returns the frame
+    segments, the exact (start, end) times and a list of per-event notes."""
+    segs, exact, notes = [], [], []
+    dropped = modified = 0
+    for k, (on, du) in enumerate(sched):
+        end = min(on + du, a_total)
+        if k + 1 < len(sched):
+            end = min(end, sched[k + 1][0])
+        if on < 0 or on >= a_total - 0.02 or end - on <= 0.0:
+            dropped += 1
+            notes.append(f"event {k+1} at {on:.3f} s dropped (outside A or zero length)")
+            continue
+        s = int(round(on / hop_s))
+        e = int(round(end / hop_s))
+        if e - s < 2:
+            e = min(n_frames, s + 2)
+            modified += 1
+            notes.append(f"event {k+1} at {on:.3f} s: {1000*(end-on):.0f} ms shorter than two analysis frames; "
+                         f"its trajectory uses 20 ms (placement keeps the scheduled time)")
+        if segs and s < segs[-1][1]:
+            s = segs[-1][1]
+            if e - s < 2:
+                e = s + 2
+        e = min(e, n_frames)
+        if e - s < 2:
+            dropped += 1
+            notes.append(f"event {k+1} at {on:.3f} s dropped (no analysis frames left)")
+            continue
+        segs.append((s, e))
+        exact.append((on, end))
+    return segs, exact, notes, dropped, modified
 
 
 def cnn_key(fk, P):
@@ -1478,7 +1538,33 @@ def stage_features(cfg, P):
     segA, novA, infA = segment(fA, P["sens"], P["min_dur"], P["max_dur"])
     segB, novB, infB = segment(fB, P["sens"], P["min_dur"], P["max_dur"])
     log(f"  analysis+segmentation {time.time()-t0:.2f} s")
-    for nm, segs, inf in (("A", segA, infA), ("B", segB, infB)):
+    exactA = None
+    sched_stats = {}
+    if cfg.get("a_events"):
+        # v1.3: the driver's events are known (generated rhythm). Use them as A's
+        # gestures; automatic segmentation of A is run only to report agreement.
+        sched = read_schedule(cfg["a_events"])
+        autoA = segA
+        segA, exactA, snotes, sdrop, smod = schedule_segments(sched, fA["hop_s"], len(fA["db"]), a_total)
+        auto_on = np.array([s * fA["hop_s"] for s, _ in autoA])
+        sch_on = np.array([o for o, _ in sched])
+        hit = 0
+        for o in sch_on:
+            if len(auto_on) and np.min(np.abs(auto_on - o)) <= 0.03:
+                hit += 1
+        extra_auto = sum(1 for a in auto_on if len(sch_on) == 0 or np.min(np.abs(sch_on - a)) > 0.03)
+        report.append(f"Driver A events: SCHEDULE (authoritative) | scheduled {len(sched)} | used {len(segA)} | "
+                      f"dropped {sdrop} | trajectory-lengthened {smod} | merged 0")
+        report.append(f"  Check only (not used): automatic segmentation of A finds {len(autoA)} gestures; "
+                      f"{hit} of {len(sched)} scheduled onsets within 30 ms; {extra_auto} automatic onset(s) not in "
+                      f"the schedule")
+        for n in snotes[:8]:
+            report.append("  " + n)
+        if len(snotes) > 8:
+            report.append(f"  ... {len(snotes) - 8} more schedule notes")
+        sched_stats = {"a_source": "schedule", "sched_n": len(sched), "sched_used": len(segA),
+                       "sched_dropped": sdrop, "sched_modified": smod, "auto_n": len(autoA), "auto_hit": hit}
+    for nm, segs, inf in ((("A", segA, infA),) if exactA is None else ()) + (("B", segB, infB),):
         report.append(f"Segmentation {nm}: {len(segs)} gestures | gate {fmt(inf['gate_on_db'],1)} dB "
                       f"(peak {fmt(inf['peak_db'],1)}, floor {fmt(inf['floor_db'],1)}) | onsets {inf['onsets']} | "
                       f"merged {inf['merged']} | dropped short {inf['dropped_short']} | split long {inf['split_long']}"
@@ -1496,6 +1582,9 @@ def stage_features(cfg, P):
         warn.append(f"B has only {len(segB)} gestures: matching has very little choice and repetition is unavoidable.")
 
     rawA, evA = build_events(fA, segA, "A")
+    if exactA is not None:
+        for ev, (on, end) in zip(evA, exactA):
+            ev["start"], ev["end"], ev["dur"] = float(on), float(end), float(end - on)
     rawB, evB = build_events(fB, segB, "B")
     nA, nB = len(evA), len(evB)
     trA, _ = source_normalise(rawA)
@@ -1532,7 +1621,7 @@ def stage_features(cfg, P):
             "dtw_full": dtw_full, "dtw_mask": mask, "lock": lock,
             "gateB": infB["gate"], "hopB": fB["hop_s"],
             "a_total": a_total, "srb": srb, "n_samples_b": len(xb),
-            "report": report, "warn": warn}
+            "report": report, "warn": warn, "sched_stats": sched_stats}
 
 
 def _holdout_split(src, seed):
@@ -1743,7 +1832,7 @@ def run(cfg):
     rng = np.random.default_rng(P["seed"])
 
     cdir = cfg.get("cache_dir", "")
-    fkey = feat_key(audio_hash(cfg), P)
+    fkey = feat_key(audio_hash(cfg), P, cfg)
     F = cache_load(cdir, "feat", fkey)
     feat_note = "reused"
     if F is None:
@@ -2073,6 +2162,7 @@ def run(cfg):
             "ret_rnd": round(diag["ret_rnd"], 3) if diag else "n/a",
             "warnings": len(warn), "seconds": round(time.time() - t_start, 2),
         }
+        kv.update(F.get("sched_stats") or {"a_source": "auto"})
         for k, v in kv.items():
             f.write(f"{k}={v}\n")
     log(f"  done in {time.time()-t_start:.2f} s")
