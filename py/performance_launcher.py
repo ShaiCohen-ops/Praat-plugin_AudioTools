@@ -3,7 +3,7 @@
 # Praat AudioTools Plugin
 # Script:      performance_launcher.py
 # Author:      Shai Cohen
-# Version:     1.7.3 (2026) — MIDI keyboard input + note-to-cue mapping
+# Version:     1.7.4.1 (2026) — Performance Mode maintenance corrections
 # License:     MIT License
 #
 # Description:
@@ -33,6 +33,43 @@
 #   - Velocity: velocity scales cue gain ((v/127)^2 amplitude law).
 #   - CC 120 / CC 123 (All Sound Off / All Notes Off) = Stop All.
 #   Note names use middle C = C4 = 60 (some keyboards label it C3).
+#
+# Performance Mode (Windows only, automatic, nothing to configure):
+#   While the launcher runs: no display power-off, no idle sleep, and the
+#   (non-policy) screen saver is suspended for the session. Machine-
+#   inactivity / MDM lock policies are detected and reported, never changed.
+#   Top bar shows "Performance Mode: Display/Sleep Protected" or
+#   "Limited — <reason>".
+#   Everything is restored on close; see the section comment for crash cases.
+#
+# Changelog v1.7.4.1 (maintenance):
+#   - FIX: watchdog restores the screen saver only after WaitForSingleObject
+#     returns WAIT_OBJECT_0 (launcher confirmed terminated). OpenProcess
+#     failure, WAIT_FAILED or any other result is logged and the recovery
+#     file is left for the next launch; the process handle is closed in
+#     try/finally. Previously an OpenProcess failure fell straight through
+#     to a restore, possibly while the launcher was still running.
+#   - FIX: _on_close runs MIDI close, Stop All, the 0.15 s wait, stream close,
+#     Performance Mode restore, config save and temp cleanup as independent
+#     exception-safe steps (same order); the window is destroyed in finally.
+#   - Indicator now reads "Performance Mode: Display/Sleep Protected" instead
+#     of "Active", so it does not imply that every Windows lock is prevented.
+#     Limited warnings unchanged.
+#
+# Changelog v1.7.4:
+#   - NEW: Performance Mode (PerformanceModeManager). Addresses the rehearsal
+#     failure "black screen, later locked session": SetThreadExecutionState
+#     (ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED) blocks idle
+#     display-off and idle sleep; SPI_SETSCREENSAVEACTIVE suspends the screen
+#     saver, session-only (no registry write), after recording the original
+#     state. Group-Policy screen savers, 'Machine inactivity limit' and
+#     Intune device-lock policies are read-only: reported as Limited, not
+#     bypassed. Win+L and user-initiated sleep are unaffected.
+#   - Restoration: _on_close (now also when audio/MIDI teardown raises),
+#     atexit, a no-polling watchdog process for forced kills, a recovery
+#     file checked at the next launch, and finally Windows sign-out.
+#   - Audio callback, MIDI handling, cue mapping and config format unchanged.
+#     Version now matches PerformanceLauncher.praat 1.7.4 (Praat unchanged).
 #
 # Changelog v1.7.3:
 #   - NEW: MIDI Stop key, placed on the next key after the last cue in the
@@ -151,6 +188,452 @@ import json
 import time
 import traceback
 import threading
+import atexit
+import tempfile
+
+# ── Performance Mode: Windows power / screen-saver management (v1.7.4) ─
+# Placed ahead of the tkinter / numpy / sounddevice imports on purpose: the
+# crash-recovery watchdog is this same file started with PERF_WATCHDOG_FLAG,
+# and it must never import sounddevice (the ASIO-enabled PortAudio would
+# probe ASIO drivers while the launcher holds the interface). Standard
+# library only. Nothing in this section calls a Windows API on macOS/Linux,
+# and nothing here ever runs on the audio or MIDI threads.
+#
+#   Display power-off (idle)   SetThreadExecutionState ES_DISPLAY_REQUIRED
+#   System idle sleep          SetThreadExecutionState ES_SYSTEM_REQUIRED
+#     Both are held by the main thread and released by Windows itself when
+#     the process ends, however it ends (no restore step can be missed).
+#   Screen saver (and the      SystemParametersInfoW SPI_SETSCREENSAVEACTIVE,
+#     "On resume, display        session-only (fWinIni = 0: no registry or
+#     logon screen" lock)        profile write; sign-out reverts it anyway).
+#     Skipped when the screen saver is set by Group Policy.
+#   Machine inactivity limit,  Security policy: detected read-only, reported,
+#     Intune device lock,        never changed.
+#     Dynamic Lock
+#
+# Crash recovery for the screen saver, in layers: _on_close -> atexit ->
+# watchdog process (blocks on the launcher's process handle, no polling) ->
+# recovery file read at the next launch -> Windows sign-out.
+
+PERF_WATCHDOG_FLAG = '--performance-mode-watchdog'
+PERF_MARKER_NAME   = 'performance_launcher_restore.json'
+
+_ES_CONTINUOUS       = 0x80000000
+_ES_SYSTEM_REQUIRED  = 0x00000001
+_ES_DISPLAY_REQUIRED = 0x00000002
+_SPI_GETSCREENSAVETIMEOUT = 0x000E
+_SPI_GETSCREENSAVEACTIVE  = 0x0010
+_SPI_SETSCREENSAVEACTIVE  = 0x0011
+_SPI_GETSCREENSAVESECURE  = 0x0076
+_SYNCHRONIZE                       = 0x00100000
+_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+_STILL_ACTIVE = 259
+_INFINITE     = 0xFFFFFFFF
+_WAIT_OBJECT_0 = 0x00000000
+_WAIT_FAILED   = 0xFFFFFFFF
+
+_SS_POLICY_KEY   = r'Software\Policies\Microsoft\Windows\Control Panel\Desktop'
+_LOCK_POLICY_KEY = r'SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+_MDM_LOCK_KEY    = r'SOFTWARE\Microsoft\PolicyManager\current\device\DeviceLock'
+_WINLOGON_KEY    = r'Software\Microsoft\Windows NT\CurrentVersion\Winlogon'
+
+_win_dlls = {}
+
+def _win_dll(name):
+    """Private WinDLL instances with explicit prototypes (no shared windll
+    state, so other libraries' argtypes cannot clash)."""
+    if name in _win_dlls:
+        return _win_dlls[name]
+    import ctypes
+    from ctypes import wintypes
+    d = ctypes.WinDLL(name, use_last_error=True)
+    if name == 'kernel32':
+        d.SetThreadExecutionState.argtypes = (wintypes.DWORD,)
+        d.SetThreadExecutionState.restype = wintypes.DWORD
+        d.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+        d.OpenProcess.restype = wintypes.HANDLE
+        d.WaitForSingleObject.argtypes = (wintypes.HANDLE, wintypes.DWORD)
+        d.WaitForSingleObject.restype = wintypes.DWORD
+        d.GetExitCodeProcess.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
+        d.GetExitCodeProcess.restype = wintypes.BOOL
+        d.QueryFullProcessImageNameW.argtypes = (
+            wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD))
+        d.QueryFullProcessImageNameW.restype = wintypes.BOOL
+        d.CloseHandle.argtypes = (wintypes.HANDLE,)
+        d.CloseHandle.restype = wintypes.BOOL
+    elif name == 'user32':
+        d.SystemParametersInfoW.argtypes = (
+            wintypes.UINT, wintypes.UINT, wintypes.LPVOID, wintypes.UINT)
+        d.SystemParametersInfoW.restype = wintypes.BOOL
+    _win_dlls[name] = d
+    return d
+
+def _win_set_execution_state(flags):
+    """Previous execution state; 0 means the call failed."""
+    return int(_win_dll('kernel32').SetThreadExecutionState(flags))
+
+def _win_spi_get(action):
+    """Integer result of an SPI_GET* query, or None on failure."""
+    import ctypes
+    v = ctypes.c_uint(0)
+    ok = _win_dll('user32').SystemParametersInfoW(action, 0, ctypes.byref(v), 0)
+    return int(v.value) if ok else None
+
+def _win_set_screensaver_active(active):
+    """Session-only switch (fWinIni = 0: no SPIF_UPDATEINIFILE, so nothing is
+    written to the registry/profile). Returns True only if read-back agrees."""
+    want = 1 if active else 0
+    ok = _win_dll('user32').SystemParametersInfoW(_SPI_SETSCREENSAVEACTIVE, want, None, 0)
+    return bool(ok) and _win_spi_get(_SPI_GETSCREENSAVEACTIVE) == want
+
+def _win_pid_is_python(pid):
+    """True if `pid` is a running python*.exe (a launcher that may own the
+    recovery file). Any failure -> False."""
+    import ctypes
+    from ctypes import wintypes
+    k = _win_dll('kernel32')
+    h = k.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
+    if not h:
+        return False
+    try:
+        code = wintypes.DWORD(0)
+        if not k.GetExitCodeProcess(h, ctypes.byref(code)) or code.value != _STILL_ACTIVE:
+            return False
+        buf = ctypes.create_unicode_buffer(1024)
+        size = wintypes.DWORD(1024)
+        if not k.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(size)):
+            return True
+        return os.path.basename(buf.value).lower().startswith('python')
+    finally:
+        k.CloseHandle(h)
+
+def _win_reg_value(hive_name, path, name):
+    """Read-only registry lookup; None if absent or unreadable."""
+    try:
+        import winreg
+        access = winreg.KEY_READ | getattr(winreg, 'KEY_WOW64_64KEY', 0)
+        with winreg.OpenKey(getattr(winreg, hive_name), path, 0, access) as key:
+            return winreg.QueryValueEx(key, name)[0]
+    except (OSError, ImportError, AttributeError):
+        return None
+
+def _as_int(v):
+    try:
+        return int(str(v).strip())
+    except (TypeError, ValueError):
+        return None
+
+def _perf_read_marker(path):
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            m = json.load(f)
+        return m if isinstance(m, dict) else {}
+    except FileNotFoundError:
+        return None
+    except Exception:
+        return {}          # unreadable/corrupt: caller treats as stale
+
+def _perf_restore_from_marker(path, expected_pid=None):
+    """Put the screen saver back to the state recorded in the recovery file.
+    Returns None if there was nothing to do, else (ok, original_state, pid).
+    The file is removed only after a verified restore."""
+    m = _perf_read_marker(path)
+    if m is None:
+        return None
+    pid = _as_int(m.get('pid'))
+    orig = _as_int(m.get('screensaver_active'))
+    if pid is None or orig not in (0, 1):
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        return None
+    if expected_pid is not None and pid != expected_pid:
+        return None        # belongs to another launcher instance
+    ok = _win_set_screensaver_active(bool(orig))
+    if ok:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+    return ok, orig, pid
+
+def _perf_watchdog_main(args):
+    """Helper process: args = <launcher pid> <recovery file> [<log file>].
+    Blocks on the launcher's process handle (zero CPU, no wake-ups). After the
+    launcher exits, acts only if the recovery file is still there, i.e. the
+    launcher did not restore the screen saver itself.
+    v1.7.4.1: restores ONLY after WaitForSingleObject returns WAIT_OBJECT_0
+    (launcher confirmed terminated). If the handle cannot be opened or the
+    wait fails, the watchdog exits and leaves the recovery file for the next
+    launch (or sign-out) instead of risking a restore mid-performance."""
+    if sys.platform != 'win32' or len(args) < 2:
+        return
+    pid = _as_int(args[0])
+    if pid is None:
+        return
+    marker = args[1]
+    log_path = args[2] if len(args) > 2 else ''
+
+    def _wlog(text):
+        if not log_path:
+            return
+        try:
+            t_stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+            with open(log_path, 'a', encoding='utf-8') as f:
+                f.write(f"[{t_stamp}] Performance Mode watchdog: {text}\n")
+        except Exception:
+            pass
+
+    try:
+        import ctypes
+        _last_err = getattr(ctypes, 'get_last_error', lambda: 0)
+        k = _win_dll('kernel32')
+        h = k.OpenProcess(_SYNCHRONIZE, False, pid)
+        if not h:
+            _wlog(f"cannot open launcher process {pid} (error {_last_err()}); "
+                  f"recovery file kept for the next launch")
+            return
+        try:
+            rc = k.WaitForSingleObject(h, _INFINITE)
+            err = _last_err() if rc == _WAIT_FAILED else 0
+        finally:
+            k.CloseHandle(h)
+        if rc != _WAIT_OBJECT_0:
+            what = (f"WAIT_FAILED (error {err})" if rc == _WAIT_FAILED
+                    else f"unexpected wait result 0x{rc:08X}")
+            _wlog(f"{what}; launcher termination not confirmed, recovery file kept "
+                  f"for the next launch")
+            return
+        res = _perf_restore_from_marker(marker, expected_pid=pid)
+        if res is not None:
+            ok, orig, _ = res
+            _wlog(f"launcher exited without restoring; screen saver set back to "
+                  f"{'on' if orig else 'off'}"
+                  f"{'' if ok else ' FAILED (next launch / sign-out will restore it)'}")
+    except Exception as e:
+        _wlog(f"error ({e}); recovery file kept for the next launch")
+
+if __name__ == '__main__' and len(sys.argv) >= 2 and sys.argv[1] == PERF_WATCHDOG_FLAG:
+    _perf_watchdog_main(sys.argv[2:])
+    sys.exit(0)
+
+
+class PerformanceModeManager:
+    """Keeps a Windows machine performance-ready for the launcher's lifetime.
+    activate()/deactivate() run on the main (Tk) thread only: the execution
+    state belongs to the calling thread. On macOS/Linux both are no-ops."""
+
+    # Deliberately does not claim that every Windows lock is prevented.
+    STATUS_ACTIVE  = "Performance Mode: Display/Sleep Protected"
+    LIMITED_POWER  = "Performance Mode: Limited — display-off/sleep not blocked"
+    LIMITED_LOCK   = "Performance Mode: Limited — Windows auto-lock policy may still apply"
+    LIMITED_SAVER  = "Performance Mode: Limited — screen saver may still start"
+    _PRIORITY = (LIMITED_POWER, LIMITED_LOCK, LIMITED_SAVER)
+
+    def __init__(self, log, state_dir='', log_path=''):
+        self.supported = (sys.platform == 'win32')
+        self._log = log
+        self.marker_path = os.path.join(state_dir or tempfile.gettempdir(), PERF_MARKER_NAME)
+        self.log_path = log_path or ''
+        self.active = False
+        self.limited = False
+        self.status_text = ''
+        self._power_held = False
+        self._saver_original = None     # set only if we changed the screen saver
+        self._other_instance = False
+        self._watchdog = None
+        self._done = False
+
+    # ── startup ──
+    def activate(self):
+        if not self.supported or self.active:
+            return
+        self.active = True
+        atexit.register(self.deactivate)
+        limits = []                      # (status text, log detail)
+        self._log("Performance Mode: activating")
+
+        try:
+            self._recover_stale_marker()
+        except Exception as e:
+            self._log(f"Performance Mode: recovery check failed: {e}")
+
+        # 1. Display power-off + idle sleep
+        try:
+            self._power_held = _win_set_execution_state(
+                _ES_CONTINUOUS | _ES_SYSTEM_REQUIRED | _ES_DISPLAY_REQUIRED) != 0
+            err = '' if self._power_held else 'call returned 0'
+        except Exception as e:
+            self._power_held, err = False, str(e)
+        if self._power_held:
+            self._log("Performance Mode: display-off and idle sleep blocked "
+                      "(SetThreadExecutionState)")
+        else:
+            limits.append((self.LIMITED_POWER, f"SetThreadExecutionState failed ({err})"))
+
+        # 2. Inactivity-lock security policies (read-only)
+        try:
+            limits += self._check_lock_policies()
+        except Exception as e:
+            self._log(f"Performance Mode: lock-policy check failed: {e}")
+
+        # 3. Screen saver
+        try:
+            limits += self._handle_screensaver()
+        except Exception as e:
+            limits.append((self.LIMITED_SAVER, f"screen-saver handling failed: {e}"))
+
+        for _text, detail in limits:
+            self._log(f"Performance Mode: LIMITED — {detail}")
+        texts = [t for t, _ in limits]
+        self.limited = bool(texts)
+        self.status_text = next((p for p in self._PRIORITY if p in texts), self.STATUS_ACTIVE)
+        self._log(self.status_text)
+
+    def _recover_stale_marker(self):
+        m = _perf_read_marker(self.marker_path)
+        if m is None:
+            return
+        pid = _as_int(m.get('pid'))
+        if pid and pid != os.getpid() and _win_pid_is_python(pid):
+            self._other_instance = True
+            self._log(f"Performance Mode: screen saver already suspended by a running "
+                      f"launcher (pid {pid}); leaving it to that instance")
+            return
+        res = _perf_restore_from_marker(self.marker_path)
+        if res is not None:
+            ok, orig, old = res
+            self._log(f"Performance Mode: previous session (pid {old}) did not exit cleanly; "
+                      f"screen saver set back to {'on' if orig else 'off'}"
+                      f"{'' if ok else ' — FAILED'}")
+
+    def _check_lock_policies(self):
+        limits = []
+        secs = _as_int(_win_reg_value('HKEY_LOCAL_MACHINE', _LOCK_POLICY_KEY,
+                                      'InactivityTimeoutSecs'))
+        if secs and secs > 0:
+            limits.append((self.LIMITED_LOCK,
+                           f"'Machine inactivity limit' policy locks after {secs} s idle "
+                           f"(security policy, not changed)"))
+        mins = _as_int(_win_reg_value('HKEY_LOCAL_MACHINE', _MDM_LOCK_KEY,
+                                      'MaxInactivityTimeDeviceLock'))
+        if mins and mins > 0:
+            limits.append((self.LIMITED_LOCK,
+                           f"MDM/Intune device-lock policy locks after {mins} min idle "
+                           f"(not changed)"))
+        if _as_int(_win_reg_value('HKEY_CURRENT_USER', _WINLOGON_KEY, 'EnableGoodbye')) == 1:
+            self._log("Performance Mode: note — Dynamic Lock is on (locks when the paired "
+                      "phone moves out of range; not an idle lock, not changed)")
+        return limits
+
+    def _handle_screensaver(self):
+        active  = _win_spi_get(_SPI_GETSCREENSAVEACTIVE)
+        secure  = _win_spi_get(_SPI_GETSCREENSAVESECURE)
+        timeout = _win_spi_get(_SPI_GETSCREENSAVETIMEOUT)
+        if active is None:
+            return [(self.LIMITED_SAVER, "could not read the screen-saver state")]
+        self._log("Performance Mode: screen saver "
+                  + ("off" if not active else
+                     f"on, {timeout if timeout is not None else '?'} s"
+                     + (", locks on resume" if secure else "")))
+        if not active:
+            return []
+        pol = {n: _win_reg_value('HKEY_CURRENT_USER', _SS_POLICY_KEY, n)
+               for n in ('ScreenSaveActive', 'ScreenSaverIsSecure',
+                         'ScreenSaveTimeOut', 'SCRNSAVE.EXE')}
+        if (str(pol['ScreenSaveActive']) == '1' or str(pol['ScreenSaverIsSecure']) == '1'
+                or pol['ScreenSaveTimeOut'] not in (None, '')
+                or pol['SCRNSAVE.EXE'] not in (None, '')):
+            return [(self.LIMITED_LOCK if secure else self.LIMITED_SAVER,
+                     "screen saver is set by Group Policy (not changed)")]
+        if self._other_instance:
+            return []
+        return self._suspend_screensaver()
+
+    def _suspend_screensaver(self):
+        # The recovery file is written BEFORE the change: if it cannot be
+        # written there is no reliable crash recovery, so nothing is changed.
+        try:
+            parent = os.path.dirname(self.marker_path)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            with open(self.marker_path, 'w', encoding='utf-8') as f:
+                json.dump({'pid': os.getpid(), 'screensaver_active': 1,
+                           'created': time.strftime("%Y-%m-%d %H:%M:%S")}, f)
+        except OSError as e:
+            return [(self.LIMITED_SAVER,
+                     f"screen saver left on: recovery file not writable ({e})")]
+        if not self._spawn_watchdog():
+            self._log("Performance Mode: watchdog not started; after a forced kill the "
+                      "screen saver is restored at the next launch or at sign-out")
+        if _win_set_screensaver_active(False):
+            self._saver_original = 1
+            self._log("Performance Mode: screen saver suspended for this session "
+                      "(not written to the registry)")
+            return []
+        try:
+            os.remove(self.marker_path)
+        except OSError:
+            pass
+        return [(self.LIMITED_SAVER, "Windows refused to suspend the screen saver")]
+
+    def _spawn_watchdog(self):
+        import subprocess
+        try:
+            exe = getattr(sys, '_base_executable', '') or sys.executable
+            if not os.path.isfile(exe):
+                exe = sys.executable
+            pyw = os.path.join(os.path.dirname(exe), 'pythonw.exe')
+            if os.path.isfile(pyw):
+                exe = pyw
+            script = os.path.abspath(__file__)
+            args = [exe, '-I', script, PERF_WATCHDOG_FLAG,
+                    str(os.getpid()), self.marker_path, self.log_path]
+        except Exception:
+            return False
+        CREATE_NO_WINDOW, CREATE_BREAKAWAY_FROM_JOB = 0x08000000, 0x01000000
+        for flags in (CREATE_NO_WINDOW | CREATE_BREAKAWAY_FROM_JOB, CREATE_NO_WINDOW):
+            try:
+                # No inherited pipes: Praat's runSubprocess must not wait on it.
+                self._watchdog = subprocess.Popen(
+                    args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL, close_fds=True,
+                    cwd=os.path.dirname(script) or None, creationflags=flags)
+                return True
+            except OSError:
+                continue
+        return False
+
+    # ── shutdown (idempotent: _on_close, then atexit as a safety net) ──
+    def deactivate(self):
+        if not self.active or self._done:
+            return
+        self._done = True
+        if self._saver_original is not None:
+            try:
+                ok = _win_set_screensaver_active(bool(self._saver_original))
+            except Exception:
+                ok = False
+            if ok:
+                try:
+                    os.remove(self.marker_path)
+                except OSError:
+                    pass
+                self._log("Performance Mode: screen saver restored (on)")
+            else:
+                self._log("Performance Mode: could not restore the screen saver; recovery "
+                          "file kept (watchdog / next launch / sign-out will restore it)")
+        if self._power_held:
+            try:
+                _win_set_execution_state(_ES_CONTINUOUS)
+                self._log("Performance Mode: display/sleep requests released")
+            except Exception as e:
+                self._log(f"Performance Mode: release failed ({e}); Windows drops it at exit")
+            self._power_held = False
+        self._log("Performance Mode: off")
+
+
 import tkinter as tk
 from tkinter import ttk
 from tkinter import messagebox
@@ -867,6 +1350,18 @@ class PerformanceLauncherApp:
         if load_errors:
             self.engine.log_event("Load errors:\n" + "\n".join(load_errors))
 
+        # Performance Mode (Windows only; no-op elsewhere). Started here on
+        # the main thread, before the audio stream opens; released only in
+        # _on_close (atexit as fallback). Never touched by audio/MIDI threads.
+        self.perf_mode = PerformanceModeManager(
+            self.engine.log_event,
+            state_dir=os.path.dirname(self.config_file) if self.config_file else '',
+            log_path=self.engine.log_file_path)
+        try:
+            self.perf_mode.activate()
+        except Exception as e:
+            self.engine.log_event(f"Performance Mode: activation error: {e}")
+
         self._build_ui()
         self._rebuild_key_map()
         self._rebuild_note_map()
@@ -894,6 +1389,12 @@ class PerformanceLauncherApp:
 
         tk.Label(top, text="PERFORMANCE LAUNCHER", bg=PANEL_BG,
                  fg=TEXT_FG, font=("Helvetica", 11, "bold")).pack(side='left', padx=8)
+
+        # Performance Mode indicator (Windows only; nothing shown elsewhere)
+        if self.perf_mode.supported and self.perf_mode.status_text:
+            tk.Label(top, text=self.perf_mode.status_text, bg=PANEL_BG,
+                     fg=ARMED_COLOR if self.perf_mode.limited else "#4a9a6a",
+                     font=("Helvetica", 8)).pack(side='left', padx=8)
 
         tk.Button(top, text="⏹ Stop All", bg=BUTTON_BG, fg=TEXT_FG,
                   relief='flat', padx=8,
@@ -1692,13 +2193,30 @@ class PerformanceLauncherApp:
 
     # ── Shutdown ──────────────────────────────────────────────────────
     def _on_close(self):
-        self.midi.close()          # stop MIDI triggers before tearing down audio
-        self.engine.stop_all()
-        time.sleep(0.15)
-        self.engine.close_stream()
-        self._save_config()
-        self._cleanup_temp_files()
-        self.root.destroy()
+        # v1.7.4.1: every step is independently exception-safe, in the same
+        # order as before; a failure is logged and the next step still runs.
+        # Performance Mode is restored after the stream is closed (or failed
+        # to close); the window is always destroyed. atexit remains a fallback.
+        steps = (
+            ("MIDI close",        self.midi.close),   # stop MIDI triggers first
+            ("Stop All",          self.engine.stop_all),
+            ("shutdown fade wait", lambda: time.sleep(0.15)),
+            ("audio stream close", self.engine.close_stream),
+            ("Performance Mode restore", self.perf_mode.deactivate),
+            ("config save",       self._save_config),
+            ("temp-file cleanup", self._cleanup_temp_files),
+        )
+        try:
+            for label, step in steps:
+                try:
+                    step()
+                except Exception as e:
+                    try:
+                        self.engine.log_event(f"Shutdown error ({label}): {e}")
+                    except Exception:
+                        pass
+        finally:
+            self.root.destroy()
 
     def _cleanup_temp_files(self):
         """Delete the per-cue WAV exports and the manifest written by Praat."""
