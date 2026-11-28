@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.4 (2026) - Correct latent/attention geometry, segmentation and crossfade
+# Version: 1.5 (2026) - Dual-trajectory attentional counterpoint
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -20,6 +20,36 @@
 #
 # No plan.csv is ever written.
 # Only output.wav persists after execution.
+#
+# Changelog v1.5 (engine self_attention_latent.py v1.6):
+#   - Navigation_mode: Linked (v1.4 engine path, bit-identical audio) /
+#     Independent / Competitive / Divergence_convergence. The three dual
+#     modes navigate two latent trajectories (own position, velocity, RNG,
+#     context, candidates, anchors and render) over one shared phase plan
+#     and write a true two-voice stereo Sound (L voice / R voice).
+#   - Trajectory_divergence (0-1): starting offset + minimum-separation floor
+#     (Independent, Competitive) or the height of the separation arc (D/C).
+#   - Competition_strength (0-1): symmetric soft competition, Competitive only.
+#   - Presets 2-14 keep their settings and run Linked; new presets
+#     "Dual chaotic plasma" and "Attentional counterpoint".
+#   - One time convention: event times are written relative to the exported
+#     WAV (Silences segmentation now subtracts the Sound's start time, as
+#     Equal_intervals already did); --time_offset 0 and --mix_align on are
+#     passed explicitly.
+#   - Arguments go to Python through an args file (Windows runSystem limit).
+#   - Dual modes draw the Attentional Counterpoint Map from the executed
+#     per-step TSV diagnostics; Linked keeps the v1.4 picture.
+#   - Review round 1: Competitive and Divergence_convergence share one set of
+#     slot boundaries (step i of both voices sounds at the same time);
+#     Independent keeps a free rhythm per voice. Overlap, same-dominant,
+#     separation, trend and convergence are measured on the sounding
+#     timeline (viz_timeline.tsv), not by pairing step numbers.
+#   - Review round 2: a step whose event is far longer than its slot plays a
+#     moving window through the event (one read cursor per voice and event)
+#     instead of always its opening; the Info window reports how much of the
+#     events was played and, when events and slots are badly matched,
+#     proposes Plan_steps / Interval_size / Target_duration values. Shorter
+#     map captions; subtitle names script and engine versions.
 #
 # Changelog v1.4:
 #   - TRUE Equal_intervals segmentation; final interval is no longer omitted.
@@ -157,6 +187,11 @@ stats_txt$   = tempBase$ + "stats.txt"
 pythonLog$   = tempBase$ + "python.log"
 probePy$     = tempBase$ + "probe.py"
 probeMarker$ = tempBase$ + "probe.ok"
+argsFile$    = tempBase$ + "args.txt"
+vizPrefix$   = tempBase$ + "viz_"
+stepsTsv$    = vizPrefix$ + "steps.tsv"
+timelineTsv$ = vizPrefix$ + "timeline.tsv"
+eventsTsv$   = vizPrefix$ + "events.tsv"
 
 # Enforce forward slashes for all temporary paths passed to python
 pythonScriptJ$ = replace_regex$(pythonScript$, "\\", "/", 0)
@@ -167,6 +202,8 @@ stats_txtJ$    = replace_regex$(stats_txt$, "\\", "/", 0)
 pythonLogJ$    = replace_regex$(pythonLog$, "\\", "/", 0)
 probePyJ$      = replace_regex$(probePy$, "\\", "/", 0)
 probeMarkerJ$  = replace_regex$(probeMarker$, "\\", "/", 0)
+argsFileJ$     = replace_regex$(argsFile$, "\\", "/", 0)
+vizPrefixJ$    = replace_regex$(vizPrefix$, "\\", "/", 0)
 
 # ---- CLEANUP PROCEDURE ----
 procedure cleanUpTempFiles
@@ -191,12 +228,26 @@ procedure cleanUpTempFiles
     if fileReadable(probeMarker$)
         deleteFile: probeMarker$
     endif
+    if fileReadable(argsFile$)
+        deleteFile: argsFile$
+    endif
+    if fileReadable(stepsTsv$)
+        deleteFile: stepsTsv$
+    endif
+    if fileReadable(eventsTsv$)
+        deleteFile: eventsTsv$
+    endif
+    if fileReadable(timelineTsv$)
+        deleteFile: timelineTsv$
+    endif
 endproc
 
 @cleanUpTempFiles
 
+# Six additional listening experiments (A-F). Each uses fixed 8 s, seed 42.
+# Experiment F is identical to E except Attention_heads (4 vs 1).
 # ---- FORM ----
-form Self-Attention Latent Navigation v1.4
+form Self-Attention Latent Navigation v1.5
     optionmenu Preset: 1
         option Custom
         option Gentle drift
@@ -206,6 +257,21 @@ form Self-Attention Latent Navigation v1.4
         option Rhythmic grid
         option Spectral smear
         option Chaotic plasma
+        option Micro plasma (experiment)
+        option Macro cloud (experiment)
+        option Hyper rhythmic grid (experiment)
+        option Gestural mutation (experiment)
+        option Pure attractor (experiment)
+        option Attention stress test (experiment)
+        option Dual chaotic plasma
+        option Attentional counterpoint
+    optionmenu Navigation_mode: 1
+        option Linked
+        option Independent
+        option Competitive
+        option Divergence_convergence
+    real Trajectory_divergence 0.50
+    real Competition_strength 0.50
     optionmenu Segmentation_method: 1
         option Silences
         option Equal_intervals
@@ -347,8 +413,185 @@ elsif preset = 8
     pitch_mode           = 1
     normalize_mode       = 3
     presetName$          = "ChaoticPlasma"
+elsif preset = 9
+    # Listening experiment: preset 1 of 6. Existing presets are unchanged.
+    segmentation_method  = 2
+    silence_threshold    = 25.0
+    min_event_duration   = 0.010
+    min_silence_duration = 0.03
+    interval_size        = 0.035
+    latent_size          = 32
+    random_seed          = 42
+    attention_heads      = 16
+    plan_steps           = 200
+    duration_scale       = 1.0
+    duration_jitter      = 0.50
+    energy_scale         = 1.0
+    energy_jitter        = 0.50
+    target_duration      = 8.0
+    pitch_mode           = 1
+    normalize_mode       = 3
+    load_output          = 1
+    show_visualization   = 1
+    play_result         = 1
+    presetName$          = "MicroPlasma"
+elsif preset = 10
+    # Listening experiment: preset 2 of 6. Existing presets are unchanged.
+    segmentation_method  = 2
+    silence_threshold    = 25.0
+    min_event_duration   = 0.050
+    min_silence_duration = 0.03
+    interval_size        = 0.500
+    latent_size          = 2
+    random_seed          = 42
+    attention_heads      = 1
+    plan_steps           = 12
+    duration_scale       = 1.0
+    duration_jitter      = 0.00
+    energy_scale         = 1.0
+    energy_jitter        = 0.00
+    target_duration      = 8.0
+    pitch_mode           = 2
+    normalize_mode       = 3
+    load_output          = 1
+    show_visualization   = 1
+    play_result         = 1
+    presetName$          = "MacroCloud"
+elsif preset = 11
+    # Listening experiment: preset 3 of 6. Existing presets are unchanged.
+    segmentation_method  = 2
+    silence_threshold    = 25.0
+    min_event_duration   = 0.010
+    min_silence_duration = 0.03
+    interval_size        = 0.050
+    latent_size          = 8
+    random_seed          = 42
+    attention_heads      = 4
+    plan_steps           = 200
+    duration_scale       = 1.0
+    duration_jitter      = 0.02
+    energy_scale         = 1.0
+    energy_jitter        = 0.02
+    target_duration      = 8.0
+    pitch_mode           = 1
+    normalize_mode       = 3
+    load_output          = 1
+    show_visualization   = 1
+    play_result         = 1
+    presetName$          = "HyperRhythmicGrid"
+elsif preset = 12
+    # Listening experiment: preset 4 of 6. Existing presets are unchanged.
+    segmentation_method  = 2
+    silence_threshold    = 25.0
+    min_event_duration   = 0.050
+    min_silence_duration = 0.03
+    interval_size        = 0.400
+    latent_size          = 24
+    random_seed          = 42
+    attention_heads      = 8
+    plan_steps           = 24
+    duration_scale       = 1.0
+    duration_jitter      = 0.50
+    energy_scale         = 1.0
+    energy_jitter        = 0.40
+    target_duration      = 8.0
+    pitch_mode           = 2
+    normalize_mode       = 3
+    load_output          = 1
+    show_visualization   = 1
+    play_result         = 1
+    presetName$          = "GesturalMutation"
+elsif preset = 13
+    # Listening experiment: preset 5 of 6. Existing presets are unchanged.
+    segmentation_method  = 2
+    silence_threshold    = 25.0
+    min_event_duration   = 0.020
+    min_silence_duration = 0.03
+    interval_size        = 0.125
+    latent_size          = 8
+    random_seed          = 42
+    attention_heads      = 4
+    plan_steps           = 120
+    duration_scale       = 1.0
+    duration_jitter      = 0.00
+    energy_scale         = 1.0
+    energy_jitter        = 0.00
+    target_duration      = 8.0
+    pitch_mode           = 2
+    normalize_mode       = 3
+    load_output          = 1
+    show_visualization   = 1
+    play_result         = 1
+    presetName$          = "PureAttractor"
+elsif preset = 14
+    # Listening experiment: preset 6 of 6. Existing presets are unchanged.
+    segmentation_method  = 2
+    silence_threshold    = 25.0
+    min_event_duration   = 0.020
+    min_silence_duration = 0.03
+    interval_size        = 0.125
+    latent_size          = 8
+    random_seed          = 42
+    attention_heads      = 1
+    plan_steps           = 120
+    duration_scale       = 1.0
+    duration_jitter      = 0.00
+    energy_scale         = 1.0
+    energy_jitter        = 0.00
+    target_duration      = 8.0
+    pitch_mode           = 2
+    normalize_mode       = 3
+    load_output          = 1
+    show_visualization   = 1
+    play_result         = 1
+    presetName$          = "AttentionStressTest"
+elsif preset = 15
+    # Chaotic plasma processing, two independent highly divergent voices.
+    segmentation_method  = 1
+    silence_threshold    = 10.0
+    min_event_duration   = 0.02
+    min_silence_duration = 0.01
+    interval_size        = 0.1
+    latent_size          = 32
+    attention_heads      = 16
+    plan_steps           = 120
+    duration_scale       = 1.0
+    duration_jitter      = 0.5
+    energy_scale         = 1.0
+    energy_jitter        = 0.4
+    pitch_mode           = 1
+    normalize_mode       = 3
+    navigation_mode      = 2
+    trajectory_divergence = 0.85
+    competition_strength = 0.0
+    presetName$          = "DualChaoticPlasma"
+elsif preset = 16
+    # Moderately dense counterpoint: two voices that compete for material.
+    segmentation_method  = 1
+    silence_threshold    = 25.0
+    min_event_duration   = 0.04
+    min_silence_duration = 0.03
+    interval_size        = 0.2
+    latent_size          = 16
+    attention_heads      = 8
+    plan_steps           = 64
+    duration_scale       = 1.0
+    duration_jitter      = 0.15
+    energy_scale         = 1.0
+    energy_jitter        = 0.10
+    pitch_mode           = 2
+    normalize_mode       = 3
+    navigation_mode      = 3
+    trajectory_divergence = 0.50
+    competition_strength = 0.75
+    presetName$          = "AttentionalCounterpoint"
 else
     presetName$ = "Custom"
+endif
+# Presets 2-14 are the v1.4 presets: settings and behaviour unchanged, so
+# they always run the Linked (v1.4) navigation path.
+if preset >= 2 and preset <= 14
+    navigation_mode = 1
 endif
 
 # ── pitch mode string ──────────────────────────────────────────────────────
@@ -366,6 +609,24 @@ elsif normalize_mode = 2
 else
     normStr$ = "rms"
 endif
+
+# ── navigation mode string ────────────────────────────────────────────────
+if navigation_mode = 1
+    navStr$ = "linked"
+    navLabel$ = "Linked"
+elsif navigation_mode = 2
+    navStr$ = "independent"
+    navLabel$ = "Independent"
+elsif navigation_mode = 3
+    navStr$ = "competitive"
+    navLabel$ = "Competitive"
+else
+    navStr$ = "divergence_convergence"
+    navLabel$ = "Divergence/convergence"
+endif
+isDual = navigation_mode > 1
+trajectory_divergence = max(0, min(1, trajectory_divergence))
+competition_strength = max(0, min(1, competition_strength))
 
 # ── Clamp parameters ─────────────────────────────────────────────────────
 if attention_heads < 1
@@ -388,9 +649,10 @@ endif
 # Stage 0 — Early Python Dependency Probe
 # ═════════════════════════════════════════════════════════════════════════════
 clearinfo
-appendInfoLine: "=== Self-Attention Latent Navigation v1.4 ==="
+appendInfoLine: "=== Self-Attention Latent Navigation v1.5 ==="
 appendInfoLine: "Input:  ", soundName$
 appendInfoLine: "Preset: ", presetName$
+appendInfoLine: "Navigation: ", navLabel$
 appendInfoLine: ""
 appendInfoLine: "[0/4] Detecting Python dependencies..."
 
@@ -468,6 +730,15 @@ selectObject: sound
 dur = Get total duration
 sr = Get sampling frequency
 nChannels = Get number of channels
+soundStart = Get start time
+
+# Dual modes render exactly two voices. Channels are never dropped silently:
+# a source with more than two channels must use Linked (which keeps all
+# channels) or be converted first.
+if isDual and nChannels > 2
+    @cleanUpTempFiles
+    exitScript: navLabel$ + " navigation renders two voices (left / right): the left voice reads channel 1, the right voice channel 2." + newline$ + "This Sound has " + string$(nChannels) + " channels, and channels are never dropped silently." + newline$ + "Use Navigation_mode = Linked (keeps all channels), or extract or mix the channels you want into a stereo or mono Sound first."
+endif
 
 # Write as wav so Python can read it reliably
 Save as WAV file: tempWav$
@@ -478,6 +749,7 @@ Save as WAV file: tempWav$
 appendInfoLine: "[2/4] Segmenting audio..."
 writeFileLine: eventsCSV$, "start_time,end_time,label,duration"
 n_events = 0
+evSum = 0
 
 if segmentation_method = 2
     # TRUE equal-interval segmentation. v1.3 incorrectly still traversed the
@@ -490,6 +762,7 @@ if segmentation_method = 2
         if evDur >= min_event_duration
             appendFileLine: eventsCSV$, fixed$(t, 6), ",", fixed$(en, 6), ",interval,", fixed$(evDur, 6)
             n_events = n_events + 1
+            evSum = evSum + evDur
         endif
         t = en
     endwhile
@@ -503,12 +776,18 @@ else
         selectObject: tg
         lab$ = Get label of interval: 1, i
         if lab$ = "sounding"
+            # TextGrid times are on the Sound's own timeline; the exported
+            # WAV starts at 0, so write times relative to the Sound's start
+            # (Equal_intervals already counts from 0).
             st = Get start time of interval: 1, i
             en = Get end time of interval: 1, i
+            st = st - soundStart
+            en = en - soundStart
             evDur = en - st
             if evDur >= min_event_duration
                 appendFileLine: eventsCSV$, fixed$(st, 6), ",", fixed$(en, 6), ",", lab$, ",", fixed$(evDur, 6)
                 n_events = n_events + 1
+                evSum = evSum + evDur
             endif
         endif
     endfor
@@ -519,6 +798,7 @@ else
         appendInfoLine: "  Warning: too few silence events; falling back to equal intervals"
         writeFileLine: eventsCSV$, "start_time,end_time,label,duration"
         n_events = 0
+        evSum = 0
         eqSize = interval_size
         if eqSize > dur / 2
             eqSize = dur / 2
@@ -530,6 +810,7 @@ else
             if evDur >= min_event_duration
                 appendFileLine: eventsCSV$, fixed$(t, 6), ",", fixed$(en, 6), ",interval,", fixed$(evDur, 6)
                 n_events = n_events + 1
+                evSum = evSum + evDur
             endif
             t = en
         endwhile
@@ -542,33 +823,72 @@ if n_events < 2
     exitScript: "Only " + string$(n_events) + " event detected. Latent navigation needs at least two events." + newline$ + "Use a smaller Interval size or shorter Min event duration."
 endif
 
+# Dual modes: are the events much longer than a step's slot? Then each step
+# plays a moving window of its event rather than the whole event (engine
+# round 2), and a better-matched segmentation is proposed. Nothing is
+# changed automatically. (Linked compresses the whole render instead; its
+# v1.4 behaviour is kept as it is.)
+advice1$ = ""
+advice2$ = ""
+meanEv = evSum / n_events
+if target_duration > 0
+    outT = target_duration * duration_scale
+else
+    outT = dur * duration_scale
+endif
+slotEst = outT / plan_steps
+fitEst = slotEst / meanEv
+if isDual and fitEst < 0.5
+    stepsWhole = max(8, round(outT / meanEv))
+    intervalProp = max(0.02, 2 * slotEst)
+    durProp = 0.5 * plan_steps * meanEv / duration_scale
+    advice1$ = "Events average " + fixed$(meanEv, 3) + " s but a step slot is about " + fixed$(slotEst, 3) + " s, so each step plays a moving window through its event (about " + fixed$(100 * 2 * fitEst, 0) + " percent of it per step)."
+    advice2$ = "For whole events: Plan_steps about " + string$(stepsWhole) + ", or Equal_intervals with Interval_size about " + fixed$(intervalProp, 3) + " s, or Target_duration of at least " + fixed$(durProp, 1) + " s."
+endif
+if isDual and n_events < 8
+    advice2$ = advice2$ + if advice2$ = "" then "" else " " fi + "Only " + string$(n_events) + " events: the two voices have little material to choose between (a smaller Interval_size or Equal_intervals gives more)."
+endif
+if advice1$ <> "" or advice2$ <> ""
+    appendInfoLine: "  Note: ", advice1$
+    appendInfoLine: "        ", advice2$
+endif
+
 # ═════════════════════════════════════════════════════════════════════════════
 # Stage 3 — Call Python
 # ═════════════════════════════════════════════════════════════════════════════
 appendInfoLine: "[3/4] Running Python engine..."
 
-targetDurArg$ = ""
+# One argument per line in an args file: no shell quoting, and no risk of
+# the ~1 kB command-line truncation of runSystem on Windows.
+writeFileLine: argsFile$, tempWavJ$
+appendFileLine: argsFile$, eventsCSVJ$
+appendFileLine: argsFile$, output_wavJ$
+appendFileLine: argsFile$, stats_txtJ$
+appendFileLine: argsFile$, "--latent_size", newline$, string$(latent_size)
+appendFileLine: argsFile$, "--seed", newline$, string$(random_seed)
+appendFileLine: argsFile$, "--attn_heads", newline$, string$(attention_heads)
+appendFileLine: argsFile$, "--plan_steps", newline$, string$(plan_steps)
+appendFileLine: argsFile$, "--plan_dur_scale", newline$, string$(duration_scale)
+appendFileLine: argsFile$, "--plan_dur_jitter", newline$, string$(duration_jitter)
+appendFileLine: argsFile$, "--plan_eng_scale", newline$, string$(energy_scale)
+appendFileLine: argsFile$, "--plan_eng_jitter", newline$, string$(energy_jitter)
+appendFileLine: argsFile$, "--pitch_mode", newline$, pitchStr$
+appendFileLine: argsFile$, "--normalize_mode", newline$, normStr$
 if target_duration > 0
-    targetDurArg$ = " --duration " + string$(target_duration)
+    appendFileLine: argsFile$, "--duration", newline$, string$(target_duration)
 endif
+# Event times are relative to the exported WAV (see segmentation).
+appendFileLine: argsFile$, "--time_offset", newline$, "0"
+appendFileLine: argsFile$, "--mix_align", newline$, "on"
+appendFileLine: argsFile$, "--nav_mode", newline$, navStr$
+if isDual
+    appendFileLine: argsFile$, "--divergence", newline$, string$(trajectory_divergence)
+    appendFileLine: argsFile$, "--competition", newline$, string$(competition_strength)
+    appendFileLine: argsFile$, "--viz_tsv", newline$, vizPrefixJ$
+endif
+appendFileLine: argsFile$, "--cleanup"
 
-cmd$ = pythonCmd$ + " """ + pythonScriptJ$ + """"
-    ... + " """ + tempWavJ$ + """"
-    ... + " """ + eventsCSVJ$ + """"
-    ... + " """ + output_wavJ$ + """"
-    ... + " """ + stats_txtJ$ + """"
-    ... + " --latent_size " + string$(latent_size)
-    ... + " --seed " + string$(random_seed)
-    ... + " --attn_heads " + string$(attention_heads)
-    ... + " --plan_steps " + string$(plan_steps)
-    ... + " --plan_dur_scale " + string$(duration_scale)
-    ... + " --plan_dur_jitter " + string$(duration_jitter)
-    ... + " --plan_eng_scale " + string$(energy_scale)
-    ... + " --plan_eng_jitter " + string$(energy_jitter)
-    ... + " --pitch_mode " + pitchStr$
-    ... + " --normalize_mode " + normStr$
-    ... + targetDurArg$
-    ... + " --cleanup"
+cmd$ = pythonCmd$ + " """ + pythonScriptJ$ + """ ""@" + argsFileJ$ + """"
     ... + " > """ + pythonLogJ$ + """ 2>&1"
 
 runSystem_nocheck: cmd$
@@ -630,6 +950,37 @@ driftStat$      = "?"
 mutateStat$     = "?"
 returnStat$     = "?"
 settleStat$     = "?"
+navModeStat$ = "linked"
+ignoredStat$ = "?"
+routingStat$ = "?"
+srcLStat$ = "?"
+srcRStat$ = "?"
+uniqLStat$ = "?"
+uniqRStat$ = "?"
+sharedDomStat$ = "?"
+overlapStat$ = "?"
+sepMeanStat$ = "?"
+sepBeginStat$ = "?"
+sepPeakStat$ = "?"
+sepEndStat$ = "?"
+compAdjStat$ = "?"
+lambdaStat$ = "?"
+peakLStat$ = "?"
+peakRStat$ = "?"
+rmsLStat$ = "?"
+rmsRStat$ = "?"
+lrCorrStat$ = "?"
+fitMedStat$ = "?"
+cappedStat$ = "?"
+pcaEv1Stat$ = "?"
+pcaEv2Stat$ = "?"
+finalResizeStat$ = "?"
+timelineStat$ = "?"
+startOffStat$ = "?"
+windowedStat$ = "?"
+covLStat$ = "?"
+covRStat$ = "?"
+cov0LStat$ = "?"
 
 if fileReadable(stats_txt$)
     statsText$ = readFile$(stats_txt$)
@@ -676,6 +1027,70 @@ if fileReadable(stats_txt$)
     returnStat$ = parseStatLine.result$
     @parseStatLine: statsText$, "mode_settle="
     settleStat$ = parseStatLine.result$
+    @parseStatLine: statsText$, "final_resize_ratio="
+    finalResizeStat$ = parseStatLine.result$
+    @parseStatLine: statsText$, "nav_mode="
+    navModeStat$ = parseStatLine.result$
+    if isDual
+        @parseStatLine: statsText$, "ignored_parameters="
+        ignoredStat$ = parseStatLine.result$
+        @parseStatLine: statsText$, "dual_timeline="
+        timelineStat$ = parseStatLine.result$
+        @parseStatLine: statsText$, "step_start_offset_max="
+        startOffStat$ = parseStatLine.result$
+        @parseStatLine: statsText$, "segments_windowed="
+        windowedStat$ = parseStatLine.result$
+        @parseStatLine: statsText$, "read_coverage_L="
+        covLStat$ = parseStatLine.result$
+        @parseStatLine: statsText$, "read_coverage_R="
+        covRStat$ = parseStatLine.result$
+        @parseStatLine: statsText$, "read_coverage_start_only_L="
+        cov0LStat$ = parseStatLine.result$
+        @parseStatLine: statsText$, "dual_routing="
+        routingStat$ = parseStatLine.result$
+        @parseStatLine: statsText$, "voice_L_source="
+        srcLStat$ = parseStatLine.result$
+        @parseStatLine: statsText$, "voice_R_source="
+        srcRStat$ = parseStatLine.result$
+        @parseStatLine: statsText$, "unique_dominant_L="
+        uniqLStat$ = parseStatLine.result$
+        @parseStatLine: statsText$, "unique_dominant_R="
+        uniqRStat$ = parseStatLine.result$
+        @parseStatLine: statsText$, "shared_dominant_fraction="
+        sharedDomStat$ = parseStatLine.result$
+        @parseStatLine: statsText$, "selection_overlap_mean="
+        overlapStat$ = parseStatLine.result$
+        @parseStatLine: statsText$, "separation_mean="
+        sepMeanStat$ = parseStatLine.result$
+        @parseStatLine: statsText$, "separation_begin="
+        sepBeginStat$ = parseStatLine.result$
+        @parseStatLine: statsText$, "separation_peak_region="
+        sepPeakStat$ = parseStatLine.result$
+        @parseStatLine: statsText$, "separation_end="
+        sepEndStat$ = parseStatLine.result$
+        @parseStatLine: statsText$, "competition_adjust_mean="
+        compAdjStat$ = parseStatLine.result$
+        @parseStatLine: statsText$, "competition_lambda="
+        lambdaStat$ = parseStatLine.result$
+        @parseStatLine: statsText$, "peak_L="
+        peakLStat$ = parseStatLine.result$
+        @parseStatLine: statsText$, "peak_R="
+        peakRStat$ = parseStatLine.result$
+        @parseStatLine: statsText$, "rms_L="
+        rmsLStat$ = parseStatLine.result$
+        @parseStatLine: statsText$, "rms_R="
+        rmsRStat$ = parseStatLine.result$
+        @parseStatLine: statsText$, "lr_correlation="
+        lrCorrStat$ = parseStatLine.result$
+        @parseStatLine: statsText$, "segment_fit_ratio_median="
+        fitMedStat$ = parseStatLine.result$
+        @parseStatLine: statsText$, "segments_capped="
+        cappedStat$ = parseStatLine.result$
+        @parseStatLine: statsText$, "pca_explained_1="
+        pcaEv1Stat$ = parseStatLine.result$
+        @parseStatLine: statsText$, "pca_explained_2="
+        pcaEv2Stat$ = parseStatLine.result$
+    endif
 endif
 
 haveOutput = 0
@@ -688,6 +1103,17 @@ if load_output and fileReadable(output_wav$)
     haveOutput = 1
 else
     compositeName$ = soundName$ + "_sal_" + presetName$
+endif
+
+# Executed per-step diagnostics are read into Tables BEFORE the temp files
+# are deleted; the map draws nothing that is not in them or in the output.
+stepsTab = 0
+eventsTab = 0
+timeTab = 0
+if isDual and fileReadable(stepsTsv$) and fileReadable(eventsTsv$) and fileReadable(timelineTsv$)
+    stepsTab = Read Table from tab-separated file: stepsTsv$
+    eventsTab = Read Table from tab-separated file: eventsTsv$
+    timeTab = Read Table from tab-separated file: timelineTsv$
 endif
 
 @cleanUpTempFiles
@@ -703,7 +1129,14 @@ endif
 # Panel F: Light-grey 3-line summary (suite standard)
 ###############################################################################
 
-if show_visualization
+if show_visualization and isDual
+    if stepsTab and haveOutput
+        appendInfoLine: "  Drawing Attentional Counterpoint Map..."
+        @drawCounterpointMap
+    else
+        appendInfoLine: "  Map not drawn: needs the loaded output and the step diagnostics."
+    endif
+elsif show_visualization
     appendInfoLine: "  Drawing visualization..."
 
     Erase all
@@ -721,7 +1154,7 @@ if show_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##SELF-ATTENTION LATENT NAVIGATION v1.4##"
+    Text: 0.5, "centre", 0.68, "half", "##SELF-ATTENTION LATENT NAVIGATION v1.5##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
     Text: 0.5, "centre", -0.22, "half",
@@ -980,6 +1413,8 @@ if show_visualization
     Font size: 10
     Colour: "Black"
     Line width: 1
+    # v1.5: whole canvas selected, so Save as PNG / Copy export all panels
+    Select outer viewport: 0, 8, 0, 6.2
 else
     appendInfoLine: "  Visualization skipped."
 endif
@@ -1005,10 +1440,594 @@ appendInfoLine: "VAE loss:    ", vaeLossStat$
 appendInfoLine: "Output dur:  ", outDurStat$, " s"
 appendInfoLine: "Pitch mode:  ", pitchModeStat$
 appendInfoLine: "Normalize:   ", normModeStat$, "  RMS: ", rmsInputStat$, " -> ", rmsOutputStat$
+appendInfoLine: "Navigation:  ", navLabel$, "  (engine: ", navModeStat$, ")"
+if isDual
+    appendInfoLine: "Divergence:  ", fixed$(trajectory_divergence, 2), "   Competition: ", fixed$(competition_strength, 2), "  (lambda ", lambdaStat$, ")"
+    appendInfoLine: "Ignored:     ", ignoredStat$
+    appendInfoLine: "Routing:     ", routingStat$, "  (L voice <- ", srcLStat$, ", R voice <- ", srcRStat$, ")"
+    appendInfoLine: "Step timing: ", timelineStat$, "  (largest start offset between step i of L and R: ", startOffStat$, " s)"
+    appendInfoLine: "Dominant:    L ", uniqLStat$, "  R ", uniqRStat$, " of ", nEventsStat$, " events;  same dominant sounding together ", sharedDomStat$, " of the time"
+    appendInfoLine: "Overlap:     ", overlapStat$, " (time-weighted, sounding together)   competition adjustment (TV) ", compAdjStat$
+    appendInfoLine: "Separation:  mean ", sepMeanStat$, "  begin ", sepBeginStat$, "  peak region ", sepPeakStat$, "  end ", sepEndStat$, "  (x median latent distance)"
+    appendInfoLine: "Stereo:      peak L/R ", peakLStat$, " / ", peakRStat$, "   RMS L/R ", rmsLStat$, " / ", rmsRStat$, "   L/R corr ", lrCorrStat$
+    appendInfoLine: "Timeline:    no whole-file resize; per-segment fit ratio median ", fitMedStat$, ", segments at the fit limit ", cappedStat$, " (", windowedStat$, " read as moving windows)"
+    appendInfoLine: "Coverage:    share of the dominant events played  L ", covLStat$, "  R ", covRStat$, "   (reading only their openings: L ", cov0LStat$, ")"
+    if advice1$ <> "" or advice2$ <> ""
+        appendInfoLine: "Suggestion:  ", advice1$
+        appendInfoLine: "             ", advice2$
+    endif
+    if stepsTab = 0
+        appendInfoLine: "Warning:     step diagnostics were not produced; the map was not drawn."
+    endif
+else
+    appendInfoLine: "Timeline:    whole-file resize ratio ", finalResizeStat$
+endif
 appendInfoLine: "=========================================="
 appendInfoLine: ""
 
-if play_result and haveOutput
-    selectObject: outSound
-    Play
+if stepsTab
+    removeObject: stepsTab, eventsTab, timeTab
 endif
+
+if haveOutput
+    selectObject: outSound
+    if play_result
+        Play
+    endif
+endif
+
+###############################################################################
+# ATTENTIONAL COUNTERPOINT MAP  (dual navigation modes, 8 x 8.95 in canvas)
+# Every mark is read from the executed per-step Table (stepsTab: one row per
+# step and voice, rows 1..n = L, n+1..2n = R), the projected-event Table
+# (eventsTab) or the output Sound itself.
+#   A  phase timeline in output time (L / R slots) + executed separation trend
+#   B  two lanes: dominant event per slot, L and R
+#   C  latent constellation (shared PCA): events, both paths, start/end,
+#      convergence points
+#   D  normalised latent separation and selection overlap over time
+#   E  L / R output waveforms on one shared amplitude scale
+#   F  compositional summary
+###############################################################################
+procedure cmSafe: .s$
+    .r$ = replace$(.s$, "\", "\bs", 0)
+    .r$ = replace$(.r$, "_", "\_ ", 0)
+    .r$ = replace$(.r$, "%", "\% ", 0)
+    .r$ = replace$(.r$, "#", "\# ", 0)
+    .r$ = replace$(.r$, "^", "\^ ", 0)
+endproc
+
+procedure cmNice: .span, .n
+    .step = 1
+    if .span > 0 and .n > 0
+        .raw = .span / .n
+        .p = 10 ^ floor(log10(.raw))
+        .m = .raw / .p
+        if .m < 1.5
+            .step = .p
+        elsif .m < 3.5
+            .step = 2 * .p
+        elsif .m < 7.5
+            .step = 5 * .p
+        else
+            .step = 10 * .p
+        endif
+    endif
+endproc
+
+procedure cmPhaseColour: .ph$
+    if .ph$ = "drift"
+        .c$ = "{0.30, 0.75, 0.88}"
+    elsif .ph$ = "mutate"
+        .c$ = "{0.92, 0.82, 0.30}"
+    elsif .ph$ = "return"
+        .c$ = "{0.90, 0.55, 0.20}"
+    else
+        .c$ = "{0.30, 0.72, 0.40}"
+    endif
+endproc
+
+procedure drawCounterpointMap
+    cmColL$ = "{0.20, 0.40, 0.80}"
+    cmColR$ = "{0.85, 0.33, 0.10}"
+    cmGrid$ = "{0.60, 0.60, 0.60}"
+    selectObject: stepsTab
+    cmRows = Get number of rows
+    cmN = round(cmRows / 2)
+    selectObject: eventsTab
+    cmNEv = Get number of rows
+    selectObject: outSound
+    cmT = Get total duration
+    @cmNice: cmT, 8
+    cmTStep = cmNice.step
+
+    Erase all
+    Black
+    Plain line
+    Line width: 1
+
+    # ---------------- TITLE ----------------
+    Font size: 12
+    Select inner viewport: 0.6, 7.7, 0.05, 0.62
+    Axes: 0, 1, 0, 1
+    Colour: "Black"
+    Text: 0.5, "centre", 0.74, "half", "##ATTENTIONAL COUNTERPOINT MAP##"
+    @cmSafe: soundName$
+    cmSub$ = cmSafe.r$ + "  |  " + presetName$ + "  |  " + navLabel$
+        ... + "  |  divergence " + fixed$(trajectory_divergence, 2)
+        ... + "  |  competition " + fixed$(competition_strength, 2)
+        ... + "  |  Self-Attention Latent v1.5 (engine 1.6)"
+    Font size: 7
+    Select inner viewport: 0.6, 7.7, 0.05, 0.62
+    Axes: 0, 1, 0, 1
+    Colour: "{0.35, 0.35, 0.52}"
+    Text: 0.5, "centre", 0.20, "half", cmSub$
+
+    # ---------------- A: PHASE TIMELINE ----------------
+    Font size: 7
+    Select inner viewport: 0.6, 7.7, 0.95, 1.45
+    Axes: 0, cmT, 0, 3
+    Paint rectangle: "{0.96, 0.96, 0.96}", 0, cmT, 0, 3
+    for cmI from 1 to cmRows
+        selectObject: stepsTab
+        cmV$ = Get value: cmI, "voice"
+        cmPh$ = Get value: cmI, "phase"
+        cmA = Get value: cmI, "t0"
+        cmB = Get value: cmI, "t1"
+        @cmPhaseColour: cmPh$
+        if cmV$ = "L"
+            Paint rectangle: cmPhaseColour.c$, cmA, cmB, 2, 3
+        else
+            Paint rectangle: cmPhaseColour.c$, cmA, cmB, 1, 2
+        endif
+    endfor
+    # separation trend of the two voices as they sound together
+    selectObject: timeTab
+    cmNT = Get number of rows
+    for cmI from 1 to cmNT
+        selectObject: timeTab
+        cmTr$ = Get value: cmI, "trend"
+        cmA = Get value: cmI, "t0"
+        cmB = Get value: cmI, "t1"
+        if cmTr$ = "diverge"
+            cmC$ = "{0.72, 0.58, 0.88}"
+        elsif cmTr$ = "converge"
+            cmC$ = "{0.55, 0.80, 0.55}"
+        else
+            cmC$ = "{0.90, 0.90, 0.90}"
+        endif
+        Paint rectangle: cmC$, cmA, cmB, 0, 1
+    endfor
+    Select inner viewport: 0.6, 7.7, 0.95, 1.45
+    Axes: 0, cmT, 0, 3
+    Colour: "White"
+    Draw line: 0, 2, cmT, 2
+    Draw line: 0, 1, cmT, 1
+    # phase names at the first L slot of each phase
+    Font size: 6
+    Select inner viewport: 0.6, 7.7, 0.95, 1.45
+    Axes: 0, cmT, 0, 3
+    Colour: "Black"
+    cmPrev$ = ""
+    for cmI from 1 to cmN
+        selectObject: stepsTab
+        cmPh$ = Get value: cmI, "phase"
+        if cmPh$ <> cmPrev$
+            cmA = Get value: cmI, "t0"
+            Text: cmA + 0.005 * cmT, "left", 2.5, "half", cmPh$
+            cmPrev$ = cmPh$
+        endif
+    endfor
+    Select inner viewport: 0.6, 7.7, 0.95, 1.45
+    Axes: 0, cmT, 0, 3
+    Text: -0.006 * cmT, "right", 2.5, "half", "L"
+    Text: -0.006 * cmT, "right", 1.5, "half", "R"
+    Text: -0.006 * cmT, "right", 0.5, "half", "trend"
+    Font size: 7
+    Select inner viewport: 0.6, 7.7, 0.95, 1.45
+    Axes: 0, cmT, 0, 3
+    Colour: "Black"
+    Draw inner box
+    Marks bottom every: 1, cmTStep, "no", "yes", "no"
+    if timelineStat$ = "shared"
+        Text top: "no", "##A## Phases (shared L / R slots) and separation trend: purple apart, green closer, grey steady"
+    else
+        Text top: "no", "##A## Phases (free L / R slots) and separation trend: purple apart, green closer, grey steady"
+    endif
+
+    # ---------------- B: LANES ----------------
+    cmEvStep = 1
+    if cmNEv > 12
+        @cmNice: cmNEv, 5
+        cmEvStep = max(1, cmNice.step)
+    endif
+    for cmLane from 1 to 2
+        if cmLane = 1
+            cmY0 = 1.85
+            cmY1 = 2.80
+            cmCol$ = cmColL$
+            cmOff = 0
+        else
+            cmY0 = 3.10
+            cmY1 = 4.05
+            cmCol$ = cmColR$
+            cmOff = cmN
+        endif
+        Font size: 7
+        Select inner viewport: 0.6, 7.7, cmY0, cmY1
+        Axes: 0, cmT, -0.5, cmNEv - 0.5
+        Paint rectangle: "{0.985, 0.985, 0.985}", 0, cmT, -0.5, cmNEv - 0.5
+        for cmI from 1 to cmN
+            selectObject: stepsTab
+            cmDom = Get value: cmI + cmOff, "dominant"
+            cmW = Get value: cmI + cmOff, "dom_w"
+            cmA = Get value: cmI + cmOff, "t0"
+            cmB = Get value: cmI + cmOff, "t1"
+            cmH = 0.10 + 0.32 * cmW
+            Paint rectangle: cmCol$, cmA, cmB, cmDom - cmH, cmDom + cmH
+        endfor
+        Select inner viewport: 0.6, 7.7, cmY0, cmY1
+        Axes: 0, cmT, -0.5, cmNEv - 0.5
+        Colour: "Black"
+        Line width: 1
+        for cmI from 1 to cmNT
+            selectObject: timeTab
+            cmSh = Get value: cmI, "shared"
+            if cmSh = 1
+                cmDom = Get value: cmI, "domL"
+                cmA = Get value: cmI, "t0"
+                cmB = Get value: cmI, "t1"
+                Draw rectangle: cmA, cmB, cmDom - 0.46, cmDom + 0.46
+            endif
+        endfor
+        Font size: 7
+        Select inner viewport: 0.6, 7.7, cmY0, cmY1
+        Axes: 0, cmT, -0.5, cmNEv - 0.5
+        Colour: "Black"
+        Draw inner box
+        Marks left every: 1, cmEvStep, "yes", "yes", "no"
+        Text left: "yes", "Event"
+        if cmLane = 1
+            Marks bottom every: 1, cmTStep, "no", "yes", "no"
+            Text top: "no", "##B## LEFT voice: dominant event per slot (thickness = mix weight; frame = same event sounding in R)"
+        else
+            Marks bottom every: 1, cmTStep, "yes", "yes", "no"
+            Text bottom: "yes", "Output time (s)"
+            Text top: "no", "RIGHT voice"
+        endif
+    endfor
+
+    # ---------------- C: LATENT CONSTELLATION ----------------
+    cmXmin = 1e30
+    cmXmax = -1e30
+    cmYmin = 1e30
+    cmYmax = -1e30
+    for cmI from 1 to cmNEv
+        selectObject: eventsTab
+        cmX = Get value: cmI, "x"
+        cmY = Get value: cmI, "y"
+        cmXmin = min(cmXmin, cmX)
+        cmXmax = max(cmXmax, cmX)
+        cmYmin = min(cmYmin, cmY)
+        cmYmax = max(cmYmax, cmY)
+    endfor
+    for cmI from 1 to cmRows
+        selectObject: stepsTab
+        cmX = Get value: cmI, "x"
+        cmY = Get value: cmI, "y"
+        cmXmin = min(cmXmin, cmX)
+        cmXmax = max(cmXmax, cmX)
+        cmYmin = min(cmYmin, cmY)
+        cmYmax = max(cmYmax, cmY)
+    endfor
+    # degenerate projection (identical latents): a fixed +-1 frame
+    if cmXmax - cmXmin < 1e-9
+        cmXmin = cmXmin - 1
+        cmXmax = cmXmax + 1
+    endif
+    if cmYmax - cmYmin < 1e-9
+        cmYmin = cmYmin - 1
+        cmYmax = cmYmax + 1
+    endif
+    cmPad = 0.06 * (cmXmax - cmXmin)
+    cmXmin = cmXmin - cmPad
+    cmXmax = cmXmax + cmPad
+    cmPad = 0.06 * (cmYmax - cmYmin)
+    cmYmin = cmYmin - cmPad
+    cmYmax = cmYmax + cmPad
+
+    Font size: 7
+    Select inner viewport: 0.6, 3.7, 4.85, 7.40
+    Axes: cmXmin, cmXmax, cmYmin, cmYmax
+    Paint rectangle: "{0.985, 0.985, 0.985}", cmXmin, cmXmax, cmYmin, cmYmax
+    for cmI from 1 to cmNEv
+        selectObject: eventsTab
+        cmX = Get value: cmI, "x"
+        cmY = Get value: cmI, "y"
+        Paint circle (mm): "{0.62, 0.62, 0.62}", cmX, cmY, 0.45
+    endfor
+    Select inner viewport: 0.6, 3.7, 4.85, 7.40
+    Axes: cmXmin, cmXmax, cmYmin, cmYmax
+    Line width: 1
+    for cmLane from 1 to 2
+        if cmLane = 1
+            Colour: cmColL$
+            cmOff = 0
+        else
+            Colour: cmColR$
+            cmOff = cmN
+        endif
+        for cmI from 1 to cmN - 1
+            selectObject: stepsTab
+            cmX = Get value: cmI + cmOff, "x"
+            cmY = Get value: cmI + cmOff, "y"
+            cmX2 = Get value: cmI + cmOff + 1, "x"
+            cmY2 = Get value: cmI + cmOff + 1, "y"
+            Draw line: cmX, cmY, cmX2, cmY2
+        endfor
+    endfor
+    Line width: 2
+    for cmLane from 1 to 2
+        if cmLane = 1
+            cmCol$ = cmColL$
+            cmOff = 0
+        else
+            cmCol$ = cmColR$
+            cmOff = cmN
+        endif
+        selectObject: stepsTab
+        cmX = Get value: 1 + cmOff, "x"
+        cmY = Get value: 1 + cmOff, "y"
+        Colour: cmCol$
+        Draw circle (mm): cmX, cmY, 1.6
+        cmX = Get value: cmN + cmOff, "x"
+        cmY = Get value: cmN + cmOff, "y"
+        Paint circle (mm): cmCol$, cmX, cmY, 1.3
+    endfor
+    Line width: 1
+    Colour: "Black"
+    cmNConv = 0
+    for cmI from 1 to cmNT
+        selectObject: timeTab
+        cmCv = Get value: cmI, "conv"
+        if cmCv = 1
+            cmX = Get value: cmI, "xL"
+            cmY = Get value: cmI, "yL"
+            cmX2 = Get value: cmI, "xR"
+            cmY2 = Get value: cmI, "yR"
+            Draw circle (mm): (cmX + cmX2) / 2, (cmY + cmY2) / 2, 1.1
+            Paint circle (mm): "Black", (cmX + cmX2) / 2, (cmY + cmY2) / 2, 0.35
+            cmNConv = cmNConv + 1
+        endif
+    endfor
+    Font size: 6
+    Select inner viewport: 0.6, 3.7, 4.85, 7.40
+    Axes: 0, 1, 0, 1
+    Colour: cmColL$
+    Text: 0.03, "left", 0.95, "half", "##L voice##"
+    Colour: cmColR$
+    Text: 0.03, "left", 0.89, "half", "##R voice##"
+    Colour: "{0.40, 0.40, 0.40}"
+    Text: 0.03, "left", 0.83, "half", "grey = source events"
+    Font size: 7
+    Select inner viewport: 0.6, 3.7, 4.85, 7.40
+    Axes: cmXmin, cmXmax, cmYmin, cmYmax
+    Colour: "Black"
+    Draw inner box
+    @cmNice: cmXmax - cmXmin, 5
+    Marks bottom every: 1, cmNice.step, "yes", "yes", "no"
+    @cmNice: cmYmax - cmYmin, 5
+    Marks left every: 1, cmNice.step, "yes", "yes", "no"
+    Text bottom: "yes", "PC1 (" + pcaEv1Stat$ + " of variance)"
+    Text left: "yes", "PC2 (" + pcaEv2Stat$ + ")"
+    Text top: "no", "##C## Latent paths (PCA): ring start, dot end, black ring meeting (" + string$(cmNConv) + ")"
+
+    # ---------------- D: SEPARATION + OVERLAP ----------------
+    cmSmax = 0
+    for cmI from 1 to cmNT
+        selectObject: timeTab
+        cmS = Get value: cmI, "sep"
+        cmS2 = Get value: cmI, "target"
+        cmSmax = max(cmSmax, cmS)
+        if navigation_mode = 4
+            cmSmax = max(cmSmax, cmS2)
+        endif
+    endfor
+    if cmSmax <= 0
+        cmSmax = 1
+    endif
+    cmSmax = cmSmax * 1.1
+    Font size: 7
+    Select inner viewport: 4.5, 7.7, 4.85, 5.50
+    Axes: 0, cmT, 0, cmSmax
+    Paint rectangle: "{0.985, 0.985, 0.985}", 0, cmT, 0, cmSmax
+    Select inner viewport: 4.5, 7.7, 4.85, 5.50
+    Axes: 0, cmT, 0, cmSmax
+    for cmPass from 1 to 2
+        if cmPass = 1
+            cmCol$ = "Black"
+            cmCol$ = "{0.10, 0.10, 0.10}"
+            Line width: 1.5
+            Solid line
+            cmCname$ = "sep"
+        else
+            cmCol$ = "{0.45, 0.45, 0.45}"
+            Line width: 1
+            Dashed line
+            cmCname$ = "target"
+        endif
+        if cmPass = 1 or navigation_mode = 4
+            Colour: cmCol$
+            # exact step function over the sounding intervals
+            for cmI from 1 to cmNT
+                selectObject: timeTab
+                cmA = Get value: cmI, "t0"
+                cmB = Get value: cmI, "t1"
+                cmS = Get value: cmI, cmCname$
+                Draw line: cmA, cmS, cmB, cmS
+                if cmI < cmNT
+                    cmS2 = Get value: cmI + 1, cmCname$
+                    Draw line: cmB, cmS, cmB, cmS2
+                endif
+            endfor
+        endif
+    endfor
+    Solid line
+    Line width: 1
+    Font size: 7
+    Select inner viewport: 4.5, 7.7, 4.85, 5.50
+    Axes: 0, cmT, 0, cmSmax
+    Colour: "Black"
+    Draw inner box
+    @cmNice: cmSmax, 3
+    Marks left every: 1, cmNice.step, "yes", "yes", "no"
+    Marks bottom every: 1, cmTStep, "no", "yes", "no"
+    Text left: "yes", "Sep"
+    if navigation_mode = 4
+        Text top: "no", "##D## Separation of the sounding voices (dashed = target)"
+    else
+        Text top: "no", "##D## Separation of the sounding voices"
+    endif
+
+    Font size: 7
+    Select inner viewport: 4.5, 7.7, 5.75, 6.15
+    Axes: 0, cmT, 0, 1
+    Paint rectangle: "{0.985, 0.985, 0.985}", 0, cmT, 0, 1
+    Select inner viewport: 4.5, 7.7, 5.75, 6.15
+    Axes: 0, cmT, 0, 1
+    Colour: "{0.45, 0.25, 0.60}"
+    Line width: 1.5
+    for cmI from 1 to cmNT
+        selectObject: timeTab
+        cmA = Get value: cmI, "t0"
+        cmB = Get value: cmI, "t1"
+        cmS = Get value: cmI, "overlap"
+        Draw line: cmA, cmS, cmB, cmS
+        if cmI < cmNT
+            cmS2 = Get value: cmI + 1, "overlap"
+            Draw line: cmB, cmS, cmB, cmS2
+        endif
+    endfor
+    Line width: 1
+    Font size: 7
+    Select inner viewport: 4.5, 7.7, 5.75, 6.15
+    Axes: 0, cmT, 0, 1
+    Colour: "Black"
+    Draw inner box
+    Marks left every: 1, 0.5, "yes", "yes", "no"
+    Marks bottom every: 1, cmTStep, "no", "yes", "no"
+    Text left: "yes", "Ovl"
+    Text top: "no", "Shared material of the sounding mixes"
+
+    # ---------------- E: L / R WAVEFORMS ----------------
+    selectObject: outSound
+    cmWL = Extract one channel: 1
+    cmMx = Get maximum: 0, 0, "Sinc70"
+    cmMn = Get minimum: 0, 0, "Sinc70"
+    cmPk = max(abs(cmMx), abs(cmMn))
+    selectObject: outSound
+    cmWR = Extract one channel: 2
+    cmMx = Get maximum: 0, 0, "Sinc70"
+    cmMn = Get minimum: 0, 0, "Sinc70"
+    cmPk = max(cmPk, max(abs(cmMx), abs(cmMn)))
+    if cmPk < 0.001
+        cmPk = 1
+    endif
+    cmPk = cmPk * 1.05
+    for cmLane from 1 to 2
+        if cmLane = 1
+            cmY0 = 6.42
+            cmY1 = 6.86
+            cmCol$ = cmColL$
+            selectObject: cmWL
+        else
+            cmY0 = 6.92
+            cmY1 = 7.36
+            cmCol$ = cmColR$
+            selectObject: cmWR
+        endif
+        Font size: 7
+        Select inner viewport: 4.5, 7.7, cmY0, cmY1
+        Colour: cmCol$
+        Draw: 0, 0, -cmPk, cmPk, "no", "Curve"
+        Font size: 7
+        Select inner viewport: 4.5, 7.7, cmY0, cmY1
+        Axes: 0, cmT, -cmPk, cmPk
+        Colour: "Black"
+        Draw inner box
+        Font size: 6
+        Select inner viewport: 4.5, 7.7, cmY0, cmY1
+        Axes: 0, 1, 0, 1
+        if cmLane = 1
+            Text: -0.012, "right", 0.5, "half", "L"
+        else
+            Text: -0.012, "right", 0.5, "half", "R"
+        endif
+        Font size: 7
+        Select inner viewport: 4.5, 7.7, cmY0, cmY1
+        Axes: 0, cmT, -cmPk, cmPk
+        if cmLane = 1
+            Marks bottom every: 1, cmTStep, "no", "yes", "no"
+            Text top: "no", "##E## Output L / R, one amplitude scale (+-" + fixed$(cmPk, 2) + ")"
+        else
+            Marks bottom every: 1, cmTStep, "yes", "yes", "no"
+            Text bottom: "yes", "Output time (s)"
+        endif
+    endfor
+    removeObject: cmWL, cmWR
+
+    # ---------------- F: SUMMARY ----------------
+    if target_duration > 0
+        cmDurTxt$ = fixed$(target_duration, 3) + " s target"
+    else
+        cmDurTxt$ = fixed$(dur, 3) + " s source"
+    endif
+    if navigation_mode = 3
+        cmCompTxt$ = fixed$(competition_strength, 2) + " (lambda " + lambdaStat$ + ", adjustment TV " + compAdjStat$ + ")"
+    else
+        cmCompTxt$ = fixed$(competition_strength, 2) + " (not used in this mode)"
+    endif
+    @cmSafe: routingStat$
+    cmRout$ = cmSafe.r$
+    @cmSafe: compositeName$
+    cmOutName$ = cmSafe.r$
+    cmL1$ = "##" + presetName$ + "##  " + navLabel$
+        ... + "  |  Events " + string$(cmNEv)
+        ... + "  |  Steps " + string$(cmN) + " per voice"
+        ... + "  |  z " + string$(latent_size) + ", heads " + attnHeadsStat$
+        ... + "  |  Duration " + fixed$(cmT, 3) + " s = " + cmDurTxt$ + " x Duration scale " + fixed$(duration_scale, 2)
+    cmL2$ = "Divergence " + fixed$(trajectory_divergence, 2)
+        ... + "  |  Competition " + cmCompTxt$
+        ... + "  |  Unique dominant L " + uniqLStat$ + " / R " + uniqRStat$ + " of " + string$(cmNEv)
+        ... + "  |  Same dominant sounding together " + sharedDomStat$ + " of the time"
+    @cmSafe: timelineStat$
+    cmL3$ = "Timeline " + cmSafe.r$ + "  |  Overlap (time-weighted) " + overlapStat$
+        ... + "  |  Separation mean " + sepMeanStat$ + " (begin " + sepBeginStat$ + ", peak region " + sepPeakStat$ + ", end " + sepEndStat$ + ")"
+        ... + "  |  Routing " + cmRout$ + " (L <- " + srcLStat$ + ", R <- " + srcRStat$ + ")"
+    cmL4$ = "Peak L/R " + peakLStat$ + " / " + peakRStat$
+        ... + "  |  RMS L/R " + rmsLStat$ + " / " + rmsRStat$
+        ... + "  |  L/R correlation " + lrCorrStat$
+        ... + "  |  Fit median " + fitMedStat$ + ", windows " + windowedStat$ + ", coverage L/R " + covLStat$ + " / " + covRStat$
+        ... + "  |  Output: " + cmOutName$
+    Font size: 6
+    Select inner viewport: 0.6, 7.7, 8.05, 8.85
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    Select inner viewport: 0.6, 7.7, 8.05, 8.85
+    Axes: 0, 1, 0, 1
+    Colour: "{0.28, 0.28, 0.28}"
+    Text: 0.01, "left", 0.82, "half", cmL1$
+    Text: 0.01, "left", 0.60, "half", cmL2$
+    Text: 0.01, "left", 0.38, "half", cmL3$
+    Text: 0.01, "left", 0.16, "half", cmL4$
+    Select inner viewport: 0.6, 7.7, 8.05, 8.85
+    Axes: 0, 1, 0, 1
+    Colour: "Black"
+    Draw inner box
+
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    # whole canvas selected, so Save as PNG / Copy export all panels
+    Select outer viewport: 0, 8, 0, 8.95
+endproc
