@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.3.1 (2026) - visualization spacing pass
+# Version: 1.4 (2026) - acoustic reconstruction upgrade
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -12,14 +12,42 @@
 #
 #   Segments a Sound into events, extracts acoustic features,
 #   and calls a Python engine that learns a latent space and
-#   builds a temporal field to warp event durations.
-#   Reconstruction is via PSOLA, resampling, or placement.
+#   builds a temporal field to warp event durations.  A second
+#   Python engine renders those durations on the WHOLE Sound
+#   through one continuous time map (silences preserved):
+#     phase_vocoder  pitch-preserving, transient-protected,
+#                    multichannel-coherent phase vocoder
+#     varispeed      tape-speed reading; pitch follows speed
+#     placement_only original samples placed in the new slots
 #
 # Dependencies (Python):
 #   pip install numpy soundfile
 #
-# Python backend: latent_time_warp.py.  The separate stretch.py engine belongs
-# to HPSS_Phase_Vocoder and is not called by Temporal Elasticity.
+# Python backends: latent_time_warp.py (durations, v1.3, unchanged)
+#                  te_reconstruct.py   (audio rendering, v1.0)
+# The separate stretch.py engine belongs to HPSS_Phase_Vocoder and is
+# not called by Temporal Elasticity.
+#
+# v1.4 acoustic reconstruction upgrade:
+#   - Per-event PSOLA / resampling / placement branches and their
+#     Concatenate step are replaced by ONE call to te_reconstruct.py,
+#     which processes the whole Sound in one pass.  Segmentation now only
+#     decides the time map; it no longer cuts the audio.
+#   - Silences, leading and trailing time are preserved sample-exactly
+#     (v1.3 concatenated sounding events only and dropped every gap).
+#   - Option 1 is now a phase vocoder (not PSOLA): no pitch tracking,
+#     chords/noise/inharmonic material supported, attacks protected.
+#   - Option 2 is explicitly labelled varispeed (pitch changes).
+#   - Channel count, order and inter-channel phase are preserved.
+#   - True identity path: when every event keeps its duration the
+#     output is a Copy of the source (bit-identical, same time domain).
+#   - Output keeps the source start time.  Rendered length is checked
+#     against the planned length; a mismatch or a missing render is an
+#     error, never a silently wrong Sound.
+#   - Exchange files: source exported as 32-bit PCM WAV (exact for 16/24-
+#     bit material; hot sources are attenuated by an exact power of two
+#     and restored in Python), result returned as 64-bit float WAV.
+#   - Praat 7 full-trust request; report parsing matches whole keys.
 #
 # v1.3.1 visualization pass:
 #   - Dedicated vertical bands prevent panel titles and axis labels from colliding.
@@ -71,6 +99,20 @@ endif
 if not fileReadable(pythonScript$)
     exitScript: "Cannot find Python script: latent_time_warp.py" + newline$ + "Expected at: " + pluginDir$ + "py/ or next to this script."
 endif
+reconScript$ = pluginDir$ + "py/te_reconstruct.py"
+if not fileReadable(reconScript$)
+    reconScript$ = defaultDirectory$ + "/te_reconstruct.py"
+endif
+if not fileReadable(reconScript$)
+    exitScript: "Cannot find Python script: te_reconstruct.py" + newline$ + "Expected at: " + pluginDir$ + "py/ or next to this script."
+endif
+
+# Praat 7.0+ refuses file writes and system calls without full trust.
+if praatVersion >= 7000
+    if not askForTrust()
+        exitScript: "Temporal Elasticity needs permission to write temporary files and run Python."
+    endif
+endif
 
 tempDirRaw$ = temporaryDirectory$ + "/"
 tempDir$ = replace_regex$(tempDirRaw$, "\\", "/", 0)
@@ -84,6 +126,11 @@ statsTxt$     = tempDir$ + tempBase$ + "_stats.txt"
 probePy$      = tempDir$ + tempBase$ + "_probe.py"
 probeMarker$  = tempDir$ + tempBase$ + "_probe.ok"
 logTxt$       = tempDir$ + tempBase$ + "_python.log"
+sourceWav$    = tempDir$ + tempBase$ + "_source.wav"
+renderWav$    = tempDir$ + tempBase$ + "_render.wav"
+reconArgs$    = tempDir$ + tempBase$ + "_recon_args.txt"
+reconRep$     = tempDir$ + tempBase$ + "_recon.txt"
+reconLog$     = tempDir$ + tempBase$ + "_recon.log"
 
 pythonScriptJ$ = replace_regex$(pythonScript$, "\\", "/", 0)
 eventsCSVJ$    = replace_regex$(eventsCSV$, "\\", "/", 0)
@@ -92,6 +139,9 @@ statsTxtJ$     = replace_regex$(statsTxt$, "\\", "/", 0)
 probePyJ$      = replace_regex$(probePy$, "\\", "/", 0)
 probeMarkerJ$  = replace_regex$(probeMarker$, "\\", "/", 0)
 logTxtJ$       = replace_regex$(logTxt$, "\\", "/", 0)
+reconScriptJ$  = replace_regex$(reconScript$, "\\", "/", 0)
+reconArgsJ$    = replace_regex$(reconArgs$, "\\", "/", 0)
+reconLogJ$     = replace_regex$(reconLog$, "\\", "/", 0)
 tempDirJ$      = replace_regex$(tempDir$, "\\", "/", 0)
 
 nEvents = 0
@@ -115,6 +165,24 @@ procedure cleanUpTempFiles
     if fileReadable(logTxt$)
         deleteFile: logTxt$
     endif
+    if fileReadable(sourceWav$)
+        deleteFile: sourceWav$
+    endif
+    if fileReadable(renderWav$)
+        deleteFile: renderWav$
+    endif
+    if fileReadable(renderWav$ + ".part.wav")
+        deleteFile: renderWav$ + ".part.wav"
+    endif
+    if fileReadable(reconArgs$)
+        deleteFile: reconArgs$
+    endif
+    if fileReadable(reconRep$)
+        deleteFile: reconRep$
+    endif
+    if fileReadable(reconLog$)
+        deleteFile: reconLog$
+    endif
     if nEvents > 0
         for .iPatch from 0 to nEvents - 1
             .patchPath$ = tempDir$ + patchPrefix$ + string$(.iPatch) + ".wav"
@@ -128,7 +196,7 @@ endproc
 @cleanUpTempFiles
 
 # ---- FORM ----
-form Temporal Elasticity v1.3.1
+form Temporal Elasticity v1.4
     comment ── Preset ───────────────────────────────────────────────────
     optionmenu Preset: 1
         option Custom
@@ -175,8 +243,8 @@ form Temporal Elasticity v1.3.1
 
     comment ── Reconstruction ────────────────────────────────────────────
     optionmenu Reconstruction_method: 1
-        option PSOLA
-        option resampling
+        option phase_vocoder (pitch-preserving)
+        option varispeed (pitch changes)
         option placement_only
 
     comment ── Output ────────────────────────────────────────────────────
@@ -354,14 +422,30 @@ soundStart = Get start time
 soundEnd = Get end time
 sr  = Get sampling frequency
 nChannels = Get number of channels
+nSourceSamples = Get number of samples
+# Sample-boundary origin: Python counts samples from (x1 - dx/2).
+firstSampleTime = Get time from sample number: 1
+sampleOrigin = firstSampleTime - 0.5 / sr
+
+if reconstruction_method = 1
+    reconMethod$ = "pv"
+    reconLabel$ = "phase vocoder"
+elsif reconstruction_method = 2
+    reconMethod$ = "varispeed"
+    reconLabel$ = "varispeed (pitch changes)"
+else
+    reconMethod$ = "placement"
+    reconLabel$ = "placement only"
+endif
 
 # ---- INFO HEADER ----
 clearinfo
-writeInfoLine:  "=== Temporal Elasticity v1.3 ==="
+writeInfoLine:  "=== Temporal Elasticity v1.4 ==="
 appendInfoLine: "Input:   ", soundName$
 appendInfoLine: "Preset:  ", presetName$
 appendInfoLine: "Mode:    ", modeStr$, "  Method: ", methodStr$
 appendInfoLine: "Rules:   ", rulesStr$
+appendInfoLine: "Render:  ", reconLabel$
 appendInfoLine: ""
 appendInfoLine: "Duration: ", fixed$(dur, 2), " s | SR: ", sr, " Hz"
 appendInfoLine: ""
@@ -598,12 +682,13 @@ endif
 # ===========================================================================
 # Stage 4 — Read durations + reconstruct
 # ===========================================================================
-appendInfoLine: "[4/5] Reconstructing..."
+appendInfoLine: "[4/5] Reconstructing (", reconLabel$, ")..."
 
 Read Table from comma-separated file: durationsCSV$
 durTable = selected("Table")
 nRows    = Get number of rows
 
+maxDurChange = 0
 for i from 1 to nRows
     startArr[i]   = Get value: i, "start_time"
     origDurArr[i] = Get value: i, "original_duration"
@@ -611,114 +696,139 @@ for i from 1 to nRows
     newDurArr[i]  = Get value: i, "new_duration"
     z0Arr[i]      = Get value: i, "latent_z0"
     z1Arr[i]      = Get value: i, "latent_z1"
+    maxDurChange = max(maxDurChange, abs(newDurArr[i] - origDurArr[i]))
 endfor
 removeObject: durTable
 
 output_name$ = soundName$ + "_te"
 
-if reconstruction_method = 1
-    # PSOLA
-    nParts = 0
-    for i from 1 to nRows
-        st = startArr[i]
-        od = origDurArr[i]
-        nd = newDurArr[i]
-        selectObject: sound
-        part  = Extract part: st, st + od, "rectangular", 1, "no"
-        selectObject: part
-        manip = To Manipulation: 0.01, 75, 600
-        selectObject: manip
-        durTier = Extract duration tier
-        selectObject: durTier
-        Add point: od / 2, nd / (od + 1e-9)
-        plusObject: manip
-        Replace duration tier
-        selectObject: manip
-        resyn = Get resynthesis (overlap-add)
-        removeObject: manip, durTier, part
-        nParts = nParts + 1
-        partArr[nParts] = resyn
-    endfor
-    selectObject: partArr[1]
-    for i from 2 to nParts
-        plusObject: partArr[i]
-    endfor
-    outputSound = Concatenate
-    Rename: output_name$
-    for i from 1 to nParts
-        removeObject: partArr[i]
-    endfor
+# Planned output length: source length plus every event's duration change.
+# Silences and untouched time keep their exact length.
+plannedChange = 0
+for i from 1 to nRows
+    plannedChange = plannedChange + newDurArr[i] - origDurArr[i]
+endfor
+plannedSamples = round(nSourceSamples + plannedChange * sr)
 
-elsif reconstruction_method = 2
-    # Resampling — change duration by resampling to shifted SR, then back to original SR
-    nParts = 0
-    for i from 1 to nRows
-        st = startArr[i]
-        od = origDurArr[i]
-        nd = newDurArr[i]
-        selectObject: sound
-        part     = Extract part: st, st + od, "rectangular", 1, "no"
-        # Varispeed reconstruction: reinterpret the existing samples at a
-        # shifted sampling frequency (this changes duration/pitch), THEN
-        # sinc-resample to the original SR while preserving that new duration.
-        # No arbitrary 192 kHz ceiling: the scale range is already bounded by
-        # the latent engine, and clipping warpSr would make high-SR sources miss
-        # their requested duration (e.g. strong compression at 96/192 kHz).
-        warpSr = sr * od / (nd + 1e-9)
-        selectObject: part
-        Override sampling frequency: warpSr
-        normalized = Resample: sr, 50
-        removeObject: part
-        nParts = nParts + 1
-        partArr[nParts] = normalized
-    endfor
-    selectObject: partArr[1]
-    for i from 2 to nParts
-        plusObject: partArr[i]
-    endfor
-    outputSound = Concatenate
-    Rename: output_name$
-    for i from 1 to nParts
-        removeObject: partArr[i]
-    endfor
+reconExact$ = "?"
+reconOnsets$ = "?"
+reconUnprot$ = "0"
+reconPeak$ = "?"
 
+if maxDurChange * sr < 0.5
+    # ---- Identity path: no event changes length -> exact copy, no resynthesis.
+    selectObject: sound
+    outputSound = Copy: output_name$
+    reconLabel$ = "identity (exact copy)"
+    reconExact$ = "1"
+    reconOnsets$ = "0"
+    reconPeak$ = "unchanged"
+    plannedSamples = nSourceSamples
+    appendInfoLine: "  All effective scales are 1.0 -> identity copy (no resynthesis)"
 else
-    # Placement only: preserve event samples (no stretch). Each event occupies
-    # exactly its requested temporal slot: truncate if the slot is shorter, or
-    # append multichannel silence if it is longer.
-    nParts = 0
-    for i from 1 to nRows
-        od = origDurArr[i]
-        nd = newDurArr[i]
-        keepDur = min(od, nd)
-        selectObject: sound
-        part = Extract part: startArr[i], startArr[i] + keepDur, "rectangular", 1, "no"
-        nParts = nParts + 1
-        partArr[nParts] = part
-        gap = nd - keepDur
-        if gap > 0.001
-            silence = Create Sound from formula: "te_gap", nChannels, 0, gap, sr, "0"
-            nParts = nParts + 1
-            partArr[nParts] = silence
+    # ---- Export the whole source once.  32-bit PCM is exact for 16/24-bit
+    # material; values at or above full scale would clip, so a hot source is
+    # first attenuated by an exact power of two that Python undoes.
+    selectObject: sound
+    srcPeak = Get absolute extremum: 0, 0, "None"
+    gainExp = 0
+    if srcPeak >= 0.999
+        gainExp = floor(log2(srcPeak / 0.999)) + 1
+    endif
+    exportCopy = Copy: "te_export"
+    if gainExp > 0
+        Formula: "self * " + string$(2 ^ (-gainExp))
+    endif
+    Save as 32-bit WAV file: sourceWav$
+    removeObject: exportCopy
+    if not fileReadable(sourceWav$)
+        @cleanUpTempFiles
+        exitScript: "Could not export the source Sound for reconstruction: " + sourceWav$
+    endif
+
+    # Arguments go through a file (one per line): long paths cannot be cut
+    # by the ~1 kB command-line limit of Praat's runSystem on Windows.
+    writeFileLine: reconArgs$, replace_regex$(sourceWav$, "\\", "/", 0)
+    appendFileLine: reconArgs$, durationsCSVJ$
+    appendFileLine: reconArgs$, replace_regex$(renderWav$, "\\", "/", 0)
+    appendFileLine: reconArgs$, replace_regex$(reconRep$, "\\", "/", 0)
+    appendFileLine: reconArgs$, "--method=" + reconMethod$
+    appendFileLine: reconArgs$, "--time_offset=" + fixed$(sampleOrigin, 12)
+    appendFileLine: reconArgs$, "--input_gain=" + string$(2 ^ gainExp)
+
+    reconCall$ = pythonCmd$ + " """ + reconScriptJ$ + """ ""@" + reconArgsJ$ + """"
+    runSystem_nocheck: reconCall$ + " > """ + reconLogJ$ + """ 2>&1"
+
+    if not fileReadable(renderWav$)
+        errMsg$ = "Reconstruction engine failed - no rendered audio was produced."
+        if fileReadable(reconLog$)
+            errMsg$ = errMsg$ + newline$ + newline$ + readFile$(reconLog$)
         endif
-    endfor
-    selectObject: partArr[1]
-    for i from 2 to nParts
-        plusObject: partArr[i]
-    endfor
-    outputSound = Concatenate
+        @cleanUpTempFiles
+        exitScript: errMsg$
+    endif
+
+    # The engine rounds every event boundary to a sample, so its exact plan
+    # may differ from the float estimate above by up to one sample per event.
+    enginePlan = undefined
+    if fileReadable(reconRep$)
+        reconText$ = newline$ + readFile$(reconRep$)
+        @parseKey: reconText$, "planned_out_samples"
+        enginePlan = number(parseKey.result$)
+    endif
+    if enginePlan = undefined or abs(enginePlan - plannedSamples) > nRows + 1
+        @cleanUpTempFiles
+        exitScript: "Reconstruction report missing or inconsistent with the event plan" + newline$ +
+            ... "(engine plan " + string$(enginePlan) + " samples, script plan " + string$(plannedSamples) + ")."
+    endif
+    plannedSamples = enginePlan
+
+    outputSound = Read from file: renderWav$
     Rename: output_name$
-    for i from 1 to nParts
-        removeObject: partArr[i]
-    endfor
+    outCh = Get number of channels
+    outN = Get number of samples
+    outSr = Get sampling frequency
+    if outCh <> nChannels or outSr <> sr or outN <> plannedSamples
+        removeObject: outputSound
+        @cleanUpTempFiles
+        exitScript: "Reconstruction returned an inconsistent Sound:" + newline$ +
+            ... "channels " + string$(outCh) + " (expected " + string$(nChannels) + "), " +
+            ... "rate " + string$(outSr) + " Hz, samples " + string$(outN) +
+            ... " (planned " + string$(plannedSamples) + ")."
+    endif
+    Shift times to: "start time", soundStart
+
+    if fileReadable(reconRep$)
+        @parseKey: reconText$, "exact_fraction"
+        reconExact$ = parseKey.result$
+        @parseKey: reconText$, "onsets_protected"
+        reconOnsets$ = parseKey.result$
+        @parseKey: reconText$, "onsets_unprotected"
+        reconUnprot$ = parseKey.result$
+        @parseKey: reconText$, "peak_out"
+        reconPeak$ = parseKey.result$
+    endif
 endif
 
-# Measure what Praat actually rendered (PSOLA can differ slightly from the
-# purely planned sum; placement and varispeed should match closely).
 selectObject: outputSound
 measuredOutputDur = Get total duration
+appendInfoLine: "  Rendered: ", fixed$(measuredOutputDur, 4), " s (planned ", fixed$(plannedSamples / sr, 4), " s), ",
+    ... nChannels, " ch"
+appendInfoLine: "  Exact (unresynthesised) fraction: ", reconExact$, " | attacks protected: ", reconOnsets$
+outPeakCheck = Get absolute extremum: 0, 0, "None"
+if outPeakCheck > 1
+    appendInfoLine: "  Note: rendered peak ", fixed$(outPeakCheck, 3), " exceeds full scale (not normalized;",
+        ... " phase changes can raise the crest of noisy material). Scale before saving to integer formats."
+endif
 
 # ---- Read stats ----
+# Keys are matched as whole lines (newline + key + "="), so e.g. "scale_mean"
+# can no longer match inside "field_scale_mean".
+procedure parseKey: .text$, .key$
+    @parseStatLine: .text$, newline$ + .key$ + "="
+    .result$ = parseStatLine.result$
+endproc
+
 procedure parseStatLine: .text$, .key$
     .result$ = "?"
     .pos = index(.text$, .key$)
@@ -750,35 +860,35 @@ scaleMeanStat$ = "?"
 entrStat$      = "?"
 
 if fileReadable(statsTxt$)
-    statsText$ = readFile$(statsTxt$)
-    @parseStatLine: statsText$, "n_events="
-    nEvStat$ = parseStatLine.result$
-    @parseStatLine: statsText$, "z_dim="
-    zDimStat$ = parseStatLine.result$
-    @parseStatLine: statsText$, "latent_method="
-    methodStat$ = parseStatLine.result$
-    @parseStatLine: statsText$, "field_mode="
-    modeStat$ = parseStatLine.result$
-    @parseStatLine: statsText$, "extra_rules="
-    rulesStat$ = parseStatLine.result$
-    @parseStatLine: statsText$, "latent_loss_initial="
-    lossInitStat$ = parseStatLine.result$
-    @parseStatLine: statsText$, "latent_loss_final="
-    lossFinalStat$ = parseStatLine.result$
-    @parseStatLine: statsText$, "compression_ratio="
-    comprStat$ = parseStatLine.result$
-    @parseStatLine: statsText$, "orig_total_dur="
-    origDurStat$ = parseStatLine.result$
-    @parseStatLine: statsText$, "new_total_dur="
-    newDurStat$ = parseStatLine.result$
-    @parseStatLine: statsText$, "scale_min="
-    scaleMinStat$ = parseStatLine.result$
-    @parseStatLine: statsText$, "scale_max="
-    scaleMaxStat$ = parseStatLine.result$
-    @parseStatLine: statsText$, "scale_mean="
-    scaleMeanStat$ = parseStatLine.result$
-    @parseStatLine: statsText$, "scale_entropy="
-    entrStat$ = parseStatLine.result$
+    statsText$ = newline$ + readFile$(statsTxt$)
+    @parseKey: statsText$, "n_events"
+    nEvStat$ = parseKey.result$
+    @parseKey: statsText$, "z_dim"
+    zDimStat$ = parseKey.result$
+    @parseKey: statsText$, "latent_method"
+    methodStat$ = parseKey.result$
+    @parseKey: statsText$, "field_mode"
+    modeStat$ = parseKey.result$
+    @parseKey: statsText$, "extra_rules"
+    rulesStat$ = parseKey.result$
+    @parseKey: statsText$, "latent_loss_initial"
+    lossInitStat$ = parseKey.result$
+    @parseKey: statsText$, "latent_loss_final"
+    lossFinalStat$ = parseKey.result$
+    @parseKey: statsText$, "compression_ratio"
+    comprStat$ = parseKey.result$
+    @parseKey: statsText$, "orig_total_dur"
+    origDurStat$ = parseKey.result$
+    @parseKey: statsText$, "new_total_dur"
+    newDurStat$ = parseKey.result$
+    @parseKey: statsText$, "scale_min"
+    scaleMinStat$ = parseKey.result$
+    @parseKey: statsText$, "scale_max"
+    scaleMaxStat$ = parseKey.result$
+    @parseKey: statsText$, "scale_mean"
+    scaleMeanStat$ = parseKey.result$
+    @parseKey: statsText$, "scale_entropy"
+    entrStat$ = parseKey.result$
 endif
 
 ###############################################################################
@@ -868,7 +978,7 @@ if draw_visualization
     Font size: 7
     Text left: "yes", "Warped"
     Text bottom: "yes", "Time (s)"
-    Text top: "no", "Rendered " + fixed$(measuredOutputDur, 2) + " s | planned event sum " + newDurStat$ + " s"
+    Text top: "no", "Rendered " + fixed$(measuredOutputDur, 2) + " s | planned " + fixed$(plannedSamples / sr, 2) + " s | " + reconLabel$
 
     # === Latent map (actual mechanism) ===
     Select outer viewport: 0, 8, 3.04, 4.50
@@ -984,21 +1094,25 @@ if draw_visualization
     Paint rectangle: "{0.95, 0.95, 0.95}", 0, 1, 0, 1
     Font size: 7
     Colour: "Black"
-    Text: 0.02, "left", 0.82, "half", "##Run statistics##"
+    Text: 0.02, "left", 0.86, "half", "##Run statistics##"
     Font size: 6
     Colour: "{0.3, 0.3, 0.3}"
-    Text: 0.02, "left", 0.60, "half",
+    Text: 0.02, "left", 0.66, "half",
         ... "Events: " + nEvStat$ +
         ... " | Latent: " + methodStat$ + " z=" + zDimStat$ +
         ... " | Fit metric: " + lossInitStat$ + " → " + lossFinalStat$
-    Text: 0.02, "left", 0.38, "half",
+    Text: 0.02, "left", 0.48, "half",
         ... "Field: " + modeStat$ +
         ... " | Rules: " + rulesStat$ +
         ... " | Scale: [" + scaleMinStat$ + ", " + scaleMaxStat$ + "]  mean=" + scaleMeanStat$
-    Text: 0.02, "left", 0.16, "half",
-        ... "Event-sum: " + origDurStat$ + " s → " + newDurStat$ + " s | Rendered: " + fixed$(measuredOutputDur, 2) + " s" +
+    Text: 0.02, "left", 0.30, "half",
+        ... "Event-sum: " + origDurStat$ + " s → " + newDurStat$ + " s | Rendered (with silences): " + fixed$(measuredOutputDur, 2) + " s" +
         ... " | Ratio: " + comprStat$ +
         ... " | Entropy: " + entrStat$
+    Text: 0.02, "left", 0.12, "half",
+        ... "Render: " + reconLabel$ + " | " + string$(nChannels) + " ch" +
+        ... " | exact fraction " + reconExact$ +
+        ... " | attacks protected " + reconOnsets$ + " (unprotected " + reconUnprot$ + ")"
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
 
@@ -1020,7 +1134,9 @@ appendInfoLine: "Preset:    ", presetName$
 appendInfoLine: "Events:    ", nEvStat$, " | Latent: ", methodStat$, " z=", zDimStat$
 appendInfoLine: "Field:     ", modeStat$, " | Rules: ", rulesStat$
 appendInfoLine: "Fit metric:", lossInitStat$, " → ", lossFinalStat$
-appendInfoLine: "Duration:  event sum ", origDurStat$, " s → ", newDurStat$, " s; rendered ", fixed$(measuredOutputDur, 3), " s"
+appendInfoLine: "Duration:  event sum ", origDurStat$, " s → ", newDurStat$, " s; rendered ", fixed$(measuredOutputDur, 3), " s (silences kept)"
+appendInfoLine: "Render:    ", reconLabel$, " | ", nChannels, " ch | exact fraction ", reconExact$,
+    ... " | attacks protected ", reconOnsets$, " | peak ", reconPeak$
 appendInfoLine: "Scale:     [", scaleMinStat$, ", ", scaleMaxStat$, "]  mean=", scaleMeanStat$
 
 selectObject: outputSound
