@@ -167,7 +167,7 @@ elsif stage = 3
     stageName$   = "cascade"
     stageLabel$  = "Crystalline Cascade"
 elsif stage = 4
-    stageRel$    = "Spatial & Surround/4-Channel Canon.praat"
+    stageRel$    = "Spatial & Surround/4-Channel_Canon.praat"
     stageName$   = "canon"
     stageLabel$  = "4-Channel Canon"
 endif
@@ -272,6 +272,7 @@ if stage = 1
     p_n_mfcc            = 12
     p_ordering$          = "Nearest neighbor chain (most similar next)"
     p_play_result       = 0
+    p_mds_draw_visualization = 0  ; Skip drawing during feedback iterations
 elsif stage = 2
     p_freeze_points   = 12
     p_freeze_rep_div  = 3.0
@@ -349,7 +350,8 @@ while iter < max_iter and stopFlag = 0
             ... p_n_mfcc,
             ... p_ordering$,
             ... p_silence_between,
-            ... p_play_result
+            ... p_play_result,
+            ... p_mds_draw_visualization
     elsif stage = 2
         runScript: stageScript$,
             ... p_preset$,
