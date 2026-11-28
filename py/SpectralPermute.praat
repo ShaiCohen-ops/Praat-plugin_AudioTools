@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 2.3.1 (2026)
+# Version: 2.4 (2026)
 #
 # Description:
 #   Spectral Permutation.
@@ -121,6 +121,28 @@
 #     substituting. Each order is required only on the axes that use it.
 #   - Panel C now labels its cells per axis: source BLOCK on the time-bearing
 #     axes, source BAND on freq, where there are no time blocks to show.
+#
+# Changelog v2.4 - Extended Spectral Permutation:
+#   - NEW: Output_duration (main form, seconds). 0 = previous behaviour,
+#     bit-identical to v2.3.1 on every axis (verified). A positive value
+#     makes the Num_blocks source blocks a POOL and draws as many output
+#     slots from it as the duration needs: resequencing WITH REPLACEMENT,
+#     no time-stretching. Each band builds its own sequence on band_time.
+#     The first round is exactly the v2.3.1 order; later rounds are fresh
+#     shuffles (random_shuffle), rotations (reverse/rotate) or repeats
+#     (custom_order); no block is ever placed twice in a row. Output has
+#     exactly round(Output_duration * sr) samples; the result is checked.
+#   - Available on time and band_time. freq / time_freq / mag_phase take
+#     phase from the source's own time position, which does not exist past
+#     the region, so they refuse a positive Output_duration with a message
+#     until a phase-continuation mechanism is added.
+#   - Not set by any preset (it is a source/result relation, not processing
+#     character), so a preset never changes the output length.
+#   - Figure: panel B on the output's own time axis with the real slot
+#     boundaries; panel C shows every output slot (source block per band).
+#   - Report: slots, block use per band, adjacent repeats, trimmed samples;
+#     seam ratio in extended mode is measured against the source's median
+#     5 ms window (there is no source at the same place).
 #
 # Changelog v2.3.1:
 #   - Engine 2.3.1: band_energy by conservative power rebinning. v2.3
@@ -252,10 +274,11 @@ sr        = Get sampling frequency
 nChannels = Get number of channels
 
 # ---- FORM ----
-form Spectral Permutation v2.3.1
+form Spectral Permutation v2.4
     comment ── Region (seconds; End = 0 means "to end") ──
     real Start_time 0.0
     real End_time 0.0
+    real Output_duration_(s,_0_=_region) 0.0
     optionmenu Preset: 1
         option Band shuffle
         option Gentle drift
@@ -641,6 +664,25 @@ if start_time >= end_time
     exitScript: "Start_time must be less than End_time (and End_time must be within the sound's duration)."
 endif
 
+# ---- OUTPUT DURATION (0 = same as the region, v2.3.1 behaviour) ----
+if output_duration < 0
+    output_duration = 0
+endif
+extended = 0
+if output_duration > 0
+    if axis$ <> "time" and axis$ <> "band_time"
+        exitScript: "Output_duration > 0 works on the time and band_time axes only." + newline$
+            ... + "The " + axis$ + " axis takes phase from the source's own time position, which"
+            ... + newline$ + "does not exist beyond the region. Set Output_duration to 0 or choose"
+            ... + newline$ + "a band_time / time preset (Band shuffle, Gentle drift, Spectral smear, Retrograde)."
+    endif
+    if output_duration > 3600
+        exitScript: "Output_duration is limited to 3600 s."
+    endif
+    extended = 1
+endif
+requestedSamples = round (output_duration * sr)
+
 # ---- CUSTOM ORDER: strip whitespace, then validate ----
 custom_order$ = replace$ (custom_order$, " ", "", 0)
 custom_order$ = replace$ (custom_order$, tab$, "", 0)
@@ -722,7 +764,7 @@ endproc
 
 # ---- INFO ----
 clearinfo
-writeInfoLine:  "=== Spectral Permutation v2.0 ==="
+writeInfoLine:  "=== Spectral Permutation v2.4 ==="
 appendInfoLine: "Input: ", soundName$
 appendInfoLine: "Duration: ", fixed$ (dur, 3), " s | SR: ", sr, " Hz | Channels: ", nChannels
 appendInfoLine: ""
@@ -734,7 +776,11 @@ elsif presetApplied
     appendInfoLine: "  (preset values, then edited in the advanced dialog)"
 endif
 appendInfoLine: "Region:       ", fixed$ (start_time, 3), " -> ", fixed$ (end_time, 3), " s"
-appendInfoLine: "(output contains ONLY this region, not the rest of the sound)"
+if extended
+    appendInfoLine: "Output:       ", fixed$ (output_duration, 3), " s built from this region's blocks (resequencing with replacement)"
+else
+    appendInfoLine: "(output contains ONLY this region, not the rest of the sound)"
+endif
 appendInfoLine: "Axis:         ", axis$
 if axis$ = "freq"
     appendInfoLine: "Blocks:       not used on the freq axis (time is held fixed)"
@@ -821,6 +867,7 @@ pythonCall$ = pythonCmd$ + " """ + pythonScript$ + """"
     ... + " --edge_fade_ms "  + fixed$ (edge_fade_ms, 3)
     ... + " --num_variants "  + string$ (num_variants)
     ... + " --energy_mode "   + energy$
+    ... + " --out_duration "  + fixed$ (output_duration, 6)
     ... + " --cleanup"
 
 if needTimeOrder
@@ -941,6 +988,36 @@ endif
 intStart = statNum.out
 @statNum: "interior_end_s"
 intEnd = statNum.out
+@statStr: "extended"
+extStat$ = statStr.out$
+@statNum: "samples_out"
+samplesOut = statNum.out
+@statNum: "out_slots"
+outSlots = statNum.out
+@statNum: "trimmed_samples"
+trimmedSamples = statNum.out
+@statNum: "block_use_min"
+useMin = statNum.out
+@statNum: "block_use_max"
+useMax = statNum.out
+@statNum: "adjacent_repeats"
+adjRepeats = statNum.out
+@statStr: "seam_reference"
+seamRef$ = statStr.out$
+nOutBounds = 0
+if extended
+    @statStr: "out_block_bounds_s"
+    obStr$ = statStr.out$
+    if obStr$ <> "" and obStr$ <> "none"
+        obTok = Create Strings from tokens: "outBounds", obStr$, ","
+        nOutBounds = Get number of strings
+        for spBi to nOutBounds
+            obTok$ = Get string: spBi
+            spOutBound_'spBi' = number (obTok$)
+        endfor
+        removeObject: obTok
+    endif
+endif
 @statNum: "map_bands"
 mapBands = statNum.out
 @statNum: "map_blocks"
@@ -970,10 +1047,19 @@ for b to mapBands
     @statStr: "map_row_" + string$ (b)
     row$ = statStr.out$
     spRow_'b'$ = row$
+    # one Strings object per row: a token-by-token string scan is quadratic
+    # and an extended row can hold thousands of slots
+    rowTok = Create Strings from tokens: "mapRow", row$, ","
+    nRowTok = Get number of strings
     for i to mapBlocks
-        @nthToken: row$, i
-        spMap_'b'_'i' = nthToken.out
+        if i <= nRowTok
+            rowTok$ = Get string: i
+            spMap_'b'_'i' = number (rowTok$)
+        else
+            spMap_'b'_'i' = undefined
+        endif
     endfor
+    removeObject: rowTok
     @statStr: "band_" + string$ (b) + "_hz"
     hz$ = statStr.out$
     @nthToken: hz$, 1
@@ -1004,6 +1090,22 @@ resultSound = spResult_1
 selectObject: resultSound
 durOut = Get total duration
 regionDur = end_time - start_time
+if extended
+    for v to num_variants
+        selectObject: spResult_'v'
+        nGot = Get number of samples
+        if nGot <> requestedSamples or extStat$ <> "yes"
+            @cleanUpTempFiles
+            exitScript: "Extended result has " + string$ (nGot) + " samples; "
+                ... + string$ (requestedSamples) + " were requested. Result discarded."
+        endif
+    endfor
+    selectObject: resultSound
+endif
+vizDurB = regionDur
+if extended
+    vizDurB = durOut
+endif
 
 # ===========================================================================
 # Visualization
@@ -1064,8 +1166,13 @@ if draw_visualization
         ... + "   blocks " + string$ (num_blocks)
         ... + "   bands " + string$ (mapBands)
         ... + "   " + spacing$
-    Text: 1, "right", 0.18, "half", fixed$ (start_time, 3) + " - "
-        ... + fixed$ (end_time, 3) + " s"
+    if extended
+        Text: 1, "right", 0.18, "half", fixed$ (start_time, 3) + " - "
+            ... + fixed$ (end_time, 3) + " s  ->  " + fixed$ (durOut, 3) + " s output"
+    else
+        Text: 1, "right", 0.18, "half", fixed$ (start_time, 3) + " - "
+            ... + fixed$ (end_time, 3) + " s"
+    endif
 
     # ---- PANEL A: ORIGINAL REGION ----
     # Font size BEFORE Select inner viewport: Praat derives the inner
@@ -1093,27 +1200,42 @@ if draw_visualization
     Text: 0, "left", 1.04, "half", "##A. Source region##   (kHz vs s)"
 
     # ---- PANEL B: PERMUTED RESULT ----
+    # On its own time axis: in extended mode the output is longer (or
+    # shorter) than the region shown in panel A.
     Font size: 6
     Select inner viewport: 0.60, 7.70, 3.10, 4.80
     selectObject: specB
     Paint: 0, 0, 0, drawMaxHz, 100, "yes", 50, 6, 0, "no"
 
     Select inner viewport: 0.60, 7.70, 3.10, 4.80
-    Axes: 0, regionDur, 0, drawMaxHz
-    @drawBandGrid: mapBands, drawMaxHz, regionDur
-    @drawRealBounds: regionDur, drawMaxHz
+    Axes: 0, vizDurB, 0, drawMaxHz
+    @drawBandGrid: mapBands, drawMaxHz, vizDurB
+    if extended
+        @drawOutBounds: vizDurB, drawMaxHz
+    else
+        @drawRealBounds: regionDur, drawMaxHz
+    endif
 
     Select inner viewport: 0.60, 7.70, 3.10, 4.80
-    Axes: 0, regionDur, 0, drawMaxHz
+    Axes: 0, vizDurB, 0, drawMaxHz
     Draw inner box
     Select inner viewport: 0.60, 7.70, 3.10, 4.80
-    Axes: 0, regionDur, 0, drawMaxHz
+    Axes: 0, vizDurB, 0, drawMaxHz
     Marks left every: 1000, 2, "yes", "yes", "no"
-    Marks bottom every: 1, 0.5, "yes", "yes", "no"
+    if extended
+        @niceStep: vizDurB / 8
+        Marks bottom every: 1, niceStep.out, "yes", "yes", "no"
+    else
+        Marks bottom every: 1, 0.5, "yes", "yes", "no"
+    endif
     Font size: 7
     Select inner viewport: 0.60, 7.70, 3.10, 4.80
     Axes: 0, 1, 0, 1
-    Text: 0, "left", 1.04, "half", "##B. Permuted result##   (kHz vs s)"
+    if extended
+        Text: 0, "left", 1.04, "half", "##B. Extended result##   (kHz vs s)   red = output slot boundaries"
+    else
+        Text: 0, "left", 1.04, "half", "##B. Permuted result##   (kHz vs s)"
+    endif
 
     # ---- PANEL C: PERMUTATION MAP ----
     # Each cell is one (band, destination block). Its colour and number give
@@ -1135,9 +1257,11 @@ if draw_visualization
     Axes: 0, mapBlocks, 0, mapBands
     Black
     Line width: 1
-    for i from 1 to mapBlocks - 1
-        Draw line: i, 0, i, mapBands
-    endfor
+    if mapBlocks <= 64
+        for i from 1 to mapBlocks - 1
+            Draw line: i, 0, i, mapBands
+        endfor
+    endif
     if mapBands <= 20
         for b from 1 to mapBands - 1
             Draw line: 0, b, mapBlocks, b
@@ -1179,8 +1303,14 @@ if draw_visualization
         endif
     endfor
     if mapValue$ = "block"
+        slotStep = 1
+        if mapBlocks > 24
+            slotStep = ceiling (mapBlocks / 24)
+        endif
         for i to mapBlocks
-            One mark bottom: i - 0.5, "no", "yes", "no", string$ (i)
+            if (i - 1) mod slotStep = 0
+                One mark bottom: i - 0.5, "no", "yes", "no", string$ (i)
+            endif
         endfor
     endif
     Font size: 7
@@ -1189,6 +1319,9 @@ if draw_visualization
     if mapValue$ = "band"
         Text: 0, "left", 1.04, "half",
             ... "##C. Permutation map##   cell = source band; rows = destination bands (band low edge, Hz); time is held fixed"
+    elsif extended
+        Text: 0, "left", 1.04, "half",
+            ... "##C. Sequence map##   cell colour = source block (1-" + string$ (num_blocks) + "); rows = bands (low edge, Hz); columns = output slot"
     else
         Text: 0, "left", 1.04, "half",
             ... "##C. Permutation map##   cell = source block; rows = bands (band low edge, Hz); columns = destination block"
@@ -1222,7 +1355,9 @@ if draw_visualization
         ... + string$ (differBands) + " of " + string$ (mapBands) + " differ from master"
         ... + "     Master order: " + masterOrder$
     yy = yy - 0.10
-    if seamRatio$ <> "n/a" and seamRatio$ <> "" and seamRatio$ <> "?"
+    if extended and seamRatio$ <> "n/a" and seamRatio$ <> "" and seamRatio$ <> "?"
+        seamTxt$ = "Seam step at slot boundaries: result/source median window " + seamRatio$
+    elsif seamRatio$ <> "n/a" and seamRatio$ <> "" and seamRatio$ <> "?"
         seamTxt$ = "Seam step at block boundaries: result/source " + seamRatio$
     else
         seamTxt$ = "No time blocks on this axis (no seams to measure)"
@@ -1231,10 +1366,19 @@ if draw_visualization
     Text: 0.02, "left", yy, "half", seamTxt$ + "     Phase: " + clean.out$
         ... + "     Output peak: " + fixed$ (peakOut, 4)
     yy = yy - 0.10
-    Text: 0.02, "left", yy, "half", "Region: " + fixed$ (start_time, 3) + " - "
-        ... + fixed$ (end_time, 3) + " s     Output: " + fixed$ (durOut, 3)
-        ... + " s     Variants: " + string$ (num_variants)
-        ... + "     Seed: " + string$ (seed)
+    if extended
+        Text: 0.02, "left", yy, "half", "Region: " + fixed$ (start_time, 3) + " - "
+            ... + fixed$ (end_time, 3) + " s     Output: " + fixed$ (durOut, 3)
+            ... + " s = " + string$ (outSlots) + " slots from " + string$ (num_blocks) + " blocks"
+            ... + "     uses per block " + string$ (useMin) + "-" + string$ (useMax)
+            ... + "     repeats in a row " + string$ (adjRepeats)
+            ... + "     Variants: " + string$ (num_variants) + "     Seed: " + string$ (seed)
+    else
+        Text: 0.02, "left", yy, "half", "Region: " + fixed$ (start_time, 3) + " - "
+            ... + fixed$ (end_time, 3) + " s     Output: " + fixed$ (durOut, 3)
+            ... + " s     Variants: " + string$ (num_variants)
+            ... + "     Seed: " + string$ (seed)
+    endif
     yy = yy - 0.10
     if warning$ <> "none" and warning$ <> "" and warning$ <> "?"
         @clean: warning$
@@ -1276,6 +1420,12 @@ else
 endif
 appendInfoLine: "Selected region:     ", fixed$ (regionDur, 3), " s"
 appendInfoLine: "Output duration:     ", fixed$ (durOut, 3), " s"
+if extended
+    appendInfoLine: "Extended:            ", outSlots, " output slots drawn from ", num_blocks, " source blocks",
+        ... " (each block used ", useMin, "-", useMax, " times per band; ", adjRepeats, " immediate repeats)"
+    appendInfoLine: "                     exactly ", samplesOut, " samples; ", trimmedSamples,
+        ... " sample(s) trimmed off the region end (< one hop)"
+endif
 appendInfoLine: "Interior frames:     ", interiorFrames, "  (", blockFrames, " per block, ", tailFrames, " left as tail)"
 if masterOrder$ = "n/a"
     appendInfoLine: "Master order:        not used on the freq axis"
@@ -1299,8 +1449,13 @@ if axis$ = "freq" or axis$ = "time_freq"
     appendInfoLine: "Energy:              ", energyEff$
 endif
 if seamRatio$ <> "n/a" and seamRatio$ <> "" and seamRatio$ <> "?"
-    appendInfoLine: "Seam step at block boundaries (+-5 ms): median ratio result/source ", seamRatio$,
-        ... "; worst ", fixed$ (seamOut, 5), " vs source ", fixed$ (seamSrc, 5), " there"
+    if extended
+        appendInfoLine: "Seam step at slot boundaries (+-5 ms): median ratio result/", seamRef$, " ", seamRatio$,
+            ... "; worst ", fixed$ (seamOut, 5), " vs reference ", fixed$ (seamSrc, 5)
+    else
+        appendInfoLine: "Seam step at block boundaries (+-5 ms): median ratio result/source ", seamRatio$,
+            ... "; worst ", fixed$ (seamOut, 5), " vs source ", fixed$ (seamSrc, 5), " there"
+    endif
 endif
 appendInfoLine: "Max sample step (whole clip, not a seam measure): source ", fixed$ (stepIn, 5), " -> result ", fixed$ (stepOut, 5)
 appendInfoLine: "Output peak:         ", fixed$ (peakOut, 4)
@@ -1438,6 +1593,46 @@ procedure drawRealBounds: .t1, .maxHz
     Black
 endproc
 
+
+# Output slot boundaries (extended mode), from out_block_bounds_s.
+procedure drawOutBounds: .t1, .maxHz
+    if nOutBounds >= 2
+        Line width: 1
+        Colour: {0.45, 0.45, 0.45}
+        Dashed line
+        .a = spOutBound_1
+        .z = spOutBound_'nOutBounds'
+        Draw line: .a, 0, .a, .maxHz
+        Draw line: .z, 0, .z, .maxHz
+        if nOutBounds <= 82
+            Line width: 1
+            Colour: {0.85, 0.30, 0.10}
+            Dotted line
+            for spBi from 2 to nOutBounds - 1
+                .x = spOutBound_'spBi'
+                Draw line: .x, 0, .x, .maxHz
+            endfor
+        endif
+    endif
+    Solid line
+    Line width: 1
+    Black
+endproc
+
+# Round tick spacing (1/2/5 x 10^k) for a time axis.
+procedure niceStep: .raw
+    .e = 10 ^ floor (log10 (.raw))
+    .m = .raw / .e
+    if .m < 1.5
+        .out = 1 * .e
+    elsif .m < 3.5
+        .out = 2 * .e
+    elsif .m < 7.5
+        .out = 5 * .e
+    else
+        .out = 10 * .e
+    endif
+endproc
 
 # Picture-window text markup sanitizer. In Picture text `_` is subscript,
 # `%` italic, `#` bold, `^` superscript, and each is SWALLOWED rather than

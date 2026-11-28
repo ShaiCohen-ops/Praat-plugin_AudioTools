@@ -1,5 +1,5 @@
 """
-spectral_permute.py — Spectral Permutation Engine  v2.3.1
+spectral_permute.py — Spectral Permutation Engine  v2.4
 
 Part of Praat AudioTools plugin
 Author: Shai Cohen, Department of Music, Bar-Ilan University
@@ -13,7 +13,43 @@ Usage (called by Praat, not directly):
         --phase_mode lock
         --fft_size 2048 --hop_size 512 --edge_fade_ms 15.0
         --num_variants 1 --energy_mode magnitude
-        [--cleanup]
+        [--out_duration 60.0] [--cleanup]
+
+═══════════════════════════════════════════════════════════════════════════
+WHAT CHANGED IN v2.4 — Extended Spectral Permutation (output duration)
+═══════════════════════════════════════════════════════════════════════════
+  --out_duration D (seconds, default 0 = off). With D > 0 the N source
+  blocks become a POOL from which a sequence of as many output slots as D
+  needs is drawn: spectral resequencing WITH REPLACEMENT. Nothing is time-
+  stretched; every slot is an unmodified source block (phase lock as usual).
+  Axes: time and band_time (one code path). freq / time_freq / mag_phase
+  refuse D > 0: they take phase from the destination TIME of the source,
+  which does not exist past the region, so they need a phase-continuation
+  mechanism first.
+
+  Sequence rule, per band (band_time) or shared (time):
+    round 0      = the band's existing order (so the first N slots are
+                   exactly what v2.3.1 places there)
+    round r >= 1 random_shuffle : fresh permutation, seed stream
+                                  [seed, band, r] (master: band 0)
+                 reverse/rotate : the band's base order cyclically rotated
+                                  by r
+                 custom_order   : the user's order repeated as given
+    A round never starts with the block that ended the previous round
+    (rotated by one if it would), so no block is ever placed twice in a row.
+    Bands that share the master order also share the master SEQUENCE, so
+    Decorrelation keeps its meaning (0 = the time axis, extended).
+
+  Length: the head (frames before the interior) and the original tail
+  (unpermuted tail frames, region end, after-context) are kept; only the
+  number of sequence frames changes, by ceil((D*sr - region)/hop) frames,
+  and the last slot may be a partial block. The result is cut to exactly
+  round(D*sr) samples; the cut (< one hop) comes off the region's last
+  samples, under the edge fade, and is reported.
+
+  out_duration = 0 runs the v2.3.1 code unchanged (bit-identical). A
+  positive D equal to the region length also reproduces v2.3.1 exactly
+  (zero extra frames, round 0 only).
 
 ═══════════════════════════════════════════════════════════════════════════
 WHAT CHANGED IN v2.3.1
@@ -445,6 +481,88 @@ def transplant(src_cplx, dst_cplx, energy_mode):
     return patch * np.exp(1j * np.angle(dst_cplx))
 
 
+def extend_order(base, n_slots, kind, seed, band_key):
+    """Sequence of n_slots source-block indices drawn from the pool given by
+    `base` (a permutation of range(n)). Round 0 is `base` itself."""
+    import numpy as np
+    n = len(base)
+    seq = list(base)
+    r = 1
+    while len(seq) < n_slots:
+        if kind == "random_shuffle":
+            o = [int(i) for i in np.random.RandomState([seed, band_key, r]).permutation(n)]
+        elif kind in ("reverse", "rotate"):
+            k = r % n
+            o = list(base[k:]) + list(base[:k])
+        else:                                   # custom_order: as given
+            o = list(base)
+        tries = 0
+        while n > 1 and o[0] == seq[-1] and tries < n:
+            o = o[1:] + o[:1]
+            tries += 1
+        seq.extend(o)
+        r += 1
+    return seq[:n_slots], r
+
+
+def build_extended_sequences(master, band_orders, n_slots, kind, seed):
+    """One sequence per band. Bands holding the master order share the
+    master's sequence (stream key 0); variant bands get their own stream."""
+    master_seq, rounds = extend_order(master, n_slots, kind, seed, 0)
+    seqs = []
+    for b, o in enumerate(band_orders):
+        if list(o) == list(master):
+            seqs.append(list(master_seq))
+        else:
+            sq, _ = extend_order(o, n_slots, kind, seed, b + 1)
+            seqs.append(sq)
+    return seqs, rounds
+
+
+def permute_region_extended(Z, f0, f1, cfg):
+    """Resequencing with replacement (time / band_time). Returns a NEW frame
+    matrix with cfg["extra_frames"] more (or fewer) frames than Z."""
+    import numpy as np
+    n_frames = f1 - f0
+    N = cfg["n_blocks"]
+    blk = n_frames // N
+    if blk < 1:
+        return None, {"error": "not enough STFT frames (%d) for %d blocks" % (n_frames, N)}
+    used = blk * N
+    tail = n_frames - used
+    extra = cfg["extra_frames"]
+    seq_frames = used + extra
+    if seq_frames < 1:
+        return None, {"error": "Output_duration is too short: no sequence frame would remain"}
+    n_slots = int(np.ceil(seq_frames / float(blk)))
+    last_len = seq_frames - (n_slots - 1) * blk
+    pool = [f0 + i * blk for i in range(N)]
+    seqs = cfg["sequences"]
+    if len(seqs[0]) < n_slots:
+        return None, {"error": "internal: sequence shorter than slot count"}
+    total = Z.shape[1] + extra
+    Zout = np.zeros((Z.shape[0], total), dtype=Z.dtype)
+    Zout[:, :f0] = Z[:, :f0]
+    Zout[:, f0 + seq_frames:] = Z[:, f0 + used:]
+    phase_mode, n_fft, hop = cfg["phase_mode"], cfg["n_fft"], cfg["hop"]
+    for b, (lo, hi) in enumerate(cfg["bands"]):
+        prev = Z[lo:hi, f0 - 1] if (phase_mode == "lock" and f0 >= 1) else None
+        for i in range(n_slots):
+            src = seqs[b][i]
+            L = blk if i < n_slots - 1 else last_len
+            block = Z[lo:hi, pool[src]:pool[src] + L].copy()
+            if phase_mode == "lock":
+                block = lock_phase(prev, block, lo, n_fft, hop)
+            d = f0 + i * blk
+            Zout[lo:hi, d:d + L] = block
+            prev = block[:, -1]
+    starts = [f0 + i * blk for i in range(n_slots)]
+    return Zout, {"tail_frames": tail, "block_frames": blk, "starts": starts,
+                  "slot_end": f0 + seq_frames, "n_slots": n_slots,
+                  "last_slot_frames": last_len, "seq_frames": seq_frames,
+                  "src_starts": pool}
+
+
 def permute_region(Z, f0, f1, cfg):
     """Permute Z[:, f0:f1] and return (Znew, info).
 
@@ -593,6 +711,9 @@ def process_channel(audio_ch, sr, start_i, end_i, cfg, fade_n):
                   "longer region." % (f1 - f0, need))
         return apply_edge_fade(audio_ch[start_i:end_i].copy(), fade_n), {"error": reason}
 
+    if cfg.get("out_len"):
+        return _process_extended(Z, f0, f1, cfg, sr, lead, region_len, fade_n, n_fft, hop)
+
     Znew, info = permute_region(Z, f0, f1, cfg)
     if "error" in info:
         return apply_edge_fade(audio_ch[start_i:end_i].copy(), fade_n), info
@@ -613,6 +734,56 @@ def process_channel(audio_ch, sr, start_i, end_i, cfg, fade_n):
     info["bounds_s"] = [((m * hop - hop / 2.0) - lead) / sr for m in edges]
     info["bounds_samples"] = [int(round(m * hop - hop / 2.0 - lead)) for m in edges]
     return apply_edge_fade(out, fade_n), info
+
+
+def _process_extended(Z, f0, f1, cfg, sr, lead, region_len, fade_n, n_fft, hop):
+    import numpy as np
+    from scipy.signal import istft
+    Znew, info = permute_region_extended(Z, f0, f1, cfg)
+    if Znew is None:
+        return None, info
+    _, y = istft(Znew, fs=sr, window="hann", nperseg=n_fft,
+                 noverlap=n_fft - hop, boundary=True)
+    y = np.asarray(y, dtype=np.float64)
+    L = cfg["out_len"]
+    natural = region_len + cfg["extra_frames"] * hop
+    if len(y) < lead + L:
+        y = np.pad(y, (0, lead + L - len(y)))
+    out = y[lead:lead + L]
+    info["interior_frames"] = f1 - f0
+    info["trimmed_samples"] = int(natural - L)
+    blk = info["block_frames"]
+    sb = list(info["src_starts"]) + [info["src_starts"][-1] + blk]
+    info["bounds_s"] = [((m * hop - hop / 2.0) - lead) / sr for m in sb]
+    info["bounds_samples"] = [int(round(m * hop - hop / 2.0 - lead)) for m in sb]
+    ob = list(info["starts"]) + [info["slot_end"]]
+    info["out_bounds_s"] = [((m * hop - hop / 2.0) - lead) / sr for m in ob]
+    info["out_bounds_samples"] = [int(round(m * hop - hop / 2.0 - lead)) for m in ob]
+    return apply_edge_fade(out, fade_n), info
+
+
+def seam_metric_extended(src, out, bounds_samples, sr, win_ms=5.0):
+    """Extended output has no source at the same place. Reference = median,
+    over the whole source region, of the max sample step in windows of the
+    same size; ratio ~1 means joins are no rougher than typical source."""
+    import numpy as np
+    w = max(2, int(round(win_ms / 1000.0 * sr)))
+    d = np.abs(np.diff(src))
+    nwin = len(d) // (2 * w)
+    if nwin < 1:
+        return None, 0.0, 0.0
+    ref = float(np.median(d[:nwin * 2 * w].reshape(nwin, 2 * w).max(axis=1)))
+    ratios, worst = [], 0.0
+    for b in bounds_samples[1:-1]:
+        a0, a1 = max(1, b - w), min(len(out), b + w)
+        if a1 - a0 < 2:
+            continue
+        so = float(np.max(np.abs(np.diff(out[a0 - 1:a1]))))
+        ratios.append(so / max(ref, 1e-9))
+        worst = max(worst, so)
+    if not ratios:
+        return None, 0.0, ref
+    return float(np.median(ratios)), worst, ref
 
 
 def seam_metric(src, out, bounds_samples, sr, win_ms=5.0):
@@ -678,6 +849,8 @@ def main():
     p.add_argument("--edge_fade_ms", type=float, default=15.0)
     p.add_argument("--num_variants", type=int, default=1)
     p.add_argument("--energy_mode", type=str, default="magnitude", choices=ENERGY_MODES)
+    p.add_argument("--out_duration", type=float, default=0.0,
+                   help="output length in seconds; 0 = same as the region (v2.3.1 behaviour)")
     p.add_argument("--cleanup", action="store_true")
     args = p.parse_args()
 
@@ -719,6 +892,20 @@ def main():
     decor = min(1.0, max(0.0, args.decorrelation))
     if args.axis == "time":
         decor = 0.0
+
+    extended = args.out_duration > 0
+    out_len = int(round(args.out_duration * sr)) if extended else 0
+    region_len = end_i - start_i
+    extra_frames = 0
+    if extended:
+        if args.axis not in ("time", "band_time"):
+            die("Output_duration > 0 is available on the time and band_time axes only "
+                "(axis '%s' takes phase from the source's own time position, which does "
+                "not exist beyond the region)" % args.axis)
+        if out_len < 1:
+            die("Output_duration is shorter than one sample")
+        delta = out_len - region_len
+        extra_frames = int(-((-delta) // hop))       # ceil(delta / hop), also for delta < 0
 
     bands = band_edges(n_bins, sr, n_fft, n_bands, args.band_spacing)
     fade_n = int(round(args.edge_fade_ms / 1000.0 * sr))
@@ -762,6 +949,30 @@ def main():
                "band_orders": band_orders, "band_order": b_order,
                "phase_mode": args.phase_mode, "n_fft": n_fft, "hop": hop,
                "energy_mode": args.energy_mode}
+        seq_rounds = 0
+        if extended:
+            # slot count is fixed by the frame geometry; it is the same for every
+            # channel because all channels share sr, region and STFT settings
+            pad_ = n_fft
+            lead_ = start_i - max(0, start_i - pad_)
+            half_ = n_fft // 2
+            f0_ = int(np.ceil((lead_ + half_) / float(hop)))
+            f1_ = int(np.floor((lead_ + region_len - half_) / float(hop))) + 1
+            blk_ = (f1_ - f0_) // n_blocks
+            if blk_ < 1 or f1_ <= f0_:
+                die("the region has too few fully-interior STFT frames (%d) for %d blocks, "
+                    "so it cannot be extended. Use a smaller Window_ms or Hop_size, fewer "
+                    "blocks, or a longer region." % (max(0, f1_ - f0_), n_blocks))
+            seq_frames_ = blk_ * n_blocks + extra_frames
+            if seq_frames_ < 1:
+                die("Output_duration %.3f s is too short for this region and window "
+                    "(it would leave no sequence frames)" % args.out_duration)
+            n_slots_ = int(np.ceil(seq_frames_ / float(blk_)))
+            seqs, seq_rounds = build_extended_sequences(master, band_orders, max(n_slots_, n_blocks),
+                                                        args.kind, seed)
+            cfg["sequences"] = seqs
+            cfg["out_len"] = out_len
+            cfg["extra_frames"] = extra_frames
 
         print("  [Py 3/4] Variant %d/%d (seed %d): permuting..." % (v + 1, n_variants, seed))
 
@@ -769,12 +980,16 @@ def main():
         if mono:
             res, info = process_channel(audio, sr, start_i, end_i, cfg, fade_n)
             if "error" in info:
+                if extended:
+                    die(info["error"])
                 warn.append(info["error"])
             src_metric = audio[start_i:end_i]
         else:
             chans, seen, info = [], set(), {}
             for c in range(n_ch):
                 r, inf = process_channel(audio[:, c], sr, start_i, end_i, cfg, fade_n)
+                if extended and "error" in inf:
+                    die(inf["error"])
                 chans.append(r)
                 info = inf
                 if "error" in inf and inf["error"] not in seen:
@@ -788,9 +1003,13 @@ def main():
         sf.write(out_path, res.astype(np.float32), sr, subtype="FLOAT")
         written.append(out_path)
 
+        if extended and res.shape[0] != out_len:
+            die("internal: produced %d samples, requested %d" % (res.shape[0], out_len))
         probe = res if res.ndim == 1 else res[:, 0]
         seam = (None, 0.0, 0.0)
-        if "bounds_samples" in info and args.axis != "freq":
+        if extended:
+            seam = seam_metric_extended(src_metric, probe, info["out_bounds_samples"], sr)
+        elif "bounds_samples" in info and args.axis != "freq":
             seam = seam_metric(src_metric, probe, info["bounds_samples"], sr)
         stats_blocks.append({
             "seed": seed, "master": master, "band_orders": band_orders,
@@ -799,6 +1018,8 @@ def main():
             "step_in": max_step(src_metric), "step_out": max_step(probe),
             "peak": float(np.max(np.abs(res))) if res.size else 0.0,
             "dur": res.shape[0] / sr,
+            "samples": int(res.shape[0]),
+            "sequences": cfg.get("sequences"), "rounds": seq_rounds,
         })
         for w in warn:
             print("  WARNING: %s" % w)
@@ -813,6 +1034,9 @@ def main():
         f.write("region_duration=%.4f\n" % (end_t - start_t))
         f.write("duration_in=%.4f\n" % orig_dur)
         f.write("duration_out=%.4f\n" % s0["dur"])
+        f.write("samples_out=%d\n" % s0["samples"])
+        f.write("extended=%s\n" % ("yes" if extended else "no"))
+        f.write("out_duration_requested=%.6f\n" % (args.out_duration if extended else 0.0))
         f.write("sr=%d\n" % sr)
         f.write("channels=%d\n" % n_ch)
         f.write("axis=%s\n" % args.axis)
@@ -839,6 +1063,25 @@ def main():
         f.write("interior_frames=%d\n" % s0["info"].get("interior_frames", 0))
         f.write("block_frames=%d\n" % s0["info"].get("block_frames", 0))
         f.write("tail_frames=%d\n" % s0["info"].get("tail_frames", 0))
+        if extended:
+            inf0 = s0["info"]
+            n_slots = inf0["n_slots"]
+            f.write("out_slots=%d\n" % n_slots)
+            f.write("last_slot_frames=%d\n" % inf0["last_slot_frames"])
+            f.write("sequence_frames=%d\n" % inf0["seq_frames"])
+            f.write("extra_frames=%d\n" % extra_frames)
+            f.write("trimmed_samples=%d\n" % inf0["trimmed_samples"])
+            uses = [[sq[:n_slots].count(k) for k in range(n_blocks)] for sq in s0["sequences"]]
+            f.write("block_use_min=%d\n" % min(min(u) for u in uses))
+            f.write("block_use_max=%d\n" % max(max(u) for u in uses))
+            rep_adj = max(sum(1 for i in range(1, n_slots) if sq[i] == sq[i - 1])
+                          for sq in s0["sequences"])
+            f.write("adjacent_repeats=%d\n" % rep_adj)
+            ob = inf0["out_bounds_s"]
+            f.write("out_block_bounds_s=%s\n" % ",".join("%.5f" % v for v in ob))
+            f.write("seam_reference=source median window\n")
+        else:
+            f.write("seam_reference=source at same place\n")
         f.write("max_step_in=%.6f\n" % s0["step_in"])
         f.write("max_step_out=%.6f\n" % s0["step_out"])
         sr_, so_, ss_ = s0["seam"]
@@ -860,7 +1103,8 @@ def main():
         map_is_band = (args.axis == "freq")
         f.write("map_value=%s\n" % ("band" if map_is_band else "block"))
         f.write("map_bands=%d\n" % n_bands)
-        f.write("map_blocks=%d\n" % (1 if map_is_band else n_blocks))
+        f.write("map_blocks=%d\n" % (1 if map_is_band else
+                                      (s0["info"]["n_slots"] if extended else n_blocks)))
         f.write("map_ramp=%d\n" % (n_bands if map_is_band else n_blocks))
         f.write("blocks_used=%s\n" % ("no" if map_is_band else "yes"))
         for b in range(n_bands):
@@ -869,6 +1113,8 @@ def main():
                                                 hi / (n_bins - 1) * nyq))
             if map_is_band:
                 row = [s0["band_order"][b] + 1]
+            elif extended:
+                row = [i + 1 for i in s0["sequences"][b][:s0["info"]["n_slots"]]]
             else:
                 row = [i + 1 for i in s0["band_orders"][b]]
             f.write("map_row_%d=%s\n" % (b + 1, ",".join(str(i) for i in row)))
